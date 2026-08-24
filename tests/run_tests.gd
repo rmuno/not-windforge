@@ -5717,6 +5717,22 @@ func _test_streaming_is_tiered_and_skips_still_frames() -> void:
 	t.set_cell(Vector2i(2000, 2000), TerrainDB.Type.STONE)  # a brand-new chunk
 	t.update_streaming([primary], [secondary])
 	_check(t.scan_count == still + 1, "writing into a NEW chunk re-arms the scan")
+
+	# RENDER RANGE follows the camera (owner: "render distance is not matching
+	# active zoom"): the primary radius derives from primary_range_px, so a
+	# wider view widens the promoted neighbourhood — and changing it re-arms
+	# the scan-skip (a zoom change re-scans once).
+	var r_default: int = t._primary_promote_r()
+	t.primary_range_px = t.chunk_px() * 14.0
+	_check(t._primary_promote_r() > r_default,
+		"a wider camera view widens the promote radius (%d > %d)"
+			% [t._primary_promote_r(), r_default])
+	t.primary_range_px = t.chunk_px() * 500.0
+	_check(t._primary_promote_r() <= 20 * maxi(t.subdiv, 1) / 8,
+		"an extreme zoom-out is CAPPED (%d)" % t._primary_promote_r())
+	var scans_z: int = t.scan_count
+	t.update_streaming([primary], [secondary])
+	_check(t.scan_count == scans_z + 1, "a zoom change re-arms the scan once")
 	t.queue_free()
 	await process_frame
 
