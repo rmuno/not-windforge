@@ -27,10 +27,12 @@ window/stretch/mode="canvas_items"
 
 [rendering]
 
-# Desktop keeps Forward+ (Vulkan); the WEB export MUST fall back to the
-# Compatibility renderer (WebGL2) — browsers cannot run Forward+/Vulkan. The
-# game is plain 2D drawing, so Compatibility renders it identically. This
-# per-platform override is what makes the GitHub Pages web build work at all.
+; Desktop keeps Forward+ (Vulkan); the WEB export MUST fall back to the
+; Compatibility renderer (WebGL2) - browsers cannot run Forward+/Vulkan. The
+; game is plain 2D drawing, so Compatibility renders it identically. This
+; per-platform override is what makes the GitHub Pages web build work at all.
+; (";" comments, never "#": Godot's config parser garbles "#" lines into
+; broken keys the next time it re-saves this file - it bit us 2026-08-24.)
 renderer/rendering_method="forward_plus"
 renderer/rendering_method.web="gl_compatibility"
 
