@@ -3,3 +3,4 @@
 docs/previews/*.svg
 # Web/export output (CI builds this fresh; never commit the built game).
 /build/
+.claude/
