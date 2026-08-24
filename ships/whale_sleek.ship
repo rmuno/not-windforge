@@ -1,0 +1,31 @@
+# Sky whale body plan — "sleek": the juvenile racer of the pod. Preview
+# it without booting the game:
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/whale_sleek.ship
+#
+# A candidate body plan beside ships/whale.ship (the bulky adult sperm
+# whale). Same rules, different proportions: long and low, 28 wide by 3
+# tall, never more than 3 rows thick anywhere. The ventral line runs
+# straight; the dorsal line lifts once, over the shoulders, and drops
+# again into a short blunt snout — a torpedo with a tail. Thin at the
+# stock (1 row) so the small fluke reads as a kick, not a paddle.
+#
+# Blunt head to the RIGHT, tapering tail to a fluke LEFT. The two empty
+# cells inside the shoulders are the STOMACH cavity (swallowed loot
+# rides there — mine in and you break through into a hollow). A juvenile
+# is nearly all blubber: the meat core is a thin seam through the
+# shoulders, the only place the body is deep enough to have an inside.
+# (Post-jam adjustment 2026-08-20: shoulder widened 2 columns and the
+# seam thickened so composition sits inside the surveyed 50-85%
+# blubber band — the suite gates every pod member on it.)
+#
+#   W  blubber (buoyant flesh — keep it the majority or the whale falls)
+#   M  meat (dense core)
+#
+# One connected piece. Keep it that way.
+
+origin 14 1
+
+W.............WWWWWWWWWWWW..
+WWWWWWWWWWWWWWMMMMMMMM..MMWW
+W...WWWWWWWWWWWWWWWWWWWWWWWW

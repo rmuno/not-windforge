@@ -1,0 +1,35 @@
+# Ammonite-conch kraken body plan -- SHELL (K) casing SURROUNDS a MEAT (M)
+# interior. Krakens carry no blubber; the game holds them aloft (a neutral-
+# buoyancy exception), so there is no W and the float rule does not apply.
+# Preview:  godot --headless --path . --script tools/ship_preview.gd -- ships/kraken_c.ship
+#
+# THE ANATOMY (owner, from the source, 2026-08-23): the shell is an OUTER
+# CASING wrapping the beast; the MEAT is INSIDE; only a LITTLE meat is EXPOSED,
+# as a deliberate GAMEPLAY WEAK SPOT. Shell is armored (hp 250, collision_resist
+# 20), so shots barely dent it -- to hurt the kraken you must snipe the small
+# exposed-meat tiles. This is the reworked C (owner: "C is closest in spirit,
+# make it 'perfect'"): LONGER, a somewhat POINTY shell tip on the LEFT (the
+# coiled ram tip), sweeping into a matched, similarly-sized MOUTH entrance on
+# the RIGHT -- an aperture in the casing (no shell on the mouth side) that bares
+# the throat. The only exterior meat is at that mouth (~3 tiles): the weak spot.
+# Buried inside is a meat-walled LOOT CAVITY (like the whale stomach) -- mine
+# through to reach it. One 4-connected body, no thin necks.
+#
+#   K shell (armour: hp 250, mass 2, collision_resist 20 -- light, very hard)
+#   M meat  (dense flesh -- the interior body and the exposed mouth-throat)
+#   . air / hollow (the open mouth aperture and the sealed loot cavity)
+#
+# Composition: K 54 (32.5%), M 112 (67.5%), no W. 166 solid cells, one island.
+# The shell is the SKIN (thin casing); the meat is the BULK it encloses.
+
+origin 11 4
+
+.....KKKKKKKKKKKKKKK..
+...KKKMMMMMMMMMMMMMKK.
+..KKMMMMMMMMMMMMMMMMKK
+.KKMMMMMMMMMMMMMMMMMM.
+KKMMMMMM..MMMMMMMMMMMM
+.KKMMMMMMMMMMMMMMMMMM.
+..KKMMMMMMMMMMMMMMMMKK
+...KKKMMMMMMMMMMMMMKK.
+.....KKKKKKKKKKKKKKK..

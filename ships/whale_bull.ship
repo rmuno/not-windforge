@@ -1,0 +1,34 @@
+# Sky whale body plan — BULL variant. A candidate body plan, not the
+# live whale: ships/whale.ship is still the one the game and the tests
+# load. Preview this one without booting the game:
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/whale_bull.ship
+#
+# The bull is the alpha ram of the sky: a 30-wide profile against the
+# reference whale's 26, and it carries its extra tonnage lengthwise, not
+# upward — the 4-row thickness cap of the owner's survey (2026-08-20) is
+# never exceeded. Bulk comes from head mass instead. Where the reference
+# tapers to a rounded snout, the bull's head runs the FULL 4 rows all the
+# way to the right edge and stops square, with a 3-cell gape cut under it
+# for the heavy underslung jaw. The tail is the survey's thin part (2
+# rows through the peduncle), opening into a broad forked fluke: the two
+# left-hand tips with the notch bitten out between them.
+#
+# The three empty cells in row 1 are the STOMACH cavity (swallowed loot
+# lives there once items exist; the compartment is real today — mine in
+# and you break through into a hollow). Note the gape at the bottom
+# right is NOT the stomach: it is open to the sky, a mouth, not a room.
+#
+#   W  blubber (buoyant flesh — keep it the majority or the whale falls)
+#   M  meat (dense core, shelled in blubber on every outside face)
+#
+# 101 cells, 78 blubber (77%). It floats because it is mostly blubber —
+# mining the blubber off a carcass literally sinks it. One connected
+# piece; the fluke tips hang off the peduncle, not off each other.
+
+origin 15 1
+
+WWW.....WWWWWWWWWWWWWWWWWWWWWW
+.WWWWWWWWWMMMMM...MMMMMWWWWWWW
+.WWWWWWWWWMMMMMMMMMMMMMWWWWWWW
+WWW......WWWWWWWWWWWWWW...WWWW

@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://maps/world/world.gd" id="1_world"]
+
+[node name="World" type="Node2D"]
+script = ExtResource("1_world")
+world_scale = 8
+camera_zoom = 0.198
+pilot_zoom_out = 1.728

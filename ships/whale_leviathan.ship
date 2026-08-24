@@ -1,0 +1,36 @@
+# Sky whale body plan — "LEVIATHAN", the scarred elder of the sky.
+# A candidate body plan; preview it without booting the game:
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/whale_leviathan.ship
+#
+# The longest whale of the set. Vertical thickness is capped at 4 rows
+# (owner survey 2026-08-20: thickest ~20-30 source blocks), so the
+# elder's enormity is carried entirely by LENGTH — 38 authored columns
+# against the reference's 24. Same sperm-whale reading: blunt head to
+# the RIGHT, peduncle tapering to a fluke on the LEFT.
+#
+# The outline is weathered on purpose. The fluke's upper lobe is bitten
+# clean off (leftmost column runs three rows, not four), and the dorsal
+# ridge is chipped twice — a lone knuckle standing proud just ahead of
+# the peduncle, then a two-cell notch gouged out of the back further
+# forward. An elder does not keep a smooth line.
+#
+# TWO stomach cavities instead of the reference's one — this one has
+# swallowed a lot. Both are 2-cell hollows fully enclosed by body on
+# every orthogonal side: the forward one sits low (lower row, above
+# the belly), the aft one sits high (upper row, under the back). Mine
+# into either and you break through into a hollow.
+#
+#   W  blubber (buoyant flesh — keep it the majority or the whale falls)
+#   M  meat (dense core)
+#
+# The whale floats because it is mostly blubber (here ~72%). Meat is a
+# strict inner core: every meat cell has blubber or a stomach wall
+# between it and the sky. Keep it one connected piece.
+
+origin 20 1
+
+..W........W.WWWW..WWWWWWWWWWWWWWWWWWW..
+.WWWWWWWWWWWWWMMMWWM..MMMMMMMMMMMMMWWWW.
+.WWWWWWWWWWWWWMMMMMMMMMMMM..MMMMMMMWWWW.
+.WW.......WWWWWWWWWWWWWWWWWWWWWWWWWWWW..

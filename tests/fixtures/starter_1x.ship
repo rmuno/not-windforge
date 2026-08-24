@@ -1,0 +1,24 @@
+# FROZEN 1× TEST FIXTURE — the starter as authored before the native-8×
+# re-author (2026-08-20). The legacy 1× scene and the unit/pilot suites
+# load THIS file; the game's real starter is ships/starter.ship (native
+# 8×, true component footprints). Edit this only to serve the tests —
+# it no longer spawns in the game.
+#
+# One character per block:
+#   .  empty        #  hull         G  gasbag (lift, free)
+#   E  engine       H  helm         B  ballast
+#   D  door         -  platform     |  strut
+#   ^ v < > P V  propeller — axis derives from mounting
+#
+# 'origin COL ROW' names which character is ship cell (0,0).
+
+origin 6 4
+
+GGGGGGGGGGGG
+..#....####.
+..D....D..#.
+..D....D.H#>
+>####--####|
+|#BE...BEE#T
+T####--####.
+...^....^...

@@ -1,0 +1,51 @@
+class_name PickupFloats
+extends RefCounted
+
+## Floating "+1 Stone" pickup numbers that pop when you mine a cell — the
+## immediate, tactile feedback the mining slice is judged on (Terraria feel,
+## MARKET.md §3). The dug cell vanishing is the primary confirmation; this is
+## the satisfying flourish on top.
+##
+## Same float-and-fade idiom as DamageNumbers (a hit rises and fades over its
+## life), but SIMPLER: pickups are discrete events, one per dig, so there is no
+## coalescing — each dig is its own small text. Pure logic (no nodes, no
+## rendering) so it is unit-testable directly; the WorldOverlay draws active().
+
+## How long a pickup float lives (rise + fade), in seconds. Short — it is a
+## confirmation, not a message to read.
+const LIFETIME := 0.9
+## How far it drifts upward over its life, in cells (× world scale).
+const RISE_CELLS := 1.6
+
+## Each: {"pos": Vector2, "text": String, "age": float, "scale": float}.
+var _floats: Array[Dictionary] = []
+
+
+## Record a pickup at `world_pos`. `text` is the label ("+1 Stone"); `world_scale`
+## sizes both the font and the rise so it stays legible at any scale.
+func add(world_pos: Vector2, text: String, world_scale := 1.0) -> void:
+	_floats.append({
+		"pos": world_pos,
+		"text": text,
+		"age": 0.0,
+		"scale": world_scale,
+	})
+
+
+## Advance every float and drop the expired ones. Cheap; call once per frame.
+func update(dt: float) -> void:
+	var kept: Array[Dictionary] = []
+	for f in _floats:
+		f["age"] += dt
+		if f["age"] < LIFETIME:
+			kept.append(f)
+	_floats = kept
+
+
+## The live floats, for the overlay to draw. Not a copy — read-only by contract.
+func active() -> Array[Dictionary]:
+	return _floats
+
+
+func count() -> int:
+	return _floats.size()

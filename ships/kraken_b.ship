@@ -1,0 +1,32 @@
+# Giant-squid / kraken body plan ("kraken_b") -- a long, whippy serpentine
+# hunter. SHELL (K) casing SURROUNDS a MEAT (M) interior; no blubber (krakens
+# do not float on fat -- the game holds them aloft as a buoyancy exception).
+# Preview:  godot --headless --path . --script tools/ship_preview.gd -- ships/kraken_b.ship
+#
+# THE ANATOMY (owner, from the source, 2026-08-23): shell is an OUTER CASING;
+# meat is INSIDE; only a LITTLE meat is EXPOSED as the deliberate WEAK SPOT.
+# Reads LEFT-to-RIGHT. The LEFT end is a POINTY armoured SHELL TIP -- the mantle
+# cone the squid RAMS with (shell hp 250, collision_resist 20: it barely dents).
+# The armoured casing wraps the mantle top and bottom, hiding the meat interior.
+# At the RIGHT the casing OPENS into the HEAD: a gaping MOUTH throat plus three
+# trailing TENTACLE strands, all bare MEAT -- the exposed weak spot lives here
+# (the mouth + the tentacle roots), so you snipe the head, not the shelled body.
+# Buried mid-mantle is a meat-walled LOOT CAVITY -- mine through to reach it.
+# One 4-connected body, no thin necks.
+#
+#   K shell (armour: hp 250, mass 2, collision_resist 20 -- light, very hard)
+#   M meat  (dense flesh -- the mantle interior, the mouth, and the tentacles)
+#   . air / hollow (the open mouth gaps and the sealed loot cavity)
+#
+# Composition: K 48 (30%), M 110 (70%), no W. 158 solid cells, one island.
+# Shell = the mantle SKIN; meat = the bulk it encloses + the exposed head.
+
+origin 13 3
+
+....KKKKKKKKKKKKKKKK........
+..KKKMMMMMMMMMMMMMKKMMMMMM..
+.KKMMMMMMMMMMMMMMMMMMMMMMMM.
+KKMMMMM..MMMMMMMMMMMMMMMMMMMM
+.KKMMMMMMMMMMMMMMMMMMMMMMMM.
+..KKKMMMMMMMMMMMMMKKMMMMMM..
+....KKKKKKKKKKKKKKKK........

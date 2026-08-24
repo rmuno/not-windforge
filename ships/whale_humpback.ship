@@ -1,0 +1,40 @@
+# Sky whale body plan — HUMPBACK variant. A candidate alongside
+# ships/whale.ship (the flat-backed sperm-whale profile); same format,
+# same block vocabulary, different silhouette. Preview it without
+# booting the game:
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/whale_humpback.ship
+#
+#   W  blubber (buoyant flesh — keep it the majority or the whale falls)
+#   M  meat (dense core)
+#
+# Theme: an arched-back gentle giant. Read right-to-left, the profile is
+# a blunt stub of a head (shorter than the sperm whale's ram), a deep
+# rounded chest that sags to the lowest row, then the whole midsection
+# rides UP into the hump — the dorsal line climbs from row 2 at the tail
+# strand to row 0 amidships and settles back to row 1 over the head, so
+# the top edge visibly rises and falls. The tail thins to a 2-row strand
+# and ends in a broad two-pronged fluke: two 2x2 blades split by the
+# strand's own centreline.
+#
+# Proportions follow the owner's survey (2026-08-20): thin parts run 2
+# rows (the tail strand), thickest 4 rows, and no column ever carries
+# more than 4 body cells — including the notched fluke columns, which
+# hold 2 cells per blade.
+#
+# The two empty cells in the head-side core are the STOMACH cavity —
+# fully enclosed on all four orthogonal sides (meat above, meat left and
+# right, blubber below), so mining in breaks through into a hollow.
+#
+# Meat is an inner core only: every M cell has body on all four sides
+# and never touches the silhouette. Blubber is 59 of 78 cells (76%),
+# which is what keeps the carcass in the air.
+
+origin 12 2
+
+WW..........WWWWW........
+WWW........WMMMMMWWWWWW..
+..WWWWWWWWWMMMMMMMMMMMWWW
+..WWWWWWWWWWWWWWWM..MMWWW
+WWW..............WWWWWWW.
+WW.......................

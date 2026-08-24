@@ -1,0 +1,26 @@
+# Sky whale body plan — EDIT ME to redesign the whale; the game and the
+# tests load this file. Preview it without booting the game:
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/whale.ship
+#
+# Proportions follow the owner's survey (2026-08-20): thin parts ~10
+# source blocks (~1 of our authored cells per player-height... ours run
+# 2 rows at the tail strand), thickest ~20-30 (~3-4 rows here), long
+# sperm-whale profile — blunt head to the RIGHT, tapering tail to a
+# fluke LEFT. The two empty cells inside the body are the STOMACH
+# cavity (source whales carry swallowed loot there — the loot itself
+# waits for items to exist; the compartment is real today: mine in and
+# you break through into a hollow).
+#
+#   W  blubber (buoyant flesh — keep it the majority or the whale falls)
+#   M  meat (dense core)
+#
+# The whale floats because it is mostly blubber — mining the blubber
+# off a carcass literally sinks it. Keep it one connected piece.
+
+origin 12 1
+
+.W.....WWWWWWWWWWWWWWWW...
+.WWWWWWWWWMMMMM..MMMMWWWW.
+.WWWWWWWWMMMMMMMMMMMMWWWW.
+.W.....WWWWWWWWWWWWWWWW...

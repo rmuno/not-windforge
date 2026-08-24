@@ -1,0 +1,19 @@
+# FROZEN 1× TEST FIXTURE — the enemy patrol cutter as authored before
+# the native-8× re-author (2026-08-20). The legacy 1× scene and the
+# unit suites load THIS file; the game's real hulk is ships/hulk.ship
+# (native 8×, true component footprints). Edit this only to serve the
+# tests — it no longer spawns in the game.
+#
+# NOTE the parser rule: comments are "# " (hash-space) or a bare "#".
+# A grid row may START with '#' (hull).
+
+origin 4 4
+
+.GGGGGG.
+..|..|..
+.######.
+.D....#.
+.DEE.H#>
+.######.
+.^..|.^.
+....T...

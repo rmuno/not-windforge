@@ -1,0 +1,21 @@
+# Sky critter body plan — the SMALL tameable creature (taming progression,
+# WIKI: taming runs small -> whale). A compact flesh body driven by the SAME
+# creature brain as the whale (combat/whale_ai.gd): it roams, is tameable at a
+# LOWER Wisdom bar than a whale (LORE Beast Whisperer vs Master Trader), and is
+# rideable — faster and nimbler than a whale, but it does NOT mine terrain.
+#
+# Preview it without booting the game:
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/critter.ship
+#
+#   W  blubber (buoyant flesh — the majority, so the critter floats)
+#   M  meat (a small dense core)
+#
+# Blunt head to the RIGHT, tapering tail LEFT — the whale's silhouette in
+# miniature. Keep it one connected piece and mostly blubber.
+
+origin 2 1
+
+.WWWW.
+WWMMWW
+.WWWW.

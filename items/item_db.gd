@@ -1,0 +1,115 @@
+class_name ItemDB
+extends RefCounted
+
+## The ONE unified item-id space every Inventory speaks (v0.25.0, the make/use
+## loop). Sprint 2 mining stored raw TerrainDB.Type ints as inventory keys; once
+## items grow past terrain — whale products you harvest, goods you craft — they
+## all have to coexist in one type->count map WITHOUT colliding. This is the seam
+## the economy grows on, so the id scheme is fixed here and nowhere else.
+##
+## THE ID SCHEME — three disjoint numeric RANGES, so an id alone says what KIND
+## of item it is and two kinds can never share a key:
+##   * TERRAIN  [0, 100)   — a terrain material item's id IS its TerrainDB.Type
+##     value (dirt=1 .. aetherite=7). Deliberate: mining already credits
+##     TerrainDB.Type ints (world._on_terrain_dug), and the existing inventory
+##     tests key on TerrainDB.Type — keeping terrain ids == TerrainDB.Type means
+##     the whole mining path and its tests need no change. AIR (0) is never an item.
+##   * PRODUCT  [100, 200) — whale-product items HARVESTED from a carcass
+##     (blubber, meat, bone, stomach loot). Distinct block-vs-item: a BLUBBER
+##     *block* (BlockDB.Type.BLUBBER) is ship structure; a Blubber *product*
+##     (ItemDB.Product.BLUBBER) is what harvesting that block off a corpse yields.
+##   * CRAFTED  [200, 300) — goods produced by a recipe (items/recipes.gd):
+##     whale oil rendered from blubber, an ingot smelted from ore.
+## Ranges are 100 apart with room to spare; TerrainDB.Type tops out at 7, so the
+## terrain range will not reach PRODUCT_BASE for a very long time.
+##
+## Lookups (name/color) DISPATCH on the range: terrain ids delegate to TerrainDB
+## (its table stays the source of truth for materials), products/crafted read the
+## small table below. So the HUD and pickup floats call ItemDB.name_of(id) for
+## ANY item and never branch on kind themselves.
+
+const TERRAIN_BASE := 0
+const PRODUCT_BASE := 100
+const CRAFTED_BASE := 200
+
+## Whale-product items — what harvesting a carcass yields (see Ship.harvest_cell).
+## Values are explicit so they sit in the PRODUCT range regardless of order.
+enum Product {
+	BLUBBER = PRODUCT_BASE,  ## 100 — rendered into oil; the economy's raw material
+	MEAT,                    ## 101 — food / building flesh
+	BONE,                    ## 102 — reserved: no bone BLOCK exists to harvest yet
+	STOMACH_LOOT,            ## 103 — the [?] drop: a carcass's swallowed cargo
+}
+
+## Crafted goods — recipe outputs (see items/recipes.gd).
+enum Crafted {
+	WHALE_OIL = CRAFTED_BASE,  ## 200 — refined blubber; "powers the world's machinery"
+	INGOT,                     ## 201 — smelted ore; a hull-grade building material
+	LIFE_SUPPORT,              ## 202 — the deep-air survival gear (player/life_support.gd):
+	                           ##       carry one and the deep band's unbreathable air can't
+	                           ##       suffocate you. Crafted from copper ingot + blubber.
+}
+
+## Products + crafted goods, name/color for the HUD and pickup floats. Terrain
+## materials are absent on purpose — their names/colors live in TerrainDB and
+## name_of/color_of delegate there for the terrain range.
+const ITEMS := {
+	Product.BLUBBER:      {"name": "Blubber",      "color": Color(0.86, 0.72, 0.66)},
+	Product.MEAT:         {"name": "Meat",         "color": Color(0.58, 0.28, 0.26)},
+	Product.BONE:         {"name": "Bone",         "color": Color(0.90, 0.88, 0.80)},
+	Product.STOMACH_LOOT: {"name": "Stomach Loot", "color": Color(0.70, 0.60, 0.85)},
+	Crafted.WHALE_OIL:    {"name": "Whale Oil",    "color": Color(0.30, 0.28, 0.16)},
+	Crafted.INGOT:        {"name": "Copper Ingot", "color": Color(0.80, 0.52, 0.32)},
+	Crafted.LIFE_SUPPORT: {"name": "Aether Lung",  "color": Color(0.55, 0.80, 0.74)},
+}
+
+
+## Is `id` a terrain-material item? (The [0,100) range.) AIR (0) is not a real
+## item, but the range test stays honest — callers screen AIR separately where it
+## matters (placement uses is_placeable_terrain).
+static func is_terrain(id: int) -> bool:
+	return id >= TERRAIN_BASE and id < PRODUCT_BASE
+
+
+## Is `id` a whale-product item? (The [100,200) range.)
+static func is_product(id: int) -> bool:
+	return id >= PRODUCT_BASE and id < CRAFTED_BASE
+
+
+## Is `id` a crafted good? (The [200,300) range.)
+static func is_crafted(id: int) -> bool:
+	return id >= CRAFTED_BASE and id < CRAFTED_BASE + 100
+
+
+## Can this item be PLACED into the terrain grid (world placement)? Only real
+## terrain materials — a solid TerrainDB type, never AIR, never a product/craft.
+static func is_placeable_terrain(id: int) -> bool:
+	return is_terrain(id) and TerrainDB.is_solid(id)
+
+
+## The whale-product ITEM id a flesh BLOCK yields when harvested off a carcass,
+## or -1 if the block is not harvestable flesh. The one place block-type ->
+## product-item is decided (Ship.harvest_cell reads it). Bone is intentionally
+## absent: no bone block exists to harvest (STATE/BACKLOG).
+static func whale_product_for(block_type: int) -> int:
+	match block_type:
+		BlockDB.Type.BLUBBER:
+			return Product.BLUBBER
+		BlockDB.Type.MEAT:
+			return Product.MEAT
+	return -1
+
+
+## Display name for ANY item id — terrain, product or crafted. Dispatches on the
+## range so callers never branch on kind.
+static func name_of(id: int) -> String:
+	if is_terrain(id):
+		return TerrainDB.get_def(id)["name"]
+	return ITEMS.get(id, {"name": "Item %d" % id})["name"]
+
+
+## Display color for ANY item id (same dispatch as name_of).
+static func color_of(id: int) -> Color:
+	if is_terrain(id):
+		return TerrainDB.color_of(id)
+	return ITEMS.get(id, {"color": Color.MAGENTA})["color"]
