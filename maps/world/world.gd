@@ -2282,16 +2282,21 @@ func _process(_delta: float) -> void:
 			# runtime state, never a thing you place.
 			build_type = (build_type + 1) % BlockDB.type_count()
 
-	var cell := local_ship.cell_at_global(get_global_mouse_position())
-	_update_build_ghost(cell)
+	# CARCASS-AS-AIRSHIP, the thrust half (owner: "bolt on lift+THRUST to fly a
+	# corpse"): the build verbs target a CARCASS under the cursor (within arm's
+	# reach) when there is one — place engines/props/a helm on a dead whale,
+	# then board it and FLY it — and your own ship otherwise, exactly as before.
+	var build_ship := _build_target(get_global_mouse_position())
+	var cell := build_ship.cell_at_global(get_global_mouse_position())
+	_update_build_ghost(build_ship, cell)
 
 	var ui_mouse := _ui_wants_mouse()  # a hovered debug/saves/help panel eats clicks
 	if Input.is_action_just_pressed("build_place") and not ui_mouse:
-		local_ship.net_set_block(cell, build_type)
+		build_ship.net_set_block(cell, build_type)
 	if Input.is_action_just_pressed("build_remove") and not ui_mouse:
-		local_ship.net_remove_block(cell)
+		build_ship.net_remove_block(cell)
 	if Input.is_action_pressed("debug_damage") and not ui_mouse:
-		local_ship.net_damage_cell(cell, 4.0)
+		build_ship.net_damage_cell(cell, 4.0)
 
 	# RMB: the grapple, exactly as the original — fire toward the cursor; fire
 	# again to let go early. On foot only; the helm has your hands. While RIDING,
@@ -2326,16 +2331,38 @@ var _ghost_cell := Vector2i.ZERO
 var _ghost_valid := false
 var _ghost_ratio_now := 0.0
 var _ghost_ratio_next := 0.0
+## The ship the ghost (and Q/C/G) currently target — local_ship, or a CARCASS
+## under the cursor (the carcass-as-airship build loop).
+var _ghost_ship: Ship = null
 
 
-func _update_build_ghost(cell: Vector2i) -> void:
+## The ship the build verbs operate on this frame: a CARCASS whose grid is under
+## the cursor — an occupied cell or a legal adjacent build spot — AND within
+## arm's reach (corpse-building is reach-gated like harvesting; your own ship
+## keeps its reach-free build, unchanged). Otherwise local_ship. This is the
+## "thrust onto a corpse" seam: place engines/props/a helm on a dead whale,
+## then board its helm and fly the body.
+func _build_target(cursor: Vector2) -> Ship:
+	if fleet != null and player != null and is_instance_valid(player):
+		for ship in fleet.ships():
+			if not is_instance_valid(ship) or not ship.is_carcass():
+				continue
+			var cell := (ship as Ship).cell_at_global(cursor)
+			if (ship.has_block(cell) or ship.can_place_at(cell)) \
+					and _carcass_cell_in_reach(ship, cell):
+				return ship
+	return local_ship
+
+
+func _update_build_ghost(ship: Ship, cell: Vector2i) -> void:
 	# Declutter (owner 2026-08-22): the ghost used to hang at the cursor across
 	# the whole sky. Show it only where building is actually in play — over the
-	# ship (an occupied cell) or adjacent to it (can_place_at) — so open sky stays
-	# calm. Never while piloting; the helm has your hands.
-	_ghost_shown = is_instance_valid(local_ship) and player != null \
+	# target ship (an occupied cell) or adjacent to it (can_place_at) — so open
+	# sky stays calm. Never while piloting; the helm has your hands.
+	_ghost_ship = ship
+	_ghost_shown = is_instance_valid(ship) and player != null \
 		and not player.is_piloting() \
-		and (local_ship.can_place_at(cell) or local_ship.has_block(cell))
+		and (ship.can_place_at(cell) or ship.has_block(cell))
 	if not _ghost_shown:
 		_ghost_label.visible = false
 		return
@@ -2344,10 +2371,11 @@ func _update_build_ghost(cell: Vector2i) -> void:
 	# occupied cell, or no neighbour to build off. The ghost is green if
 	# and only if pressing Q would really place a block — anything else
 	# teaches the player a rule the game does not have. Note the game
-	# imposes no reach limit on building today, so neither does the ghost.
-	_ghost_valid = local_ship.can_place_at(cell)
-	_ghost_ratio_now = local_ship.lift_ratio()
-	_ghost_ratio_next = BuildPreview.ratio_with(local_ship, build_type)
+	# imposes no reach limit on building on YOUR ship; a carcass target is
+	# already reach-gated by _build_target.
+	_ghost_valid = ship.can_place_at(cell)
+	_ghost_ratio_now = ship.lift_ratio()
+	_ghost_ratio_next = BuildPreview.ratio_with(ship, build_type)
 
 	_ghost_label.text = BuildPreview.readout(_ghost_ratio_now, _ghost_ratio_next)
 	_ghost_label.add_theme_color_override("font_color", _ghost_tint())
@@ -2365,11 +2393,11 @@ func _ghost_tint() -> Color:
 ## into another node's _draw is what crashed the [F] prompt on freed
 ## instances (see interact_prompt).
 func build_ghost() -> Variant:
-	if not _ghost_shown or not is_instance_valid(local_ship):
+	if not _ghost_shown or _ghost_ship == null or not is_instance_valid(_ghost_ship):
 		return null
-	var origin := local_ship.local_pos_of(_ghost_cell) - Vector2.ONE * Ship.CELL * 0.5
+	var origin := _ghost_ship.local_pos_of(_ghost_cell) - Vector2.ONE * Ship.CELL * 0.5
 	return [
-		local_ship.global_transform,
+		_ghost_ship.global_transform,
 		Rect2(origin, Vector2.ONE * Ship.CELL),
 		BlockDB.color_of(build_type),
 		_ghost_tint(),

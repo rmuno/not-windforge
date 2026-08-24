@@ -216,6 +216,7 @@ func _initialize() -> void:
 	_check_mining(world)
 	_check_placing(world)
 	await _check_harvesting(world)
+	await _check_corpse_airship(world)
 	await _check_progression(world)
 	await _check_save_load(world)
 	await _check_taming(world, fleet)
@@ -498,6 +499,82 @@ func _check_progression(world: Node) -> void:
 
 ## Build a throwaway flesh body (a whale-shaped creature) with the given pool max
 ## and pool=that max unless dead. `pool_now` 0 makes a carcass; >0 makes it alive.
+## CARCASS-AS-AIRSHIP, the THRUST half, end to end (owner: "attach engines +
+## propellers to a carcass so you can DRIVE it" — the other half of v0.43.0's
+## balloons). A dead flesh body takes BUILT blocks through the real build-target
+## path (Q targets a carcass under the cursor within reach), gains a helm the
+## player can board, and FLIES under its own bolted-on thrust.
+func _check_corpse_airship(world: Node) -> void:
+	var pl = world.get("player")
+	if pl == null:
+		_ok(false, "a player exists for the corpse-airship check")
+		return
+	if pl.is_piloting():
+		pl.disembark()
+
+	# A dead 4-cell flesh slab, parked far from everything — spawned INTO the
+	# fleet (the build-target resolver scans fleet.ships(), like every ship
+	# system does).
+	var corpse := Ship.new()
+	for c in [Vector2i(0, 0), Vector2i(1, 0)]:
+		corpse.blocks[c] = {"type": BlockDB.Type.BLUBBER, "hp": BlockDB.max_hp(BlockDB.Type.BLUBBER)}
+	for c in [Vector2i(2, 0), Vector2i(3, 0)]:
+		corpse.blocks[c] = {"type": BlockDB.Type.MEAT, "hp": BlockDB.max_hp(BlockDB.Type.MEAT)}
+	corpse.gravity_scale = 0.0
+	corpse.shared_health_max = 100.0
+	corpse.shared_health = 0.0
+	world.get("fleet").add_child(corpse)
+	corpse.rebuild()
+	corpse.position = Vector2(72000, -4000)
+	await physics_frame
+	_ok(corpse.is_carcass(), "the flesh slab is a carcass (pool empty)")
+
+	# THE TARGET RESOLVER: with the cursor's world point on the corpse and the
+	# player in reach, the build verbs aim at the CARCASS, not the player's ship.
+	pl.global_position = corpse.global_position
+	var over := corpse.to_global(corpse.local_pos_of(Vector2i(1, 0)))
+	_ok(world._build_target(over) == corpse,
+		"the build target under the cursor is the carcass (in reach)")
+	pl.global_position = corpse.global_position + Vector2(100000, 0)
+	_ok(world._build_target(over) != corpse,
+		"out of reach, the carcass is NOT the target (reach gate holds)")
+	pl.global_position = corpse.global_position
+
+	# Bolt on the works through the REAL placement path: a helm above the back,
+	# an engine and a prop beside it. set_block via net_set_block (single-player
+	# authority), exactly what Q does.
+	corpse.net_set_block(Vector2i(1, -1), BlockDB.Type.HELM)
+	corpse.net_set_block(Vector2i(2, -1), BlockDB.Type.ENGINE)
+	corpse.net_set_block(Vector2i(3, -1), BlockDB.Type.PROPELLER)
+	await physics_frame
+	_ok(corpse.has_helm(), "a helm built onto the corpse makes it steerable")
+	_ok(corpse.blocks.size() == 7, "the corpse carries its bolted-on machinery")
+
+	# Board the corpse's helm and drive: thrust moves the dead body under its
+	# own bolted-on power — the whole point.
+	var found: Array = Player.find_helm([corpse], pl.global_position, 100000.0)
+	_ok(not found.is_empty(), "the corpse's helm is boardable")
+	if not found.is_empty():
+		_ok(pl.board(found[0], found[1]), "the player takes the corpse helm")
+		# REAL input (the pilot-suite technique): the world overwrites the
+		# piloted ship's controls from Input every frame, so a direct
+		# net_set_controls is erased — press the actual action instead.
+		Input.action_press("ship_right")
+		var vx0: float = corpse.linear_velocity.x
+		for i in 30:
+			await physics_frame
+		Input.action_release("ship_right")
+		_ok(corpse.linear_velocity.x > vx0 + 10.0,
+			"the corpse FLIES under its bolted-on thrust (vx %.0f -> %.0f)"
+				% [vx0, corpse.linear_velocity.x])
+		pl.disembark()
+
+	# Clean up so the later hosting check sees the untouched fleet.
+	corpse.queue_free()
+	await physics_frame
+	world.respawn_player()
+
+
 func _spawn_flesh(world: Node, cells: Dictionary, pool_now: float) -> Ship:
 	var s := Ship.new()
 	for cell in cells:
