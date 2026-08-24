@@ -999,6 +999,13 @@ func _build_generated_terrain() -> void:
 func _stream_terrain() -> void:
 	if terrain == null:
 		return
+	# RENDER RANGE = what the camera actually shows (owner 2026-08-24: a fixed
+	# radius popped terrain at the screen edge whenever the pilot/ride zoom-out
+	# or the wheel widened the view). Half the visible extent at the LIVE zoom,
+	# largest axis — Terrain adds its own chunk margin and caps the extreme.
+	if camera != null and is_instance_valid(camera):
+		var half: Vector2 = get_viewport_rect().size * 0.5 / camera.zoom
+		terrain.primary_range_px = maxf(half.x, half.y)
 	# TIERED (the subdiv-8 lag fix): the PLAYER (+ their ship — the camera)
 	# streams render-range terrain; every OTHER ship gets only a collision
 	# bubble. See Terrain.update_streaming.

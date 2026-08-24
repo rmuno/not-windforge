@@ -461,14 +461,31 @@ func _encode_diffs() -> PackedInt32Array:
 ## keep a wide radius, SECONDARY foci (every other ship) a tight collision
 ## bubble. In fine chunks, derived from the coarse constants ×subdiv — at
 ## subdiv 1 these reduce to exactly the old 2/3 radii for every focus.
+## What the PRIMARY tier must actually cover, in world px: the CAMERA's visible
+## half-extent plus a margin (owner 2026-08-24: "render distance is not matching
+## active zoom" — a fixed radius pops terrain at the screen edge the moment the
+## pilot/ride zoom-out or the user's wheel widens the view). The world sets this
+## every frame from the live camera zoom; 0 falls back to the fixed heuristic
+## (unit tests, headless tools). The scan-skip cache keys on the derived radius,
+## so a zoom change re-scans exactly once.
+var primary_range_px := 0.0
+
+
 func _primary_promote_r() -> int:
-	# ~9/16ths of the old px range: still comfortably past the widest pilot
-	# zoom-out, at a quarter of the node count.
+	if primary_range_px > 0.0:
+		# Cover the visible extent plus one chunk of margin, never below the
+		# coarse minimum — and capped: an extreme wheel-zoom-out showing half
+		# the world cannot promote thousands of chunks (beyond the cap the far
+		# terrain simply isn't streamed; that far out is the map's job).
+		return clampi(int(ceil(primary_range_px / chunk_px())) + 1,
+			PROMOTE_RADIUS, 20 * maxi(subdiv, 1) / 8)
+	# Fallback: ~9/16ths of the old px range (past the default pilot zoom-out).
 	return maxi(PROMOTE_RADIUS, roundi(9.0 * subdiv / 8.0))
 
 
 func _primary_demote_r() -> int:
-	return maxi(DEMOTE_RADIUS, roundi(12.0 * subdiv / 8.0))
+	# Hysteresis: a few chunks past the promote radius, whatever it derived to.
+	return _primary_promote_r() + maxi(1, roundi(3.0 * subdiv / 8.0))
 
 
 func _secondary_promote_r() -> int:
@@ -490,6 +507,7 @@ func _secondary_demote_r() -> int:
 ## still player is never missed.
 var _last_primary_chunks: Array = []
 var _last_secondary_chunks: Array = []
+var _last_primary_r := -1
 var _last_scan_drained := false
 var _stream_dirty := false
 ## Introspection for tests: total full scans performed.
@@ -514,14 +532,18 @@ func update_streaming(foci: Array, secondary: Array = []) -> void:
 		var local: Vector2 = to_local(f)
 		secondary_chunks.append(Vector2i(floori(local.x / cpx), floori(local.y / cpx)))
 
-	# The skip: nothing crossed a chunk boundary, nothing new was written, and
-	# the last scan ended with the queue drained → this frame is a no-op.
+	# The skip: nothing crossed a chunk boundary, the zoom-derived radius is
+	# unchanged, nothing new was written, and the last scan ended with the
+	# queue drained → this frame is a no-op.
+	var promote_r := _primary_promote_r()
 	if _last_scan_drained and not _stream_dirty \
+			and promote_r == _last_primary_r \
 			and primary_chunks == _last_primary_chunks \
 			and secondary_chunks == _last_secondary_chunks:
 		return
 	_last_primary_chunks = primary_chunks
 	_last_secondary_chunks = secondary_chunks
+	_last_primary_r = promote_r
 	_stream_dirty = false
 	scan_count += 1
 
@@ -533,7 +555,7 @@ func update_streaming(foci: Array, secondary: Array = []) -> void:
 	# still focus drains it K per frame until fully promoted.
 	var candidates: Array = []
 	var seen := {}
-	_gather_candidates(primary_chunks, _primary_promote_r(), seen, candidates)
+	_gather_candidates(primary_chunks, promote_r, seen, candidates)
 	_gather_candidates(secondary_chunks, _secondary_promote_r(), seen, candidates)
 	var all_chunks := primary_chunks + secondary_chunks
 	if not candidates.is_empty():
@@ -649,6 +671,7 @@ func clear_all() -> void:
 	# Streaming caches describe the world that just ceased to exist.
 	_last_primary_chunks = []
 	_last_secondary_chunks = []
+	_last_primary_r = -1
 	_last_scan_drained = false
 	_stream_dirty = false
 
