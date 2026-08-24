@@ -120,6 +120,8 @@ func _initialize() -> void:
 	await _test_island_gen_is_banded_and_columns_clear()
 	await _test_island_gen_islands_are_coherent()
 	await _test_island_gen_is_data_only_and_sparse()
+	await _test_fill_row_matches_set_cell()
+	await _test_subdiv_world_is_the_same_world_finer()
 	await _test_inventory_add_remove_count()
 	await _test_mining_seam_digs_and_credits()
 	await _test_pickup_floats_rise_and_expire()
@@ -5653,6 +5655,93 @@ func _test_island_gen_is_data_only_and_sparse() -> void:
 		"there is solid spawn ground directly under SHIP_START")
 
 	t.queue_free()
+	await process_frame
+
+
+## The SUBDIV fast path (fill_row) must be behaviour-identical to per-cell
+## set_cell — it exists only because per-cell chunk lookups made 64×-cell
+## generation a multi-second stall. Same spans through both paths, byte-equal
+## resident data; chunk-boundary crossings and negative coordinates included.
+func _test_fill_row_matches_set_cell() -> void:
+	_t("terrain fill_row is byte-identical to per-cell set_cell")
+	var a := Terrain.new()
+	var b := Terrain.new()
+	root.add_child(a)
+	root.add_child(b)
+	# Spans crossing chunk boundaries, negative space, single cells, and an
+	# air-only span over an absent chunk (must stay absent).
+	var spans := [
+		[-40, 70, 5, TerrainDB.Type.STONE],    # crosses three chunks
+		[0, 0, -3, TerrainDB.Type.DIRT],       # single cell
+		[-100, -90, -70, TerrainDB.Type.ORE],  # fully negative
+		[30, 33, 5, TerrainDB.Type.AIR],       # air over solid (a real erase)
+		[500, 520, 500, TerrainDB.Type.AIR],   # air over ABSENT chunks (no-op)
+	]
+	for s in spans:
+		a.fill_row(s[0], s[1], s[2], s[3])
+		for x in range(int(s[0]), int(s[1]) + 1):
+			b.set_cell(Vector2i(x, int(s[2])), int(s[3]))
+	_check(a.chunk_coords().size() == b.chunk_coords().size(),
+		"same chunks allocated (%d == %d)" % [a.chunk_coords().size(), b.chunk_coords().size()])
+	var same := true
+	for c in b.chunk_coords():
+		for y in Terrain.CHUNK:
+			for x in Terrain.CHUNK:
+				var cell := Vector2i(c.x * Terrain.CHUNK + x, c.y * Terrain.CHUNK + y)
+				if a.cell_type(cell) != b.cell_type(cell):
+					same = false
+	_check(same, "every cell agrees between the two paths")
+	_check(a.total_solid_cells() == b.total_solid_cells(),
+		"same solid count (%d)" % a.total_solid_cells())
+	a.queue_free()
+	b.queue_free()
+	await process_frame
+
+
+## Terrain SUBDIV (the owner's full-8× resolution): a subdiv-S world is the SAME
+## world at S× finer cells — same pixel geography, ~the same solid AREA in px²,
+## the spawn floor under the same px footprint — never a different world. Uses a
+## small explicit window so the test is fast; the invariance is in the shared
+## constants (×sub) and the px-fixed Airspace geometry.
+func _test_subdiv_world_is_the_same_world_finer() -> void:
+	_t("a subdiv-8 world is the subdiv-1 world at 8x resolution (px-invariant)")
+	var coarse := Terrain.new()
+	var fine := Terrain.new()
+	fine.subdiv = 8
+	root.add_child(coarse)
+	root.add_child(fine)
+	_check(is_equal_approx(fine.cell_px() * 8.0, coarse.cell_px()),
+		"a fine cell is exactly 1/8 the px of a coarse cell")
+
+	var window := Rect2i(-384, -384, 768, 768)  # cells at subdiv 1
+	var window8 := Rect2i(window.position * 8, window.size * 8)
+	IslandGen.generate(coarse, IslandGen.DEFAULT_SEED, window)
+	IslandGen.generate(fine, IslandGen.DEFAULT_SEED, window8)
+
+	# The spawn floor occupies the identical px footprint: the coarse floor top
+	# row (0,8) maps to fine (0,64) — and both are DIRT.
+	_check(coarse.cell_type(Vector2i(0, 8)) == TerrainDB.Type.DIRT
+			and fine.cell_type(Vector2i(0, 64)) == TerrainDB.Type.DIRT,
+		"the spawn floor sits at the same px spot in both worlds (dirt top)")
+	# Solid AREA in px² agrees within tolerance (finer edges differ slightly:
+	# the wobble roughens at cell granularity, so a few % is expected).
+	var area_c := float(coarse.total_solid_cells()) * coarse.cell_px() * coarse.cell_px()
+	var area_f := float(fine.total_solid_cells()) * fine.cell_px() * fine.cell_px()
+	_check(area_c > 0.0 and area_f > 0.0, "both windows generated land")
+	var ratio := area_f / area_c
+	_check(ratio > 0.8 and ratio < 1.25,
+		"solid AREA is px-invariant within tolerance (fine/coarse = %.3f)" % ratio)
+	# Determinism at subdiv 8: a second fine generation is byte-identical.
+	var fine2 := Terrain.new()
+	fine2.subdiv = 8
+	root.add_child(fine2)
+	IslandGen.generate(fine2, IslandGen.DEFAULT_SEED, window8)
+	_check(fine2.total_solid_cells() == fine.total_solid_cells()
+			and fine2.chunk_coords().size() == fine.chunk_coords().size(),
+		"subdiv-8 generation is deterministic (%d cells)" % fine.total_solid_cells())
+	coarse.queue_free()
+	fine.queue_free()
+	fine2.queue_free()
 	await process_frame
 
 

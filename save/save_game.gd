@@ -148,6 +148,11 @@ static func capture(world: Object, name: String, playtime: float) -> Dictionary:
 		"playtime": playtime,
 		"location": location_label(world),
 		"world_seed": int(world.world_seed),
+		# The terrain RESOLUTION this world was generated at: diff cell coords
+		# are only meaningful in the grid that produced them, so a load must
+		# regenerate at the SAVED subdiv, whatever the current lever says.
+		# Additive/optional — a save without it is a legacy coarse world (1).
+		"terrain_subdiv": (world.terrain.subdiv if world.terrain != null else 1),
 		"terrain_diffs": encode_terrain_diffs(world.terrain),
 		"ships": ships,
 		"player": encode_player(world.player),
@@ -167,11 +172,14 @@ static func restore(world: Object, data: Dictionary) -> bool:
 
 	world.world_seed = int(data.get("world_seed", world.world_seed))
 
-	# Terrain: regenerate deterministically from the seed, then re-apply diffs.
-	# Mirrors world._build_generated_terrain's construction order (generate then
-	# plant the Cairn) so the loaded world is bit-identical to a fresh one before
-	# the player's edits go back on top.
+	# Terrain: regenerate deterministically from the seed AT THE SAVED SUBDIV
+	# (diff cell coordinates only mean anything in the grid that produced them —
+	# a legacy save without the field is a coarse subdiv-1 world), then re-apply
+	# diffs. Mirrors world._build_generated_terrain's construction order
+	# (generate then plant the Cairn) so the loaded world is bit-identical to a
+	# fresh one before the player's edits go back on top.
 	if world.terrain != null:
+		world.terrain.subdiv = maxi(1, int(data.get("terrain_subdiv", 1)))
 		world.terrain.clear_all()
 		IslandGen.generate(world.terrain, world.world_seed)
 		EasterEggs.plant_cairn(world.terrain)

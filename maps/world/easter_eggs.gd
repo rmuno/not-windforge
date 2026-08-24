@@ -35,18 +35,32 @@ const CAIRN_CELL := Vector2i(-1360, 980)
 ## Carve the Cairn into a generated terrain: a solid aetherite core with four arms
 ## making a plus/beacon. Always present so the egg can't silently vanish. Just
 ## writes cells (idempotent enough to re-run). Called once after IslandGen.generate.
+## Scales with the terrain's SUBDIV — CAIRN_CELL is a coarse-cell coordinate, so
+## everything multiplies by `sub` and the beacon keeps its exact pixel position
+## and size at any terrain resolution (and `cairn_cell_for(terrain)` is still
+## solid, which the startup pin asserts).
 static func plant_cairn(terrain: Terrain) -> void:
-	var c := CAIRN_CELL
-	# A solid 5×5 aetherite core.
-	for dy in range(-2, 3):
-		for dx in range(-2, 3):
-			terrain.set_cell(c + Vector2i(dx, dy), TerrainDB.Type.AETHERITE)
+	var sub := maxi(terrain.subdiv, 1)
+	var c := CAIRN_CELL * sub
+	# A solid 5×5 (coarse) aetherite core.
+	terrain.fill_rect(Rect2i(c - Vector2i(2, 2) * sub, Vector2i(5, 5) * sub),
+		TerrainDB.Type.AETHERITE)
 	# Four arms — the plus/beacon that reads as deliberate, not natural terrain.
-	for k in range(3, 6):
-		terrain.set_cell(c + Vector2i(k, 0), TerrainDB.Type.AETHERITE)
-		terrain.set_cell(c + Vector2i(-k, 0), TerrainDB.Type.AETHERITE)
-		terrain.set_cell(c + Vector2i(0, k), TerrainDB.Type.AETHERITE)
-		terrain.set_cell(c + Vector2i(0, -k), TerrainDB.Type.AETHERITE)
+	# Each arm is a coarse-cell-thick bar from radius 3 to 5 (coarse).
+	terrain.fill_rect(Rect2i(c + Vector2i(3 * sub, 0), Vector2i(3 * sub, sub)),
+		TerrainDB.Type.AETHERITE)
+	terrain.fill_rect(Rect2i(c + Vector2i(-5 * sub, 0), Vector2i(3 * sub, sub)),
+		TerrainDB.Type.AETHERITE)
+	terrain.fill_rect(Rect2i(c + Vector2i(0, 3 * sub), Vector2i(sub, 3 * sub)),
+		TerrainDB.Type.AETHERITE)
+	terrain.fill_rect(Rect2i(c + Vector2i(0, -5 * sub), Vector2i(sub, 3 * sub)),
+		TerrainDB.Type.AETHERITE)
+
+
+## The Cairn's anchor cell in THIS terrain's (possibly subdivided) grid — the
+## cell tests and tools should probe. CAIRN_CELL itself is the coarse coordinate.
+static func cairn_cell_for(terrain: Terrain) -> Vector2i:
+	return CAIRN_CELL * maxi(terrain.subdiv, 1)
 
 
 # --- 2. The Pale Wanderer (rare ghost whale) -------------------------------
