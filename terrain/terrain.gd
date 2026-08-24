@@ -175,6 +175,7 @@ func set_cell(cell: Vector2i, type: int) -> void:
 		var arr := PackedByteArray()
 		arr.resize(CHUNK * CHUNK)  # resize zero-fills → all AIR
 		_chunks[ch] = arr
+		_stream_dirty = true  # a NEW chunk may need promoting under a still focus
 	var a: PackedByteArray = _chunks[ch]
 	a[_index_in_chunk(cell, ch)] = type
 	_chunks[ch] = a
@@ -204,6 +205,7 @@ func fill_row(x0: int, x1: int, y: int, type: int) -> void:
 			var arr := PackedByteArray()
 			arr.resize(CHUNK * CHUNK)  # resize zero-fills → all AIR
 			_chunks[ch] = arr
+			_stream_dirty = true  # see set_cell — a new chunk may need promoting
 		var a: PackedByteArray = _chunks[ch]
 		# Row-local base index: (local y) * CHUNK − chunk-origin x, so the store
 		# below is base + world-x with no further arithmetic per cell.
@@ -450,68 +452,138 @@ func _encode_diffs() -> PackedInt32Array:
 
 # --- Promote / demote -----------------------------------------------------
 
-## Given the world positions of every focus (players and ships), promote the
-## chunks that hold terrain within PROMOTE_RADIUS and demote live chunks that
-## have drifted past DEMOTE_RADIUS of every focus. Synchronous and cheap — each
-## promote is one chunk's greedy merge — so there is never a loading screen.
-## Call once per physics frame from the world.
-func update_streaming(foci: Array) -> void:
+## TIERED radii (the subdiv-8 "so heckin' laggy" fix, owner 2026-08-24). At
+## subdiv 8 the old one-radius-for-everyone model promoted a 33×33-chunk
+## neighbourhood around EVERY focus: measured 2.6 ms of pure scan per frame at
+## 15 foci plus hundreds-to-thousands of live chunk nodes. But only the PLAYER
+## (the camera) needs render-range terrain; every other ship needs colliders
+## only in its immediate vicinity. So: PRIMARY foci (the player + their ship)
+## keep a wide radius, SECONDARY foci (every other ship) a tight collision
+## bubble. In fine chunks, derived from the coarse constants ×subdiv — at
+## subdiv 1 these reduce to exactly the old 2/3 radii for every focus.
+func _primary_promote_r() -> int:
+	# ~9/16ths of the old px range: still comfortably past the widest pilot
+	# zoom-out, at a quarter of the node count.
+	return maxi(PROMOTE_RADIUS, roundi(9.0 * subdiv / 8.0))
+
+
+func _primary_demote_r() -> int:
+	return maxi(DEMOTE_RADIUS, roundi(12.0 * subdiv / 8.0))
+
+
+func _secondary_promote_r() -> int:
+	# A collision bubble: at subdiv 8 that is 3 fine chunks (~1.5k px at 8×) —
+	# nearest-first promotion keeps the chunk a fast mover is IN first in line.
+	return maxi(PROMOTE_RADIUS, roundi(3.0 * subdiv / 8.0))
+
+
+func _secondary_demote_r() -> int:
+	return maxi(DEMOTE_RADIUS, roundi(5.0 * subdiv / 8.0))
+
+
+## Scan-skip cache: the focus chunk sets of the last call, and whether that
+## call left NOTHING promotable. When no focus has crossed a chunk boundary
+## since — the overwhelmingly common frame — the whole candidate scan and the
+## demote sweep are provably no-ops and are skipped outright (the 2.6 ms/frame
+## steady cost falls to a dictionary compare). Writing data into a NEW chunk
+## (set_cell/fill_row allocating) arms `_stream_dirty` so placement near a
+## still player is never missed.
+var _last_primary_chunks: Array = []
+var _last_secondary_chunks: Array = []
+var _last_scan_drained := false
+var _stream_dirty := false
+## Introspection for tests: total full scans performed.
+var scan_count := 0
+
+
+## Given the world positions of PRIMARY foci (the player and their ship — the
+## camera range) and SECONDARY foci (every other ship — a collision bubble),
+## promote the chunks that hold terrain within each tier's radius and demote
+## live chunks outside every tier's demote radius (hysteresis). Synchronous and
+## cheap — each promote is one chunk's greedy merge — so there is never a
+## loading screen. Call once per physics frame from the world. The old
+## single-tier call shape still works: everything in `foci` is primary.
+func update_streaming(foci: Array, secondary: Array = []) -> void:
 	var cpx := chunk_px()
-	var focus_chunks: Array[Vector2i] = []
+	var primary_chunks: Array[Vector2i] = []
 	for f in foci:
 		var local: Vector2 = to_local(f)
-		focus_chunks.append(Vector2i(
-			floori(local.x / cpx), floori(local.y / cpx)))
+		primary_chunks.append(Vector2i(floori(local.x / cpx), floori(local.y / cpx)))
+	var secondary_chunks: Array[Vector2i] = []
+	for f in secondary:
+		var local: Vector2 = to_local(f)
+		secondary_chunks.append(Vector2i(floori(local.x / cpx), floori(local.y / cpx)))
+
+	# The skip: nothing crossed a chunk boundary, nothing new was written, and
+	# the last scan ended with the queue drained → this frame is a no-op.
+	if _last_scan_drained and not _stream_dirty \
+			and primary_chunks == _last_primary_chunks \
+			and secondary_chunks == _last_secondary_chunks:
+		return
+	_last_primary_chunks = primary_chunks
+	_last_secondary_chunks = secondary_chunks
+	_stream_dirty = false
+	scan_count += 1
 
 	# Promote: only chunks that actually hold terrain data (air chunks have no
 	# entry and stay inert forever — the resident-world guarantee). Gather every
-	# candidate in radius, then promote at most PROMOTE_PER_CALL of them,
-	# NEAREST-first — so a burst of chunks entering the radius spreads across
-	# frames instead of hitching one frame (see PROMOTE_PER_CALL). The candidate
-	# set is recomputed each call, so a still focus drains it K per frame until
-	# it is fully promoted; no persistent queue to keep in sync.
-	# The radii are in CHUNKS, but a chunk shrinks by SUBDIV in px (cell_px does),
-	# so scaling them by subdiv keeps the promotion range constant in PX — the
-	# player always has the same physical distance of terrain promoted around them
-	# (colliders never pop in late), it is just split across SUBDIV²× more, smaller
-	# chunk nodes. That extra node/collider count over the same area is the perf
-	# cost the SUBDIV gate weighs (see `subdiv`).
-	var promote_r := PROMOTE_RADIUS * maxi(subdiv, 1)
-	var demote_r := DEMOTE_RADIUS * maxi(subdiv, 1)
+	# candidate in each tier's radius, then promote at most PROMOTE_PER_CALL,
+	# NEAREST-first — a burst spreads across frames instead of hitching one
+	# (see PROMOTE_PER_CALL); the candidate set is recomputed each call, so a
+	# still focus drains it K per frame until fully promoted.
 	var candidates: Array = []
 	var seen := {}
-	for fc in focus_chunks:
-		for dy in range(-promote_r, promote_r + 1):
-			for dx in range(-promote_r, promote_r + 1):
-				var c := fc + Vector2i(dx, dy)
-				if seen.has(c):
-					continue
-				if _chunks.has(c) and not _live.has(c):
-					seen[c] = true
-					candidates.append(c)
+	_gather_candidates(primary_chunks, _primary_promote_r(), seen, candidates)
+	_gather_candidates(secondary_chunks, _secondary_promote_r(), seen, candidates)
+	var all_chunks := primary_chunks + secondary_chunks
 	if not candidates.is_empty():
-		# Nearest-first by Chebyshev distance to the closest focus.
+		# Nearest-first by Chebyshev distance to the closest focus of any tier.
 		candidates.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
-			return _focus_distance(a, focus_chunks) < _focus_distance(b, focus_chunks))
+			return _focus_distance(a, all_chunks) < _focus_distance(b, all_chunks))
 		var promoted := 0
 		for c in candidates:
 			if promoted >= PROMOTE_PER_CALL:
 				break
 			_promote(c)
 			promoted += 1
+		_last_scan_drained = candidates.size() <= PROMOTE_PER_CALL
+	else:
+		_last_scan_drained = true
 
-	# Demote: any live chunk beyond DEMOTE_RADIUS of every focus (hysteresis).
+	# Demote: any live chunk beyond its nearest tier's demote radius (hysteresis).
+	var pd := _primary_demote_r()
+	var sd := _secondary_demote_r()
 	var to_demote: Array[Vector2i] = []
 	for c in _live:
 		var keep := false
-		for fc in focus_chunks:
-			if maxi(absi(c.x - fc.x), absi(c.y - fc.y)) <= demote_r:
+		for fc in primary_chunks:
+			if maxi(absi(c.x - fc.x), absi(c.y - fc.y)) <= pd:
 				keep = true
 				break
+		if not keep:
+			for fc in secondary_chunks:
+				if maxi(absi(c.x - fc.x), absi(c.y - fc.y)) <= sd:
+					keep = true
+					break
 		if not keep:
 			to_demote.append(c)
 	for c in to_demote:
 		_demote(c)
+
+
+## Collect promotable chunks (hold data, not yet live) within `radius` of the
+## given focus chunks into `candidates`, deduplicated via `seen`.
+func _gather_candidates(focus_chunks: Array, radius: int, seen: Dictionary,
+		candidates: Array) -> void:
+	for fc in focus_chunks:
+		for dy in range(-radius, radius + 1):
+			for dx in range(-radius, radius + 1):
+				var c: Vector2i = fc + Vector2i(dx, dy)
+				if seen.has(c):
+					continue
+				if _chunks.has(c) and not _live.has(c):
+					seen[c] = true
+					candidates.append(c)
 
 
 ## Chunk-grid Chebyshev distance from a chunk to the nearest focus — the key the
@@ -574,6 +646,11 @@ func clear_all() -> void:
 	_live.clear()
 	_chunks.clear()
 	_edits.clear()
+	# Streaming caches describe the world that just ceased to exist.
+	_last_primary_chunks = []
+	_last_secondary_chunks = []
+	_last_scan_drained = false
+	_stream_dirty = false
 
 
 # --- Introspection (streaming loop + tests) -------------------------------
