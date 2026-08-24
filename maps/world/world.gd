@@ -418,7 +418,7 @@ func _build_help_panel() -> PanelContainer:
 		"LMB shoot (turrets at the helm)    RMB grapple — W/S reel, jump to sling",
 		"grapple a whale + hold to TAME it (needs LORE Beast Whisperer) — then WASD steers; release the hook (RMB) to let go",
 		"Z mine / harvest (hold + aim)    X repair (hold + sweep)",
-		"V place terrain    B cycle material    N cycle recipe    M craft",
+		"V place terrain    B cycle material    N cycle recipe    M craft    Shift+M craft all",
 		"U tether a helium balloon (aim at a hull/corpse cell)    Y balloon size — fly a carcass!",
 		"the DEEP band's air is unbreathable — craft & carry an Aether Lung (N/M) or you suffocate",
 		"Q build hull    C remove    E cycle block    G damage",
@@ -2994,6 +2994,12 @@ func place_target() -> Variant:
 # A tiny, data-driven make step (items/recipes.gd): N cycles the selected recipe,
 # M crafts it. Crafting consumes the inputs from the inventory and adds the
 # output — or does nothing at all if an input is missing (no partial spend).
+#
+# SHIFT+M crafts the whole affordable stack in one action (owner's "crafting
+# without repetition" charter — the original's reviews hated spam-clicking a
+# recipe). The "craft" action is bound to bare M, but Godot's action matching
+# ignores modifiers unless the check is exact, so Shift+M ALSO fires "craft" —
+# hence one keypress branch here rather than a second action.
 
 func _handle_crafting() -> void:
 	if player == null or not is_instance_valid(player) or player.is_piloting():
@@ -3001,7 +3007,10 @@ func _handle_crafting() -> void:
 	if Input.is_action_just_pressed("craft_cycle"):
 		_recipe_index = (_recipe_index + 1) % Recipes.RECIPES.size()
 	if Input.is_action_just_pressed("craft"):
-		try_craft()
+		if Input.is_key_pressed(KEY_SHIFT):
+			try_craft_all()
+		else:
+			try_craft()
 
 
 ## Craft the selected recipe; returns true if it was made. Unit-testable without
@@ -3012,12 +3021,32 @@ func try_craft() -> bool:
 		return false
 	var recipe: Dictionary = Recipes.RECIPES[_recipe_index]
 	var made := Recipes.craft(player.inventory, recipe)
-	if made and _pickups != null:
-		# Pop the output over the player as feedback (crafting has no world cell).
-		_pickups.add(player.global_position,
-			"+%d %s" % [int(recipe.get("count", 1)), ItemDB.name_of(int(recipe["output"]))],
-			float(world_scale))
+	if made:
+		_craft_feedback(recipe, 1)
 	return made
+
+
+## Craft the selected recipe as many times as the inventory affords; returns how
+## many were made. Same seam as try_craft — input-free so it is unit-testable.
+func try_craft_all() -> int:
+	if player == null or not is_instance_valid(player):
+		return 0
+	var recipe: Dictionary = Recipes.RECIPES[_recipe_index]
+	var made := Recipes.craft_all(player.inventory, recipe)
+	if made > 0:
+		_craft_feedback(recipe, made)
+	return made
+
+
+## One float over the player saying what the craft produced — "+6 Whale Oil" for a
+## batch, the same path single-craft has always used (crafting has no world cell to
+## pop the number over, so it rides the player).
+func _craft_feedback(recipe: Dictionary, batches: int) -> void:
+	if _pickups == null:
+		return
+	_pickups.add(player.global_position,
+		"+%d %s" % [int(recipe.get("count", 1)) * batches, ItemDB.name_of(int(recipe["output"]))],
+		float(world_scale))
 
 
 ## Piloting is entered by walking up to a helm and using it, exactly as the
@@ -3292,12 +3321,17 @@ func _cue_state() -> Dictionary:
 	s["near_helm"] = not _nearby_helm.is_empty() or not _nearby_door.is_empty()
 	s["near_trainer"] = _near_trainer()
 
-	# Craft: the selected recipe's inputs are present.
+	# Craft: the selected recipe's inputs are present. The "(xN)" suffix is how
+	# many the stock affords — the one hint that Shift+M is worth pressing. A
+	# short suffix on a line that already exists, deliberately not a new readout.
 	if player.inventory != null and Recipes.RECIPES.size() > 0:
 		var recipe: Dictionary = Recipes.RECIPES[_recipe_index]
+		var affordable := Recipes.craftable_count(player.inventory, recipe)
 		if Recipes.can_craft(player.inventory, recipe):
 			s["craftable"] = true
 			s["craft_text"] = Recipes.summary(recipe)
+			if affordable > 0:
+				s["craft_text"] = "%s (x%d)" % [s["craft_text"], affordable]
 
 	# Cursor-driven cues (mutually exclusive by cell state). Only on foot.
 	var cursor := get_global_mouse_position()

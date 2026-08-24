@@ -130,6 +130,7 @@ func _initialize() -> void:
 	await _test_terrain_placement_writes_consumes_and_digs_back()
 	await _test_whale_carcass_harvest_yields_products()
 	await _test_crafting_consumes_inputs_and_yields_output()
+	await _test_craft_all_makes_the_whole_stack_in_one_action()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
 	await _test_map_view_toggles_visibility()
@@ -6002,6 +6003,71 @@ func _test_crafting_consumes_inputs_and_yields_output() -> void:
 	_check(not Recipes.craft(poor, oil_recipe), "craft() refuses")
 	_check(poor.count(ItemDB.Product.BLUBBER) == need - 1 and poor.total() == need - 1,
 		"and the inventory is untouched — no partial spend")
+	await process_frame
+
+
+## Crafting without repetition (items/recipes.gd, v0.44.x): craftable_count is the
+## min over inputs of have/need, and craft_all spends exactly that batch in ONE
+## call — the anti-grind fix for a recipe you would otherwise press M at ten times.
+## The last block is the break-the-fix check: too poor to craft even once must
+## consume NOTHING (a naive loop-until-broke implementation fails it).
+func _test_craft_all_makes_the_whole_stack_in_one_action() -> void:
+	_t("craft-all makes every affordable copy in one action, and never part-spends")
+
+	# The multi-input recipe is the interesting one: the batch is bounded by the
+	# SCARCEST input, not by the first one checked.
+	var recipe := {}
+	for r in Recipes.RECIPES:
+		if int(r["output"]) == ItemDB.Crafted.LIFE_SUPPORT:
+			recipe = r
+			break
+	_check(not recipe.is_empty(), "there is a multi-input recipe to batch (the Aether Lung)")
+	var ids: Array = recipe["inputs"].keys()
+	var ingot := int(ids[0])
+	var blubber := int(ids[1])
+	var ingot_need := int(recipe["inputs"][ingot])
+	var blubber_need := int(recipe["inputs"][blubber])
+	var yield_each := int(recipe.get("count", 1))
+
+	# --- craftable_count is the MIN over inputs -----------------------------
+	var empty := Inventory.new()
+	_check(Recipes.craftable_count(empty, recipe) == 0, "an empty inventory affords 0")
+	_check(Recipes.craftable_count(null, recipe) == 0, "a null inventory affords 0 (0-safe)")
+
+	var one_missing := Inventory.new()
+	one_missing.add(ingot, ingot_need * 5)   # plenty of one input, none of the other
+	_check(Recipes.craftable_count(one_missing, recipe) == 0,
+		"a missing input floors the count to 0 however much of the rest you hold")
+
+	var mixed := Inventory.new()
+	mixed.add(ingot, ingot_need * 4)         # enough for 4
+	mixed.add(blubber, blubber_need * 3 + 1) # enough for 3 (+ a partial that buys nothing)
+	_check(Recipes.craftable_count(mixed, recipe) == 3,
+		"the count is the min over inputs, partials floored (got %d, want 3)"
+			% Recipes.craftable_count(mixed, recipe))
+
+	# --- craft_all spends exactly that batch, once --------------------------
+	var made := Recipes.craft_all(mixed, recipe)
+	_check(made == 3, "craft_all made exactly the affordable number (%d)" % made)
+	_check(mixed.count(ItemDB.Crafted.LIFE_SUPPORT) == yield_each * 3,
+		"and added the whole yield (%d)" % mixed.count(ItemDB.Crafted.LIFE_SUPPORT))
+	_check(mixed.count(ingot) == ingot_need * 4 - ingot_need * 3,
+		"the surplus input was left alone (%d ingots)" % mixed.count(ingot))
+	_check(mixed.count(blubber) == 1,
+		"and the scarce input is spent down to its unusable remainder (%d)"
+			% mixed.count(blubber))
+	_check(Recipes.craftable_count(mixed, recipe) == 0, "nothing left to batch afterwards")
+
+	# --- break-the-fix: too poor to craft even once changes NOTHING ---------
+	var poor := Inventory.new()
+	poor.add(ingot, ingot_need)              # a full one input...
+	poor.add(blubber, blubber_need - 1)      # ...and one short of the other
+	var before := poor.total()
+	_check(Recipes.craft_all(poor, recipe) == 0, "craft_all with insufficient inputs makes 0")
+	_check(poor.count(ItemDB.Crafted.LIFE_SUPPORT) == 0, "no output appeared")
+	_check(poor.count(ingot) == ingot_need and poor.count(blubber) == blubber_need - 1
+			and poor.total() == before,
+		"and NOTHING was consumed — no partial spend on a failed batch")
 	await process_frame
 
 
