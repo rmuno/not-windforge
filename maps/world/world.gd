@@ -61,6 +61,10 @@ var hud: Label
 ## Small, gray bottom-right corner: build number + FPS, plus the one always-on
 ## trace of everything that moved to a toggle ("F1 help   Tab map").
 var _corner_label: Label
+## Name of the key that actually opens the help panel HERE — "F1" on desktop,
+## the browser-safe alias on the web build (maps/world/web_keys.gd). Resolved
+## once: the corner status reprints every frame.
+var _help_key_name: String = WebKeys.label_for(KEY_F1, WebKeys.is_web())
 ## Controls + block legend, hidden by default, shown on F1 (the old 13-line
 ## always-on legend and the giant control line, folded into ONE on-demand panel).
 var _help_panel: PanelContainer
@@ -412,8 +416,16 @@ func _build_help_panel() -> PanelContainer:
 	var label := Label.new()
 	label.add_theme_color_override("font_color", Color(0.85, 0.89, 0.96))
 	label.add_theme_font_size_override("font_size", 13)
+	# The web build cannot use the F-row (the browser takes it — F5 reloads the
+	# page), so it answers to letters instead; print whichever set actually works
+	# on this platform rather than lying to the browser player.
+	var web := WebKeys.is_web()
+	var k_help := WebKeys.label_for(KEY_F1, web)
+	var k_save := WebKeys.label_for(KEY_F5, web)
+	var k_saves := WebKeys.label_for(KEY_F9, web)
+	var k_diag := WebKeys.label_for(KEY_F3, web)
 	label.text = "\n".join([
-		"CONTROLS   (F1 to close)",
+		"CONTROLS   (%s to close)" % k_help,
 		"A/D walk    Space jump    F use helm / door",
 		"LMB shoot (turrets at the helm)    RMB grapple — W/S reel, jump to sling",
 		"grapple a whale + hold to TAME it (needs LORE Beast Whisperer) — then WASD steers; release the hook (RMB) to let go",
@@ -425,8 +437,8 @@ func _build_help_panel() -> PanelContainer:
 		"K character sheet (stats/perks/money — trainer shop when nearby)",
 		"  at a trainer, with the sheet open: 1-4 train a stat    0 sell salvage",
 		"Tab map    T respawn    R reset world    Esc quit    wheel zoom",
-		"F5 save    F9 saves panel (Up/Down select, Enter load)",
-		"H host    J join localhost    F2 debug window    F3 diagnostic",
+		"%s save    %s saves panel (Up/Down select, Enter load)" % [k_save, k_saves],
+		"H host    J join localhost    F2 debug window    %s diagnostic" % k_diag,
 		"",
 		"SHIP BLOCKS",
 		"H helm (F pilots)    E engine (power)    P/V propeller    T turret",
@@ -2213,6 +2225,11 @@ func _input(event: InputEvent) -> void:
 				_load_selected()
 				get_viewport().set_input_as_handled()
 				return
+	# On the web build the browser owns the F-row before the canvas sees it — F5
+	# reloaded the page instead of quicksaving. Fold a browser-safe alias back
+	# onto its F-key here (maps/world/web_keys.gd), so on web BOTH reach the same
+	# toggle and on desktop this is the identity.
+	keycode = WebKeys.unalias(keycode)
 	match keycode:
 		KEY_F1:
 			_toggle_help()
@@ -3285,8 +3302,9 @@ func _update_corner_status() -> void:
 	if _corner_label == null:
 		return
 	var ver: String = str(ProjectSettings.get_setting("application/config/version", "dev"))
-	_corner_label.text = "F1 help   Tab map\nv%s   %d fps" % [
-		ver, Engine.get_frames_per_second()]
+	# Same platform split as the help panel: name the key that actually works here.
+	_corner_label.text = "%s help   Tab map\nv%s   %d fps" % [
+		_help_key_name, ver, Engine.get_frames_per_second()]
 
 
 ## The inventory, as plain [color, name, count] rows for the HUD strip to draw as
