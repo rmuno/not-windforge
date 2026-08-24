@@ -129,14 +129,41 @@ var _push_dir := Vector2.ZERO
 var _align_t := 0.0
 
 
-func provoke() -> void:
+## Instance id of the thing that last attacked this creature — the RETALIATION
+## target (owner 2026-08-24: "they should target whatever tried to attack it";
+## before this, a provoked whale always rammed the nearest player-side SHIP, so
+## shooting it on foot sent it at your parked ship). An id, not a ref, so a
+## freed attacker never dangles; 0 = unknown → tick falls back to the caller's
+## nearest-ship target, the old behaviour.
+var _attacker_id := 0
+
+
+func provoke(attacker: Node2D = null) -> void:
 	# A tamed whale is an ally: it does not turn on the hand that tamed it,
 	# so damage never provokes it into a ram. This is the "won't ram you"
 	# half of the taming contract.
 	if tamed:
 		return
+	# Latch WHO to retaliate against. Only overwrite on a real attribution, so
+	# an unattributed re-provoke (terrain crush, a hazard) keeps the whale angry
+	# at the last known assailant instead of forgetting them.
+	if attacker != null and is_instance_valid(attacker):
+		_attacker_id = attacker.get_instance_id()
 	_provoked_until = Time.get_ticks_msec() \
 		+ Tunables.get_num("whale_anger_seconds") * 1000.0
+
+
+## The live attacker node, or null if none was ever attributed / it is gone
+## (freed, despawned). Position-bearing only — the ram doctrine needs nothing
+## more, so the target can be a Ship OR the on-foot Player alike.
+func _attacker() -> Node2D:
+	if _attacker_id == 0:
+		return null
+	var node := instance_from_id(_attacker_id) as Node2D
+	if node == null or not is_instance_valid(node):
+		_attacker_id = 0  # gone for good — forget it
+		return null
+	return node
 
 
 ## Tame the creature (the world calls this once the LORE gate passes and the
@@ -144,6 +171,7 @@ func provoke() -> void:
 func tame() -> void:
 	tamed = true
 	_provoked_until = -1.0e12
+	_attacker_id = 0  # all is forgiven
 	_end_attack()
 
 
@@ -190,7 +218,11 @@ func _altitude_hold_accel() -> float:
 	return _gravity_cancel_accel() - whale.linear_velocity.y * RIDE_HOLD_DAMP
 
 
-func tick(delta: float, target: Ship) -> void:
+## `target` is the caller's FALLBACK prey (the nearest player-side ship) — used
+## only when no attacker was ever attributed. Node2D, not Ship: the retaliation
+## target can be the on-foot PLAYER (shoot a whale from the ground and it comes
+## for YOU, not your parked ship — owner 2026-08-24).
+func tick(delta: float, target: Node2D) -> void:
 	if whale == null or not is_instance_valid(whale):
 		return
 	# Carcass check by BLOCK COUNT, not blueprint_completion(): that
@@ -239,10 +271,16 @@ func tick(delta: float, target: Ship) -> void:
 		# quietly sink out of the thin air while it loiters. Just cancel the
 		# unsupported weight — no drift damping, so the lazy roam stays lazy.
 		accel.y += _gravity_cancel_accel()
-	elif Time.get_ticks_msec() < _provoked_until and target != null \
-			and is_instance_valid(target):
+	elif Time.get_ticks_msec() < _provoked_until \
+			and (_attacker() != null or (target != null and is_instance_valid(target))):
+		# RETALIATION: the prey is the ATTACKER when we know who hit us (a ship
+		# or the on-foot player alike); the caller's nearest-ship target is only
+		# the fallback for unattributed anger (a terrain crush, a legacy path).
+		var prey: Node2D = _attacker()
+		if prey == null:
+			prey = target
 		# Broadside doctrine: get level with the prey, THEN shove flat.
-		var to := target.global_position - whale.global_position
+		var to := prey.global_position - whale.global_position
 		if _phase == Phase.NONE:
 			# Commit to the shove when level with the prey, OR when the align
 			# has run too long (a stuck vertical drive — the prey itself is in
@@ -252,7 +290,7 @@ func tick(delta: float, target: Ship) -> void:
 			# it runs at most once per tick and only while genuinely aligning.
 			if absf(to.y) <= ALIGN_BAND * u \
 					or _align_t >= ALIGN_MAX_SECONDS \
-					or whale.get_colliding_bodies().has(target):
+					or whale.get_colliding_bodies().has(prey):
 				# Level with its prey (or out of patience, or already on it):
 				# wind up and heave from the CURRENT altitude. The direction is
 				# latched now and held for the whole attack.

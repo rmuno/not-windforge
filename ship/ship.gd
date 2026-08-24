@@ -326,6 +326,14 @@ var balloons: Array = []
 ## A wild whale keeps this false and crashes into terrain exactly as before.
 var ridden_mining := false
 
+## Instance id of the last thing that SHOT this body (the player on foot, a
+## piloted ship, a bandit ship) — stamped by Shot just before net_damage_cell,
+## read by the world's provoke wiring so a creature retaliates against its
+## ACTUAL attacker, not the nearest player-side ship (owner 2026-08-24: "if I
+## shoot a whale on foot, the whale goes for the ship???"). An id, not a ref,
+## so a freed attacker can never dangle; 0 = unattributed (terrain, hazards).
+var last_attacker_id := 0
+
 
 ## Pilot input, matching the original's model: propellers push the hull around,
 ## the ship does not steer like a car. x = right(+)/left(−) via propellers,
@@ -736,6 +744,44 @@ func can_place_at(cell: Vector2i) -> bool:
 func cell_at_global(global_pos: Vector2) -> Vector2i:
 	var local := to_local(global_pos)
 	return Vector2i(roundi(local.x / CELL), roundi(local.y / CELL))
+
+
+## The nearest SOLID cell to a world point — the cell `cell_at_global` gives if it
+## already holds a block, else the closest block within `max_ring` cells (ring by
+## ring, so the first hit is nearest). Returns the raw cell if nothing solid is
+## near (a genuine miss).
+##
+## WHY (owner 2026-08-24, "whales seem immune while charging"): a LIVING creature
+## collides as ONE coarse AABB box (v0.41.1, the physics-cliff fix), but its cells
+## are SPARSE inside that box — a whale silhouette leaves the AABB corners empty.
+## A shot striking the box at an empty corner mapped to an AIR cell, so
+## `damage_cell` found no block, dealt nothing, and the shot was consumed anyway:
+## the whale visibly ate the shot and read as immune. Snapping the hit to the
+## nearest real block makes a visible hit always bite (ram immunity is, and stays,
+## a BLOCKS-only crush thing — it never touched gunfire). A vessel (exact per-cell
+## collider) always hits a solid cell first, so this is a no-op for ships.
+func nearest_solid_cell(global_pos: Vector2, max_ring: int = 8) -> Vector2i:
+	var base := cell_at_global(global_pos)
+	if blocks.has(base):
+		return base
+	var best := base
+	var best_d2 := 1 << 30
+	for r in range(1, max_ring + 1):
+		# Scan the square ring at Chebyshev distance r; keep the nearest by true
+		# (squared) distance so a diagonal never beats a closer orthogonal cell.
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if maxi(absi(dx), absi(dy)) != r:
+					continue
+				var c := base + Vector2i(dx, dy)
+				if blocks.has(c):
+					var d2 := dx * dx + dy * dy
+					if d2 < best_d2:
+						best_d2 = d2
+						best = c
+		if best_d2 < (1 << 30):
+			return best  # this ring had a block — it is the nearest one
+	return base
 
 
 func local_pos_of(cell: Vector2i) -> Vector2:

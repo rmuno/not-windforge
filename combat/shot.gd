@@ -36,6 +36,10 @@ const GRAVITY_FACTOR := 0.05
 var velocity := Vector2.ZERO
 var faction := 0
 var damage := 8.0
+## Who fired this shell (instance id of the player body or the ship — 0 for an
+## unattributed source like a hazard). Stamped onto the struck ship's
+## `last_attacker_id` so a creature's retaliation targets the actual shooter.
+var shooter_id := 0
 ## Seconds a shell stays in the air — and therefore THE range limit, for
 ## every shooter alike (owner 2026-08-21: "bullets should all be able to
 ## travel about 10x their current distance... perhaps up the time limit
@@ -149,9 +153,20 @@ func _physics_process(delta: float) -> void:
 			# being local visuals in multiplayer.)
 			ship.apply_central_impulse(velocity * mass)
 			if ship.faction != faction:
+				# Attribute the hit before the damage lands: the `damaged`
+				# signal fires inside net_damage_cell, and the world's provoke
+				# wiring reads last_attacker_id in that handler — stamping
+				# after would be one hit late.
+				if shooter_id != 0:
+					ship.last_attacker_id = shooter_id
 				# Nudge inward along the flight line so face/corner contacts
-				# resolve into the struck cell, not its empty neighbour.
-				var cell := ship.cell_at_global(
+				# resolve into the struck cell, not its empty neighbour, then snap
+				# to the nearest real block — a LIVING creature collides as one
+				# coarse AABB whose corners are empty cells, and a shot landing
+				# there used to hit air and deal nothing (the "immune whale"). A
+				# vessel's exact collider already lands on a solid cell, so the
+				# snap is a no-op there. See Ship.nearest_solid_cell.
+				var cell := ship.nearest_solid_cell(
 					(hit["position"] as Vector2) + velocity.normalized() * Ship.CELL * 0.4)
 				ship.net_damage_cell(cell, damage)
 		queue_free()

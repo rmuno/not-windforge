@@ -413,7 +413,7 @@ func _build_help_panel() -> PanelContainer:
 		"CONTROLS   (F1 to close)",
 		"A/D walk    Space jump    F use helm / door",
 		"LMB shoot (turrets at the helm)    RMB grapple — W/S reel, jump to sling",
-		"grapple a whale + hold to TAME it (needs LORE Beast Whisperer) — then WASD rides, F dismounts",
+		"grapple a whale + hold to TAME it (needs LORE Beast Whisperer) — then WASD steers; release the hook (RMB) to let go",
 		"Z mine / harvest (hold + aim)    X repair (hold + sweep)",
 		"V place terrain    B cycle material    N cycle recipe    M craft",
 		"U tether a helium balloon (aim at a hull/corpse cell)    Y balloon size — fly a carcass!",
@@ -1344,7 +1344,7 @@ func _handle_shooting(delta: float) -> void:
 	_spawn_shot(player.global_position, aim,
 		900.0 * player._scale_mult, Tunables.get_num("sidearm_damage"), 0, player._scale_mult,
 		player.SIZE.x * 0.9, SIDEARM_MASS,
-		player.velocity + player.get_platform_velocity())
+		player.velocity + player.get_platform_velocity(), player)
 	# Fire-rate is a real, upgradable property: the GRACE quickness perk
 	# (player.fire_rate_mult) AND the F2 fire_rate_mult lever both shorten the
 	# interval between sidearm shots. A perked/levered player fires measurably
@@ -1384,7 +1384,7 @@ const CROSSRANGE_LIMIT := 0.9
 
 func _spawn_shot(from: Vector2, toward: Vector2, speed: float, dmg: float,
 		fac: int, vis: float, muzzle := 0.0, slug_mass := 1.0,
-		platform_vel := Vector2.ZERO) -> void:
+		platform_vel := Vector2.ZERO, shooter: Node2D = null) -> void:
 	if from.distance_to(toward) < 1.0:
 		return
 	var shot_gravity := 980.0 * world_scale * Shot.GRAVITY_FACTOR
@@ -1424,6 +1424,10 @@ func _spawn_shot(from: Vector2, toward: Vector2, speed: float, dmg: float,
 	s.fire(dir * speed * slug_mass, platform_vel)
 	s.faction = fac
 	s.damage = dmg
+	# Attribution: who to retaliate against (a creature rams its SHOOTER, not
+	# the nearest player-side ship). Null for unattributed sources.
+	if shooter != null and is_instance_valid(shooter):
+		s.shooter_id = shooter.get_instance_id()
 	# No per-shooter lifetime multiplier any more: `Shot.life` is 30 s for
 	# everyone (owner 2026-08-21). The enemy's old ×10 existed only to give
 	# bandits reach past their doubled eyesight; the shared 30 s covers that
@@ -1458,7 +1462,7 @@ func _fire_turrets(ship: Ship, aim: Vector2, speed_mult := 1.0) -> bool:
 		_spawn_shot(muzzle, aim, 700.0 * ship.scale_unit * speed_mult,
 			Tunables.get_num("turret_damage"),
 			ship.faction, ship.scale_unit, 0.0, SHELL_MASS,
-			ship.linear_velocity)
+			ship.linear_velocity, ship)
 		fired = true
 	return fired
 
@@ -1555,7 +1559,7 @@ func _fire_turrets_at(ship: Ship, target: Ship, speed_mult: float) -> bool:
 		# you must not shoot itself in its own keel.
 		_spawn_shot(muzzle, aim as Vector2, 700.0 * ship.scale_unit * speed_mult,
 			Tunables.get_num("turret_damage"), ship.faction, ship.scale_unit, 0.0, SHELL_MASS,
-			ship.linear_velocity)
+			ship.linear_velocity, ship)
 		fired = true
 	return fired
 
@@ -1627,7 +1631,13 @@ func _whale_ai_for(creature: Ship) -> WhaleAI:
 		ai.home = creature.global_position
 		_whale_ais[id] = ai
 		creature.damaged.connect(
-			func(_cell: Vector2i, _amount: float) -> void: ai.provoke())
+			func(_cell: Vector2i, _amount: float) -> void:
+				# Retaliate against the ACTUAL attacker: Shot stamps the
+				# shooter's id onto the ship just before the damage lands, so
+				# resolving it here hands the brain who to ram (the on-foot
+				# player included). Null for unattributed damage — the AI then
+				# falls back to nearest-ship, the old doctrine.
+				ai.provoke(instance_from_id(creature.last_attacker_id) as Node2D))
 	return _whale_ais[id]
 
 
@@ -1672,18 +1682,48 @@ func try_tame(creature: Ship) -> bool:
 	return true
 
 
-## The grapple-and-hold bond. Runs on the authority; drives try_tame when the
-## hook has been held on a tameable creature long enough, then mounts the rider.
+## Whether `creature` is an ALREADY-TAMED ridable ally — a creature we bonded
+## with before (its WhaleAI exists and is tamed). Checked without creating an AI
+## for it, so a non-creature (the player's own ship) can never match.
+func _is_tamed_ally(creature: Ship) -> bool:
+	if creature == null or not is_instance_valid(creature):
+		return false
+	var id := creature.get_instance_id()
+	return _whale_ais.has(id) and (_whale_ais[id] as WhaleAI).tamed
+
+
+## The grapple-and-hold bond, AND the ride lifecycle. Runs on the authority.
+## Riding is now the LATCH itself (owner 2026-08-24): the grapple IS the leash, so
+## a ride ENDS the instant the hook is no longer latched onto the ridden creature
+## (release with RMB, jump-unlatch, or the rope broke) — no F, no separate mount
+## toggle. A creature you already tamed re-mounts INSTANTLY on re-grapple (it is no
+## longer inert); only a WILD creature needs the 3 s bond + the LORE gate.
 func _handle_taming(delta: float) -> void:
 	if not Net.is_server():
 		return
-	if player == null or not is_instance_valid(player) or player.is_riding():
+	if player == null or not is_instance_valid(player):
 		_tame_reset()
 		return
+	# Already riding: the only thing that matters is whether we still hold the
+	# hook on this creature. Let go of the leash → step off.
+	if player.is_riding():
+		if player.grapple_target() != player.riding:
+			dismount_creature()
+		return
 	var creature := player.grapple_target()
-	if creature == null or not is_instance_valid(creature) \
-			or creature.faction != 2 or creature.is_carcass() \
-			or creature.creature_kind == "kraken":
+	if creature == null or not is_instance_valid(creature) or creature.is_carcass():
+		_tame_reset()
+		return
+	# Re-mount a creature we already tamed — instant, no bond, no gate (it is our
+	# ally). This is the fix for a tamed whale going "inert" after dismount.
+	if _is_tamed_ally(creature):
+		if player.mount(creature):
+			_whale_ai_for(creature).mount()
+			_notify("riding — release the hook (RMB) to let go")
+		_tame_reset()
+		return
+	# Otherwise this must be a WILD, tameable creature to bond with.
+	if creature.faction != 2 or creature.creature_kind == "kraken":
 		_tame_reset()
 		return
 	# The gate, felt: without enough LORE for THIS creature's tier the bond never
@@ -1702,7 +1742,7 @@ func _handle_taming(delta: float) -> void:
 	if _tame_progress >= TAME_BOND_SECONDS:
 		if try_tame(creature) and player.mount(creature):
 			_whale_ai_for(creature).mount()
-			_notify("tamed! WASD to steer   ·   F to dismount")
+			_notify("tamed! steer with WASD   ·   release the hook (RMB) to let go")
 		_tame_reset()
 
 
@@ -2224,13 +2264,16 @@ func _process(_delta: float) -> void:
 	if Input.is_action_pressed("debug_damage") and not ui_mouse:
 		local_ship.net_damage_cell(cell, 4.0)
 
-	# RMB: the grapple, exactly as the original — fire toward the cursor;
-	# fire again to let go early. On foot only; the helm has your hands.
+	# RMB: the grapple, exactly as the original — fire toward the cursor; fire
+	# again to let go early. On foot only; the helm has your hands. While RIDING,
+	# the grapple is the leash: RMB releases it, which ends the ride (owner
+	# 2026-08-24 — "unlatch my hook, not F"). _handle_taming sees the hook drop
+	# next frame and steps you off.
 	if Input.is_action_just_pressed("grapple") and not ui_mouse and player != null \
-			and not player.is_piloting() and not player.is_riding():
+			and not player.is_piloting():
 		if player.hook_active():
 			player.release_grapple()
-		else:
+		elif not player.is_riding():
 			player.fire_grapple(get_global_mouse_position() - player.global_position)
 
 	_handle_shooting(get_process_delta_time())
@@ -2851,8 +2894,10 @@ func _handle_interact() -> void:
 		_nearby_helm = []
 		_nearby_door = []
 		return
-	# Riding a tamed creature: F steps off (dismount), and nothing else — the
-	# helm/door search below is for when you are on your own two feet.
+	# Riding a tamed creature: the ride ends by releasing the hook (RMB — see the
+	# grapple handler), not F. F still steps off as a harmless fallback, but is no
+	# longer required (owner 2026-08-24). No helm/door search while mounted — that
+	# is for when you are on your own two feet.
 	if player.is_riding():
 		_nearby_helm = []
 		_nearby_door = []

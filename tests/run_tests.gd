@@ -47,6 +47,7 @@ func _initialize() -> void:
 	await _test_balloons_lift_and_detach()
 	await _test_whale_is_a_whale()
 	await _test_whale_is_one_unit_until_dead()
+	await _test_shots_snap_to_the_nearest_block_on_a_creature()
 	await _test_living_creature_gets_a_coarse_collider()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
 	await _test_creature_skin_faces_its_motion()
@@ -59,6 +60,7 @@ func _initialize() -> void:
 	await _test_whale_diag_buffers_and_flushes_periodically()
 	await _test_combat_rebuilds_coalesce_per_frame()
 	await _test_whale_ai_neutral_until_provoked()
+	await _test_provoked_whale_rams_its_attacker()
 	await _test_provoked_whale_never_endlessly_charges_down()
 	await _test_provoked_whale_align_still_rams_when_reachable()
 	await _test_whale_spawn_picks_varied_plans()
@@ -1028,6 +1030,52 @@ func _test_whale_is_one_unit_until_dead() -> void:
 	await process_frame
 
 
+## Owner 2026-08-24: "whales seem completely immune to damage while charging."
+## ROOT CAUSE: a LIVING creature collides as one coarse AABB box (the physics-cliff
+## fix), but its cells are SPARSE inside — a shot into an empty corner mapped to an
+## AIR cell, damaged nothing, and was consumed anyway (visibly "eaten", read as
+## immune). Ram immunity is, and always was, a BLOCKS-only crush thing — it never
+## touched gunfire. Fix: shots snap the hit to the nearest real block, so a visible
+## hit always bites. (A vessel's exact collider already lands on a solid cell.)
+func _test_shots_snap_to_the_nearest_block_on_a_creature() -> void:
+	_t("a shot into a living creature's coarse-AABB margin snaps to a real block (the 'immune whale' fix)")
+	var s := _make_ship(ShipLayout.load_cells("res://ships/whale.ship"))
+	s.position = Vector2(-12000, 0)
+	s.shared_health = 1000.0
+	s.shared_health_max = 1000.0
+	# An empty cell right beside the body — the margin the single-AABB collider
+	# still covers, where a shot used to land on nothing.
+	var solid: Vector2i = s.blocks.keys()[0]
+	var air := Vector2i.ZERO
+	var found := false
+	for off in [Vector2i(0, -1), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(1, 0),
+			Vector2i(-1, -1), Vector2i(1, -1)]:
+		if not s.blocks.has(solid + off):
+			air = solid + off
+			found = true
+			break
+	_check(found, "found an empty cell beside the body")
+	var air_pt := s.to_global(s.local_pos_of(air))
+	_check(not s.blocks.has(s.cell_at_global(air_pt)),
+		"the raw hit cell is AIR — the old path damaged nothing here (the 'immune' bug)")
+	var snapped := s.nearest_solid_cell(air_pt)
+	_check(s.blocks.has(snapped), "nearest_solid_cell snaps the hit onto a real block")
+	_check(s.nearest_solid_cell(s.to_global(s.local_pos_of(solid))) == solid,
+		"a hit already on a block returns that block (no-op for a vessel's exact collider)")
+	# End to end: the snapped hit DRAINS the shared pool — the whale bleeds now.
+	var pool := s.shared_health
+	s.damage_cell(snapped, 50.0)
+	_check(s.shared_health < pool,
+		"the snapped shot drains the pool — no longer immune (%.0f -> %.0f)" % [pool, s.shared_health])
+	# Break-the-fix: the raw air cell still deals nothing, proving the snap is what bites.
+	var pool2 := s.shared_health
+	s.damage_cell(air, 50.0)
+	_check(is_equal_approx(s.shared_health, pool2),
+		"an air-cell hit still deals nothing (the snap is what makes the hit land)")
+	s.queue_free()
+	await process_frame
+
+
 ## The whale-sandwich FPS fix (session 5). A LIVING creature is one flexing body
 ## (no cell breaks, damage pools), so it does not need a cell-accurate collider —
 ## and the cost of the sandwich is the number of overlapping shape PAIRS the
@@ -1447,6 +1495,67 @@ func _test_ram_immunity() -> void:
 	if is_instance_valid(slug):
 		slug.queue_free()
 	shootable.queue_free()
+	await process_frame
+
+
+## Owner 2026-08-24: "they should target whatever tried to attack it — if I
+## (player) am outside my ship and shoot a whale, the whale will go for the ship
+## (???)". The provoked whale used to ram the CALLER-chosen nearest player-side
+## ship, always. Now provoke() latches the attacker (stamped by Shot onto
+## Ship.last_attacker_id → the world's damaged wiring) and the brain retaliates
+## against THAT — a ship or the on-foot player alike; the caller's target is only
+## the fallback for unattributed damage.
+func _test_provoked_whale_rams_its_attacker() -> void:
+	_t("a provoked whale retaliates against its ATTACKER, not the nearest ship")
+	var whale := _make_ship(ShipLayout.load_cells("res://ships/whale.ship"))
+	whale.faction = 2
+	whale.position = Vector2(-16000, 0)
+	# The decoy: a player-side ship parked LEVEL and to the RIGHT — exactly what
+	# the old doctrine would charge (the fallback target the world still passes).
+	var decoy := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	decoy.freeze = true
+	decoy.position = whale.position + Vector2(900, 0)
+	# The attacker: the on-foot "player" — a bare Node2D (all the brain may
+	# assume about a retaliation target) standing level on the LEFT.
+	var attacker := Node2D.new()
+	root.add_child(attacker)
+	attacker.global_position = whale.position + Vector2(-900, 0)
+	await _step(2)
+
+	var ai := WhaleAI.new()
+	ai.whale = whale
+	ai.home = whale.global_position
+
+	# Shot from the left: the whale is told WHO hit it.
+	ai.provoke(attacker)
+	ai.tick(1.0 / 60.0, decoy)
+	_check(ai.phase() == WhaleAI.Phase.PUSH,
+		"level with its attacker, it commits to the shove at once")
+	var d: float = ai._push_dir.x
+	_check(d < 0.0,
+		"and the shove aims at the ATTACKER (left, %.0f) — not the decoy ship (right)" % d)
+
+	# The attacker latch survives an unattributed re-provoke (a terrain bump
+	# must not make it forget who shot it)...
+	ai.provoke()
+	_check(ai._attacker() == attacker, "an unattributed re-provoke keeps the attacker latched")
+	# ...and clears when the attacker is gone: freed mid-anger, the brain falls
+	# back to the caller's nearest-ship target instead of chasing a ghost.
+	attacker.queue_free()
+	await process_frame
+	_check(ai._attacker() == null, "a freed attacker is forgotten (no dangling ram target)")
+	ai._end_attack()
+	ai.tick(1.0 / 60.0, decoy)
+	_check(ai.phase() == WhaleAI.Phase.PUSH and ai._push_dir.x > 0.0,
+		"with the attacker gone it falls back to the fallback ship (break-the-fix: the old doctrine)")
+
+	# Taming forgives: the latch is wiped with the anger.
+	ai.provoke(decoy)
+	ai.tame()
+	_check(ai._attacker() == null, "taming clears the grudge along with the anger")
+
+	whale.queue_free()
+	decoy.queue_free()
 	await process_frame
 
 

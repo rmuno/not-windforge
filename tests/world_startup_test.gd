@@ -676,6 +676,33 @@ func _check_taming(world: Node, fleet) -> void:
 		_ok(not world.try_tame(kraken), "a kraken is REFUSED even at Master Trader — untameable")
 		_ok(kraken.faction == 2, "the kraken stays wild")
 
+	# --- RIDE = THE LEASH (owner 2026-08-24) --------------------------------
+	# The ride is now the grapple LATCH, not a separate mount toggle: releasing
+	# the hook (RMB) ends it — no F — and a creature you already tamed re-mounts
+	# INSTANTLY on re-grapple (it used to go inert, unridable, after dismount).
+	# The whale here is still a tamed ally (faction 0), the player back on foot.
+	_ok(world._is_tamed_ally(whale), "a tamed whale reads as a re-ridable ally")
+	var vessel = null
+	for s in fleet.ships():
+		if s.creature_kind == "" and not s.is_carcass():
+			vessel = s
+			break
+	if vessel != null:
+		_ok(not world._is_tamed_ally(vessel), "a plain vessel is NOT a re-ridable ally (never mounts by grapple)")
+	# Simulate the grapple latching onto the tamed ally, then run the ride loop —
+	# it re-mounts with no bond, proving a tamed whale is never inert again.
+	p._hook_state = Player.HookState.LATCHED
+	p._anchor_ship = whale
+	world._handle_taming(0.016)
+	_ok(p.is_riding() and p.riding == whale,
+		"re-grappling a tamed whale re-mounts it INSTANTLY (no re-bond) — the inert-whale fix")
+	_ok(p.grapple_latched(),
+		"and the grapple stays latched while riding — it is the leash, not consumed")
+	# Let go of the hook (RMB) → the ride ends on the next loop tick, no F.
+	p.release_grapple()
+	world._handle_taming(0.016)
+	_ok(not p.is_riding(), "releasing the hook (RMB) ends the ride — no F needed")
+
 	# Restore both creatures to WILD so the later hosting check sees the full pod
 	# and critter set (this test deliberately mutated allegiances; undo them).
 	whale.faction = 2

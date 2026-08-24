@@ -47,23 +47,28 @@ var _mouth_local := Vector2.INF
 var grabbing := false
 
 
-func tick(delta: float, target: Ship) -> void:
+func tick(delta: float, target: Node2D) -> void:
 	if whale == null or not is_instance_valid(whale):
 		return
+	# The Ship-shaped prey (the caller's nearest-ship fallback). The base class
+	# takes Node2D now (retaliation can target the on-foot player), but the
+	# kraken's own additions — the hunt restamp and the per-cell mouth grab —
+	# need a block grid, so they act on the SHIP prey only.
+	var prey_ship := target as Ship
 	# Aggression: hunt on sight. A wild kraken keeps itself provoked while a living
 	# prey is around, so the inherited align→push→glide ram runs immediately (the
 	# whale only rams AFTER being hit; the kraken does not wait). Untameable, so
 	# `tamed` is never set — but guard it anyway to stay honest with the base class.
-	if not tamed and not ridden and target != null and is_instance_valid(target) \
-			and not target.is_carcass():
+	if not tamed and not ridden and prey_ship != null and is_instance_valid(prey_ship) \
+			and not prey_ship.is_carcass():
 		_provoked_until = Time.get_ticks_msec() + HUNT_RESTAMP_MS
 	super.tick(delta, target)
 	# The mouth grab rides ON TOP of the inherited swim/ram: a living, wild kraken
 	# whose mouth has reached the prey chews it continuously.
 	grabbing = false
-	if _is_alive() and not tamed and target != null and is_instance_valid(target) \
-			and not target.is_carcass():
-		_mouth_grab(delta, target)
+	if _is_alive() and not tamed and prey_ship != null and is_instance_valid(prey_ship) \
+			and not prey_ship.is_carcass():
+		_mouth_grab(delta, prey_ship)
 
 
 ## A living creature (pool not yet empty). A carcass has drained its pool; the

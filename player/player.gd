@@ -285,12 +285,15 @@ func grapple_target() -> Ship:
 
 
 ## Climb onto a tamed creature and ride it. Returns false if already piloting/
-## riding or the creature is gone. The rider sits on top of its solid bounds;
-## the grapple is released (your hands are on the beast now).
+## riding or the creature is gone. The rider sits on top of its solid bounds.
+## The grapple STAYS latched — it is the LEASH (owner 2026-08-24: riding is "a
+## strong suggestion, not a full system replacement"): you keep holding the hook
+## while you ride, and releasing it (RMB) is what lets go. So mount does NOT
+## release the grapple; the world ends the ride the moment the hook is no longer
+## latched onto this creature (world._handle_taming).
 func mount(creature: Ship) -> bool:
 	if is_piloting() or is_riding() or creature == null or not is_instance_valid(creature):
 		return false
-	release_grapple()
 	riding = creature
 	var b := creature.solid_bounds
 	_ride_creature_local = Vector2(b.get_center().x, b.position.y - SIZE.y * 0.5)
@@ -303,6 +306,10 @@ func dismount() -> void:
 	if not is_riding():
 		return
 	riding = null
+	# Drop the leash on the way off, so the hook is not still latched onto the
+	# (tamed) creature — otherwise the ride loop would re-mount instantly next
+	# frame (the grapple is the ride's on/off switch now).
+	release_grapple()
 	rotation = 0.0
 	# At rest relative to the world when you hop off; the fall (if any) takes
 	# over next frame with the collider back on.
