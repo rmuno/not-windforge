@@ -121,6 +121,7 @@ func _initialize() -> void:
 	await _test_island_gen_islands_are_coherent()
 	await _test_island_gen_is_data_only_and_sparse()
 	await _test_fill_row_matches_set_cell()
+	await _test_streaming_is_tiered_and_skips_still_frames()
 	await _test_subdiv_world_is_the_same_world_finer()
 	await _test_inventory_add_remove_count()
 	await _test_mining_seam_digs_and_credits()
@@ -5654,6 +5655,68 @@ func _test_island_gen_is_data_only_and_sparse() -> void:
 	_check(t.is_solid(Vector2i(0, 8)) and t.is_solid(Vector2i(0, 16)),
 		"there is solid spawn ground directly under SHIP_START")
 
+	t.queue_free()
+	await process_frame
+
+
+## The subdiv-8 lag fix (owner 2026-08-24, "so heckin' laggy"): streaming is
+## TIERED — a primary focus (the player/camera) promotes a wide neighbourhood, a
+## secondary focus (any other ship) only a small collision bubble — and a frame
+## where no focus crossed a chunk boundary SKIPS the scan outright (measured
+## 2.6 ms/frame of pure scan at 15 foci before). Break-the-fix pins: the skip
+## must re-arm when a focus moves AND when new data lands near a still focus.
+func _test_streaming_is_tiered_and_skips_still_frames() -> void:
+	_t("terrain streaming: tiered radii + still-frame scan skip")
+	var t := Terrain.new()
+	t.subdiv = 8
+	root.add_child(t)
+	# One long solid band so both foci have promotable data everywhere.
+	t.fill_rect(Rect2i(-400, 0, 800, 8), TerrainDB.Type.STONE)
+	var cpx := t.chunk_px()
+	var primary := t.to_global(Vector2(0.5, 0.5) * cpx)
+	var secondary := t.to_global(Vector2(-300.0 / Terrain.CHUNK, 0.5) * cpx * Terrain.CHUNK / cpx)
+	secondary = t.cell_center(Vector2i(-300, 4))
+	for i in 400:
+		t.update_streaming([primary], [secondary])
+	# Tiered: count live chunks near each focus — the primary neighbourhood is
+	# strictly wider than the secondary collision bubble.
+	var pc := Vector2i(0, 0)
+	var sc := Vector2i(floori(-300.0 / Terrain.CHUNK), 0)
+	var near_p := 0
+	var near_s := 0
+	for c in t._live:
+		if absi(c.x - pc.x) <= t._primary_promote_r():
+			near_p += 1
+		if absi(c.x - sc.x) <= t._primary_promote_r():
+			near_s += 1
+	_check(near_s > 0, "a secondary focus still gets its collision bubble (%d chunks)" % near_s)
+	_check(near_p > near_s,
+		"the primary focus promotes a wider neighbourhood (%d > %d)" % [near_p, near_s])
+
+	# Scan skip: with nothing moving and the queue drained, further calls do NO
+	# scan at all (the 2.6 ms/frame steady bill).
+	var scans_before: int = t.scan_count
+	for i in 50:
+		t.update_streaming([primary], [secondary])
+	_check(t.scan_count == scans_before, "still frames skip the scan entirely")
+	# ...a focus crossing a chunk boundary re-arms it...
+	t.update_streaming([primary + Vector2(cpx * 1.5, 0.0)], [secondary])
+	_check(t.scan_count == scans_before + 1, "a focus crossing a boundary re-scans")
+	# ...and NEW data near a still focus re-arms it too (the _stream_dirty
+	# break-the-fix: without it, terrain placed near a parked player would
+	# never gain a collider until they wandered).
+	var before2: int = t.scan_count
+	t.update_streaming([primary], [secondary])  # drain the move above
+	var drained: int = t.scan_count
+	while t.scan_count > before2 and t.scan_count - before2 < 300:
+		before2 = t.scan_count
+		t.update_streaming([primary], [secondary])
+	var still: int = t.scan_count
+	t.update_streaming([primary], [secondary])
+	_check(t.scan_count == still, "drained + still again: skipping again")
+	t.set_cell(Vector2i(2000, 2000), TerrainDB.Type.STONE)  # a brand-new chunk
+	t.update_streaming([primary], [secondary])
+	_check(t.scan_count == still + 1, "writing into a NEW chunk re-arms the scan")
 	t.queue_free()
 	await process_frame
 

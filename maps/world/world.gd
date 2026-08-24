@@ -999,14 +999,23 @@ func _build_generated_terrain() -> void:
 func _stream_terrain() -> void:
 	if terrain == null:
 		return
-	var foci: Array = []
+	# TIERED (the subdiv-8 lag fix): the PLAYER (+ their ship — the camera)
+	# streams render-range terrain; every OTHER ship gets only a collision
+	# bubble. See Terrain.update_streaming.
+	var primary: Array = []
+	var secondary: Array = []
 	if player != null and is_instance_valid(player):
-		foci.append(player.global_position)
+		primary.append(player.global_position)
 	if fleet != null:
 		for ship in fleet.ships():
-			if is_instance_valid(ship):
-				foci.append(ship.global_position)
-	terrain.update_streaming(foci)
+			if not is_instance_valid(ship):
+				continue
+			if ship == local_ship or (player != null and is_instance_valid(player)
+					and (player.piloting == ship or player.riding == ship)):
+				primary.append(ship.global_position)
+			else:
+				secondary.append(ship.global_position)
+	terrain.update_streaming(primary, secondary)
 
 
 ## Something to fight: an enemy hulk hangs mid-arena (faction 1), with a
