@@ -161,6 +161,7 @@ func _initialize() -> void:
 	await _test_save_ships_and_player_round_trip()
 	await _test_save_metadata_readable_without_full_load()
 	await _test_save_load_fails_gracefully()
+	await _test_web_key_aliases()
 
 	print("\n=== %d checks, %d failed ===" % [_checks, _failures])
 	if _failures == 0:
@@ -7119,3 +7120,86 @@ func _test_debug_window_toggles_and_switches_tabs() -> void:
 
 	win.queue_free()
 	await process_frame
+
+
+## The web build's browser-safe key aliases (maps/world/web_keys.gd). The
+## harness cannot press browser keys, so this tests the PURE mapping — which is
+## exactly why the helper takes `web` as an argument (OS.has_feature cannot be
+## faked). The property that actually matters is the last one: an alias that
+## collides with a key the game already reads is worse than the F-key it
+## replaces, and only a test can keep that true as bindings are added.
+func _test_web_key_aliases() -> void:
+	_t("web key aliases remap the browser-reserved F-row and collide with nothing")
+
+	# 1. DESKTOP — pure identity, for every key, reserved or not.
+	for key: int in [KEY_F1, KEY_F3, KEY_F5, KEY_F9, KEY_F2, KEY_TAB, KEY_A, KEY_0]:
+		_check(WebKeys.remap_for(key, false) == key,
+			"desktop leaves %s alone" % OS.get_keycode_string(key))
+	_check(WebKeys.unalias_for(KEY_P, false) == KEY_P,
+		"desktop never folds a letter onto an F-key (P stays P)")
+
+	# 2. WEB — the four keys the browser steals get an alias.
+	_check(WebKeys.remap_for(KEY_F1, true) == KEY_I, "web: F1 (browser help) -> I")
+	_check(WebKeys.remap_for(KEY_F3, true) == KEY_L, "web: F3 (find-in-page) -> L")
+	_check(WebKeys.remap_for(KEY_F5, true) == KEY_P, "web: F5 (PAGE RELOAD) -> P")
+	_check(WebKeys.remap_for(KEY_F9, true) == KEY_O, "web: F9 -> O")
+	# Everything else is untouched even on web — F2 is not reserved, and the
+	# game's own bindings must not shift under the player.
+	for key: int in [KEY_F2, KEY_TAB, KEY_A, KEY_0, KEY_H]:
+		_check(WebKeys.remap_for(key, true) == key,
+			"web leaves the unreserved %s alone" % OS.get_keycode_string(key))
+
+	# 3. THE REVERSE FOLD — what world._input actually calls. On web an alias
+	#    resolves to its F-key, and the F-key still resolves to itself, so BOTH
+	#    reach the toggle (a browser that lets F1 through keeps working).
+	for source: int in WebKeys.WEB_ALIASES.keys():
+		var alias: int = WebKeys.remap_for(source, true)
+		_check(WebKeys.unalias_for(alias, true) == source,
+			"web: pressing %s reaches the %s toggle"
+				% [OS.get_keycode_string(alias), OS.get_keycode_string(source)])
+		_check(WebKeys.unalias_for(source, true) == source,
+			"web: %s itself still reaches its toggle" % OS.get_keycode_string(source))
+
+	# 4. NO COLLISION — targets are distinct, none is itself a source (so the
+	#    fold can never chain), and none is a key the game already reads:
+	#    neither a bound action in project.godot nor a raw key in world.gd.
+	var targets: Array = WebKeys.WEB_ALIASES.values()
+	var unique: Dictionary = {}
+	for target: int in targets:
+		unique[target] = true
+	_check(unique.size() == targets.size(),
+		"every alias is a different key (%d targets)" % targets.size())
+	for target: int in targets:
+		_check(not WebKeys.WEB_ALIASES.has(target),
+			"%s is not itself remapped (the fold cannot chain)"
+				% OS.get_keycode_string(target))
+
+	# The action map is the authority on bound keys — read it rather than
+	# restating it, so a future binding of P breaks this test loudly.
+	_check(InputMap.has_action("move_left"),
+		"the action map is loaded (so the collision check below is not vacuous)")
+	var bound: Dictionary = {}
+	for action: StringName in InputMap.get_actions():
+		for event: InputEvent in InputMap.action_get_events(action):
+			if event is InputEventKey:
+				var k := event as InputEventKey
+				# Only PLAIN presses collide — Godot's built-in ui_* actions bind
+				# Ctrl+L and Ctrl+O, which a bare L or O never triggers.
+				if k.ctrl_pressed or k.alt_pressed or k.shift_pressed or k.meta_pressed:
+					continue
+				# This project binds by physical_keycode, leaving keycode 0.
+				var code: int = k.keycode if k.keycode != 0 else k.physical_keycode
+				bound[code] = action
+	for target: int in targets:
+		_check(not bound.has(target),
+			"%s is not bound to a game action" % OS.get_keycode_string(target))
+
+	# The raw keys world.gd reads directly (not in the action map): the UI
+	# toggles, host/join, the balloon keys and the trainer number row — 0 sells
+	# salvage, which is why the diagnostic alias is not 0.
+	var raw_keys: Array[int] = [KEY_TAB, KEY_K, KEY_H, KEY_J, KEY_Y, KEY_U,
+		KEY_1, KEY_2, KEY_3, KEY_4, KEY_0, KEY_UP, KEY_DOWN, KEY_ENTER,
+		KEY_F1, KEY_F2, KEY_F3, KEY_F5, KEY_F9]
+	for target: int in targets:
+		_check(not raw_keys.has(target),
+			"%s is not a raw key world.gd already reads" % OS.get_keycode_string(target))
