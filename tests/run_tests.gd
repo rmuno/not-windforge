@@ -88,6 +88,9 @@ func _initialize() -> void:
 	await _test_ridden_whale_treads_water()
 	await _test_kraken_is_a_kraken()
 	await _test_kraken_ai_grabs_hovers_and_rams()
+	await _test_kraken_cavity_loot_spills_once_on_breach()
+	await _test_kraken_mouth_bites_the_player_on_foot()
+	await _test_kraken_spawn_keeps_out_of_deep_rock()
 	await _test_single_player_is_not_online()
 	await _test_remote_ships_are_eased_not_snapped()
 	await _test_serialization_roundtrip()
@@ -2271,6 +2274,219 @@ func _test_kraken_ai_grabs_hovers_and_rams() -> void:
 	prey.queue_free()
 	far.queue_free()
 	await _step(3)
+
+
+## The sealed LOOT CAVITY (owner follow-up 2026-08-24): both kraken plans wall a
+## hollow pocket into the meat, and mining THROUGH into it on a CARCASS spills a
+## fixed bundle. The gates that matter here: it is the BREACH that pays (not the
+## kill, and not any old harvest), a LIVING kraken never pays, and the bundle
+## comes out exactly once — the whale stomach-drop contract, for a bundle.
+func _test_kraken_cavity_loot_spills_once_on_breach() -> void:
+	_t("a breached kraken loot cavity spills its bundle once; a living one never does")
+	# A 5×5 meat shell around ONE sealed air cell — the authored cavity in
+	# miniature, with every wall cell harvestable flesh.
+	var cells := {}
+	for x in 5:
+		for y in 5:
+			if Vector2i(x, y) != Vector2i(2, 2):
+				cells[Vector2i(x, y)] = BlockDB.Type.MEAT
+
+	# --- A LIVING body: no cavity loot, ever --------------------------------
+	var live := _make_ship(cells.duplicate())
+	live.position = Vector2(-52000, 0)
+	live.shared_health_max = 100.0
+	live.shared_health = 100.0
+	_check(live.cavity_cells().has(Vector2i(2, 2)),
+		"the sealed pocket is found — interior air the outside flood never reaches")
+	_check(live.cavity_cells().size() == 1,
+		"and nothing outside the body is mistaken for it (%d cells)"
+			% live.cavity_cells().size())
+	_check(live.harvest_cell(Vector2i(2, 1)) == -1,
+		"a LIVING body yields nothing to a harvest, cavity wall included")
+	_check(not live.cavity_breached() and live.take_cavity_loot().is_empty(),
+		"so a living kraken never drops its cavity bundle")
+	live.queue_free()
+
+	# --- A CARCASS: the BREACH is what pays ---------------------------------
+	var corpse := _make_ship(cells.duplicate())
+	corpse.position = Vector2(-52000, -6000)
+	corpse.shared_health_max = 100.0
+	corpse.shared_health = 0.0  # dead → a carcass
+	_check(corpse.take_cavity_loot().is_empty(),
+		"an intact carcass pays nothing — killing it is not cracking it open")
+	_check(corpse.harvest_cell(Vector2i(0, 0)) == ItemDB.Product.MEAT,
+		"harvesting an OUTER wall cell yields its flesh product as usual")
+	_check(not corpse.cavity_breached() and corpse.take_cavity_loot().is_empty(),
+		"but that cell is nowhere near the pocket — still no bundle")
+
+	_check(corpse.harvest_cell(Vector2i(2, 1)) == ItemDB.Product.MEAT,
+		"the cell ON the cavity wall harvests to flesh too")
+	_check(corpse.cavity_breached(), "and THAT one breaches the pocket")
+	var bundle := corpse.take_cavity_loot()
+	var got := {}
+	for entry in bundle:
+		got[int(entry[0])] = int(entry[1])
+	_check(bundle.size() == 2 and got.size() == 2,
+		"the breach spills a two-entry bundle (%d)" % bundle.size())
+	_check(got.get(TerrainDB.Type.AETHERITE, 0) == 12,
+		"12 aetherite — the deep band's own prize, buried in the beast")
+	_check(got.get(TerrainDB.Type.STONE, 0) == 3, "and the 3 stone it was packed in")
+	for id in got:
+		_check(ItemDB.is_terrain(int(id)),
+			"%s is an existing terrain-range item id, not an invented type"
+				% ItemDB.name_of(int(id)))
+	_check(corpse.take_cavity_loot().is_empty(),
+		"and only once — the cavity is emptied, exactly like the stomach")
+	corpse.queue_free()
+
+	# --- The AUTHORED plans really carry one --------------------------------
+	# Break-the-fix insurance for the SHIP FILES: re-author a kraken without its
+	# walled pocket and this fails, instead of the drop quietly never happening.
+	for path in ["res://ships/kraken_b.ship", "res://ships/kraken_c.ship"]:
+		var body := _make_ship(ShipLayout.load_cells(path))
+		body.position = Vector2(-52000, -12000)
+		_check(not body.cavity_cells().is_empty(),
+			"%s walls in a sealed loot cavity (%d cells)"
+				% [path.get_file(), body.cavity_cells().size()])
+		body.queue_free()
+	await _step(3)
+
+
+## The mouth chews PEOPLE (owner follow-up 2026-08-24): stand on foot in the jaws
+## and the kraken eats YOU at the same DPS a hull cell takes. Also pins the two
+## new F2 levers — the grab knobs are read live now, not baked in.
+func _test_kraken_mouth_bites_the_player_on_foot() -> void:
+	_t("the kraken mouth chews the on-foot player, and its grab knobs are levers")
+	# Parity first: the levers ship the constants they replaced, so the feel of a
+	# default game is byte-identical to before they existed.
+	_check_approx(Tunables.get_num("kraken_grab_dps"), KrakenAI.GRAB_DPS, 0.001,
+		"kraken_grab_dps default = KrakenAI.GRAB_DPS")
+	_check_approx(Tunables.get_num("kraken_grab_reach"), KrakenAI.GRAB_REACH, 0.001,
+		"kraken_grab_reach default = KrakenAI.GRAB_REACH")
+
+	var cells := ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/kraken_c.ship"), 8)
+	var kraken := _make_ship(cells)
+	kraken.scale_unit = 8.0
+	kraken.creature_kind = "kraken"
+	kraken.shared_health = 12000.0
+	kraken.shared_health_max = 12000.0
+	kraken.position = Vector2(-120000, 0)
+	kraken.freeze = true  # the bite is damage the brain applies, not a collision
+
+	var ai := KrakenAI.new()
+	ai.whale = kraken
+	ai.home = kraken.global_position
+	# A pace INSIDE the jaws — deliberately not exactly ON the mouth point, so a
+	# zeroed reach lever is a real gate below rather than a 0-distance tie.
+	var jaws := ai._mouth_world() + Vector2(0.0, 200.0)
+
+	var p := Player.new()
+	p.GRAVITY = 0.0
+	root.add_child(p)
+	await _step(2)
+
+	# No prey_player handed in (the world's "they are piloting / nobody here"
+	# case): the mouth must not reach for anything, and must not crash.
+	ai.prey_player = null
+	var solo: float = await _bite_drain(ai, p, jaws, 10)
+	_check(solo == 0.0 and not ai.grabbing_player,
+		"with no on-foot player handed in, nothing is bitten")
+
+	ai.prey_player = p
+	var drain: float = await _bite_drain(ai, p, jaws, 10)
+	_check(ai.grabbing_player, "the mouth latches onto a person standing in the jaws")
+	_check(drain > 0.0, "and chews them — %.1f hp gone in 10 ticks" % drain)
+
+	# Out of the jaws: the same person a body-length away is not bitten.
+	var away := jaws + Vector2(40000, 0)
+	var far_drain: float = await _bite_drain(ai, p, away, 10)
+	_check(far_drain == 0.0 and not ai.grabbing_player,
+		"a person out of the jaws takes nothing")
+
+	# THE DPS LEVER: four times the knob, four times the chewing (break-the-fix —
+	# reading KrakenAI.GRAB_DPS again here would leave the drain unchanged).
+	Tunables.set_value("kraken_grab_dps", KrakenAI.GRAB_DPS * 4.0)
+	var hard: float = await _bite_drain(ai, p, jaws, 10)
+	_check(hard > drain * 3.0,
+		"the DPS lever drives the bite (%.1f hp vs %.1f at default)" % [hard, drain])
+	Tunables.reset("kraken_grab_dps")
+
+	# THE REACH LEVER: zero it and the very same jaws-deep person is out of range.
+	Tunables.set_value("kraken_grab_reach", 0.0)
+	var no_reach: float = await _bite_drain(ai, p, jaws, 10)
+	_check(no_reach == 0.0 and not ai.grabbing_player,
+		"the reach lever gates the bite — zeroed, even the jaws cannot reach")
+	Tunables.reset("kraken_grab_reach")
+
+	# A CARCASS does not bite: an emptied pool stops the mouth with the swim.
+	kraken.shared_health = 0.0
+	var dead_drain: float = await _bite_drain(ai, p, jaws, 10)
+	_check(dead_drain == 0.0 and not ai.grabbing_player,
+		"a kraken CARCASS chews nobody — a dead mouth is just meat")
+
+	Tunables.reset_all()
+	p.queue_free()
+	kraken.queue_free()
+	await _step(3)
+
+
+## Run the kraken brain for `ticks` with the player pinned at `spot`, and return
+## how much health the mouth took. The pin is deliberate: the bite is the AI's
+## own damage, so holding the body still isolates it from walk/collision drift.
+func _bite_drain(ai: KrakenAI, p: Player, spot: Vector2, ticks: int) -> float:
+	p.health = p.max_health
+	p.velocity = Vector2.ZERO
+	ai.grabbing_player = false
+	var latched := false
+	for i in ticks:
+		p.global_position = spot
+		ai.tick(1.0 / 60.0, null)
+		latched = latched or ai.grabbing_player
+		await physics_frame
+	ai.grabbing_player = latched
+	return p.max_health - p.health
+
+
+## DEEP-SPAWN KEEP-OUT (owner follow-up 2026-08-24): krakens spawn in the deep,
+## which is where the island field is thickest, so the computed point could put a
+## 12,000-hp body inside rock. The probe+scatter is pure, so it is checked here
+## without booting the world.
+func _test_kraken_spawn_keeps_out_of_deep_rock() -> void:
+	_t("a kraken spawn buried in a deep island scatters clear; a clear one never moves")
+	var t := _make_terrain()  # scale 1: plain 16px cells
+	t.fill_rect(Rect2i(0, 0, 40, 40), TerrainDB.Type.OBSIDIAN)  # a deep island slab
+
+	var cells := {}
+	for x in 4:
+		for y in 3:
+			cells[Vector2i(x, y)] = BlockDB.Type.MEAT
+	var foot := WhaleSpawn.footprint_of(cells)
+	_check(foot.size == Vector2(4, 3) * Ship.CELL,
+		"the probe measures the whole 4x3 FOOTPRINT, not a point (%s)" % foot.size)
+
+	var buried := Vector2(10, 10) * Ship.CELL  # well inside the slab
+	_check(WhaleSpawn.footprint_blocked(t, buried, foot),
+		"the probe sees a body embedded in rock")
+	var moved := WhaleSpawn.clear_spawn_pos(t, buried, foot, 1.0)
+	_check(moved != buried, "so the spawn scatters off the island")
+	_check(not WhaleSpawn.footprint_blocked(t, moved, foot),
+		"and lands somewhere genuinely clear")
+	_check(WhaleSpawn.clear_spawn_pos(t, buried, foot, 1.0) == moved,
+		"deterministically — no RNG, so a seed still reproduces its world")
+
+	var open_air := Vector2(0.0, -8000.0)
+	_check(not WhaleSpawn.footprint_blocked(t, open_air, foot), "open air is not blocked")
+	_check(WhaleSpawn.clear_spawn_pos(t, open_air, foot, 1.0) == open_air,
+		"and a clear spawn is left exactly where it was — no gratuitous drift")
+
+	# BREAK THE FIX: with nothing to probe against (the keep-out disabled), the
+	# very same buried spawn comes straight back — the probe is what moves it.
+	_check(WhaleSpawn.clear_spawn_pos(null, buried, foot, 1.0) == buried,
+		"without the probe the kraken spawns inside the island, exactly as it used to")
+
+	t.queue_free()
+	await _step(2)
 
 
 ## RAM-MINING damage model (owner 2026-08-23, reverses the v0.36.0 no-suicide

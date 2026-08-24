@@ -28,9 +28,15 @@ extends WhaleAI
 ## (align to altitude, then shove) runs on sight.
 
 ## Continuous mouth-grab damage per second, applied to the prey cell nearest the
-## mouth while it is within GRAB_REACH. Small per frame, but "builds up fast" on a
-## latched target (a hull cell is 100 hp, so ~1 cell/second here). THE grab feel
-## knob; ram lethality stays PUSH_ACCEL (inherited).
+## mouth — or to the on-foot player standing in the jaws — while it is within
+## GRAB_REACH. Small per frame, but "builds up fast" on a latched target (a hull
+## cell is 100 hp, so ~1 cell/second here). THE grab feel knob; ram lethality
+## stays PUSH_ACCEL (inherited).
+##
+## Both grab constants are the DOCUMENTED DEFAULTS of F2 levers now
+## (`kraken_grab_dps` / `kraken_grab_reach`, group Combat) — the use sites read
+## Tunables.get_num, exactly as the inherited ram reads `whale_push_accel`. Keep
+## these values and the registry defaults in step: the parity checks compare them.
 const GRAB_DPS := 120.0
 ## How close the MOUTH must be to a prey cell to latch, unscaled px ×scale_unit.
 ## ~a few cells — a bite range, not a reach-across-the-screen grab.
@@ -45,6 +51,19 @@ const HUNT_RESTAMP_MS := 500.0
 var _mouth_local := Vector2.INF
 ## Read by tests/debug: was the mouth latched onto prey this tick?
 var grabbing := false
+
+## The ON-FOOT player, handed in by the world each tick (world._creature_swim).
+## Null when there is nobody, or while they are PILOTING — a pilot rides inside
+## the hull, and that hull is already the prey the mouth is chewing, so biting
+## them as well would double-bill one grab straight through the deck.
+##
+## Typed Node2D, not Player, for the same reason the base class took Node2D for
+## its ram target: the brain needs a position and a `take_damage`, nothing more,
+## and staying untyped here keeps the AI free of the player scene (a test can
+## stand in any node that answers both).
+var prey_player: Node2D = null
+## Read by tests/debug: did the mouth chew the on-foot player this tick?
+var grabbing_player := false
 
 
 func tick(delta: float, target: Node2D) -> void:
@@ -64,11 +83,15 @@ func tick(delta: float, target: Node2D) -> void:
 		_provoked_until = Time.get_ticks_msec() + HUNT_RESTAMP_MS
 	super.tick(delta, target)
 	# The mouth grab rides ON TOP of the inherited swim/ram: a living, wild kraken
-	# whose mouth has reached the prey chews it continuously.
+	# whose mouth has reached the prey chews it continuously. Two prey KINDS, one
+	# mouth: the block grid of a ship, and the PERSON standing in the jaws.
 	grabbing = false
-	if _is_alive() and not tamed and prey_ship != null and is_instance_valid(prey_ship) \
-			and not prey_ship.is_carcass():
+	grabbing_player = false
+	if not _is_alive() or tamed:
+		return
+	if prey_ship != null and is_instance_valid(prey_ship) and not prey_ship.is_carcass():
 		_mouth_grab(delta, prey_ship)
+	_mouth_grab_player(delta)
 
 
 ## A living creature (pool not yet empty). A carcass has drained its pool; the
@@ -84,7 +107,7 @@ func _is_alive() -> bool:
 func _mouth_grab(delta: float, target: Ship) -> void:
 	var mouth := _mouth_world()
 	var u := whale.scale_unit
-	var reach := GRAB_REACH * u
+	var reach := Tunables.get_num("kraken_grab_reach") * u
 	# Coarse gate: skip the per-cell scan unless the mouth is near the prey body at
 	# all (reach + the prey's own extent). solid_bounds is body-local px.
 	var coarse := reach + target.solid_bounds.size.length()
@@ -100,8 +123,29 @@ func _mouth_grab(delta: float, target: Ship) -> void:
 			best_d2 = d2
 			best_cell = cell
 	if best_d2 <= reach * reach:
-		target.net_damage_cell(best_cell, GRAB_DPS * delta)
+		target.net_damage_cell(best_cell, Tunables.get_num("kraken_grab_dps") * delta)
 		grabbing = true
+
+
+## The mouth chews PEOPLE too (owner follow-up 2026-08-24): stand in the jaws on
+## foot and the kraken eats YOU at the same GRAB_DPS a hull cell takes — the ram
+## can miss a person entirely (they are small and it plows past), so without this
+## the one continuous attack simply did not exist for anyone off a ship.
+##
+## Far cheaper than the ship grab: a person has no block grid, so this is one
+## distance test against the mouth point, no per-cell scan and no coarse gate.
+## `take_damage` is duck-typed rather than cast to Player — see `prey_player`.
+## (The tamed guard lives in tick(), shared with the ship grab, so the two bite
+## paths cannot drift apart; krakens are untameable, but the base class is not.)
+func _mouth_grab_player(delta: float) -> void:
+	if prey_player == null or not is_instance_valid(prey_player) \
+			or not prey_player.has_method("take_damage"):
+		return
+	var reach := Tunables.get_num("kraken_grab_reach") * whale.scale_unit
+	if (prey_player.global_position - _mouth_world()).length_squared() > reach * reach:
+		return
+	prey_player.take_damage(Tunables.get_num("kraken_grab_dps") * delta)
+	grabbing_player = true
 
 
 ## The mouth in WORLD space. Mirrors the authored point with the body's facing
@@ -142,25 +186,9 @@ func _compute_mouth_local() -> Vector2:
 	return (sum / float(n)) * Ship.CELL
 
 
-## Flood empty space inward from a border ring around the body: the air cells that
-## reach the outside. Used to tell the mouth opening from a sealed loot cavity.
+## The air cells that reach the outside — used to tell the mouth opening from the
+## sealed loot cavity. The flood itself lives on Ship now (Ship.exterior_air), so
+## the mouth finder and the cavity map (Ship.cavity_cells, its complement) can
+## never disagree about what "sealed" means.
 func _exterior_air() -> Dictionary:
-	var lo := Vector2i(1 << 30, 1 << 30)
-	var hi := Vector2i(-(1 << 30), -(1 << 30))
-	for cell in whale.blocks:
-		lo = Vector2i(mini(lo.x, cell.x), mini(lo.y, cell.y))
-		hi = Vector2i(maxi(hi.x, cell.x), maxi(hi.y, cell.y))
-	lo -= Vector2i.ONE
-	hi += Vector2i.ONE
-	var seen := {}
-	var stack: Array[Vector2i] = [lo]
-	while not stack.is_empty():
-		var c: Vector2i = stack.pop_back()
-		if seen.has(c) or whale.blocks.has(c):
-			continue
-		if c.x < lo.x or c.y < lo.y or c.x > hi.x or c.y > hi.y:
-			continue
-		seen[c] = true
-		for d in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
-			stack.append(c + d)
-	return seen
+	return whale.exterior_air()

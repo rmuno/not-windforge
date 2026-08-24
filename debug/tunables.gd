@@ -84,6 +84,10 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 1.2, "min": 0.1, "max": 5.0, "step": 0.1},         # world.ENEMY_FIRE_COOLDOWN
 	{"id": "flee_hull_fraction", "label": "Bandit flee hull fraction", "group": "Combat",
 		"kind": KIND_FLOAT, "default": 0.45, "min": 0.0, "max": 1.0, "step": 0.05},       # ShipAI.FLEE_HULL_FRACTION
+	{"id": "kraken_grab_dps", "label": "Kraken mouth-grab DPS", "group": "Combat",
+		"kind": KIND_FLOAT, "default": 120.0, "min": 0.0, "max": 1000.0, "step": 5.0},    # KrakenAI.GRAB_DPS
+	{"id": "kraken_grab_reach", "label": "Kraken mouth-grab reach (unscaled px)", "group": "Combat",
+		"kind": KIND_FLOAT, "default": 70.0, "min": 0.0, "max": 600.0, "step": 5.0},      # KrakenAI.GRAB_REACH
 	{"id": "impact_damage_threshold", "label": "Impact damage threshold", "group": "Combat",
 		"kind": KIND_FLOAT, "default": 20000.0, "min": 0.0, "max": 100000.0, "step": 1000.0},  # Ship.IMPACT_DAMAGE_THRESHOLD
 	{"id": "impact_damage_scale", "label": "Impact damage scale", "group": "Combat",

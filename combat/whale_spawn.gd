@@ -59,3 +59,76 @@ static func tint_for(path: String) -> Color:
 		if String(p["path"]) == path:
 			return p["tint"]
 	return Color.WHITE
+
+
+# --- Deep-spawn keep-out (2026-08-24) --------------------------------------
+#
+# Krakens spawn DEEP, and the deep is exactly where the island field is thickest,
+# so a computed spawn point can land INSIDE an island: a 12,000-hp body wedged in
+# rock, grinding on the collider from frame one. The player/ship spawn already had
+# a ±220-cell keep-out; creatures never did.
+#
+# The fix probes the body's would-be FOOTPRINT against the terrain and, if it is
+# in rock, walks a FIXED table of offsets until one is clear. Deliberately no
+# RandomNumberGenerator: the scatter must be a pure function of the blocked
+# position, or the same world seed would stop reproducing the same world.
+#
+# Pure statics (terrain + geometry in, a position out), so the whole keep-out is
+# unit-testable without booting the world — as with pick_plan above.
+
+## Unscaled px a try steps out, ×world_scale. Try `i` steps (i+1) of these in the
+## next cardinal direction, so eight tries sweep out to ~8 steps around the blocked
+## point — enough to clear a deep island — and the try ORDER is fixed forever.
+const SCATTER_STEP := 400.0
+const SCATTER_TRIES := 8
+## Right/up first: deep bodies are wider than they are tall, so sideways is the
+## cheapest way out, and up is the way OFF an island rather than deeper into it.
+const SCATTER_DIRS := [Vector2.RIGHT, Vector2.UP, Vector2.LEFT, Vector2.DOWN]
+
+
+## The body-local px AABB a cells dict occupies — the footprint the keep-out
+## probes. Matches Ship.local_pos_of (cell × CELL) and counts the far cell's own
+## width, so the rect covers the whole block rather than just its corner.
+static func footprint_of(cells: Dictionary) -> Rect2:
+	if cells.is_empty():
+		return Rect2()
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for cell in cells:
+		var c: Vector2i = cell
+		lo = Vector2i(mini(lo.x, c.x), mini(lo.y, c.y))
+		hi = Vector2i(maxi(hi.x, c.x), maxi(hi.y, c.y))
+	return Rect2(Vector2(lo) * Ship.CELL, Vector2(hi - lo + Vector2i.ONE) * Ship.CELL)
+
+
+## Is the footprint, placed at `pos`, in solid terrain? Samples the four CORNERS
+## plus the CENTRE — five cells, not the thousands the body covers, because this
+## runs once at spawn and only needs to catch "embedded in an island", not shave a
+## body past an overhang. No terrain (a bare test scene, a world still building)
+## means there is nothing to be blocked by.
+static func footprint_blocked(terrain: Terrain, pos: Vector2, foot: Rect2) -> bool:
+	if terrain == null or not is_instance_valid(terrain) \
+			or foot.size.x <= 0.0 or foot.size.y <= 0.0:
+		return false
+	var r := Rect2(pos + foot.position, foot.size)
+	for p in [r.position, r.position + Vector2(r.size.x, 0.0),
+			r.position + Vector2(0.0, r.size.y), r.end, r.get_center()]:
+		if terrain.is_solid(terrain.world_to_cell(p)):
+			return true
+	return false
+
+
+## `pos` if the footprint is clear there; otherwise the first scattered position
+## that IS clear. Falls back to `pos` when every try is blocked — better a bad
+## spawn than a missing kraken, and the caller cannot tell the two apart (both are
+## simply "where it went").
+static func clear_spawn_pos(terrain: Terrain, pos: Vector2, foot: Rect2,
+		scale: float) -> Vector2:
+	if not footprint_blocked(terrain, pos, foot):
+		return pos
+	for i in SCATTER_TRIES:
+		var dir: Vector2 = SCATTER_DIRS[i % SCATTER_DIRS.size()]
+		var candidate := pos + dir * SCATTER_STEP * scale * float(i + 1)
+		if not footprint_blocked(terrain, candidate, foot):
+			return candidate
+	return pos
