@@ -58,6 +58,26 @@ const PROMOTE_PER_CALL := 2
 ## nothing; at S every terrain cell is S× bigger on screen.
 var scale_unit := 1.0
 
+## TERRAIN RESOLUTION lever (owner 2026-08-24: "I want to try full 8x"). The
+## whole world is FEEL-INVARIANT in scale_unit (ratios preserved), so the "world
+## feels small/blocky" complaint was really terrain COARSENESS: a terrain cell
+## renders at CELL×scale_unit = 128 px while the player is ~144 px, so the player
+## is only ~1 terrain tile tall (vs ~9 SHIP-cells). SUBDIV divides the terrain
+## cell into SUBDIV× finer cells WITHOUT touching anything pixel-anchored (ships,
+## player, spawns — all key off world_scale/Ship.CELL, not terrain cells). At
+## SUBDIV=8 a terrain cell is 16 px and the player spans ~8 tiles (the owner's
+## Windforge 4×8 target).
+##
+## DEFAULT 1 = byte-identical to the old coarse world, so main merges safely and
+## nothing changes feel until the owner opts in. The world reads it from the
+## "terrain_subdiv" Tunable at generation time, so F2 → set it → R (reset world)
+## regenerates at the new resolution for a live A/B — and the perf gate (more,
+## smaller chunk NODES over the same px area) is judged on real hardware before
+## the default is bumped. It scales: cell_px (below), the generation cell
+## constants (IslandGen reads subdiv), the Cairn (EasterEggs), the ride-mining
+## reach, and the promote/demote radii (kept constant in PX — below).
+var subdiv := 1
+
 ## chunk_coord (Vector2i) -> PackedByteArray of CHUNK*CHUNK cell types.
 var _chunks := {}
 ## chunk_coord (Vector2i) -> live TerrainChunk node (the promoted view).
@@ -86,7 +106,7 @@ signal placed(peer_id: int, cell: Vector2i, type: int)
 
 
 func cell_px() -> float:
-	return TerrainDB.CELL * scale_unit
+	return TerrainDB.CELL * scale_unit / float(maxi(subdiv, 1))
 
 
 func chunk_px() -> float:
@@ -163,11 +183,73 @@ func set_cell(cell: Vector2i, type: int) -> void:
 		(_live[ch] as TerrainChunk).rebuild()
 
 
+## Paint one horizontal RUN of cells [x0..x1] (inclusive) on row `y` — the bulk
+## generation primitive. Behaviour-identical to per-cell set_cell, but pays the
+## chunk lookup ONCE per chunk-span instead of once per cell: at terrain SUBDIV 8
+## generation writes ~64× more cells (millions), and per-cell set_cell's
+## dictionary hop per byte turned world build into a multi-second stall. The
+## inner loop is a bare indexed byte store.
+func fill_row(x0: int, x1: int, y: int, type: int) -> void:
+	if x1 < x0:
+		return
+	var x := x0
+	while x <= x1:
+		var ch := _chunk_of(Vector2i(x, y))
+		var chunk_end := (ch.x + 1) * CHUNK - 1  # last cell x inside this chunk
+		var xe := mini(x1, chunk_end)
+		if not _chunks.has(ch):
+			if type == TerrainDB.Type.AIR:
+				x = xe + 1
+				continue  # writing air into an absent chunk stays a no-op
+			var arr := PackedByteArray()
+			arr.resize(CHUNK * CHUNK)  # resize zero-fills → all AIR
+			_chunks[ch] = arr
+		var a: PackedByteArray = _chunks[ch]
+		# Row-local base index: (local y) * CHUNK − chunk-origin x, so the store
+		# below is base + world-x with no further arithmetic per cell.
+		var base := (y - ch.y * CHUNK) * CHUNK - ch.x * CHUNK
+		for xi in range(x, xe + 1):
+			a[base + xi] = type
+		_chunks[ch] = a
+		if _live.has(ch):
+			(_live[ch] as TerrainChunk).rebuild()
+		x = xe + 1
+
+
+## Overwrite the VERTICAL run [y0..y1] of column `x` with `type`, but only the
+## cells that are already SOLID — the island CAP's primitive (topsoil written
+## over the body where the wobbled edge actually has body). One chunk lookup per
+## chunk-span instead of an is_solid + set_cell pair per cell: the cap was the
+## second-largest per-cell cost of subdiv-8 generation.
+func overwrite_col_where_solid(x: int, y0: int, y1: int, type: int) -> void:
+	if y1 < y0:
+		return
+	var y := y0
+	while y <= y1:
+		var ch := _chunk_of(Vector2i(x, y))
+		var chunk_end := (ch.y + 1) * CHUNK - 1
+		var ye := mini(y1, chunk_end)
+		if not _chunks.has(ch):
+			y = ye + 1
+			continue  # nothing solid in an absent chunk — nothing to overwrite
+		var a: PackedByteArray = _chunks[ch]
+		var lx := x - ch.x * CHUNK
+		for yi in range(y, ye + 1):
+			var idx := (yi - ch.y * CHUNK) * CHUNK + lx
+			if TerrainDB.is_solid(a[idx]):
+				a[idx] = type
+		_chunks[ch] = a
+		if _live.has(ch):
+			(_live[ch] as TerrainChunk).rebuild()
+		y = ye + 1
+
+
 ## Paint a solid rectangle of cells [cell_rect) — the generation primitive.
+## Row-span backed (fill_row), so a big fill costs chunk lookups per chunk-span,
+## not per cell.
 func fill_rect(cell_rect: Rect2i, type: int) -> void:
 	for y in range(cell_rect.position.y, cell_rect.end.y):
-		for x in range(cell_rect.position.x, cell_rect.end.x):
-			set_cell(Vector2i(x, y), type)
+		fill_row(cell_rect.position.x, cell_rect.end.x - 1, y, type)
 
 
 # --- The destructible seam (the ONLY hook mining needs) -------------------
@@ -388,11 +470,19 @@ func update_streaming(foci: Array) -> void:
 	# frames instead of hitching one frame (see PROMOTE_PER_CALL). The candidate
 	# set is recomputed each call, so a still focus drains it K per frame until
 	# it is fully promoted; no persistent queue to keep in sync.
+	# The radii are in CHUNKS, but a chunk shrinks by SUBDIV in px (cell_px does),
+	# so scaling them by subdiv keeps the promotion range constant in PX — the
+	# player always has the same physical distance of terrain promoted around them
+	# (colliders never pop in late), it is just split across SUBDIV²× more, smaller
+	# chunk nodes. That extra node/collider count over the same area is the perf
+	# cost the SUBDIV gate weighs (see `subdiv`).
+	var promote_r := PROMOTE_RADIUS * maxi(subdiv, 1)
+	var demote_r := DEMOTE_RADIUS * maxi(subdiv, 1)
 	var candidates: Array = []
 	var seen := {}
 	for fc in focus_chunks:
-		for dy in range(-PROMOTE_RADIUS, PROMOTE_RADIUS + 1):
-			for dx in range(-PROMOTE_RADIUS, PROMOTE_RADIUS + 1):
+		for dy in range(-promote_r, promote_r + 1):
+			for dx in range(-promote_r, promote_r + 1):
 				var c := fc + Vector2i(dx, dy)
 				if seen.has(c):
 					continue
@@ -415,7 +505,7 @@ func update_streaming(foci: Array) -> void:
 	for c in _live:
 		var keep := false
 		for fc in focus_chunks:
-			if maxi(absi(c.x - fc.x), absi(c.y - fc.y)) <= DEMOTE_RADIUS:
+			if maxi(absi(c.x - fc.x), absi(c.y - fc.y)) <= demote_r:
 				keep = true
 				break
 		if not keep:

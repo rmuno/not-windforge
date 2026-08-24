@@ -106,17 +106,23 @@ func _draw_fog_and_land(mr: Array, map_area: Rect2, font: Font) -> void:
 	draw_rect(map_area, Color(0.12, 0.13, 0.16, 0.78))
 
 	var cp := 16.0
+	var sub := 1
 	if terrain != null:
 		cp = terrain.cell_px()
-	# One map-cell == one terrain chunk (MapDiscovery.cell_px is set to chunk_px).
-	var chunk_px := float(Terrain.CHUNK) * cp
+		sub = maxi(terrain.subdiv, 1)
+	# One map-cell == one COARSE chunk (MapDiscovery.cell_px = chunk_px×subdiv):
+	# constant PX granularity at any terrain resolution. Fine chunks bucket DOWN
+	# to this grid below, so "has land" stays one dictionary hit per map cell.
+	var chunk_px := float(Terrain.CHUNK) * cp * float(sub)
 	var cell_screen := chunk_px * float(mr[2])
 
-	# Which chunks hold land.
+	# Which map cells hold land (fine chunk coords ÷ subdiv, floor toward −∞ so
+	# the bucket grid is correct across the origin).
 	var land := {}
 	if terrain != null:
 		for c in terrain.chunk_coords():
-			land[c] = true
+			var fc: Vector2i = c
+			land[Vector2i(floori(float(fc.x) / sub), floori(float(fc.y) / sub))] = true
 
 	# Lift the fog on discovered cells, and blip any that hold land.
 	if discovery != null:

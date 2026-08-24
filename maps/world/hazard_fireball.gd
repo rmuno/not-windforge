@@ -88,10 +88,20 @@ func _impact(hit: Dictionary) -> void:
 		var cell := ship.cell_at_global(at + into * Ship.CELL * 0.4)
 		ship.net_damage_cell(cell, damage)
 	elif terrain != null:
-		# Ground: dig the struck cell through the mining seam (net_dig — authority
-		# owns terrain edits). The inward nudge lands the contact in the solid cell.
+		# Ground: dig the struck COARSE-CELL crater through the mining seam
+		# (net_dig — authority owns terrain edits). At terrain subdiv S the
+		# struck fine cell is 1/S² of the old crater, so the strike clears the
+		# whole coarse footprint containing it — the same pixel crater at any
+		# resolution (one fine cell at subdiv 1, the old behaviour). The inward
+		# nudge lands the contact in the solid cell.
 		var cell := terrain.world_to_cell(at + into * terrain.cell_px() * 0.4)
-		terrain.net_dig(cell)
+		var s: int = maxi(terrain.subdiv, 1)
+		var o := Vector2i(floori(float(cell.x) / s) * s, floori(float(cell.y) / s) * s)
+		for dy in s:
+			for dx in s:
+				var c := o + Vector2i(dx, dy)
+				if terrain.is_solid(c):
+					terrain.net_dig(c)
 	queue_free()
 
 

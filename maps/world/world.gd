@@ -252,10 +252,13 @@ func _ready() -> void:
 	# toggle. See maps/world/hud_layer.gd, map_view.gd, map_discovery.gd.
 	_discovery = MapDiscovery.new()
 	if terrain != null:
-		# One map-cell == one terrain chunk, so "does this region hold land?" is a
-		# chunk lookup; reveal a generous few chunks around each focus.
-		_discovery.cell_px = terrain.chunk_px()
-		_discovery.reveal_radius = terrain.chunk_px() * 2.5
+		# One map-cell == one COARSE terrain chunk. ×subdiv keeps the map-cell a
+		# constant PX size at any terrain resolution (at subdiv 8 a raw chunk is
+		# 8× smaller, and per-chunk map cells would octuple the fog granularity
+		# and the draw cost); "does this region hold land?" buckets fine chunks
+		# down to this grid in MapView.
+		_discovery.cell_px = terrain.chunk_px() * terrain.subdiv
+		_discovery.reveal_radius = terrain.chunk_px() * terrain.subdiv * 2.5
 
 	var layer := CanvasLayer.new()
 
@@ -966,6 +969,12 @@ func _build_generated_terrain() -> void:
 	terrain = Terrain.new()
 	terrain.name = "Terrain"
 	terrain.scale_unit = float(world_scale)
+	# TERRAIN RESOLUTION (owner 2026-08-23: "I want to try full 8x"): SUBDIV
+	# divides the terrain cell so the player spans ~8 tiles (Windforge
+	# proportions) instead of ~1. Read ONCE at world build — F2 → change the
+	# lever → R regenerates at the new resolution (a live A/B). Everything
+	# pixel-anchored (ships, spawns, reach) is untouched; see Terrain.subdiv.
+	terrain.subdiv = maxi(1, Tunables.get_int("terrain_subdiv"))
 	add_child(terrain)
 	# The authority emits `dug` when a cell is mined; the world credits the
 	# miner's inventory and pops a pickup float. One connection for the life of
@@ -1843,10 +1852,14 @@ func ride_mine_pulse() -> int:
 		dir = creature.linear_velocity
 	if dir.length() < 0.1:
 		return 0
+	# Reach and breadth-pad are OWNER LEVERS in coarse cells — ×subdiv keeps the
+	# swath's PIXEL depth/padding constant at any terrain resolution (the whale's
+	# own cross-section already comes out in fine cells via cell_px).
 	var cells := RideMining.front_cells(
 		creature.to_global(creature.solid_bounds.get_center()),
 		creature.solid_bounds.size * 0.5, dir, terrain.cell_px(),
-		Tunables.get_int("whale_mine_reach"), Tunables.get_int("whale_mine_breadth"))
+		Tunables.get_int("whale_mine_reach") * terrain.subdiv,
+		Tunables.get_int("whale_mine_breadth") * terrain.subdiv)
 	var dug := 0
 	for cell in cells:
 		if terrain.is_solid(cell):
@@ -2428,6 +2441,51 @@ var _held_material: int = TerrainDB.Type.DIRT
 ## the seam the economy grows on, not a recipe tree.
 var _recipe_index := 0
 
+# --- The SCOOP (terrain SUBDIV — one bite = one coarse cell) ----------------
+#
+# At terrain subdiv S every old cell is S×S fine cells. Mining and placing keep
+# their OLD granularity and economy by operating in SCOOPS — the coarse-cell
+# footprint containing the aimed fine cell: one completed cut digs the whole
+# scoop, one placement paints it, and the credit/debit accumulators below turn
+# S² fine cells into exactly ONE item either way. At subdiv 1 a scoop is a
+# single cell and every accumulator step fires immediately — bit-for-bit the
+# old behaviour. (An ITEM therefore stays "one coarse cell of material": no 64×
+# inflation of the mining economy, recipes and trade values keep their meaning.)
+
+## Fine-cell origin (top-left) of the scoop containing `cell`.
+func _scoop_origin(cell: Vector2i) -> Vector2i:
+	var s := terrain.subdiv
+	return Vector2i(floori(float(cell.x) / s) * s, floori(float(cell.y) / s) * s)
+
+
+## Every fine cell of the scoop containing `cell`.
+func _scoop_cells(cell: Vector2i) -> Array:
+	var o := _scoop_origin(cell)
+	var s := terrain.subdiv
+	var out: Array = []
+	for dy in s:
+		for dx in s:
+			out.append(o + Vector2i(dx, dy))
+	return out
+
+
+## Dig-time threshold for a scoop: the hardest SOLID cell in it (uniform scoops
+## — the common case — behave exactly like the old single cell).
+func _scoop_max_hp(cell: Vector2i) -> float:
+	var hp := 0.0
+	for sc in _scoop_cells(cell):
+		var t := terrain.cell_type(sc)
+		if TerrainDB.is_solid(t):
+			hp = maxf(hp, TerrainDB.max_hp(t))
+	return maxf(hp, 1.0)
+
+
+## Fine cells accumulated toward one ITEM, keyed Vector2i(peer_id, type) —
+## dig credit and place debit kept separately. Remainders persist, so partial
+## scoops (island edges) are never lost, just carried to the next dig.
+var _dig_credit := {}
+var _place_debt := {}
+
 
 func _handle_mining(delta: float) -> void:
 	if player == null or not is_instance_valid(player) or player.is_piloting() \
@@ -2468,21 +2526,27 @@ func try_mine(target_cell: Vector2i, delta: float) -> bool:
 		_mine_reset()
 		return false
 
-	# Commit to one cell: switching to a new cell — or away from a harvest —
-	# restarts the cut.
-	if not _mine_active or _harvest_ship != null or target_cell != _mine_cell:
-		_mine_cell = target_cell
+	# Commit to one SCOOP (the coarse-cell footprint — one fine cell at subdiv
+	# 1): the anchor is the scoop origin, so the cursor wandering within the
+	# same scoop keeps its progress, and moving to a new scoop — or away from a
+	# harvest — restarts the cut.
+	var anchor := _scoop_origin(target_cell)
+	if not _mine_active or _harvest_ship != null or anchor != _mine_cell:
+		_mine_cell = anchor
 		_mine_progress = 0.0
 		_mine_active = true
 		_harvest_ship = null
 
 	# BRAWN (Strong Arm / Quarryman / Juggernaut): dig speed scales with the perk.
 	_mine_progress += Tunables.get_num("mine_power") * _mine_speed_mult() * delta
-	if _mine_progress >= TerrainDB.max_hp(terrain.cell_type(target_cell)):
+	if _mine_progress >= _scoop_max_hp(target_cell):
 		# The dig is authority-owned (mirrors Ship.net_damage_cell): single-
-		# player / server digs now and `dug` credits us; a client forwards the
-		# request. Reset either way — a completed cut starts fresh on the next.
-		terrain.net_dig(target_cell, _my_id())
+		# player / server digs now and `dug` credits us (S² fine cells → one
+		# item via the scoop accumulator); a client forwards each request.
+		# Reset either way — a completed cut starts fresh on the next.
+		for sc in _scoop_cells(target_cell):
+			if terrain.is_solid(sc):
+				terrain.net_dig(sc, _my_id())
 		_mine_progress = 0.0
 		_mine_active = false
 		return true
@@ -2702,6 +2766,16 @@ func balloons_to_draw() -> Array:
 ## miner is always the local player. (Replicating the credit + the terrain edit
 ## to a requesting client is deferred networked-terrain work — see Terrain.)
 func _on_terrain_dug(peer_id: int, cell: Vector2i, type: int) -> void:
+	# SCOOP accumulator: S² fine cells of a material = ONE item (see "The
+	# SCOOP"). At subdiv 1 the threshold is 1 and every dug cell credits
+	# immediately — the old behaviour exactly. The pickup float pops only when
+	# an item actually lands, so a scoop reads "+1 Stone", not 64 sparks.
+	var sub2 := terrain.subdiv * terrain.subdiv
+	var key := Vector2i(peer_id, type)
+	_dig_credit[key] = int(_dig_credit.get(key, 0)) + 1
+	if _dig_credit[key] < sub2:
+		return
+	_dig_credit[key] = int(_dig_credit[key]) - sub2
 	var who: Player = _placer_for(peer_id)
 	if who != null:
 		who.inventory.add(type)
@@ -2711,11 +2785,17 @@ func _on_terrain_dug(peer_id: int, cell: Vector2i, type: int) -> void:
 
 
 ## The authority PLACED `cell` (type) on behalf of `peer_id` — the inverse of a
-## dig. Debit ONE of that material from the placer (the terrain edit already
-## happened; this spends the item that became the block) and pop a "-1" float.
-## (Replicating the debit + the terrain edit to a requesting client is deferred
-## networked-terrain work — see Terrain.)
+## dig. Debit ONE of that material per S² fine cells (the scoop accumulator,
+## symmetric with the dig credit; at subdiv 1 that is every cell) and pop a
+## "-1" float when the debit lands. (Replicating the debit + the terrain edit
+## to a requesting client is deferred networked-terrain work — see Terrain.)
 func _on_terrain_placed(peer_id: int, cell: Vector2i, type: int) -> void:
+	var sub2 := terrain.subdiv * terrain.subdiv
+	var key := Vector2i(peer_id, type)
+	_place_debt[key] = int(_place_debt.get(key, 0)) + 1
+	if _place_debt[key] < sub2:
+		return
+	_place_debt[key] = int(_place_debt[key]) - sub2
 	var who: Player = _placer_for(peer_id)
 	if who != null:
 		who.inventory.remove(type, 1)
@@ -2749,11 +2829,16 @@ func mine_target() -> Variant:
 		return null
 	var in_reach := _cell_in_reach(cell)
 	var cp := terrain.cell_px()
-	var origin := terrain.to_global(Vector2(cell) * cp)
+	# The highlight is the SCOOP footprint (one coarse cell — S×S fine cells),
+	# matching exactly what a completed cut digs. At subdiv 1 this is the old
+	# single-cell rect.
+	var anchor := _scoop_origin(cell)
+	var side := cp * float(terrain.subdiv)
+	var origin := terrain.to_global(Vector2(anchor) * cp)
 	var progress := 0.0
-	if in_reach and _mine_active and _harvest_ship == null and cell == _mine_cell:
-		progress = clampf(_mine_progress / TerrainDB.max_hp(terrain.cell_type(cell)), 0.0, 1.0)
-	return [Rect2(origin, Vector2(cp, cp)), progress, in_reach]
+	if in_reach and _mine_active and _harvest_ship == null and anchor == _mine_cell:
+		progress = clampf(_mine_progress / _scoop_max_hp(cell), 0.0, 1.0)
+	return [Rect2(origin, Vector2(side, side)), progress, in_reach]
 
 
 # --- Placement (the inverse of mining) -------------------------------------
@@ -2794,9 +2879,17 @@ func try_place(target_cell: Vector2i) -> bool:
 		return false  # out of reach (the break-the-fix gate)
 	if terrain.is_solid(target_cell):
 		return false  # occupied — mine it first
-	# Authority writes the cell and `placed` debits the item; a client forwards
-	# the request and its debit is deferred (networked terrain, see Terrain).
-	return terrain.net_place(target_cell, mat, _my_id())
+	# Paint the whole SCOOP (the coarse-cell footprint — one fine cell at
+	# subdiv 1): the authority writes each empty fine cell and `placed` debits
+	# via the scoop accumulator, so a full scoop costs exactly ONE item — the
+	# inverse of the dig credit. Cells already solid inside the scoop are left
+	# alone (a partial paint accrues partial debt, carried forward).
+	var wrote := false
+	for sc in _scoop_cells(target_cell):
+		if not terrain.is_solid(sc):
+			if terrain.net_place(sc, mat, _my_id()):
+				wrote = true
+	return wrote
 
 
 ## The material the place action will actually lay down: the held one if the
@@ -2842,11 +2935,14 @@ func place_target() -> Variant:
 		return null
 	var cell := terrain.world_to_cell(get_global_mouse_position())
 	var cp := terrain.cell_px()
-	var origin := terrain.to_global(Vector2(cell) * cp)
+	# The ghost is the SCOOP footprint — what try_place actually paints.
+	var anchor := _scoop_origin(cell)
+	var side := cp * float(terrain.subdiv)
+	var origin := terrain.to_global(Vector2(anchor) * cp)
 	var mat := _held_placeable()
 	var legal := mat != TerrainDB.Type.AIR and player.inventory.count(mat) > 0 \
 		and _cell_in_reach(cell) and not terrain.is_solid(cell)
-	return [Rect2(origin, Vector2(cp, cp)), legal]
+	return [Rect2(origin, Vector2(side, side)), legal]
 
 
 # --- Crafting --------------------------------------------------------------

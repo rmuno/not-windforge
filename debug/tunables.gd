@@ -95,6 +95,9 @@ const _REGISTRY := [
 		"note": "next spawn"},                                    # Ship physics_material_override.bounce
 
 	# --- World (hazards, mining, repair) -------------------------------------
+	{"id": "terrain_subdiv", "label": "Terrain resolution (x finer; R regenerates)", "group": "World",
+		"kind": KIND_INT, "default": 8, "min": 1, "max": 8, "step": 1,
+		"note": "on world reset"},  # Terrain.subdiv — FULL 8x is the owner-approved default (player ~8 tiles tall); 1 = the legacy coarse world. Read at world BUILD only.
 	{"id": "mine_power", "label": "Mining power (hp/s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 240.0, "min": 10.0, "max": 2000.0, "step": 10.0},  # world.MINE_POWER
 	{"id": "mine_reach_cells", "label": "Mining reach (cells)", "group": "World",

@@ -70,10 +70,33 @@ const POCKET_FRAC := 0.42
 const SPAWN_CLEAR := 220
 
 
+## The world cell rect at a given terrain SUBDIV. At subdiv=1 this is WORLD_CELLS
+## (the coarse world). At subdiv=S it is S× bigger in CELLS but the SAME PX extent
+## (cell_px shrinks by S), so the world occupies the same space at finer detail.
+## world.gd frames its boundary walls with this so the wall px never move.
+static func world_cells(sub: int) -> Rect2i:
+	var s := maxi(sub, 1)
+	return Rect2i(WORLD_CELLS.position * s, WORLD_CELLS.size * s)
+
+
 ## Fill `terrain` with the seeded, banded world. `world` is the cell rect to
-## populate (defaults to WORLD_CELLS); `seed` selects the world.
+## populate (defaults to the subdiv-scaled WORLD_CELLS); `seed` selects the world.
+## Every cell CONSTANT below is multiplied by the terrain's SUBDIV so the islands
+## keep their pixel size and position while gaining SUBDIV× finer detail — and the
+## RNG stream draws the identical count of values at any subdiv (the candidate
+## lattice count is world/SPACING, both ×SUBDIV, so it is invariant), which means
+## the subdiv=8 world is literally the subdiv=1 world at 8× resolution.
 static func generate(terrain: Terrain, seed_value: int = DEFAULT_SEED,
-		world: Rect2i = WORLD_CELLS) -> void:
+		world: Rect2i = Rect2i()) -> void:
+	var sub := maxi(terrain.subdiv, 1)
+	if world.size == Vector2i.ZERO:
+		world = world_cells(sub)
+	var spacing := SPACING * sub
+	var jitter := JITTER * sub
+	var r_min := R_MIN * sub
+	var r_max := R_MAX * sub
+	var spawn_clear := SPAWN_CLEAR * sub
+
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_value
 
@@ -87,7 +110,7 @@ static func generate(terrain: Terrain, seed_value: int = DEFAULT_SEED,
 	# Guaranteed solid ground under SHIP_START (origin), placed first so nothing
 	# below overwrites it. Kept within the old hand-placed floor's footprint so
 	# the startup/mining checks keep their known solid cells.
-	_spawn_floor(terrain)
+	_spawn_floor(terrain, sub)
 
 	# Walk the candidate lattice in a fixed order. Every candidate draws the SAME
 	# number of RNG values whether or not it ends up placing an island, so the
@@ -96,16 +119,16 @@ static func generate(terrain: Terrain, seed_value: int = DEFAULT_SEED,
 	while gx < world.end.x:
 		var gy := world.position.y
 		while gy < world.end.y:
-			var cx := gx + rng.randi_range(-JITTER, JITTER)
-			var cy := gy + rng.randi_range(-JITTER, JITTER)
+			var cx := gx + rng.randi_range(-jitter, jitter)
+			var cy := gy + rng.randi_range(-jitter, jitter)
 			var place_roll := rng.randf()
-			var radius := rng.randi_range(R_MIN, R_MAX)
+			var radius := rng.randi_range(r_min, r_max)
 			var shape_seed := rng.randi()
-			gy += SPACING
+			gy += spacing
 
 			var centre := Vector2i(cx, cy)
 			# Spawn keep-out: leave the starting neighbourhood as clear sky.
-			if maxi(absi(cx), absi(cy)) <= SPAWN_CLEAR:
+			if maxi(absi(cx), absi(cy)) <= spawn_clear:
 				continue
 			# NONE in the vertical wind columns — and never let a body spill in.
 			if _touches_wind_column(cx, radius, cp):
@@ -113,8 +136,8 @@ static func generate(terrain: Terrain, seed_value: int = DEFAULT_SEED,
 			var band := Airspace.band_at(Vector2(centre) * cp)
 			if place_roll > _band_density(band):
 				continue
-			_place_island(terrain, centre, radius, band, shape_seed)
-		gx += SPACING
+			_place_island(terrain, centre, radius, band, shape_seed, sub)
+		gx += spacing
 
 	Airspace.bounds = prev_bounds
 
@@ -159,46 +182,69 @@ static func _touches_wind_column(cx: int, radius: int, cp: float) -> bool:
 ## per-cell noise); cap and pocket only overwrite interior body cells, so
 ## connectivity is preserved.
 static func _place_island(terrain: Terrain, centre: Vector2i, radius: int,
-		band: int, shape_seed: int) -> void:
+		band: int, shape_seed: int, sub: int = 1) -> void:
 	var mats := TerrainDB.band_materials(band)
 	var rx := radius
-	var ry := maxi(3, int(round(radius * 0.7)))   # flatter than wide — an island
+	var ry := maxi(3 * sub, int(round(radius * 0.7)))   # flatter than wide — an island
 	var body: int = mats["body"]
 
 	# BODY: every cell inside the ellipse. A little deterministic edge wobble
 	# (from shape_seed) roughens the outline without ever breaking the interior.
+	#
+	# ROW SPANS, exact (the SUBDIV-8 fast path): the wobble is bounded ±0.10, so
+	# a cell with n² ≤ 0.9 is inside for EVERY wobble value and one with n² > 1.1
+	# is outside for every wobble value. Each row fills its guaranteed-interior
+	# run in one fill_row (no per-cell chunk lookups — at subdiv 8 the body is
+	# ~64× more cells and per-cell set_cell made world build a multi-second
+	# stall) and walks ONLY the thin wobble band per cell. The produced cell set
+	# is IDENTICAL to the per-cell rule.
 	for dy in range(-ry, ry + 1):
-		for dx in range(-rx, rx + 1):
-			var nx := float(dx) / float(rx)
-			var ny := float(dy) / float(ry)
-			var wobble := 0.10 * sin(float(shape_seed % 17) + float(dx) * 0.7 + float(dy) * 0.9)
-			if nx * nx + ny * ny <= 1.0 - wobble:
-				terrain.set_cell(centre + Vector2i(dx, dy), body)
+		var ny := float(dy) / float(ry)
+		var ny2 := ny * ny
+		if ny2 > 1.1:
+			continue  # the whole row is guaranteed outside
+		var dx_in := int(floor(float(rx) * sqrt(maxf(0.0, 0.9 - ny2))))
+		var dx_out := mini(rx, int(floor(float(rx) * sqrt(maxf(0.0, 1.1 - ny2)))))
+		if dx_in > 0:
+			terrain.fill_row(centre.x - dx_in, centre.x + dx_in, centre.y + dy, body)
+		# The wobble band: the exact per-cell test, both signs of dx (dx=0 only
+		# when there is no interior run at all, so it is never written twice).
+		for adx in range(dx_in + 1 if dx_in > 0 else 0, dx_out + 1):
+			var signs: Array = [adx, -adx] if adx > 0 else [0]
+			for sdx in signs:
+				var dx := int(sdx)
+				var nx := float(dx) / float(rx)
+				var wobble := 0.10 * sin(float(shape_seed % 17) + float(dx) * 0.7 + float(dy) * 0.9)
+				if nx * nx + ny2 <= 1.0 - wobble:
+					terrain.set_cell(centre + Vector2i(dx, dy), body)
 
 	# CAP: the top row(s) of each column get the surface material (topsoil look).
+	# Per-column vertical runs through overwrite_col_where_solid — one chunk
+	# lookup per run instead of an is_solid+set_cell pair per cell (the cap was
+	# the second-largest cost of subdiv-8 generation). Same cells, same result:
+	# only already-solid body cells are overwritten, so the wobbled edge is
+	# respected exactly as before.
 	var cap: int = mats["cap"]
-	var cap_rows := 2 if radius >= 9 else 1
+	var cap_rows := (2 if radius >= 9 * sub else 1) * sub
 	for dx in range(-rx, rx + 1):
 		var nx := float(dx) / float(rx)
 		if absf(nx) > 1.0:
 			continue
 		var top := int(floor(float(ry) * sqrt(maxf(0.0, 1.0 - nx * nx))))
-		for k in cap_rows:
-			var c := centre + Vector2i(dx, -top + k)
-			if terrain.is_solid(c):
-				terrain.set_cell(c, cap)
+		terrain.overwrite_col_where_solid(centre.x + dx,
+			centre.y - top, centre.y - top + cap_rows - 1, cap)
 
 	# POCKET: the ore/exotic core, buried below the island's midline so it is
-	# genuinely enclosed by the body (a reason to dig in).
+	# genuinely enclosed by the body (a reason to dig in). Row spans, and no
+	# per-cell is_solid: the pocket's whole disc lies within the body's
+	# GUARANTEED interior (worst-case normalized extent (0.42)² + (0.30+0.42)²
+	# ≈ 0.69 < 0.9, inside for every wobble), so the body cell always exists.
 	var pocket: int = mats["pocket"]
 	var pr := maxi(1, int(round(minf(rx, ry) * POCKET_FRAC)))
 	var pcentre := centre + Vector2i(0, int(round(ry * 0.3)))
 	for dy in range(-pr, pr + 1):
-		for dx in range(-pr, pr + 1):
-			if dx * dx + dy * dy <= pr * pr:
-				var c := pcentre + Vector2i(dx, dy)
-				if terrain.is_solid(c):   # only carve pocket where the body exists
-					terrain.set_cell(c, pocket)
+		var half := int(floor(sqrt(float(pr * pr - dy * dy))))
+		terrain.fill_row(pcentre.x - half, pcentre.x + half, pcentre.y + dy, pocket)
 
 
 ## Guaranteed starting ground under SHIP_START (~origin). A strict SUBSET of the
@@ -206,7 +252,7 @@ static func _place_island(terrain: Terrain, centre: Vector2i, radius: int,
 ## pilot/startup/mining checks keep their known solid cells: (0,8) is dirt,
 ## (6,9) is solid, and the belly-drop lands on it. Dirt cap over a stone body,
 ## with a starter ore pocket to dig.
-static func _spawn_floor(terrain: Terrain) -> void:
-	terrain.fill_rect(Rect2i(-96, 8, 192, 12), TerrainDB.Type.STONE)
-	terrain.fill_rect(Rect2i(-96, 8, 192, 2), TerrainDB.Type.DIRT)
-	terrain.fill_rect(Rect2i(-6, 13, 12, 4), TerrainDB.Type.ORE)
+static func _spawn_floor(terrain: Terrain, sub: int = 1) -> void:
+	terrain.fill_rect(Rect2i(-96 * sub, 8 * sub, 192 * sub, 12 * sub), TerrainDB.Type.STONE)
+	terrain.fill_rect(Rect2i(-96 * sub, 8 * sub, 192 * sub, 2 * sub), TerrainDB.Type.DIRT)
+	terrain.fill_rect(Rect2i(-6 * sub, 13 * sub, 12 * sub, 4 * sub), TerrainDB.Type.ORE)

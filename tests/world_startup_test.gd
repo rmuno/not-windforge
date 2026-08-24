@@ -185,8 +185,20 @@ func _initialize() -> void:
 	# world (world._build_generated_terrain plants it). Catches removal of the call
 	# — the unit suite plants it itself and would miss that regression.
 	var terr0 = world.get("terrain")
-	_ok(terr0 != null and terr0.is_solid(EasterEggs.CAIRN_CELL),
+	_ok(terr0 != null and terr0.is_solid(EasterEggs.cairn_cell_for(terr0)),
 		"the secret Cairn is present in the real generated world")
+
+	# TERRAIN RESOLUTION (owner: full 8× — "player ~8 tiles tall"). The default
+	# world generates at subdiv 8: a terrain cell renders at CELL×scale/8 px, so
+	# the ~1.2-cell-tall player of the coarse world now spans ~8+ terrain tiles.
+	# THE break-the-fix pin for the whole resolution round.
+	if terr0 != null:
+		var p_h: float = world.player.SIZE.y * world.player.scale.y \
+			if world.player != null else 0.0
+		var tiles: float = p_h / terr0.cell_px() if terr0.cell_px() > 0.0 else 0.0
+		_ok(terr0.subdiv == 8, "the default world generates at terrain subdiv 8")
+		_ok(tiles >= 6.0,
+			"the player spans ~8 terrain tiles (%.1f) — the world reads Windforge-proportioned" % tiles)
 
 	# The character sheet (K) is hidden by default and toggles like the map/help.
 	var sheet = world.get("_character_sheet")
@@ -230,7 +242,8 @@ func _check_mining(world: Node) -> void:
 		pl.disembark()
 
 	# A known cell of the generated floor (top row is dirt). Solid to start.
-	var cell := Vector2i(0, 8)
+	# COARSE coordinate ×subdiv: the same physical spot at any terrain resolution.
+	var cell: Vector2i = Vector2i(0, 8) * int(terr.subdiv)
 	_ok(terr.is_solid(cell), "the generated floor has a solid cell to mine")
 	var type: int = terr.cell_type(cell)
 	var before: int = pl.inventory.count(type)
@@ -261,7 +274,7 @@ func _check_mining(world: Node) -> void:
 
 	# Reach gate (break-the-fix target): a solid cell far out of reach is not
 	# mined even with a long hold that would otherwise complete instantly.
-	var far := Vector2i(6, 9)
+	var far: Vector2i = Vector2i(6, 9) * int(terr.subdiv)
 	_ok(terr.is_solid(far), "a second solid cell exists to test reach")
 	var far_type: int = terr.cell_type(far)
 	var far_before: int = pl.inventory.count(far_type)
@@ -290,8 +303,8 @@ func _check_placing(world: Node) -> void:
 	pl.inventory.add(TerrainDB.Type.STONE, 2)
 	world._held_material = TerrainDB.Type.STONE
 
-	# An empty cell just above the generated floor (floor top row is y=8).
-	var empty := Vector2i(0, 7)
+	# An empty cell just above the generated floor (floor top row is coarse y=8).
+	var empty: Vector2i = Vector2i(0, 7) * int(terr.subdiv)
 	_ok(not terr.is_solid(empty), "there is an empty cell above the floor to place into")
 
 	# Out of reach (break-the-fix on the reach gate): far away, a long hold-worth
@@ -320,16 +333,21 @@ func _check_placing(world: Node) -> void:
 		"the placed cell digs back to stone — placement is the true inverse of mining")
 
 	# Empty stack: spend the last stone, then a further place writes nothing.
-	var empty2 := Vector2i(1, 7)
+	var empty2: Vector2i = Vector2i(1, 7) * int(terr.subdiv)
 	pl.global_position = terr.cell_center(empty2)
 	_ok(world.try_place(empty2) and pl.inventory.count(TerrainDB.Type.STONE) == 0,
 		"the last stone is placed, emptying the stack")
-	pl.global_position = terr.cell_center(Vector2i(2, 7))
-	_ok(not world.try_place(Vector2i(2, 7)),
+	var empty3: Vector2i = Vector2i(2, 7) * int(terr.subdiv)
+	pl.global_position = terr.cell_center(empty3)
+	_ok(not world.try_place(empty3),
 		"with an empty stack there is nothing to place")
 
-	# Clean up the two cells this test wrote so the world is unchanged downstream.
-	terr.dig(empty2)
+	# Clean up everything this test wrote (both full SCOOPS) so the world is
+	# unchanged downstream.
+	for sc in world._scoop_cells(empty):
+		terr.dig(sc)
+	for sc in world._scoop_cells(empty2):
+		terr.dig(sc)
 
 
 ## Harvesting, end to end through the REAL scene: try_harvest cuts a CARCASS's
@@ -521,8 +539,8 @@ func _check_save_load(world: Node) -> void:
 	# A terrain DIFF pair: dig a solid cell (C → air), place a material into an air
 	# cell (G → solid). Both must survive the round trip.
 	var c := Vector2i(0x7fffffff, 0)
-	for yy in range(6, 16):
-		for xx in range(-6, 24):
+	for yy in range(6 * terr.subdiv, 16 * terr.subdiv):
+		for xx in range(-6 * terr.subdiv, 24 * terr.subdiv):
 			if terr.is_solid(Vector2i(xx, yy)):
 				c = Vector2i(xx, yy)
 				break
