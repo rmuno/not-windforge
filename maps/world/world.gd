@@ -1210,10 +1210,17 @@ func _spawn_kraken() -> void:
 ## Mirrors _spawn_one_whale's pool-then-rebuild coarse-collider ordering; marks it a
 ## kraken (creature_kind → the KrakenAI + untameable) and leaves tame_level at the
 ## plain default (it never enters the taming filters, being untameable).
+##
+## DEEP-SPAWN KEEP-OUT: the deep band is where the island field is thickest, so
+## the computed `pos` can be inside rock. The footprint is probed and scattered
+## (deterministically — WhaleSpawn.clear_spawn_pos) BEFORE the spawn, never moved
+## after it: `pos` rides the spawn payload, and a post-spawn nudge would exist on
+## the server only (godot-quirks).
 func _spawn_one_kraken(path: String, pos: Vector2) -> Ship:
-	var kraken := fleet.spawn_ship_from_cells(
-		ShipLayout.upscale_cells(ShipLayout.load_cells(path), world_scale),
-		pos, 0, 0.0, float(world_scale), 2)
+	var cells := ShipLayout.upscale_cells(ShipLayout.load_cells(path), world_scale)
+	var spawn_pos := WhaleSpawn.clear_spawn_pos(
+		terrain, pos, WhaleSpawn.footprint_of(cells), float(world_scale))
+	var kraken := fleet.spawn_ship_from_cells(cells, spawn_pos, 0, 0.0, float(world_scale), 2)
 	if kraken == null:
 		return null
 	kraken.shared_health = KRAKEN_HEALTH
@@ -1224,6 +1231,10 @@ func _spawn_one_kraken(path: String, pos: Vector2) -> Ship:
 	kraken.tame_level = 0
 	kraken.body_tint = Color(0.78, 0.82, 0.74)
 	kraken.rebuild()
+	# Latch the sealed LOOT CAVITY now, while the body is whole. The map cannot be
+	# taken after a breach (the flood reaches the pocket then and it stops reading
+	# as sealed), and combat can crack the wall long before the first harvest asks.
+	kraken.cavity_cells()
 	return kraken
 
 
@@ -1638,7 +1649,22 @@ func _creature_swim(delta: float) -> void:
 		var target: Ship = null
 		if not ai.tamed:
 			target = _nearest_ship_of_faction(ship, 0)
+		# A kraken's mouth chews PEOPLE as well as hulls, so the world hands it the
+		# on-foot player each tick. Re-handed every tick rather than latched, so a
+		# body that dies, respawns or takes a helm is never a stale reference.
+		if ai is KrakenAI:
+			(ai as KrakenAI).prey_player = _on_foot_player()
 		ai.tick(delta, target)
+
+
+## The player as BITEABLE prey: their body when they are standing in the open,
+## null when there is nobody or they are PILOTING. A pilot rides inside the hull,
+## and that hull is already what the mouth is chewing — billing the same grab to
+## both would eat them straight through the deck.
+func _on_foot_player() -> Node2D:
+	if player == null or not is_instance_valid(player) or player.is_piloting():
+		return null
+	return player
 
 
 ## The WhaleAI for `creature`, created (and its provoke wired to the creature's
@@ -2614,6 +2640,16 @@ func try_harvest(ship: Ship, cell: Vector2i, delta: float) -> bool:
 				player.inventory.add(loot)
 				if _pickups != null:
 					_pickups.add(world_pos, "+1 %s" % ItemDB.name_of(loot), float(world_scale))
+			# And mining THROUGH into a sealed loot CAVITY (the kraken's walled
+			# pocket) spills its bundle — also once per carcass. A bundle, not one
+			# item, so it credits per entry; Ship decides the breach, not the world.
+			for entry in ship.take_cavity_loot():
+				var cavity_item: int = entry[0]
+				var cavity_n: int = entry[1]
+				player.inventory.add(cavity_item, cavity_n)
+				if _pickups != null:
+					_pickups.add(world_pos, "+%d %s" % [cavity_n, ItemDB.name_of(cavity_item)],
+						float(world_scale))
 		_mine_progress = 0.0
 		_mine_active = false
 		return true

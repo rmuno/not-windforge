@@ -264,6 +264,38 @@ var shared_health_max := 0.0
 ## drop TABLE itself is a `[?]` — a fixed placeholder for now (see take_stomach_loot).
 var _stomach_looted := false
 
+## --- The sealed LOOT CAVITY (kraken bodies, 2026-08-24) --------------------
+## Both authored kraken plans wall a hollow POCKET into the middle of the meat
+## (ships/kraken_*.ship: "a meat-walled LOOT CAVITY -- mine through to reach
+## it"). Unlike the mouth aperture, that air never reaches the outside, so it is
+## a container you have to CRACK: harvest a wall cell off the carcass and the
+## bundle spills, exactly once. Same shape as the whale's stomach drop above.
+##
+## `_cavity_cells` is LATCHED the first time it is asked for, because a breach is
+## precisely the thing that destroys the evidence — once the wall is gone the
+## flood reaches the pocket and it stops looking like a cavity at all. The probe
+## in harvest_cell runs BEFORE the removal, and the world latches it at spawn
+## (world._spawn_one_kraken), so the map is always taken off the whole body and
+## an eroding corpse is still measured against the ORIGINAL cavity.
+##
+## SEAM (shared with `_stomach_looted`): neither flag rides the spawn payload nor
+## the save file, so a corpse that survives a host migration or a save/load
+## forgets it was looted and can be cracked twice. One fix serves both when
+## carcass state is persisted — docs/BACKLOG.md.
+var _cavity_cells := {}
+var _cavity_mapped := false
+var _cavity_breached := false
+var _cavity_looted := false
+
+## What a breached cavity pays out: entries of [item_id, count]. TERRAIN-range
+## ItemDB ids (a terrain item's id IS its TerrainDB.Type — see items/item_db.gd),
+## so this invents no new item type; it is a buried cache of the deep's own
+## materials — the aetherite prize the band is mined for, plus the grit it sat in.
+const CAVITY_LOOT := [
+	[TerrainDB.Type.AETHERITE, 12],
+	[TerrainDB.Type.STONE, 3],
+]
+
 ## Test/debug escape hatch: force the exact per-cell collider even on a living
 ## creature (defeats the coarse path in _use_coarse_collider). Off in all normal
 ## play; the break-the-fix test flips it to prove the coarse path is what buys
@@ -664,6 +696,10 @@ func harvest_cell(cell: Vector2i) -> int:
 	var product := ItemDB.whale_product_for(blocks[cell]["type"])
 	if product < 0:
 		return -1  # not harvestable flesh (e.g. a component cell on the corpse)
+	# Cracking a cavity WALL breaches the pocket. Probed here, before the removal,
+	# because the cavity map has to be read off a body that still encloses it.
+	if not _cavity_breached and _breaches_cavity(cell):
+		_cavity_breached = true
 	remove_block(cell)
 	return product
 
@@ -681,6 +717,85 @@ func take_stomach_loot() -> int:
 		return -1
 	_stomach_looted = true
 	return ItemDB.Product.STOMACH_LOOT
+
+
+## The BREACHED cavity's one-time bundle: a copy of CAVITY_LOOT the first time it
+## is called on a CARCASS whose sealed pocket has been cracked open, then an empty
+## array forever after. Empty until the breach, so simply killing a kraken pays
+## nothing — you have to mine into it. Mirrors take_stomach_loot; returns an ARRAY
+## because the cavity is a bundle (counts included), not a single item.
+func take_cavity_loot() -> Array:
+	if not is_carcass() or _cavity_looted or not _cavity_breached:
+		return []
+	_cavity_looted = true
+	return CAVITY_LOOT.duplicate(true)
+
+
+## Has the sealed cavity been cracked open? Read by tests/debug; the payout gate
+## is take_cavity_loot.
+func cavity_breached() -> bool:
+	return _cavity_breached
+
+
+## The SEALED interior air cells — every empty cell inside the body's bounding box
+## that the outside flood never reached. Latched on the first call (see the
+## `_cavity_cells` notes): an already-breached body would map to nothing.
+func cavity_cells() -> Dictionary:
+	if _cavity_mapped:
+		return _cavity_cells
+	_cavity_mapped = true
+	if blocks.is_empty():
+		return _cavity_cells
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for cell in blocks:
+		lo = Vector2i(mini(lo.x, cell.x), mini(lo.y, cell.y))
+		hi = Vector2i(maxi(hi.x, cell.x), maxi(hi.y, cell.y))
+	var exterior := exterior_air()
+	for y in range(lo.y, hi.y + 1):
+		for x in range(lo.x, hi.x + 1):
+			var c := Vector2i(x, y)
+			if not blocks.has(c) and not exterior.has(c):
+				_cavity_cells[c] = true
+	return _cavity_cells
+
+
+## Would removing `cell` open the cavity? True when it is one of the pocket's
+## walls — 4-adjacent to a latched cavity cell.
+func _breaches_cavity(cell: Vector2i) -> bool:
+	var cavity := cavity_cells()
+	if cavity.is_empty():
+		return false
+	for d in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+		if cavity.has(cell + d):
+			return true
+	return false
+
+
+## Every EMPTY cell the OUTSIDE can reach, flooded inward from a ring one cell
+## clear of the body's bounding box. The single place "is this air open to the
+## sky?" is decided: KrakenAI's mouth finder tells an opening from a sealed
+## cavity with it, and cavity_cells() is precisely its complement inside the box.
+func exterior_air() -> Dictionary:
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for cell in blocks:
+		lo = Vector2i(mini(lo.x, cell.x), mini(lo.y, cell.y))
+		hi = Vector2i(maxi(hi.x, cell.x), maxi(hi.y, cell.y))
+	lo -= Vector2i.ONE
+	hi += Vector2i.ONE
+	var seen := {}
+	var stack: Array[Vector2i] = [lo]
+	while not stack.is_empty():
+		var c: Vector2i = stack.pop_back()
+		if seen.has(c) or blocks.has(c):
+			continue
+		if c.x < lo.x or c.y < lo.y or c.x > hi.x or c.y > hi.y:
+			continue
+		seen[c] = true
+		for d in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+			stack.append(c + d)
+	return seen
 
 
 func is_door(cell: Vector2i) -> bool:

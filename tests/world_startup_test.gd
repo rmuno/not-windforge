@@ -213,6 +213,7 @@ func _initialize() -> void:
 	var tr = world.get("_trainer")
 	_ok(tr != null and is_instance_valid(tr), "a trainer station was planted in the world")
 
+	_check_kraken_prey(world, fleet)
 	_check_mining(world)
 	_check_placing(world)
 	await _check_harvesting(world)
@@ -225,6 +226,34 @@ func _initialize() -> void:
 	await _check_hosting_after_offline_play(world, fleet)
 
 	_finish()
+
+
+## The kraken's mouth chews PEOPLE, and that only works if the WORLD hands the
+## brain the on-foot player every tick (KrakenAI.prey_player). The unit suite
+## drives the AI by hand, so the WIRING — world._creature_swim → the live AI —
+## can only be proven here, in the real scene.
+func _check_kraken_prey(world: Node, fleet) -> void:
+	var pl = world.get("player")
+	var ais: Dictionary = world.get("_whale_ais")
+	var kai = null
+	for id in ais:
+		if ais[id] is KrakenAI:
+			kai = ais[id]
+			break
+	_ok(kai != null, "the world's deep krakens run a KrakenAI")
+	if kai == null or pl == null or fleet.ships().is_empty():
+		return
+	_ok(kai.prey_player == pl,
+		"and the swim loop hands it the on-foot player as bite prey")
+
+	# A PILOT rides inside the hull the mouth is already chewing, so they stop
+	# being prey the moment they take a helm — one grab, billed once. Set and
+	# restored without awaiting a frame, so nothing else observes the fake helm.
+	var was = pl.piloting
+	pl.piloting = fleet.ships()[0]
+	_ok(world._on_foot_player() == null, "a PILOT is not bite prey — the hull is")
+	pl.piloting = was
+	_ok(world._on_foot_player() == pl, "and stepping back off makes them prey again")
 
 
 ## Mining, end to end through the REAL scene: the reach gate, the hardness
