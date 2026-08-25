@@ -273,10 +273,9 @@ func _check_machine_bundles(world: Node, local) -> void:
 		"and Q places there — no pixel-perfect hover needed")
 	_ok(local.blocks.size() == before + 16, "...the whole machine, as ever")
 	# Clean up the exact seat directly (the starter carries AUTHORED engines,
-	# so a scan-for-any-engine-cell would risk deleting one of those).
-	for c in seat:
-		if local.has_block(c):
-			local.net_remove_block(c)
+	# so a scan-for-any-engine-cell would risk deleting one of those). Bulk:
+	# per-cell removal paid a full 194k-cell rebuild SIXTEEN times here.
+	local.net_remove_blocks(seat)
 	_ok(local.blocks.size() == before, "the snapped machine cleans up exactly")
 
 	# PRIMITIVES are untouched: hull still places and removes cell by cell.
