@@ -2406,11 +2406,11 @@ func _process(_delta: float) -> void:
 	if Input.is_action_just_pressed("build_place") and not ui_mouse:
 		match _sel_kind:
 			"block":
-				build_ship.net_set_block(cell, build_type)
+				try_build_block(build_ship, cell)
 			"balloon":
 				_attach_balloon_at_cursor()
 	if Input.is_action_just_pressed("build_remove") and not ui_mouse:
-		build_ship.net_remove_block(cell)
+		try_remove_block(build_ship, cell)
 
 	# RMB: the grapple, exactly as the original — fire toward the cursor; fire
 	# again to let go early. On foot only; the helm has your hands. While RIDING,
@@ -2442,6 +2442,9 @@ func _process(_delta: float) -> void:
 
 var _ghost_shown := false
 var _ghost_cell := Vector2i.ZERO
+## The stamp's width×height in cells (1×1 for primitives) — build_ghost
+## stretches the preview rect by it.
+var _ghost_dims := Vector2i.ONE
 var _ghost_valid := false
 var _ghost_ratio_now := 0.0
 var _ghost_ratio_next := 0.0
@@ -2468,28 +2471,68 @@ func _build_target(cursor: Vector2) -> Ship:
 	return local_ship
 
 
+## Q with a block selected: place the block's whole STAMP (owner 2026-08-25:
+## "an engine will never be a single block, but a rectangle or square").
+## Primitives (hull, gasbag, flesh...) stamp their one cell, exactly as
+## before; machines stamp their BlockDB.BUNDLE_8X rectangle, all or nothing
+## — BuildPreview.stamp_order guarantees each cell lands with a neighbour, so
+## per-cell can_place_at holds down the whole chain. Returns whether the
+## stamp was placed.
+func try_build_block(ship: Ship, cell: Vector2i) -> bool:
+	if ship == null or not is_instance_valid(ship):
+		return false
+	var order := BuildPreview.stamp_order(
+		ship, BuildPreview.stamp_cells(ship, cell, build_type, build_rot))
+	if order.is_empty():
+		return false  # overlaps something, or floats free — nothing placed
+	for c in order:
+		ship.net_set_block(c, build_type)
+	return true
+
+
+## C: deconstruct. A PRIMITIVE removes its one cell (freeform sculpting); a
+## MACHINE removes its whole 4-connected region — "never a single block"
+## cuts both ways, so no whittling an engine down to a sliver. Region is
+## snapshotted first: removals can sever, and severing mid-walk must not
+## re-derive the machine.
+func try_remove_block(ship: Ship, cell: Vector2i) -> bool:
+	if ship == null or not is_instance_valid(ship) or not ship.has_block(cell):
+		return false
+	var type: int = ship.blocks[cell]["type"]
+	if not BlockDB.is_bundle(type, ship.scale_unit):
+		ship.net_remove_block(cell)
+		return true
+	for c in BuildPreview.machine_region(ship, cell):
+		if ship.has_block(c):
+			ship.net_remove_block(c)
+	return true
+
+
 func _update_build_ghost(ship: Ship, cell: Vector2i) -> void:
 	# Declutter (owner 2026-08-22): the ghost used to hang at the cursor across
 	# the whole sky. Show it only where building is actually in play — over the
 	# target ship (an occupied cell) or adjacent to it (can_place_at) — so open
 	# sky stays calm. Never while piloting; the helm has your hands.
 	_ghost_ship = ship
+	# The ghost is the whole STAMP now — one cell for a primitive, the
+	# machine's rectangle for a bundle — and it is green if and only if
+	# pressing Q would really place it (BuildPreview.stamp_valid, the same
+	# all-or-nothing rule the verb enforces). Anything else teaches the
+	# player a rule the game does not have. Note the game imposes no reach
+	# limit on building on YOUR ship; a carcass target is already
+	# reach-gated by _build_target.
+	var stamp := BuildPreview.stamp_cells(ship, cell, build_type, build_rot)
+	_ghost_valid = is_instance_valid(ship) and BuildPreview.stamp_valid(ship, stamp)
 	_ghost_shown = is_instance_valid(ship) and player != null \
 		and not player.is_piloting() \
-		and (ship.can_place_at(cell) or ship.has_block(cell))
+		and (_ghost_valid or ship.has_block(cell))
 	if not _ghost_shown:
 		_ghost_label.visible = false
 		return
-	_ghost_cell = cell
-	# EXACTLY the condition net_set_block enforces (Ship.can_place_at):
-	# occupied cell, or no neighbour to build off. The ghost is green if
-	# and only if pressing Q would really place a block — anything else
-	# teaches the player a rule the game does not have. Note the game
-	# imposes no reach limit on building on YOUR ship; a carcass target is
-	# already reach-gated by _build_target.
-	_ghost_valid = ship.can_place_at(cell)
+	_ghost_cell = stamp[0]  # the stamp's top-left — build_ghost draws from it
+	_ghost_dims = BlockDB.bundle_dims(build_type, ship.scale_unit, build_rot)
 	_ghost_ratio_now = ship.lift_ratio()
-	_ghost_ratio_next = BuildPreview.ratio_with(ship, build_type)
+	_ghost_ratio_next = BuildPreview.ratio_with(ship, build_type, stamp.size())
 
 	_ghost_label.text = BuildPreview.readout(_ghost_ratio_now, _ghost_ratio_next)
 	_ghost_label.add_theme_color_override("font_color", _ghost_tint())
@@ -2512,7 +2555,7 @@ func build_ghost() -> Variant:
 	var origin := _ghost_ship.local_pos_of(_ghost_cell) - Vector2.ONE * Ship.CELL * 0.5
 	return [
 		_ghost_ship.global_transform,
-		Rect2(origin, Vector2.ONE * Ship.CELL),
+		Rect2(origin, Vector2(_ghost_dims) * Ship.CELL),
 		BlockDB.color_of(build_type),
 		_ghost_tint(),
 	]
@@ -3200,6 +3243,11 @@ func _held_placeable() -> int:
 ## "balloon" (a crafted tether). B moves it through _build_palette().
 var _sel_kind := "block"
 
+## Bundle orientation for the selected block (BlockDB.bundle_dims rot): the
+## propeller mounts 6×2 or 2×6 in the source, so the palette lists it twice
+## and B picks the mounting — no extra key.
+var build_rot := false
+
 
 ## The flat cycle list: every {kind, id} Q could place, in order.
 func _build_palette() -> Array:
@@ -3208,6 +3256,12 @@ func _build_palette() -> Array:
 		if t == BlockDB.Type.DOOR:
 			continue  # doors are placed CLOSED; open is runtime state, never built
 		out.append({"kind": "block", "id": t})
+		# A machine whose bundle is a true rectangle mounts either way (the
+		# source's propeller): one more palette entry, rotated — the cycle
+		# key picks the mounting, no new key.
+		var dims := BlockDB.bundle_dims(t, float(world_scale))
+		if dims != Vector2i.ONE and dims.x != dims.y and t == BlockDB.Type.PROPELLER:
+			out.append({"kind": "block", "id": t, "rot": true})
 	if player != null and is_instance_valid(player) and player.inventory != null:
 		for id in player.inventory.types():
 			if ItemDB.is_placeable_terrain(id) and player.inventory.count(id) > 0:
@@ -3221,7 +3275,7 @@ func _build_palette() -> Array:
 ## Point the palette at (kind, id) — the cycle lands here, and tests/debug can
 ## jump straight to an entry. Writes the per-kind memory too, so each kind keeps
 ## its last choice while another kind is selected.
-func select_build(kind: String, id: int) -> void:
+func select_build(kind: String, id: int, rot := false) -> void:
 	_sel_kind = kind
 	match kind:
 		"terrain":
@@ -3230,6 +3284,7 @@ func select_build(kind: String, id: int) -> void:
 			_balloon_size = id
 		_:
 			build_type = id
+			build_rot = rot
 
 
 ## The current selection's per-kind id (what select_build would need to recreate it).
@@ -3247,7 +3302,9 @@ func _sel_id() -> int:
 func _palette_index(palette: Array) -> int:
 	var id := _sel_id()
 	for i in palette.size():
-		if palette[i]["kind"] == _sel_kind and int(palette[i]["id"]) == id:
+		if palette[i]["kind"] == _sel_kind and int(palette[i]["id"]) == id \
+				and (_sel_kind != "block"
+					or bool(palette[i].get("rot", false)) == build_rot):
 			return i
 	return -1
 
@@ -3259,7 +3316,7 @@ func _cycle_build(dir: int) -> void:
 	if palette.is_empty():
 		return
 	var next: Dictionary = palette[wrapi(_palette_index(palette) + dir, 0, palette.size())]
-	select_build(next["kind"], int(next["id"]))
+	select_build(next["kind"], int(next["id"]), bool(next.get("rot", false)))
 	_notify(build_selection_label())
 
 
@@ -3279,6 +3336,11 @@ func build_selection_label() -> String:
 				"" if int(Ship.BALLOON_CABLES[_balloon_size]) == 1 else "s",
 				int(Ship.BALLOON_LIFT[_balloon_size]),
 				_balloon_stock(_balloon_size)]
+	# A bundle says its shape ("Engine 4×4") so the cycle cue doubles as the
+	# footprint readout; primitives stay a bare name.
+	var dims := BlockDB.bundle_dims(build_type, float(world_scale), build_rot)
+	if dims != Vector2i.ONE:
+		return "build: %s %d×%d" % [BlockDB.get_def(build_type)["name"], dims.x, dims.y]
 	return "build: %s" % BlockDB.get_def(build_type)["name"]
 
 

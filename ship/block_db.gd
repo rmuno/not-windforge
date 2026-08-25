@@ -124,6 +124,40 @@ static func footprint_cells(type: int, su: float) -> float:
 		return FOOTPRINT_8X[type]
 	return su * su
 
+
+## Component bundle SHAPES (owner 2026-08-25: "an engine will never be a single
+## block, but a rectangle or square — same for other NONPRIMITIVE buildables").
+## The width x height each machine PLACES AS, at the shipped 8× scale — the
+## same survey shapes FOOTPRINT_8X normalises output by, so a hand-built,
+## full-footprint machine produces exactly its rating and weighs exactly its
+## rated mass. DOOR_CLOSED (no output, so no footprint entry) bundles too: a
+## 2×8 person-height doorway — the player is 8 cells tall, and a one-cell
+## door passes nobody. Types absent here are PRIMITIVES (hull, gasbag,
+## ballast, platform, strut, flesh): freeform bulk, placed cell by cell.
+const BUNDLE_8X := {
+	Type.ENGINE: Vector2i(4, 4),
+	Type.PROPELLER: Vector2i(6, 2),  # or 2×6 by mounting — see bundle_dims(rot)
+	Type.TURRET: Vector2i(2, 8),
+	Type.HELM: Vector2i(4, 7),
+	Type.DOOR_CLOSED: Vector2i(2, 8),
+}
+
+
+## The rectangle `type` places as at world scale `su`: its BUNDLE_8X shape at
+## the shipped 8×, (1,1) everywhere else — so the 1× test fixtures keep their
+## per-cell placement, exactly like footprint_cells. `rot` swaps width and
+## height (the source's propeller mounts either way).
+static func bundle_dims(type: int, su: float, rot := false) -> Vector2i:
+	if is_equal_approx(su, 8.0) and BUNDLE_8X.has(type):
+		var d: Vector2i = BUNDLE_8X[type]
+		return Vector2i(d.y, d.x) if rot else d
+	return Vector2i.ONE
+
+
+## Does `type` place (and deconstruct) as a bundle at this scale?
+static func is_bundle(type: int, su: float) -> bool:
+	return bundle_dims(type, su) != Vector2i.ONE
+
 static func get_def(type: int) -> Dictionary:
 	return BLOCKS.get(type, BLOCKS[Type.HULL])
 
