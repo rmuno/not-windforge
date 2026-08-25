@@ -949,6 +949,17 @@ func _refresh_local_ship() -> void:
 		if ship.pilot_peer == _my_id():
 			local_ship = ship
 			return
+	# THE HELM YOU HOLD IS YOUR SHIP (owner 2026-08-25): no claimed hull
+	# anywhere — the starter cannibalized for corpse-airship parts, eaten by
+	# a kraken, melted in the lava — but the player is PILOTING something.
+	# Adopt it and stamp the claim, so the ghost/build/repair/HUD pipeline
+	# (gated on local_ship) keeps serving the ship they actually fly, and a
+	# save made aboard reloads it as theirs. On foot with truly no ship,
+	# null stands — the HUD notice + respawn safety-net case.
+	if player != null and is_instance_valid(player) and player.is_piloting() \
+			and is_instance_valid(player.piloting):
+		local_ship = player.piloting
+		local_ship.pilot_peer = _my_id()
 
 
 func _my_id() -> int:
@@ -2374,14 +2385,19 @@ func _process(_delta: float) -> void:
 	if Input.is_action_just_pressed("respawn_player"):
 		respawn_player()
 
+	# INTERACT RUNS UNCONDITIONALLY (owner 2026-08-25, the stranded corpse
+	# pilot): this used to sit below the no-ship gate, so losing local_ship
+	# (starter cannibalized for parts, eaten, melted) while PILOTING a built
+	# corpse killed the E key entirely — the pilot could never step off. The
+	# one reliable use key stays alive in every state.
+	_handle_interact()
+
 	if local_ship == null:
 		hud.text = ("Connecting to host..." if Net.is_online()
-			else "No ship — this is a bug. H host   J join localhost")
+			else "No ship — walk to a helm and press E, or T to respawn")
 		_ghost_shown = false
 		_ghost_label.visible = false
 		return
-
-	_handle_interact()
 
 	# CARCASS-AS-AIRSHIP, the thrust half (owner: "bolt on lift+THRUST to fly a
 	# corpse"): the build verbs target a CARCASS under the cursor (within arm's
@@ -3019,20 +3035,19 @@ func balloons_to_draw() -> Array:
 	var out: Array = []
 	if fleet == null:
 		return out
-	var t := Time.get_ticks_msec() / 1000.0
 	for ship in fleet.ships():
 		if not is_instance_valid(ship) or ship.balloons.is_empty():
 			continue
-		var i := 0
 		for b in ship.balloons:
 			var size := int(b["size"])
 			var u: float = ship.scale_unit
 			var anchor: Vector2 = ship.to_global(ship.local_pos_of(b["cell"]))
 			var lc := Ship.BALLOON_CABLE_CELLS * Ship.CELL * u
-			var sway := sin(t * 1.2 + anchor.x * 0.002 + float(i)) * Ship.CELL * u * 0.8
+			# STATIC, straight up the taut cable — no decorative sway (owner
+			# 2026-08-25: "they can be static and immobile (as source)").
 			out.append({
 				"anchor": anchor,
-				"center": anchor + Vector2(sway, -lc),
+				"center": anchor + Vector2(0.0, -lc),
 				"radius": Ship.BALLOON_RADIUS_CELLS[size] * Ship.CELL * u,
 				"cables": int(Ship.BALLOON_CABLES[size]),
 				"unit": u,
@@ -3042,7 +3057,6 @@ func balloons_to_draw() -> Array:
 				"health": clampf(float(b.get("hp", Ship.BALLOON_HP[size]))
 					/ Ship.BALLOON_HP[size], 0.0, 1.0),
 			})
-			i += 1
 	return out
 
 
@@ -3779,7 +3793,12 @@ func contextual_cue_lines() -> Array:
 ## from foot play). On foot in single-player this is empty; connecting / no-ship
 ## messages are handled in _process.
 func _update_hud(_cell: Vector2i) -> void:
-	if player == null or not player.is_piloting() or not is_instance_valid(local_ship):
+	# The ship whose numbers the helm HUD shows is the one being PILOTED —
+	# which need not be local_ship: flying a built corpse-airship while the
+	# starter still lives used to show the STARTER's lift/power up here.
+	var flown: Ship = player.piloting if (player != null
+		and is_instance_valid(player) and player.is_piloting()) else null
+	if flown == null or not is_instance_valid(flown):
 		var session := ""
 		if Net.is_online():
 			session = "%s  peers:%d  id:%d" % [
@@ -3791,19 +3810,19 @@ func _update_hud(_cell: Vector2i) -> void:
 	hud.text = "\n".join([
 		"AT THE HELM — WASD flies, E to step off",
 		"Lift / weight: %.2f  (%s)" % [
-			local_ship.lift_ratio(),
-			"climbing" if local_ship.lift_ratio() > 1.0 else "sinking",
+			flown.lift_ratio(),
+			"climbing" if flown.lift_ratio() > 1.0 else "sinking",
 		],
 		"Power:  %.0f / %.0f%s" % [
-			local_ship.power_supply(),
-			local_ship.active_draw(),
-			"  (BROWNOUT)" if local_ship.active_draw() > local_ship.power_supply() else "",
+			flown.power_supply(),
+			flown.active_draw(),
+			"  (BROWNOUT)" if flown.active_draw() > flown.power_supply() else "",
 		],
 		"Altitude:  %.0f    Speed:  %.0f" % [
-			-local_ship.global_position.y, local_ship.linear_velocity.length()],
+			-flown.global_position.y, flown.linear_velocity.length()],
 		"Ceiling:  %.0f    Air:  %.2f" % [
-			-local_ship.ceiling_estimate(),
-			local_ship.air_density_at(local_ship.global_position.y)],
+			-flown.ceiling_estimate(),
+			flown.air_density_at(flown.global_position.y)],
 	])
 
 
