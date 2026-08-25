@@ -90,6 +90,7 @@ func _initialize() -> void:
 	await _test_kraken_is_a_kraken()
 	await _test_kraken_ai_grabs_hovers_and_rams()
 	await _test_kraken_cavity_loot_spills_once_on_breach()
+	await _test_carcass_loot_state_survives_the_wire_and_the_save()
 	await _test_kraken_mouth_bites_the_player_on_foot()
 	await _test_kraken_spawn_keeps_out_of_deep_rock()
 	await _test_single_player_is_not_online()
@@ -2427,6 +2428,104 @@ func _test_kraken_cavity_loot_spills_once_on_breach() -> void:
 			"%s walls in a sealed loot cavity (%d cells)"
 				% [path.get_file(), body.cavity_cells().size()])
 		body.queue_free()
+	await _step(3)
+
+
+## The one-shot carcass loot flags PERSIST (2026-08-25 bugfix). They used to live
+## only in RAM, so a looted corpse that went through the spawner again — a save/
+## load, a host migration, a client joining — came back pristine and paid its
+## stomach drop and cavity bundle a SECOND time (an item duplication bug: park a
+## looted carcass, save, reload, crack it again). Now they ride `to_payload` as a
+## packed int and the save dict alongside it. Checked BOTH ways round, because a
+## flag stuck ON is the same bug in reverse: an honest corpse nobody can loot.
+func _test_carcass_loot_state_survives_the_wire_and_the_save() -> void:
+	_t("a looted carcass stays looted through the payload and the save")
+	# The 5x5 meat shell around one sealed cell again — a kraken in miniature.
+	var cells := {}
+	for x in 5:
+		for y in 5:
+			if Vector2i(x, y) != Vector2i(2, 2):
+				cells[Vector2i(x, y)] = BlockDB.Type.MEAT
+
+	# --- An EMPTIED corpse stays emptied ------------------------------------
+	var looted := _make_ship(cells.duplicate())
+	looted.position = Vector2(-53000, 0)
+	looted.shared_health_max = 100.0
+	looted.shared_health = 0.0
+	_check(looted.take_stomach_loot() == ItemDB.Product.STOMACH_LOOT,
+		"the source corpse gives up its stomach drop")
+	looted.harvest_cell(Vector2i(2, 1))
+	_check(looted.cavity_breached() and not looted.take_cavity_loot().is_empty(),
+		"and its cracked cavity gives up the bundle")
+
+	var reloaded := Ship.from_data(looted.to_payload())
+	root.add_child(reloaded)
+	_check(reloaded.is_carcass(), "the reloaded body is still a carcass")
+	_check(reloaded.take_stomach_loot() == -1,
+		"the reloaded corpse has NO stomach drop left (it was already taken)")
+	_check(reloaded.cavity_breached(),
+		"the breach travels — the pocket is still cracked open after the trip")
+	_check(reloaded.take_cavity_loot().is_empty(),
+		"and no second cavity bundle — the duplication bug is closed")
+
+	# --- BREAK-THE-FIX: an UNTOUCHED corpse still pays, once -----------------
+	# If the flags came back stuck on (or the encode wrote a constant), this half
+	# fails: a fresh carcass would be unlootable.
+	var fresh := _make_ship(cells.duplicate())
+	fresh.position = Vector2(-53000, -6000)
+	fresh.shared_health_max = 100.0
+	fresh.shared_health = 0.0
+	var fresh_clone := Ship.from_data(fresh.to_payload())
+	root.add_child(fresh_clone)
+	_check(fresh_clone.take_stomach_loot() == ItemDB.Product.STOMACH_LOOT,
+		"a never-looted carcass still spills its stomach after the round trip")
+	_check(not fresh_clone.cavity_breached(),
+		"and its pocket is still sealed (no phantom breach)")
+	fresh_clone.harvest_cell(Vector2i(2, 1))
+	_check(fresh_clone.cavity_breached() and fresh_clone.take_cavity_loot().size() == 2,
+		"cracking the reloaded body pays the bundle exactly as the original would")
+
+	# --- A BREACHED but UNLOOTED pocket keeps its debt -----------------------
+	# The middle state: combat cracked the shell open, nobody harvested yet.
+	var cracked := _make_ship(cells.duplicate())
+	cracked.position = Vector2(-53000, -12000)
+	cracked.shared_health_max = 100.0
+	cracked.shared_health = 0.0
+	cracked.harvest_cell(Vector2i(2, 1))
+	_check(cracked.cavity_breached(), "the source pocket is open but unpaid")
+	var cracked_clone := Ship.from_data(cracked.to_payload())
+	root.add_child(cracked_clone)
+	_check(cracked_clone.cavity_breached() and cracked_clone.take_cavity_loot().size() == 2,
+		"the reloaded body owes the bundle, and pays it")
+	_check(cracked_clone.take_cavity_loot().is_empty(), "then never again")
+
+	# --- Through the SAVE FILE, the same ------------------------------------
+	var sd := SaveGame.encode_ship(looted)
+	var save_fleet := Fleet.new()
+	root.add_child(save_fleet)
+	await process_frame
+	var from_save: Ship = SaveGame.spawn_ship_from_encoded(save_fleet, sd)
+	_check(from_save != null and from_save.take_stomach_loot() == -1,
+		"a corpse loaded from a SAVE remembers its stomach was emptied")
+	_check(from_save.take_cavity_loot().is_empty(),
+		"and its cavity too — save/load cannot duplicate the bundle")
+
+	# A LEGACY save dict (written before the flags were persisted) has no key at
+	# all: it must load as a pristine corpse, not crash and not read as looted.
+	var legacy := sd.duplicate(true)
+	legacy.erase("carcass_state")
+	var from_legacy: Ship = SaveGame.spawn_ship_from_encoded(save_fleet, legacy)
+	_check(from_legacy != null
+			and from_legacy.take_stomach_loot() == ItemDB.Product.STOMACH_LOOT,
+		"a legacy save with no carcass_state key loads as an unlooted corpse")
+
+	looted.queue_free()
+	reloaded.queue_free()
+	fresh.queue_free()
+	fresh_clone.queue_free()
+	cracked.queue_free()
+	cracked_clone.queue_free()
+	save_fleet.queue_free()
 	await _step(3)
 
 

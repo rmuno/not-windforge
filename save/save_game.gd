@@ -266,7 +266,8 @@ static func apply_terrain_diffs(terrain: Object, flat: Array) -> void:
 
 ## One ship as a JSON-safe dict. The canonical `to_payload()` carries everything
 ## a peer (and now a save) needs — grid, transform, velocity, faction, the whale
-## shared-health pool, the blueprint, and the structural WALL layer — and
+## shared-health pool, the one-shot carcass loot flags, the blueprint, and the
+## structural WALL layer — and
 ## `body_tint` is added alongside so the cosmetic ghost-whale tint (an easter egg)
 ## survives a load too (it is NOT in the wire payload, so it rides here rather
 ## than a wire-format change).
@@ -290,6 +291,7 @@ static func encode_ship(ship: Object) -> Dictionary:
 		"blueprint": _ints(p["blueprint"]),
 		"walls": _ints(p["walls"]),
 		"balloons": _ints(p["balloons"]),
+		"carcass_state": int(p["carcass_state"]),
 		"tint": _enc_color(ship.body_tint),
 	}
 
@@ -328,6 +330,10 @@ static func spawn_ship_from_encoded(fleet: Object, sd: Dictionary) -> Object:
 		"walls": _dec_ints(sd.get("walls", [])),
 		# Tethered balloons (carcass-as-airship) — absent in a legacy save → none.
 		"balloons": _dec_ints(sd.get("balloons", [])),
+		# One-shot carcass loot flags (stomach drop / cavity bundle), packed as
+		# bits by Ship._encode_carcass_state. Absent in a legacy save → 0 → an
+		# unlooted corpse, which is how every pre-2026-08-25 save behaved.
+		"carcass_state": int(sd.get("carcass_state", 0)),
 	}
 	var ship: Object = fleet.spawn_ship(payload)
 	if ship == null:

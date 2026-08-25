@@ -278,10 +278,10 @@ var _stomach_looted := false
 ## (world._spawn_one_kraken), so the map is always taken off the whole body and
 ## an eroding corpse is still measured against the ORIGINAL cavity.
 ##
-## SEAM (shared with `_stomach_looted`): neither flag rides the spawn payload nor
-## the save file, so a corpse that survives a host migration or a save/load
-## forgets it was looted and can be cracked twice. One fix serves both when
-## carcass state is persisted — docs/BACKLOG.md.
+## PERSISTED (2026-08-25): these flags (with `_stomach_looted`) ride the spawn
+## payload and the save file as one packed int — `carcass_state` / see
+## `_encode_carcass_state`. Before that a corpse that survived a save/load or a
+## host migration forgot it had been looted and paid out a SECOND time.
 var _cavity_cells := {}
 var _cavity_mapped := false
 var _cavity_breached := false
@@ -755,6 +755,43 @@ func take_cavity_loot() -> Array:
 ## is take_cavity_loot.
 func cavity_breached() -> bool:
 	return _cavity_breached
+
+
+## --- Carcass loot state, packed for the wire and the save ------------------
+## The three one-shot loot flags as a bitfield, so a corpse keeps what it has
+## already paid out across a save/load, a host migration, or any respawn through
+## the Fleet spawner. Three bits, one payload key — a new key per flag would be
+## three wire-format changes for one fact.
+##
+## The latched cavity MAP is deliberately NOT carried: an unbreached body
+## re-derives it exactly (the pocket is still sealed), and a breached one never
+## needs it again — the breach bit is what the payout gate reads.
+const CARCASS_STOMACH_LOOTED := 1
+const CARCASS_CAVITY_BREACHED := 2
+const CARCASS_CAVITY_LOOTED := 4
+
+func _encode_carcass_state() -> int:
+	var bits := 0
+	if _stomach_looted:
+		bits |= CARCASS_STOMACH_LOOTED
+	if _cavity_breached:
+		bits |= CARCASS_CAVITY_BREACHED
+	if _cavity_looted:
+		bits |= CARCASS_CAVITY_LOOTED
+	return bits
+
+
+## Restore the packed flags. A breach restored here also LATCHES the cavity map
+## as empty: the pocket is open, so re-probing a loaded body would flood straight
+## through it and (worse) could map some other unrelated hollow as a fresh
+## cavity to crack. 0 (a legacy payload) leaves a pristine, never-looted corpse.
+func _apply_carcass_state(bits: int) -> void:
+	_stomach_looted = (bits & CARCASS_STOMACH_LOOTED) != 0
+	_cavity_breached = (bits & CARCASS_CAVITY_BREACHED) != 0
+	_cavity_looted = (bits & CARCASS_CAVITY_LOOTED) != 0
+	if _cavity_breached:
+		_cavity_mapped = true
+		_cavity_cells = {}
 
 
 ## The SEALED interior air cells — every empty cell inside the body's bounding box
@@ -2255,6 +2292,9 @@ static func from_data(data: Dictionary) -> Ship:
 		s.gravity_scale = s.scale_unit
 	# Absent for wreckage, which is its own intended form from now on.
 	s.blueprint = data.get("blueprint", PackedInt32Array())
+	# One-shot carcass loot flags (stomach / cavity). Absent in a legacy payload
+	# → 0 → an unlooted corpse, exactly as before this rode the wire.
+	s._apply_carcass_state(int(data.get("carcass_state", 0)))
 	return s
 
 
@@ -2294,6 +2334,7 @@ func to_payload() -> Dictionary:
 		"blueprint": blueprint,
 		"walls": _encode_walls(),
 		"balloons": _encode_balloons(),
+		"carcass_state": _encode_carcass_state(),
 	}
 
 
