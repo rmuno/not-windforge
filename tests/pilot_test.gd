@@ -7,7 +7,7 @@ extends SceneTree
 ##
 ## Sequence: wake in the cabin → walk out the door onto the deck → jump →
 ## cross the deck seams → out the port door and off the stern → grapple the
-## ship mid-fall, reel in, sling-jump → respawn → F at the helm → fly all
+## ship mid-fall, reel in, sling-jump → respawn → E at the helm → fly all
 ## four axes → F to step off → S+jump through the deck hatch into the machine
 ## hold → S+jump again out the belly → land on the arena floor.
 ##
@@ -204,7 +204,7 @@ func _test_exit_by_port_door() -> void:
 	var blocked := await _until(func() -> bool:
 		return _aboard_pos().x < stopped_at and absf(player.velocity.x) < 1.0, 150)
 	_ok(blocked, "the closed mast door stops the walk (x=%.0f)" % _aboard_pos().x)
-	await _tap("interact")  # open it — no helm anywhere near to steal the F
+	await _tap("interact")  # open it — no helm anywhere near to steal the E
 	var exited := await _until(func() -> bool:
 		return _aboard_pos().x < off_the_stern and not player.is_on_floor(), 150)
 	Input.action_release("move_left")
@@ -255,12 +255,12 @@ func _test_grapple() -> void:
 
 func _test_take_helm_with_f() -> void:
 	print("• taking the helm with F")
-	_ok(not player.is_piloting(), "on foot before pressing F")
+	_ok(not player.is_piloting(), "on foot before pressing E")
 
 	await _tap("interact")
 	var piloting := await _until(func() -> bool: return player.is_piloting(), 10)
 
-	_ok(piloting, "pressing F at the helm starts piloting")
+	_ok(piloting, "pressing E at the helm starts piloting")
 	if piloting:
 		await _frames(2)  # let the deferred collider toggle land
 		_ok(player._collider.disabled, "the tether: player collision is off at the helm")
@@ -319,7 +319,7 @@ func _test_step_off_with_f() -> void:
 	print("• stepping off with F")
 	await _tap("interact")
 	var off := await _until(func() -> bool: return not player.is_piloting(), 10)
-	_ok(off, "pressing F again ends piloting")
+	_ok(off, "pressing E again ends piloting")
 
 	await _frames(2)
 	_ok(not player._collider.disabled, "player collision is back on")

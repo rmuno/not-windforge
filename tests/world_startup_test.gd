@@ -221,6 +221,7 @@ func _initialize() -> void:
 	await _check_harvesting(world)
 	await _check_corpse_airship(world)
 	await _check_balloon_economy(world)
+	_check_unified_controls(world)
 	await _check_progression(world)
 	await _check_save_load(world)
 	await _check_taming(world, fleet)
@@ -659,6 +660,9 @@ func _check_balloon_economy(world: Node) -> void:
 	# moves the world point under a fixed screen pixel every time the player
 	# does — so the cursor is passed in (the overlay's call omits it).
 	var aim: Vector2 = corpse.to_global(corpse.local_pos_of(Vector2i(0, 0)))
+	# The ghost follows the build palette (v0.50.0): it only shows while Q
+	# would tether a balloon, so point the selection at one first.
+	world.select_build("balloon", size)
 	var ghost = world.balloon_ghost_to_draw(aim)
 	_ok(ghost is Dictionary, "aiming at a corpse cell raises a balloon build ghost")
 	if ghost is Dictionary:
@@ -703,10 +707,89 @@ func _check_balloon_economy(world: Node) -> void:
 	_ok(world.try_attach_balloon(corpse, Vector2i(1, 0), size),
 		"and a granted balloon tethers like a crafted one")
 
+	world.select_build("block", BlockDB.Type.HULL)  # leave the default selection
 	pl.inventory.clear()
 	corpse.queue_free()
 	await physics_frame
 	world.respawn_player()
+
+
+## THE CONSOLIDATED CONTROLS (owner 2026-08-25: "WAY too many keys and
+## combinations... nearly unplayable"). Pins the whole scheme so a later round
+## cannot quietly grow the keyboard back: E is the one USE key, Q the one PLACE
+## key, B the one CYCLE key, and the retired actions are gone from the map — a
+## re-added place_terrain/mat_cycle/debug_damage binding fails here by name.
+func _check_unified_controls(world: Node) -> void:
+	# --- The action map is the contract -------------------------------------
+	var ev: Array = InputMap.action_get_events("interact")
+	_ok(ev.size() == 1 and (ev[0] as InputEventKey).physical_keycode == KEY_E,
+		"USE is one key, and it is E (owner: standardize F to E)")
+	ev = InputMap.action_get_events("build_place")
+	_ok(ev.size() == 1 and (ev[0] as InputEventKey).physical_keycode == KEY_Q,
+		"PLACE is one key, and it is Q")
+	ev = InputMap.action_get_events("build_cycle")
+	_ok(ev.size() == 1 and (ev[0] as InputEventKey).physical_keycode == KEY_B,
+		"CYCLE is one key, and it is B")
+	for retired in ["place_terrain", "mat_cycle", "debug_damage"]:
+		_ok(not InputMap.has_action(retired),
+			"the retired '%s' action is gone from the map" % retired)
+
+	# --- One palette dispatches all three place kinds -----------------------
+	var pl = world.get("player")
+	if pl == null:
+		_ok(false, "a player exists for the palette check")
+		return
+	pl.inventory.clear()
+	pl.inventory.add(TerrainDB.Type.STONE, 5)
+	pl.inventory.add(ItemDB.balloon_item_for(Ship.BalloonSize.SMALL), 1)
+	var palette: Array = world._build_palette()
+	var kinds := {}
+	for e in palette:
+		kinds[e["kind"]] = int(kinds.get(e["kind"], 0)) + 1
+	_ok(int(kinds.get("block", 0)) == BlockDB.type_count() - 1,
+		"the palette lists every ship block except the open door (%d)"
+			% int(kinds.get("block", 0)))
+	_ok(int(kinds.get("terrain", 0)) == 1, "the carried stone is one terrain entry")
+	_ok(int(kinds.get("balloon", 0)) == 1, "the carried balloon is one balloon entry")
+	_ok(palette[0]["kind"] == "block" and palette[-1]["kind"] == "balloon",
+		"blocks lead the cycle and balloons close it")
+
+	# Cycling wraps THROUGH the kinds: from the last block, forward reaches the
+	# stone, then the balloon, then wraps back to the first block.
+	world.select_build("block", int(palette[int(kinds["block"]) - 1]["id"]))
+	world._cycle_build(1)
+	_ok(world._sel_kind == "terrain", "cycling off the last block reaches the terrain")
+	world._cycle_build(1)
+	_ok(world._sel_kind == "balloon", "then the balloon")
+	world._cycle_build(1)
+	_ok(world._sel_kind == "block" and world.build_type == int(palette[0]["id"]),
+		"then wraps to the first block")
+	world._cycle_build(-1)
+	_ok(world._sel_kind == "balloon", "and Shift+B steps the same ring backwards")
+
+	# An emptied stack falls out of the rotation — B never offers a place Q
+	# would refuse for stock.
+	pl.inventory.remove(ItemDB.balloon_item_for(Ship.BalloonSize.SMALL), 1)
+	var has_balloon := false
+	for e in world._build_palette():
+		if e["kind"] == "balloon":
+			has_balloon = true
+	_ok(not has_balloon, "the spent balloon stack drops out of the cycle")
+
+	# Exactly one ghost: with a BLOCK selected the balloon ghost stays dark even
+	# over a valid target — the block preview owns the cursor.
+	world.select_build("block", BlockDB.Type.HULL)
+	_ok(world.balloon_ghost_to_draw(pl.global_position) == null,
+		"with a block selected the balloon ghost never shows")
+
+	# The label speaks the selection — the cue B prints and any readout share it.
+	_ok(world.build_selection_label() == "build: Hull",
+		"the selection label names the block (%s)" % world.build_selection_label())
+	world.select_build("terrain", TerrainDB.Type.STONE)
+	_ok(world.build_selection_label().begins_with("place: Stone"),
+		"and the terrain (%s)" % world.build_selection_label())
+	world.select_build("block", BlockDB.Type.HULL)
+	pl.inventory.clear()
 
 
 func _spawn_flesh(world: Node, cells: Dictionary, pool_now: float) -> Ship:
