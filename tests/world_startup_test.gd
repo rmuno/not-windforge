@@ -600,7 +600,29 @@ func _check_corpse_airship(world: Node) -> void:
 		_ok(corpse.linear_velocity.x > vx0 + 10.0,
 			"the corpse FLIES under its bolted-on thrust (vx %.0f -> %.0f)"
 				% [vx0, corpse.linear_velocity.x])
-		pl.disembark()
+
+		# THE STRANDED PILOT (owner 2026-08-25: "can't get off the whale-as-ship
+		# if I build it"): lose the starter while piloting the corpse — the old
+		# no-ship gate then skipped _handle_interact entirely and E went dead.
+		# Now the helm you hold is adopted as your ship, and E always runs.
+		var starter: Ship = world.get("local_ship")
+		starter.pilot_peer = 0          # the claim dies with the hull
+		world.set("local_ship", null)   # ...and the binding drops
+		world._refresh_local_ship()
+		_ok(world.get("local_ship") == corpse,
+			"with the starter gone, the PILOTED corpse is adopted as local ship")
+		_ok(corpse.pilot_peer == 1, "and carries the claim (a save keeps it yours)")
+		Input.action_press("interact")
+		await physics_frame
+		Input.action_release("interact")
+		await physics_frame
+		_ok(not pl.is_piloting(),
+			"E still steps off the corpse helm — the use key survives the loss")
+		# Restore the world for the checks that follow.
+		starter.pilot_peer = 1
+		world.set("local_ship", starter)
+		if pl.is_piloting():
+			pl.disembark()
 
 	# Clean up so the later hosting check sees the untouched fleet.
 	corpse.queue_free()
