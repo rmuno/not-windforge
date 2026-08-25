@@ -18,10 +18,12 @@ extends RefCounted
 ## and the no-collision property (no target is itself a source).
 ##
 ## Target choice — every alias had to be a key nothing else in the game reads.
-## A/B/C/D/E/F/G/M/N/Q/R/S/T/V/W/X/Z are bound in project.godot's action map;
-## H/J/K/U/Y/Tab and the 1-4/0 trainer row are raw keys read in world.gd
-## (0 SELLS SALVAGE — it was the obvious pick for the diag toggle and it is
-## taken). That leaves I, L, O, P free, which is exactly four.
+## After the 2026-08-25 consolidation (one place key, one cycle key, E to use):
+## A/B/C/D/E/M/N/Q/R/S/T/W/X/Z are bound in project.godot's action map;
+## H/J/K/Tab and the 1-4/0 trainer row are raw keys read in world.gd
+## (0 SELLS SALVAGE — so the number row is taken too). F/G/U/V/Y fell free in
+## that consolidation, but the aliases STAY on I, L, O, P — web players have
+## muscle memory on them, and reshuffling working keys buys nothing.
 
 ## Reserved F-key -> browser-safe alias. Sources are keys the browser steals;
 ## targets are verified-unused keys (see the class doc).

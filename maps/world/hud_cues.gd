@@ -30,7 +30,7 @@ enum Cue { HELM, MINE, HARVEST, PLACE, CRAFT, TRAINER }
 static func active(state: Dictionary) -> Array:
 	var out: Array = []
 	if bool(state.get("piloting", false)):
-		out.append(Cue.HELM)   # rendered as "[F] step off"
+		out.append(Cue.HELM)   # rendered as "[E] step off"
 		return out
 	if bool(state.get("near_helm", false)):
 		out.append(Cue.HELM)

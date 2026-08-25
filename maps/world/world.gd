@@ -25,7 +25,7 @@ const SHIP_START := Vector2(0, -200)
 ## You wake up inside the cabin, AT the controls (the helm is furniture —
 ## standing in its cell reads as manning the panel). Moved off the old
 ## midpoint between door and helm when doors gained a closed state: spawn
-## must be unambiguously the helm's spot, so F right after waking boards
+## must be unambiguously the helm's spot, so E right after waking boards
 ## rather than working the door. Kept as a cell so it stays correct if
 ## CELL or the starter layout changes.
 const PLAYER_SPAWN_CELL := Vector2i(3, -1)
@@ -79,8 +79,9 @@ var _hud_layer: HudLayer
 ## thickens as you descend. Under the HUD, over the world; driven by fog_density().
 var _deep_fog: DeepFog
 
-## Which balloon SIZE the attach key (U) bolts on (Ship.BalloonSize; Y cycles it).
-## Carcass-as-airship: aim at a hull/corpse cell + U to tether a helium balloon.
+## Which balloon SIZE Q tethers while the build palette selects "balloon"
+## (Ship.BalloonSize; B cycles the palette). Carcass-as-airship: aim at a
+## hull/corpse cell and place.
 var _balloon_size := 0
 ## The toggled world map (maps/world/map_view.gd), opened with Tab. Hidden by
 ## default; reads the fog-of-war model below.
@@ -428,19 +429,15 @@ func _build_help_panel() -> PanelContainer:
 	var k_diag := WebKeys.label_for(KEY_F3, web)
 	label.text = "\n".join([
 		"CONTROLS   (%s to close)" % k_help,
-		"A/D walk    Space jump    F use helm / door",
-		"LMB shoot (turrets at the helm)    RMB grapple — W/S reel, jump to sling",
-		"grapple a whale + hold to TAME it (needs LORE Beast Whisperer) — then WASD steers; release the hook (RMB) to let go",
-		"Z mine / harvest (hold + aim)    X repair (hold + sweep)",
-		"V place terrain    B cycle material    N cycle recipe    M craft    Shift+M craft all",
-		"U tether a balloon you crafted (aim at a hull/corpse cell)    Y size + stock — fly a carcass!",
-		"the DEEP band's air is unbreathable — craft & carry an Aether Lung (N/M) or you suffocate",
-		"Q build hull    C remove    E cycle block    G damage",
-		"K character sheet (stats/perks/money — trainer shop when nearby)",
-		"  at a trainer, with the sheet open: 1-4 train a stat    0 sell salvage",
-		"Tab map    T respawn    R reset world    Esc quit    wheel zoom",
-		"%s save    %s saves panel (Up/Down select, Enter load)" % [k_save, k_saves],
-		"H host    J join localhost    F2 debug window    %s diagnostic" % k_diag,
+		"A/D walk    Space jump    E use — helm, door, step off",
+		"LMB shoot    RMB grapple (W/S reel, jump to sling; hold a whale to TAME it, release to let go)",
+		"Q place    B next thing to place — blocks, terrain, balloons (Shift+B back)    C remove",
+		"Z mine / harvest (hold)    X repair (hold)",
+		"M craft    N next recipe    Shift+M craft all — the deep's air needs an Aether Lung",
+		"K character sheet (at a trainer: 1-4 train, 0 sell salvage)    Tab map",
+		"T respawn    R reset world    Esc quit    wheel zoom",
+		"%s save    %s saves panel (Up/Down, Enter)    H host    J join" % [k_save, k_saves],
+		"F2 debug window    %s diagnostic" % k_diag,
 		"",
 		"SHIP BLOCKS",
 		"H helm (F pilots)    E engine (power)    P/V propeller    T turret",
@@ -1405,7 +1402,7 @@ func _ui_wants_mouse() -> bool:
 	return vp != null and vp.gui_get_hovered_control() != null
 
 
-## Q is the trigger everywhere (owner: "the player needs some small pew
+## LMB is the trigger everywhere (owner: "the player needs some small pew
 ## pew... the ship also needs turrets"). On foot it is a personal sidearm;
 ## at the helm it volleys every turret component toward the cursor. An
 ## underpowered ship's turrets fire proportionally slower — brownout
@@ -2361,8 +2358,11 @@ func _process(_delta: float) -> void:
 		_pickups.update(_delta)
 	_handle_mining(_delta)
 	_handle_placing(_delta)
-	if Input.is_action_just_pressed("mat_cycle"):
-		_cycle_material()
+	# B -- THE cycle key (owner 2026-08-25 consolidation): one selection for
+	# everything Q places. Shift+B steps backwards. Before the no-ship return,
+	# so the palette works on foot in an empty sky too.
+	if Input.is_action_just_pressed("build_cycle"):
+		_cycle_build(-1 if Input.is_key_pressed(KEY_SHIFT) else 1)
 	_handle_crafting()
 	# Handled before anything else, so they still work when the rest is broken.
 	if Input.is_action_just_pressed("quit_game"):
@@ -2383,28 +2383,34 @@ func _process(_delta: float) -> void:
 
 	_handle_interact()
 
-	if Input.is_action_just_pressed("build_cycle"):
-		build_type = (build_type + 1) % BlockDB.type_count()
-		if build_type == BlockDB.Type.DOOR:
-			# Placed doors start CLOSED (owner): the open state is a
-			# runtime state, never a thing you place.
-			build_type = (build_type + 1) % BlockDB.type_count()
-
 	# CARCASS-AS-AIRSHIP, the thrust half (owner: "bolt on lift+THRUST to fly a
 	# corpse"): the build verbs target a CARCASS under the cursor (within arm's
 	# reach) when there is one — place engines/props/a helm on a dead whale,
 	# then board it and FLY it — and your own ship otherwise, exactly as before.
 	var build_ship := _build_target(get_global_mouse_position())
 	var cell := build_ship.cell_at_global(get_global_mouse_position())
-	_update_build_ghost(build_ship, cell)
+	# The ghost follows the SELECTION: the block preview only while a ship block
+	# is what Q would place -- terrain and balloons draw their own targets, and
+	# exactly one ghost is ever on screen (clean-UI rule).
+	if _sel_kind == "block":
+		_update_build_ghost(build_ship, cell)
+	else:
+		_ghost_shown = false
+		_ghost_label.visible = false
 
 	var ui_mouse := _ui_wants_mouse()  # a hovered debug/saves/help panel eats clicks
+	# Q -- THE place key (owner 2026-08-25: "only ONE key for placing things").
+	# It places the palette selection: a ship block here, a balloon here, and
+	# terrain via _handle_placing (hold-to-paint keeps its own cooldown).
+	# (The old G damage-block dev verb is GONE -- LMB already damages blocks.)
 	if Input.is_action_just_pressed("build_place") and not ui_mouse:
-		build_ship.net_set_block(cell, build_type)
+		match _sel_kind:
+			"block":
+				build_ship.net_set_block(cell, build_type)
+			"balloon":
+				_attach_balloon_at_cursor()
 	if Input.is_action_just_pressed("build_remove") and not ui_mouse:
 		build_ship.net_remove_block(cell)
-	if Input.is_action_pressed("debug_damage") and not ui_mouse:
-		build_ship.net_damage_cell(cell, 4.0)
 
 	# RMB: the grapple, exactly as the original — fire toward the cursor; fire
 	# again to let go early. On foot only; the helm has your hands. While RIDING,
@@ -2498,7 +2504,7 @@ func _ghost_tint() -> Color:
 
 ## What WorldOverlay should draw, or null. The ship is resolved to plain
 ## values HERE rather than handed over as a node: passing live references
-## into another node's _draw is what crashed the [F] prompt on freed
+## into another node's _draw is what crashed the interact prompt on freed
 ## instances (see interact_prompt).
 func build_ghost() -> Variant:
 	if not _ghost_shown or _ghost_ship == null or not is_instance_valid(_ghost_ship):
@@ -3001,6 +3007,10 @@ func balloons_to_draw() -> Array:
 func balloon_ghost_to_draw(cursor := Vector2.INF) -> Variant:
 	if player == null or not is_instance_valid(player) or player.is_piloting():
 		return null
+	# Only while the palette selects a balloon (Q would tether one) — otherwise
+	# the block ghost owns the cursor and exactly one preview is ever on screen.
+	if _sel_kind != "balloon":
+		return null
 	if _ui_wants_mouse():
 		return null
 	var at := get_global_mouse_position() if cursor == Vector2.INF else cursor
@@ -3104,18 +3114,21 @@ func mine_target() -> Variant:
 
 # --- Placement (the inverse of mining) -------------------------------------
 #
-# Hold V + aim to lay the held terrain material back into the world: an empty,
-# in-reach cell becomes solid terrain and one item leaves the inventory. It is
-# authority-owned exactly like mining (Terrain.net_place mirrors net_dig): the
-# server writes the cell and `placed` debits the placer; a client forwards the
-# request. Ship building (Q hull) is a SEPARATE system — this writes TERRAIN.
+# With a terrain material SELECTED (B), hold Q + aim to lay it back into the
+# world: an empty, in-reach cell becomes solid terrain and one item leaves the
+# inventory. It is authority-owned exactly like mining (Terrain.net_place
+# mirrors net_dig): the server writes the cell and `placed` debits the placer; a
+# client forwards the request. Ship building (Q with a block selected) writes
+# the SHIP grid; this writes TERRAIN — one key, dispatched by the palette.
 
 func _handle_placing(delta: float) -> void:
 	_place_cooldown = maxf(0.0, _place_cooldown - delta)
 	if player == null or not is_instance_valid(player) or player.is_piloting() \
 			or terrain == null:
 		return
-	if not Input.is_action_pressed("place_terrain") or _ui_wants_mouse():
+	if _sel_kind != "terrain":
+		return  # Q is placing a block or a balloon right now
+	if not Input.is_action_pressed("build_place") or _ui_wants_mouse():
 		return
 	if _place_cooldown > 0.0:
 		return
@@ -3169,20 +3182,104 @@ func _held_placeable() -> int:
 	return TerrainDB.Type.AIR
 
 
-## Cycle the held material to the next placeable terrain type in the pack (B).
-## Only real terrain materials are placeable, so whale products and crafted goods
-## are skipped. Wraps; no-op with nothing placeable held.
-func _cycle_material() -> void:
-	if player == null or not is_instance_valid(player):
+# --- The BUILD PALETTE: one key places, one key cycles (owner 2026-08-25) --
+#
+# "There should be only ONE key for placing things." Q places whatever is
+# SELECTED; B cycles the selection (Shift+B backwards). The palette is one flat
+# list: every buildable ship block, then each terrain material actually carried,
+# then each crafted balloon size actually carried. Empty stacks are skipped, so
+# the list stays short early on and never offers something Q would refuse for
+# stock. Ship blocks are free-build today (BACKLOG) so they are always listed.
+#
+# The selection is stored as a KIND plus the per-kind id (build_type /
+# _held_material / _balloon_size), never as a list index: stacks appear and
+# vanish as you mine and spend, and an index into a list that just changed
+# under you would silently select something else.
+
+## What Q places right now: "block" (the ship grid), "terrain" (the world), or
+## "balloon" (a crafted tether). B moves it through _build_palette().
+var _sel_kind := "block"
+
+
+## The flat cycle list: every {kind, id} Q could place, in order.
+func _build_palette() -> Array:
+	var out: Array = []
+	for t in BlockDB.type_count():
+		if t == BlockDB.Type.DOOR:
+			continue  # doors are placed CLOSED; open is runtime state, never built
+		out.append({"kind": "block", "id": t})
+	if player != null and is_instance_valid(player) and player.inventory != null:
+		for id in player.inventory.types():
+			if ItemDB.is_placeable_terrain(id) and player.inventory.count(id) > 0:
+				out.append({"kind": "terrain", "id": id})
+		for size in Ship.BALLOON_LIFT.size():
+			if player.inventory.count(ItemDB.balloon_item_for(size)) > 0:
+				out.append({"kind": "balloon", "id": size})
+	return out
+
+
+## Point the palette at (kind, id) — the cycle lands here, and tests/debug can
+## jump straight to an entry. Writes the per-kind memory too, so each kind keeps
+## its last choice while another kind is selected.
+func select_build(kind: String, id: int) -> void:
+	_sel_kind = kind
+	match kind:
+		"terrain":
+			_held_material = id
+		"balloon":
+			_balloon_size = id
+		_:
+			build_type = id
+
+
+## The current selection's per-kind id (what select_build would need to recreate it).
+func _sel_id() -> int:
+	match _sel_kind:
+		"terrain":
+			return _held_material
+		"balloon":
+			return _balloon_size
+	return build_type
+
+
+## Where the selection sits in `palette`, or -1 (the selected stack was spent —
+## cycling recovers by stepping from the list head).
+func _palette_index(palette: Array) -> int:
+	var id := _sel_id()
+	for i in palette.size():
+		if palette[i]["kind"] == _sel_kind and int(palette[i]["id"]) == id:
+			return i
+	return -1
+
+
+## B: step the selection through the palette (dir = +-1), with a one-line cue so
+## you always know what Q now places — no panel, no wall of keys.
+func _cycle_build(dir: int) -> void:
+	var palette := _build_palette()
+	if palette.is_empty():
 		return
-	var placeable: Array = []
-	for id in player.inventory.types():
-		if ItemDB.is_placeable_terrain(id):
-			placeable.append(id)
-	if placeable.is_empty():
-		return
-	var idx := placeable.find(_held_material)
-	_held_material = placeable[(idx + 1) % placeable.size()]
+	var next: Dictionary = palette[wrapi(_palette_index(palette) + dir, 0, palette.size())]
+	select_build(next["kind"], int(next["id"]))
+	_notify(build_selection_label())
+
+
+## "build: Engine" / "place: Stone (x12)" / "balloon: small (1 tether, lift 250) x2"
+## — one line the cycle cue and any readout share, so they cannot disagree.
+func build_selection_label() -> String:
+	match _sel_kind:
+		"terrain":
+			var n := 0
+			if player != null and is_instance_valid(player) and player.inventory != null:
+				n = player.inventory.count(_held_material)
+			return "place: %s (x%d)" % [ItemDB.name_of(_held_material), n]
+		"balloon":
+			return "balloon: %s (%d tether%s, lift %d) x%d" % [
+				_balloon_size_name(_balloon_size),
+				Ship.BALLOON_CABLES[_balloon_size],
+				"" if int(Ship.BALLOON_CABLES[_balloon_size]) == 1 else "s",
+				int(Ship.BALLOON_LIFT[_balloon_size]),
+				_balloon_stock(_balloon_size)]
+	return "build: %s" % BlockDB.get_def(build_type)["name"]
 
 
 ## What the WorldOverlay should draw for the place target, or null: the world-
@@ -3192,7 +3289,7 @@ func place_target() -> Variant:
 	if player == null or not is_instance_valid(player) or player.is_piloting() \
 			or terrain == null:
 		return null
-	if not Input.is_action_pressed("place_terrain"):
+	if _sel_kind != "terrain" or not Input.is_action_pressed("build_place"):
 		return null
 	var cell := terrain.world_to_cell(get_global_mouse_position())
 	var cp := terrain.cell_px()
@@ -3281,8 +3378,8 @@ func _handle_interact() -> void:
 		_nearby_door = []
 		return
 	# Riding a tamed creature: the ride ends by releasing the hook (RMB — see the
-	# grapple handler), not F. F still steps off as a harmless fallback, but is no
-	# longer required (owner 2026-08-24). No helm/door search while mounted — that
+	# grapple handler), not the use key. E still steps off as a harmless
+	# fallback, but is no longer required (owner 2026-08-24). No helm/door search while mounted — that
 	# is for when you are on your own two feet.
 	if player.is_riding():
 		_nearby_helm = []
@@ -3306,7 +3403,7 @@ func _handle_interact() -> void:
 
 ## Doors answer the interact key only at arm's length — you work a door
 ## you are standing at, not one across the room. Short reach plus
-## nearest-wins is what disambiguates F in a cramped cabin: at the helm
+## nearest-wins is what disambiguates E in a cramped cabin: at the helm
 ## (the spawn cell) the door is out of reach entirely; pressed against a
 ## closed door, the door is the nearest station by a wide margin.
 func _door_reach() -> float:
@@ -3333,7 +3430,7 @@ func helm_in_reach() -> bool:
 	return not _nearby_helm.is_empty()
 
 
-## Where the overlay should float the [F] prompt and what it should say,
+## Where the overlay should float the [E] prompt and what it should say,
 ## as [pos, text] — or null. Validity checks live HERE: handing the raw
 ## player/ship references to another node's _draw crashed on freed
 ## instances (respawn races the redraw).
@@ -3344,11 +3441,11 @@ func interact_prompt() -> Variant:
 		var ship: Ship = _nearby_door[0]
 		var closed: bool = ship.blocks[_nearby_door[1]]["type"] == BlockDB.Type.DOOR_CLOSED
 		return [ship.to_global(ship.local_pos_of(_nearby_door[1])),
-			"[F] open the door" if closed else "[F] close the door"]
+			"[E] open the door" if closed else "[E] close the door"]
 	if _nearby_helm.is_empty() or not is_instance_valid(_nearby_helm[0]):
 		return null
 	var helm: Ship = _nearby_helm[0]
-	return [helm.to_global(helm.local_pos_of(_nearby_helm[1])), "[F] take the helm"]
+	return [helm.to_global(helm.local_pos_of(_nearby_helm[1])), "[E] take the helm"]
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
@@ -3376,23 +3473,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			host_session()
 		KEY_J:
 			join_session()
-		# Carcass-as-airship (owner 2026-08-23): U tethers a helium balloon at the
-		# aimed hull/corpse cell; Y cycles small/large. Raw keys (U/Y are unbound in
-		# the action map), gated on not being over a UI panel.
-		KEY_Y:
-			_balloon_size = (_balloon_size + 1) % Ship.BALLOON_LIFT.size()
-			# The CARRIED COUNT rides the cue (v0.49.0 — balloons are crafted and
-			# spent now): cycling is how you check stock, so the one cue answers
-			# "what does this size cost me and do I have one" without a panel.
-			_notify("balloon: %s (%d tether%s, lift %d) — %d in pack" % [
-				_balloon_size_name(_balloon_size),
-				Ship.BALLOON_CABLES[_balloon_size],
-				"" if Ship.BALLOON_CABLES[_balloon_size] == 1 else "s",
-				int(Ship.BALLOON_LIFT[_balloon_size]),
-				_balloon_stock(_balloon_size)])
-		KEY_U:
-			if not _ui_wants_mouse():
-				_attach_balloon_at_cursor()
 		# Trainer shop keys — active only while the character sheet (the shop
 		# panel) is open. 1–4 buy a level of a stat; 0 sells all salvage. Raw
 		# keys like H/J/F1/Tab, so no project.godot binding and no clash with the
@@ -3573,8 +3653,10 @@ func _cue_state() -> Dictionary:
 		s["harvestable"] = true
 		s["harvest_name"] = ItemDB.name_of(ItemDB.whale_product_for(block_type))
 		return s
-	# Placement: an empty in-reach cell with a stocked, held material.
-	if terrain != null:
+	# Placement: a terrain material SELECTED (the palette — otherwise Q is
+	# placing a block/balloon and the cue would lie), aimed at an empty
+	# in-reach cell, with stock to spend.
+	if terrain != null and _sel_kind == "terrain":
 		var pcell := terrain.world_to_cell(cursor)
 		var mat := _held_placeable()
 		if mat != TerrainDB.Type.AIR and player.inventory != null \
@@ -3599,7 +3681,7 @@ func contextual_cue_lines() -> Array:
 			HudCues.Cue.HARVEST:
 				lines.append("[Z] harvest %s" % s["harvest_name"])
 			HudCues.Cue.PLACE:
-				lines.append("[V] place %s   ·   [B] cycle" % s["place_name"])
+				lines.append("[Q] place %s   ·   [B] next" % s["place_name"])
 			HudCues.Cue.CRAFT:
 				lines.append("[M] craft %s   ·   [N] cycle" % s["craft_text"])
 			HudCues.Cue.TRAINER:
@@ -3622,7 +3704,7 @@ func _update_hud(_cell: Vector2i) -> void:
 		return
 
 	hud.text = "\n".join([
-		"AT THE HELM — WASD flies, F to step off",
+		"AT THE HELM — WASD flies, E to step off",
 		"Lift / weight: %.2f  (%s)" % [
 			local_ship.lift_ratio(),
 			"climbing" if local_ship.lift_ratio() > 1.0 else "sinking",
@@ -3645,6 +3727,6 @@ func _draw() -> void:
 		draw_rect(rect, Color(0.20, 0.24, 0.22))
 		draw_rect(rect, Color(0.28, 0.34, 0.30), false, 2.0)
 
-	# The [F] helm prompt lives on WorldOverlay (maps/world/overlay.gd):
+	# The [E] helm prompt lives on WorldOverlay (maps/world/overlay.gd):
 	# this node's own drawing renders beneath its children, so text drawn
 	# here would hide behind hulls (owner report).
