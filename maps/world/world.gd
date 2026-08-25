@@ -433,7 +433,7 @@ func _build_help_panel() -> PanelContainer:
 		"grapple a whale + hold to TAME it (needs LORE Beast Whisperer) — then WASD steers; release the hook (RMB) to let go",
 		"Z mine / harvest (hold + aim)    X repair (hold + sweep)",
 		"V place terrain    B cycle material    N cycle recipe    M craft    Shift+M craft all",
-		"U tether a helium balloon (aim at a hull/corpse cell)    Y balloon size — fly a carcass!",
+		"U tether a balloon you crafted (aim at a hull/corpse cell)    Y size + stock — fly a carcass!",
 		"the DEEP band's air is unbreathable — craft & carry an Aether Lung (N/M) or you suffocate",
 		"Q build hull    C remove    E cycle block    G damage",
 		"K character sheet (stats/perks/money — trainer shop when nearby)",
@@ -1340,6 +1340,17 @@ func _spawn_whale_at(at: Vector2) -> Ship:
 func debug_grant_money(amount: int) -> void:
 	if player != null and is_instance_valid(player) and player.wallet != null:
 		player.wallet.add(amount)
+
+
+## Grant `n` of EVERY crafted balloon size to the local player (debug Player tab).
+## STANDING ORDER (owner 2026-08-24): a feature F2 cannot reach is invisible —
+## balloons cost crafted items from v0.49.0, so the playtest bench needs a way to
+## get stock without first hunting a whale for blubber and smelting copper.
+func debug_grant_balloons(n: int = 3) -> void:
+	if player == null or not is_instance_valid(player) or player.inventory == null:
+		return
+	for size in Ship.BALLOON_LIFT.size():
+		player.inventory.add(ItemDB.balloon_item_for(size), n)
 
 
 ## Heal the local player to full (debug Player tab).
@@ -2876,7 +2887,19 @@ func _attach_balloon_at_cursor() -> void:
 
 
 ## Tether a balloon of `size` at (ship, cell). Reach-gated (arm's length, like
-## mining/harvest) and authority-gated. Returns whether it attached.
+## mining/harvest), authority-gated, and — since v0.49.0 — PAID FOR: it spends
+## one crafted balloon of that size out of the player's pack (items/recipes.gd).
+## Returns whether it attached.
+##
+## The charge is deliberately here, in the world VERB, and not in
+## `Ship.attach_balloon`: the ship layer is the mechanism (a save, a joining
+## peer and the tests all attach balloons that were paid for long ago, or never
+## cost anything at all), while the verb is the one place a PLAYER spends. Same
+## split as terrain placement (try_place debits; Terrain.net_place does not).
+##
+## Order matters: every gate is checked BEFORE the stock is touched, and the item
+## comes out only after `attach_balloon` reports success — so a refused attach
+## can never eat the balloon.
 func try_attach_balloon(ship: Ship, cell: Vector2i, size: int) -> bool:
 	if ship == null or not is_instance_valid(ship) or not ship.has_block(cell):
 		return false
@@ -2885,11 +2908,45 @@ func try_attach_balloon(ship: Ship, cell: Vector2i, size: int) -> bool:
 		return false
 	if not NetUtil.is_authority(self):
 		return false  # networked balloon attach is a seam, like harvest
+	var item := ItemDB.balloon_item_for(size)
+	if not _has_balloon(size):
+		_notify("no %s in the pack — craft one (N/M): %s"
+			% [ItemDB.name_of(item), _balloon_recipe_cost(size)])
+		return false
 	if ship.attach_balloon(cell, size):
-		_notify("balloon tethered (%s) — lift +%d"
-			% [_balloon_size_name(size), int(Ship.BALLOON_LIFT[size])])
+		if player != null and is_instance_valid(player):
+			player.inventory.remove(item, 1)
+		_notify("balloon tethered (%s) — lift +%d   [%d left]"
+			% [_balloon_size_name(size), int(Ship.BALLOON_LIFT[size]),
+				_balloon_stock(size)])
 		return true
 	return false
+
+
+## How many crafted balloons of `size` the local player carries (0 with no body).
+func _balloon_stock(size: int) -> int:
+	if player == null or not is_instance_valid(player) or player.inventory == null:
+		return 0
+	return player.inventory.count(ItemDB.balloon_item_for(size))
+
+
+## Does the local player carry a balloon of `size` to spend?
+func _has_balloon(size: int) -> bool:
+	return _balloon_stock(size) > 0
+
+
+## The "2 Blubber + 1 Copper Ingot" half of the recipe that makes `size`, for the
+## empty-pack cue — read off items/recipes.gd rather than restated here, so the
+## cue can never quote a price the crafting table does not charge.
+func _balloon_recipe_cost(size: int) -> String:
+	var want := ItemDB.balloon_item_for(size)
+	for r in Recipes.RECIPES:
+		if int(r["output"]) == want:
+			var parts: Array[String] = []
+			for id in r["inputs"]:
+				parts.append("%d %s" % [int(r["inputs"][id]), ItemDB.name_of(id)])
+			return " + ".join(parts)
+	return "?"
 
 
 ## Draw specs for every attached balloon, for WorldOverlay (which owns no ship
@@ -2924,6 +2981,45 @@ func balloons_to_draw() -> Array:
 			})
 			i += 1
 	return out
+
+
+## The balloon BUILD GHOST, or null: what tethering the selected size at the cell
+## under the cursor would put there. Same geometry as a real balloon (so what you
+## see is what you get) minus the sway — a ghost that drifts reads as alive.
+##
+## It appears only when the verb would actually be offered: on foot, not piloting,
+## not over a UI panel, with the cursor on a real hull/corpse cell. `ok` folds the
+## two ways it can still refuse — out of reach, or no balloon of that size in the
+## pack — into ONE flag for the overlay to colour by, because the player does not
+## need two shades of "no" (the cue on U says which). Keeping the ghost off the
+## screen the rest of the time is the clean-UI rule: it is an answer to "where
+## will this go", asked only while you are aiming at something.
+## `cursor` defaults to INF, meaning "wherever the mouse actually is" — the
+## overlay's case. A caller (the startup test) can aim it explicitly instead,
+## because the live mouse is un-aimable headless and the camera moves the world
+## point under a fixed screen pixel every time the player does.
+func balloon_ghost_to_draw(cursor := Vector2.INF) -> Variant:
+	if player == null or not is_instance_valid(player) or player.is_piloting():
+		return null
+	if _ui_wants_mouse():
+		return null
+	var at := get_global_mouse_position() if cursor == Vector2.INF else cursor
+	var target := _ship_cell_under(at)
+	if target.is_empty():
+		return null
+	var ship: Ship = target[0]
+	var cell: Vector2i = target[1]
+	var size := _balloon_size
+	var u: float = ship.scale_unit
+	var anchor_pos: Vector2 = ship.to_global(ship.local_pos_of(cell))
+	return {
+		"anchor": anchor_pos,
+		"center": anchor_pos + Vector2(0.0, -Ship.BALLOON_CABLE_CELLS * Ship.CELL * u),
+		"radius": Ship.BALLOON_RADIUS_CELLS[size] * Ship.CELL * u,
+		"cables": int(Ship.BALLOON_CABLES[size]),
+		"unit": u,
+		"ok": _carcass_cell_in_reach(ship, cell) and _has_balloon(size),
+	}
 
 
 ## The authority mined `cell` (type) on behalf of `peer_id`. Credit that peer's
@@ -3285,11 +3381,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		# the action map), gated on not being over a UI panel.
 		KEY_Y:
 			_balloon_size = (_balloon_size + 1) % Ship.BALLOON_LIFT.size()
-			_notify("balloon: %s (%d tether%s, lift %d)" % [
+			# The CARRIED COUNT rides the cue (v0.49.0 — balloons are crafted and
+			# spent now): cycling is how you check stock, so the one cue answers
+			# "what does this size cost me and do I have one" without a panel.
+			_notify("balloon: %s (%d tether%s, lift %d) — %d in pack" % [
 				_balloon_size_name(_balloon_size),
 				Ship.BALLOON_CABLES[_balloon_size],
 				"" if Ship.BALLOON_CABLES[_balloon_size] == 1 else "s",
-				int(Ship.BALLOON_LIFT[_balloon_size])])
+				int(Ship.BALLOON_LIFT[_balloon_size]),
+				_balloon_stock(_balloon_size)])
 		KEY_U:
 			if not _ui_wants_mouse():
 				_attach_balloon_at_cursor()

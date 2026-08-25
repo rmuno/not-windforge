@@ -220,6 +220,7 @@ func _initialize() -> void:
 	_check_placing(world)
 	await _check_harvesting(world)
 	await _check_corpse_airship(world)
+	await _check_balloon_economy(world)
 	await _check_progression(world)
 	await _check_save_load(world)
 	await _check_taming(world, fleet)
@@ -601,6 +602,108 @@ func _check_corpse_airship(world: Node) -> void:
 		pl.disembark()
 
 	# Clean up so the later hosting check sees the untouched fleet.
+	corpse.queue_free()
+	await physics_frame
+	world.respawn_player()
+
+
+## BALLOONS ARE CRAFTED AND SPENT (v0.49.0). The end-to-end loop through the real
+## world verbs: an empty pack cannot tether (and loses nothing trying), the recipe
+## turns blubber + ingots into a balloon, and tethering spends exactly one and
+## lifts the body it is tied to. The ghost is checked here too — it is the only
+## place a live world, a real cursor target and a real inventory exist at once.
+func _check_balloon_economy(world: Node) -> void:
+	var pl = world.get("player")
+	if pl == null:
+		_ok(false, "a player exists for the balloon-economy check")
+		return
+	if pl.is_piloting():
+		pl.disembark()
+
+	# A dead two-cell slab to tether to, parked away from everything.
+	var corpse := Ship.new()
+	for c in [Vector2i(0, 0), Vector2i(1, 0)]:
+		corpse.blocks[c] = {"type": BlockDB.Type.BLUBBER, "hp": BlockDB.max_hp(BlockDB.Type.BLUBBER)}
+	corpse.gravity_scale = 0.0
+	corpse.shared_health_max = 100.0
+	corpse.shared_health = 0.0
+	world.get("fleet").add_child(corpse)
+	corpse.rebuild()
+	corpse.position = Vector2(-74000, -4000)
+	await physics_frame
+	pl.global_position = corpse.global_position
+
+	var size: int = Ship.BalloonSize.SMALL
+	var item: int = ItemDB.balloon_item_for(size)
+	pl.inventory.clear()
+
+	# --- An EMPTY PACK cannot tether (the whole point of the round) ----------
+	_ok(not world.try_attach_balloon(corpse, Vector2i(0, 0), size),
+		"tethering is REFUSED with no balloon in the pack (free build is over)")
+	_ok(corpse.balloons.is_empty(), "and nothing was attached by the refusal")
+	var lift_bare: float = corpse.balloon_lift_total()
+
+	# --- The recipe makes one ----------------------------------------------
+	var recipe := {}
+	for r in Recipes.RECIPES:
+		if int(r["output"]) == item:
+			recipe = r
+	_ok(not recipe.is_empty(), "a recipe exists that outputs a %s" % ItemDB.name_of(item))
+	for id in recipe["inputs"]:
+		pl.inventory.add(id, int(recipe["inputs"][id]))
+	_ok(Recipes.craft(pl.inventory, recipe) and pl.inventory.count(item) == 1,
+		"crafting the recipe puts one %s in the pack" % ItemDB.name_of(item))
+
+	# --- The GHOST answers "where would it go" ------------------------------
+	# Aimed explicitly: the live mouse cannot be pointed headless, and the camera
+	# moves the world point under a fixed screen pixel every time the player
+	# does — so the cursor is passed in (the overlay's call omits it).
+	var aim: Vector2 = corpse.to_global(corpse.local_pos_of(Vector2i(0, 0)))
+	var ghost = world.balloon_ghost_to_draw(aim)
+	_ok(ghost is Dictionary, "aiming at a corpse cell raises a balloon build ghost")
+	if ghost is Dictionary:
+		_ok(int(ghost["cables"]) == Ship.BALLOON_CABLES[size],
+			"the ghost wears the SELECTED size's tether count (%d)" % int(ghost["cables"]))
+		_ok(bool(ghost["ok"]), "and reads GREEN — in reach, with one in the pack")
+	# Empty the pack and the SAME aim reads RED: the ghost is telling you the
+	# attach would be refused, which is the whole reason it is coloured.
+	var stashed: int = pl.inventory.count(item)
+	pl.inventory.remove(item, stashed)
+	var broke = world.balloon_ghost_to_draw(aim)
+	_ok(broke is Dictionary and not bool(broke["ok"]),
+		"with an empty pack the ghost reads RED at the same cell")
+	pl.inventory.add(item, stashed)
+	# Out of REACH is the other red: step away and the same cell refuses.
+	var stood: Vector2 = pl.global_position
+	pl.global_position = stood + Vector2(100000.0, 0.0)
+	var far = world.balloon_ghost_to_draw(aim)
+	_ok(far is Dictionary and not bool(far["ok"]),
+		"and RED again from across the sky — the reach gate shows in the ghost")
+	pl.global_position = stood
+
+	# --- Tethering SPENDS exactly one and lifts -----------------------------
+	_ok(world.try_attach_balloon(corpse, Vector2i(0, 0), size),
+		"with one in the pack, the tether goes on")
+	_ok(pl.inventory.count(item) == 0,
+		"and it cost exactly one balloon (pack now %d)" % pl.inventory.count(item))
+	_ok(corpse.balloons.size() == 1, "the corpse carries one balloon")
+	_ok(corpse.balloon_lift_total() > lift_bare,
+		"the tethered balloon adds lift (%.0f -> %.0f)"
+			% [lift_bare, corpse.balloon_lift_total()])
+	# And a SECOND attach with the emptied pack is refused again — the spend is
+	# real, not a one-time gate that stays open once you have paid once.
+	_ok(not world.try_attach_balloon(corpse, Vector2i(1, 0), size),
+		"the emptied pack cannot tether a second balloon")
+	_ok(corpse.balloons.size() == 1, "so the corpse still carries exactly one")
+
+	# --- F2 grants stock (the standing order's playtest bench) --------------
+	world.debug_grant_balloons(2)
+	_ok(pl.inventory.count(item) == 2,
+		"the F2 Player-tab grant fills the pack (%d)" % pl.inventory.count(item))
+	_ok(world.try_attach_balloon(corpse, Vector2i(1, 0), size),
+		"and a granted balloon tethers like a crafted one")
+
+	pl.inventory.clear()
 	corpse.queue_free()
 	await physics_frame
 	world.respawn_player()

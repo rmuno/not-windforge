@@ -48,6 +48,14 @@ enum Crafted {
 	LIFE_SUPPORT,              ## 202 — the deep-air survival gear (player/life_support.gd):
 	                           ##       carry one and the deep band's unbreathable air can't
 	                           ##       suffocate you. Crafted from copper ingot + blubber.
+	# The three PREBUILT balloon sizes (the owner's source model: fixed sizes with
+	# fixed tether counts — Ship.BalloonSize). ONE item per size rather than one
+	# item plus a size field, because the inventory is a flat id->count map: a
+	# stack of "balloon" that is secretly three different things cannot be counted,
+	# shown, or sold. Order MUST match Ship.BalloonSize — BALLOON_ITEMS indexes on it.
+	BALLOON_SMALL,             ## 203 — 1 tether, 250 lift
+	BALLOON_MEDIUM,            ## 204 — 2 tethers, 480 lift
+	BALLOON_LARGE,             ## 205 — 3 tethers, 750 lift
 }
 
 ## Products + crafted goods, name/color for the HUD and pickup floats. Terrain
@@ -61,7 +69,30 @@ const ITEMS := {
 	Crafted.WHALE_OIL:    {"name": "Whale Oil",    "color": Color(0.30, 0.28, 0.16)},
 	Crafted.INGOT:        {"name": "Copper Ingot", "color": Color(0.80, 0.52, 0.32)},
 	Crafted.LIFE_SUPPORT: {"name": "Aether Lung",  "color": Color(0.55, 0.80, 0.74)},
+	Crafted.BALLOON_SMALL:  {"name": "Small Balloon",  "color": Color(0.88, 0.84, 0.66)},
+	Crafted.BALLOON_MEDIUM: {"name": "Medium Balloon", "color": Color(0.86, 0.78, 0.58)},
+	Crafted.BALLOON_LARGE:  {"name": "Large Balloon",  "color": Color(0.84, 0.72, 0.50)},
 }
+
+## Balloon SIZE (Ship.BalloonSize) -> the crafted item you spend to tether one.
+## The single place that mapping lives, so the recipe table, the attach verb, the
+## HUD cue and the tests cannot drift apart.
+const BALLOON_ITEMS := [
+	Crafted.BALLOON_SMALL, Crafted.BALLOON_MEDIUM, Crafted.BALLOON_LARGE,
+]
+
+
+## The crafted item spent to tether a balloon of `size` (Ship.BalloonSize). An
+## out-of-range size CLAMPS rather than crashing — a bad size is a caller bug,
+## not a reason to take the frame down.
+static func balloon_item_for(size: int) -> int:
+	return BALLOON_ITEMS[clampi(size, 0, BALLOON_ITEMS.size() - 1)]
+
+
+## The balloon SIZE `id` stands for, or -1 when it is not a balloon item at all.
+## The inverse of balloon_item_for.
+static func balloon_size_of(id: int) -> int:
+	return BALLOON_ITEMS.find(id)
 
 
 ## Is `id` a terrain-material item? (The [0,100) range.) AIR (0) is not a real

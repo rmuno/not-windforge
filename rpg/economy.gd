@@ -33,6 +33,12 @@ const VALUES := {
 	# Crafted goods — refining adds value (oil is 8x blubber in the source).
 	ItemDB.Crafted.WHALE_OIL: 50,
 	ItemDB.Crafted.INGOT: 20,
+	# DELIBERATELY ABSENT — GEAR, not salvage: the Aether Lung and the three
+	# balloons. Selling is a BULK verb (0 dumps everything sellable in one
+	# press), so anything with a price is something a careless press can strip
+	# off you: your only life support before a dive, or the lift you crafted for
+	# the corpse you are standing on. Worth-0 items are left in the pack
+	# untouched. Give one a price only alongside a per-item sell UI.
 }
 
 

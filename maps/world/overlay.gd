@@ -27,6 +27,7 @@ func _draw() -> void:
 	_draw_mine_target()
 	_draw_place_target()
 	_draw_balloons()
+	_draw_balloon_ghost()
 	_draw_interact_prompt()
 	_draw_damage_numbers()
 	_draw_pickups()
@@ -130,6 +131,33 @@ func _draw_balloons() -> void:
 		draw_circle(center, radius, Color(1.0, 0.7, 0.7, 0.6), false, maxf(1.0, 1.5 * u))
 		draw_circle(center + Vector2(-radius * 0.32, -radius * 0.32),
 			radius * 0.32, Color(1.0, 1.0, 1.0, 0.35))
+
+
+## The balloon BUILD GHOST: where the selected size would tether if you pressed
+## U. Drawn in the same shape as the real thing (cables + bulb) but hollow and
+## tinted — GREEN when the attach would succeed, RED when it would be refused
+## (out of reach, or none of that size in the pack). All of that is decided in
+## the world's balloon_ghost_to_draw(); this only paints.
+func _draw_balloon_ghost() -> void:
+	var g: Variant = world.call("balloon_ghost_to_draw")
+	if g == null:
+		return
+	var spec := g as Dictionary
+	var anchor := spec["anchor"] as Vector2
+	var center := spec["center"] as Vector2
+	var radius := float(spec["radius"])
+	var cables := int(spec["cables"])
+	var u := float(spec["unit"])
+	var tint := Color(0.45, 0.95, 0.55) if bool(spec["ok"]) else Color(0.95, 0.35, 0.35)
+	var bottom := center + Vector2(0.0, radius)
+	for c in cables:
+		var spread := 0.0
+		if cables > 1:
+			spread = (float(c) / float(cables - 1) - 0.5) * 2.0
+		draw_line(bottom, anchor + Vector2(spread * Ship.CELL * u, 0.0),
+			Color(tint, 0.45), maxf(1.0, 1.2 * u))
+	draw_circle(center, radius, Color(tint, 0.16))
+	draw_circle(center, radius, Color(tint, 0.85), false, maxf(2.0, 2.0 * u))
 
 
 func _draw_interact_prompt() -> void:
