@@ -1,5 +1,17 @@
 # Runs every suite. Exits 0 only if all pass.
-#   powershell -File tests\run_all.ps1
+#   powershell -File tests/run_all.ps1          (full - the pre-merge certifier)
+#   powershell -File tests/run_all.ps1 -Quick   (unit suite + version gate only)
+#
+# GENTLE ON THE PLAY MACHINE (owner standing order 2026-08-25, after a crash
+# during parallel load): this runner and every Godot it spawns drop to
+# BelowNormal priority, so the owner session always wins the CPU.
+# Iterate with -Quick; run the FULL suite exactly once, to certify a merge.
+
+param([switch]$Quick)
+
+# Child processes inherit the priority class, so one line covers every Godot
+# (and the net_smoke child shell) launched below.
+try { (Get-Process -Id $PID).PriorityClass = "BelowNormal" } catch {}
 
 $godot = "D:\software\godot-4.6.0\Godot_v4.6-stable_win64.exe\Godot_v4.6-stable_win64_console.exe"
 if (-not (Test-Path $godot)) {
@@ -39,6 +51,10 @@ Write-Output "=== unit + physics ==="
 & $godot --headless --path $project --script "res://tests/run_tests.gd" | Select-String "checks,|^PASS|^FAIL"
 if ($LASTEXITCODE -ne 0) { $failed += "run_tests" }
 
+if ($Quick) {
+    Write-Output "=== quick mode: startup/pilot/net suites skipped (full run certifies the merge) ==="
+}
+if (-not $Quick) {
 Write-Output "=== 8x default startup ==="
 & $godot --headless --path $project --script "res://tests/scale_startup_test.gd" | Select-String "SCALE STARTUP|FAIL"
 if ($LASTEXITCODE -ne 0) { $failed += "8x_startup" }
@@ -63,6 +79,13 @@ if ($LASTEXITCODE -ne 0) { $failed += "pilot_8x" }
 Write-Output "=== multiplayer (two processes) ==="
 & powershell -File (Join-Path $PSScriptRoot "net_smoke.ps1") | Select-String "NET SMOKE|FAIL"
 if ($LASTEXITCODE -ne 0) { $failed += "net_smoke" }
+}
+
+# SAFETY NET: no test Godot may outlive the runner (a hung headless process is
+# invisible load on the play machine). CONSOLE-exe only -- the owner editor
+# is the GUI exe and must never be touched.
+Get-Process "Godot_v4.6-stable_win64_console" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
 
 # Version gate (owner 2026-08-20): anything merged to main MUST carry a new
 # x.y.z in project.godot's config/version. Enforced here because run_all is
