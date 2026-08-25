@@ -44,7 +44,7 @@ func _initialize() -> void:
 	_ok(fleet.ships().any(func(s) -> bool: return s.faction == 1),
 		"one of them is the hostile target hulk")
 	# Whales are the tier-2 creatures; critters the tier-1 (faction 2 both).
-	_ok(fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2).size() == world.WHALE_POD_SIZE,
+	_ok(fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken").size() == world.WHALE_POD_SIZE,
 		"the neutral whale pod is present (tier 2)")
 	_ok(fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level == 1).size() == world.CRITTER_COUNT,
 		"and a few small tameable critters (tier 1)")
@@ -57,7 +57,7 @@ func _initialize() -> void:
 	# for life. Assert the actual built collider is coarser than the precise
 	# merge — reading _use_coarse_collider() alone would miss the bug (it reads
 	# current health, true by now, even if the built collider is stale-precise).
-	var whale_ship = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2)[0]
+	var whale_ship = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken")[0]
 	var whale_shapes := 0
 	for c in whale_ship.get_children():
 		if c is CollisionShape2D:
@@ -188,17 +188,19 @@ func _initialize() -> void:
 	_ok(terr0 != null and terr0.is_solid(EasterEggs.cairn_cell_for(terr0)),
 		"the secret Cairn is present in the real generated world")
 
-	# TERRAIN RESOLUTION (owner: full 8× — "player ~8 tiles tall"). The default
-	# world generates at subdiv 8: a terrain cell renders at CELL×scale/8 px, so
-	# the ~1.2-cell-tall player of the coarse world now spans ~8+ terrain tiles.
-	# THE break-the-fix pin for the whole resolution round.
+	# TERRAIN RESOLUTION: the default world generates at the Tunables default
+	# (subdiv 4 since 2026-08-24 — the owner walked full-8× back to "1/4 the
+	# blocks, bigger each": 32px tiles, player ~4.5 tall). THE break-the-fix
+	# pin for the resolution rounds: finer than legacy-coarse, and exactly the
+	# registered default.
 	if terr0 != null:
 		var p_h: float = world.player.SIZE.y * world.player.scale.y \
 			if world.player != null else 0.0
 		var tiles: float = p_h / terr0.cell_px() if terr0.cell_px() > 0.0 else 0.0
-		_ok(terr0.subdiv == 8, "the default world generates at terrain subdiv 8")
-		_ok(tiles >= 6.0,
-			"the player spans ~8 terrain tiles (%.1f) — the world reads Windforge-proportioned" % tiles)
+		_ok(terr0.subdiv == Tunables.get_int("terrain_subdiv"),
+			"the default world generates at the registered subdiv default (%d)" % terr0.subdiv)
+		_ok(terr0.subdiv >= 2 and tiles >= 3.0,
+			"the player spans several terrain tiles (%.1f) — chunky, not pixel-fine, not coarse" % tiles)
 
 	# The character sheet (K) is hidden by default and toggles like the map/help.
 	var sheet = world.get("_character_sheet")
@@ -717,7 +719,7 @@ func _check_save_load(world: Node) -> void:
 ## is the single-player / server path, like whale spawning).
 func _check_taming(world: Node, fleet) -> void:
 	var p = world.get("player")
-	var whales: Array = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2)
+	var whales: Array = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken")
 	var critters: Array = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level == 1)
 	if p == null or whales.is_empty() or critters.is_empty() or p.stats == null:
 		_ok(false, "taming: a player with stats, a wild whale and a critter exist to test")
@@ -754,11 +756,12 @@ func _check_taming(world: Node, fleet) -> void:
 		"riding a small critter into terrain mines NOTHING (it is not a drill)")
 	world.dismount_creature()
 
-	# MASTER TRADER (LORE 5, taming tier 2): now the whale answers. It won't ram
-	# the tamer, and it is rideable.
+	# MASTER TRADER (LORE 5, taming tier 3): the whale AND the deep kraken answer
+	# (tier 3 since 2026-08-24 — krakens tame at the top bar). It won't ram the
+	# tamer, and it is rideable.
 	p.stats.set_level(StatDB.Stat.LORE, StatDB.MAX_LEVEL)
-	_ok(p.stats.taming_level() == 2, "Master Trader = taming tier 2")
-	_ok(world.try_tame(whale), "tier 2 tames the whale")
+	_ok(p.stats.taming_level() == 3, "Master Trader = taming tier 3 (whales + krakens)")
+	_ok(world.try_tame(whale), "the top tier tames the whale")
 	_ok(whale.faction == 0, "the tamed whale's allegiance flips to the player's side")
 	var ai = world._whale_ai_for(whale)
 	ai.provoke()
@@ -797,8 +800,15 @@ func _check_taming(world: Node, fleet) -> void:
 	var krakens: Array = fleet.ships().filter(func(s) -> bool: return s.creature_kind == "kraken")
 	if not krakens.is_empty():
 		var kraken = krakens[0]
-		_ok(not world.try_tame(kraken), "a kraken is REFUSED even at Master Trader — untameable")
-		_ok(kraken.faction == 2, "the kraken stays wild")
+		# TAMEABLE since 2026-08-24 (owner reversal: "you can tame krakens, they
+		# just are a little wild... and always do damage if you touch their
+		# mouth parts"): tier 3 — Master Trader (taming 3) answers it.
+		_ok(kraken.tame_level == 3, "a kraken tames at the TOP tier (3)")
+		_ok(world.try_tame(kraken), "Master Trader CAN tame a kraken")
+		_ok(kraken.faction == 0, "the tamed kraken joins the player's side")
+		# Restore to wild for the later hosting fleet checks.
+		kraken.faction = 2
+		world._whale_ai_for(kraken).tamed = false
 
 	# --- RIDE = THE LEASH (owner 2026-08-24) --------------------------------
 	# The ride is now the grapple LATCH, not a separate mount toggle: releasing
@@ -926,7 +936,7 @@ func _check_hosting_after_offline_play(world: Node, fleet) -> void:
 	_ok(world.get("local_ship") != null and is_instance_valid(world.local_ship),
 		"and is bound to a live one")
 
-	var whales: Array = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2)
+	var whales: Array = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken")
 	_ok(whales.size() == world.WHALE_POD_SIZE,
 		"the whole whale pod survived the switch (%d)" % whales.size())
 	if not whales.is_empty():

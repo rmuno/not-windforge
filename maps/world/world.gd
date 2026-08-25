@@ -1252,10 +1252,13 @@ func _spawn_one_kraken(path: String, pos: Vector2) -> Ship:
 		return null
 	kraken.shared_health = KRAKEN_HEALTH
 	kraken.shared_health_max = KRAKEN_HEALTH
-	kraken.creature_kind = "kraken"   # → KrakenAI (two-ended) + untameable
-	# tame_level 0: a kraken is never tameable, so it must fall OUTSIDE both the
-	# whale (>=2) and critter (==1) taming-tier filters the startup suites use.
-	kraken.tame_level = 0
+	kraken.creature_kind = "kraken"   # → KrakenAI (two-ended)
+	# TAMEABLE at the TOP tier (owner 2026-08-24, reversing the untameable
+	# ruling: "you can tame krakens, they just are a little wild in their
+	# movement and always do damage if you touch their mouth parts"). tame_level
+	# 3 keeps it OUTSIDE the whale (==2) and critter (==1) startup filters while
+	# gating on Master Trader + — Stats.taming_level() must reach it.
+	kraken.tame_level = 3
 	kraken.body_tint = Color(0.78, 0.82, 0.74)
 	kraken.rebuild()
 	# Latch the sealed LOOT CAVITY now, while the body is whole. The map cannot be
@@ -1774,9 +1777,6 @@ func try_tame(creature: Ship) -> bool:
 	if creature == null or not is_instance_valid(creature) \
 			or creature.faction != 2 or creature.is_carcass():
 		return false
-	# Krakens are wild deep hunters, never tameable — no perk reaches them.
-	if creature.creature_kind == "kraken":
-		return false
 	if player == null or not is_instance_valid(player) or player.stats == null \
 			or player.stats.taming_level() < creature.tame_level:
 		return false  # the Wisdom gate — a whale needs the higher perk than a critter
@@ -1825,8 +1825,10 @@ func _handle_taming(delta: float) -> void:
 			_notify("riding — release the hook (RMB) to let go")
 		_tame_reset()
 		return
-	# Otherwise this must be a WILD, tameable creature to bond with.
-	if creature.faction != 2 or creature.creature_kind == "kraken":
+	# Otherwise this must be a WILD, tameable creature to bond with. (Krakens
+	# qualify since 2026-08-24 — tame_level 3, Master Trader — they just stay
+	# wild-mannered and their mouth still bites; see KrakenAI.)
+	if creature.faction != 2:
 		_tame_reset()
 		return
 	# The gate, felt: without enough LORE for THIS creature's tier the bond never

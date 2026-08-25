@@ -74,20 +74,32 @@ func tick(delta: float, target: Node2D) -> void:
 	# kraken's own additions — the hunt restamp and the per-cell mouth grab —
 	# need a block grid, so they act on the SHIP prey only.
 	var prey_ship := target as Ship
-	# Aggression: hunt on sight. A wild kraken keeps itself provoked while a living
-	# prey is around, so the inherited align→push→glide ram runs immediately (the
-	# whale only rams AFTER being hit; the kraken does not wait). Untameable, so
-	# `tamed` is never set — but guard it anyway to stay honest with the base class.
+	# Aggression: hunt on sight. A WILD kraken keeps itself provoked while a
+	# living prey is around, so the inherited align→push→glide ram runs
+	# immediately (the whale only rams AFTER being hit; the kraken does not
+	# wait). A tamed one stops hunting — but stays dangerous (below).
 	if not tamed and not ridden and prey_ship != null and is_instance_valid(prey_ship) \
 			and not prey_ship.is_carcass():
 		_provoked_until = Time.get_ticks_msec() + HUNT_RESTAMP_MS
 	super.tick(delta, target)
-	# The mouth grab rides ON TOP of the inherited swim/ram: a living, wild kraken
-	# whose mouth has reached the prey chews it continuously. Two prey KINDS, one
-	# mouth: the block grid of a ship, and the PERSON standing in the jaws.
+	# A LITTLE WILD, always (owner 2026-08-24 — krakens are tameable but "a
+	# little wild in their movement"): a living kraken never sits still. A
+	# deterministic two-frequency wander force rides on top of whatever the
+	# base brain (roam / tamed loiter / the rider's steer) decided — small
+	# enough to flavour, not fight, the steering.
+	if _is_alive():
+		var u := whale.scale_unit
+		var wild := Tunables.get_num("kraken_wildness") * u
+		whale.apply_central_force(Vector2(
+			sin(_t * 2.7) + 0.5 * sin(_t * 6.1),
+			cos(_t * 3.3) + 0.5 * cos(_t * 5.3)) * wild * whale.mass)
+	# THE MOUTH ALWAYS BITES (owner: krakens "always do damage if you touch
+	# their mouth parts" — tamed or wild, tamer included). Two prey KINDS, one
+	# mouth: the block grid of a ship (wild hunting only — the world hands a
+	# tamed brain no ship target), and ANY person standing in the jaws.
 	grabbing = false
 	grabbing_player = false
-	if not _is_alive() or tamed:
+	if not _is_alive():
 		return
 	if prey_ship != null and is_instance_valid(prey_ship) and not prey_ship.is_carcass():
 		_mouth_grab(delta, prey_ship)

@@ -84,7 +84,7 @@ const STATS := {
 			{"name": "Haggler", "desc": "Salvage sells for more.", "effect": {"trade_bonus": 0.25}},
 			{"name": "Beast Whisperer", "desc": "You can tame small beasts — grapple, hold, and ride them.", "effect": {"taming": 1}},
 			{"name": "Artisan", "desc": "Your craft comes out finer. [STUB: craft quality not built]", "effect": {}},
-			{"name": "Master Trader", "desc": "The best prices in the sky — and the great whales themselves answer you.", "effect": {"trade_bonus": 0.6, "taming": 2}},
+			{"name": "Master Trader", "desc": "The best prices in the sky — and the great whales, even the deep krakens, answer you.", "effect": {"trade_bonus": 0.6, "taming": 3}},
 		],
 	},
 }

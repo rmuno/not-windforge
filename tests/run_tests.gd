@@ -2420,6 +2420,15 @@ func _test_kraken_mouth_bites_the_player_on_foot() -> void:
 		"the reach lever gates the bite — zeroed, even the jaws cannot reach")
 	Tunables.reset("kraken_grab_reach")
 
+	# TAMED, IT STILL BITES (owner 2026-08-24: krakens "always do damage if you
+	# touch their mouth parts" — the tamer included). Taming ends the HUNT, not
+	# the jaws: a person in the mouth of your own kraken is chewed all the same.
+	ai.tamed = true
+	var tame_drain: float = await _bite_drain(ai, p, jaws, 10)
+	_check(tame_drain > 0.0 and ai.grabbing_player,
+		"a TAMED kraken's mouth still chews a person in the jaws (%.1f hp)" % tame_drain)
+	ai.tamed = false
+
 	# A CARCASS does not bite: an emptied pool stops the mouth with the swim.
 	kraken.shared_health = 0.0
 	var dead_drain: float = await _bite_drain(ai, p, jaws, 10)
@@ -2598,10 +2607,12 @@ func _test_taming_bar_scales_with_creature_tier() -> void:
 	_check(s.taming_enabled(), "taming is enabled")
 	_check(s.taming_level() >= 1 and s.taming_level() < 2,
 		"tier 1 tames a small critter but not a whale")
-	# Master Trader (LORE 5): tier 2 — the great whales answer too.
+	# Master Trader (LORE 5): tier 3 — the great whales AND the deep krakens
+	# answer (owner 2026-08-24: krakens tame at the top bar, kraken.tame_level 3).
 	s.set_level(StatDB.Stat.LORE, StatDB.MAX_LEVEL)
-	_check(s.taming_level() == 2, "Master Trader = taming tier 2")
-	_check(s.taming_level() >= 2, "tier 2 tames a whale")
+	_check(s.taming_level() == 3, "Master Trader = taming tier 3 (whales + krakens)")
+	_check(s.taming_level() >= 2, "tier 3 tames a whale")
+	_check(s.taming_level() >= 3, "and the top bar reaches a kraken (tame_level 3)")
 
 
 ## ENEMY FLEE (Sprint 4 smarter enemies). An outmatched bandit — guns gone, hull
