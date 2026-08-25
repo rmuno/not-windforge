@@ -121,8 +121,12 @@ func _draw_balloons() -> void:
 				spread = (float(c) / float(cables - 1) - 0.5) * 2.0
 			var foot := anchor + Vector2(spread * Ship.CELL * u, 0.0)
 			draw_line(bottom, foot, cable_col, maxf(1.0, 1.4 * u))
-		# The bulb: a warm helium red, a soft rim, and a highlight so it reads round.
-		draw_circle(center, radius, Color(0.86, 0.40, 0.38))
+		# The bulb: a warm helium red, a soft rim, and a highlight so it reads
+		# round. DAMAGE DARKENS it — a balloon is ONE placeable (a hit anywhere
+		# hurts all of it), so a bag you have been shooting reads as nearly gone.
+		var health := float(s.get("health", 1.0))
+		draw_circle(center, radius,
+			Color(0.86, 0.40, 0.38).lerp(Color(0.34, 0.16, 0.16), 1.0 - health))
 		draw_circle(center, radius, Color(1.0, 0.7, 0.7, 0.6), false, maxf(1.0, 1.5 * u))
 		draw_circle(center + Vector2(-radius * 0.32, -radius * 0.32),
 			radius * 0.32, Color(1.0, 1.0, 1.0, 0.35))

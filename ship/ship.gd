@@ -335,20 +335,40 @@ var creature_kind := ""
 ## body; the balloon renders above on its cable — see WorldOverlay). A balloon
 ## whose anchor cell is mined or severed away DETACHES on the next rebuild. Rides
 ## the payload + save so a built airship persists.
-enum BalloonSize { SMALL, LARGE }
+## THE SOURCE MODEL (owner 2026-08-24, correcting the v1 seam list): balloons are
+## RIGID PREBUILT PLACEABLES — a few fixed sizes, each with a SET number of
+## tethers, and NOT independently destructible cell by cell: "when the balloon is
+## damaged or destroyed, the entire placeable has the same effect (no need to
+## destroy EVERY block of the balloon, just have to hit it from anywhere)". So a
+## balloon is ONE object with ONE hp pool: any hit anywhere on its bulb damages
+## the whole thing, and at zero it POPS entirely — its lift gone in an instant,
+## which is the drama (a shot balloon drops what it was holding up).
+enum BalloonSize { SMALL, MEDIUM, LARGE }
 ## Lift each size adds (same units as a block's lift — a gasbag is 44; these are
 ## big external balloons). Generous: a handful floats a mined-down corpse chunk.
 ## THE balloon feel knob (ram/whatnot elsewhere).
-const BALLOON_LIFT := [250.0, 750.0]
-## Cable count per size — small ONE, large up to THREE (owner's spec). Visual only
-## (the lift is applied at the anchor); read by the renderer.
-const BALLOON_CABLES := [1, 3]
+const BALLOON_LIFT := [250.0, 480.0, 750.0]
+## Cable count per size — small ONE, medium TWO, large THREE (owner's spec:
+## "the smallest only has 1 tether, and the largest has 3"). Visual only (the
+## lift is applied at the anchor); read by the renderer.
+const BALLOON_CABLES := [1, 2, 3]
 ## Balloon body radius in cells (×scale): small ~a cell, large a few — 16×16 vs
 ## ~64×32 at 1× (owner). Renderer reads it.
-const BALLOON_RADIUS_CELLS := [1.2, 2.6]
+const BALLOON_RADIUS_CELLS := [1.2, 1.9, 2.6]
+## Hit points per size — the WHOLE placeable's pool, not per cell. Bigger bags
+## are bigger targets and take a little more to burst.
+const BALLOON_HP := [60.0, 90.0, 120.0]
 ## How high above its anchor a balloon rides on a taut cable, in cells (×scale).
 const BALLOON_CABLE_CELLS := 6.0
+## Attached balloons: {"cell": Vector2i, "size": int, "hp": float}. `hp` is the
+## placeable's single pool (see BALLOON_HP) — legacy entries without it are
+## healed to full on load.
 var balloons: Array = []
+
+## A balloon POPPED at this world point (its bulb centre) — the world floats a
+## damage number / cue and the renderer stops drawing it. Emitted from
+## damage_balloon only, so it fires exactly once per burst.
+signal balloon_popped(at: Vector2, size: int)
 
 ## TRUE only while a mining-capable mount (a ridden whale) is actively being
 ## driven — the world sets it each frame in _handle_riding and clears it on
@@ -909,7 +929,7 @@ func local_pos_of(cell: Vector2i) -> Vector2:
 func attach_balloon(cell: Vector2i, size: int) -> bool:
 	if not blocks.has(cell):
 		return false
-	balloons.append({"cell": cell, "size": size})
+	balloons.append({"cell": cell, "size": size, "hp": BALLOON_HP[size]})
 	rebuild()
 	return true
 
@@ -920,6 +940,50 @@ func balloon_lift_total() -> float:
 	for b in balloons:
 		t += BALLOON_LIFT[int(b["size"])]
 	return t
+
+
+## The world-space centre of balloon `i`'s bulb — where it floats on its taut
+## cable above its anchor. THE hit target: the whole placeable is one object, so
+## a shot anywhere within its radius of this point damages all of it. Shared by
+## the renderer and the hit test so what you see is exactly what you can shoot.
+func balloon_center(i: int) -> Vector2:
+	var b: Dictionary = balloons[i]
+	return to_global(local_pos_of(b["cell"])) \
+		+ Vector2(0.0, -BALLOON_CABLE_CELLS * CELL * scale_unit)
+
+
+## The balloon whose bulb contains `world_pos`, or -1. Nearest-centre wins when
+## bulbs overlap, so a cluster disambiguates cleanly.
+func balloon_at_global(world_pos: Vector2) -> int:
+	var best := -1
+	var best_d2 := INF
+	for i in balloons.size():
+		var r: float = BALLOON_RADIUS_CELLS[int(balloons[i]["size"])] * CELL * scale_unit
+		var d2 := (balloon_center(i) - world_pos).length_squared()
+		if d2 <= r * r and d2 < best_d2:
+			best_d2 = d2
+			best = i
+	return best
+
+
+## Damage balloon `i` as ONE PLACEABLE (owner's rule: a hit anywhere on it hurts
+## the whole thing, and at zero the WHOLE balloon pops — never a partial bag).
+## Returns true if it popped. The lift disappears with it via the rebuild, so a
+## shot balloon drops whatever it was holding up.
+func damage_balloon(i: int, amount: float) -> bool:
+	if i < 0 or i >= balloons.size():
+		return false
+	var b: Dictionary = balloons[i]
+	b["hp"] = float(b.get("hp", BALLOON_HP[int(b["size"])])) - amount
+	if b["hp"] > 0.0:
+		balloons[i] = b
+		return false
+	var at := balloon_center(i)
+	var size := int(b["size"])
+	balloons.remove_at(i)
+	rebuild()  # the lift goes with it, this frame
+	balloon_popped.emit(at, size)
+	return true
 
 
 # --- Derivation from the grid --------------------------------------------
@@ -2233,28 +2297,36 @@ func to_payload() -> Dictionary:
 	}
 
 
-## Attached balloons as a flat [cell.x, cell.y, size, ...] array (three ints each).
-## Rides `to_payload` so a built carcass-airship keeps its lift; decoded below.
+## Attached balloons as a flat [cell.x, cell.y, size, hp×100, ...] array (FOUR
+## ints each). Rides `to_payload` so a built carcass-airship keeps its lift AND
+## its battle damage; decoded below. hp is fixed-point ×100 to stay integral.
 func _encode_balloons() -> PackedInt32Array:
 	var out := PackedInt32Array()
-	out.resize(balloons.size() * 3)
+	out.resize(balloons.size() * 4)
 	var i := 0
 	for b in balloons:
 		out[i] = int(b["cell"].x)
 		out[i + 1] = int(b["cell"].y)
 		out[i + 2] = int(b["size"])
-		i += 3
+		out[i + 3] = int(round(float(b.get("hp", BALLOON_HP[int(b["size"])])) * 100.0))
+		i += 4
 	return out
 
 
-## Decode a flat balloon array back into the {"cell","size"} list. Absent/empty (a
-## legacy payload) yields none — a plain ship with no balloons, unchanged.
+## Decode a flat balloon array back into the {"cell","size","hp"} list.
+## Absent/empty (a legacy payload) yields none — a plain ship with no balloons,
+## unchanged. BACKWARD-COMPAT: the pre-hp format packed THREE ints per balloon;
+## a length divisible by 3 but not 4 is read that way and healed to full, so a
+## save made before balloons had hp still loads its airship.
 static func _decode_balloons(data: PackedInt32Array) -> Array:
 	var out: Array = []
+	var stride := 4 if data.size() % 4 == 0 else 3
 	var i := 0
-	while i + 2 < data.size():
-		out.append({"cell": Vector2i(data[i], data[i + 1]), "size": data[i + 2]})
-		i += 3
+	while i + stride - 1 < data.size():
+		var size: int = clampi(data[i + 2], 0, BALLOON_HP.size() - 1)
+		var hp: float = float(data[i + 3]) / 100.0 if stride == 4 else BALLOON_HP[size]
+		out.append({"cell": Vector2i(data[i], data[i + 1]), "size": size, "hp": hp})
+		i += stride
 	return out
 
 
@@ -2610,6 +2682,27 @@ func net_damage_cell(cell: Vector2i, amount: float) -> void:
 			diag.on_whale_damage(self, "shot", amount, Vector2.ZERO, false, shared_health)
 	else:
 		_request_damage.rpc_id(1, cell, amount)
+
+
+## Damage balloon `i` through the authority (the balloon twin of net_damage_cell:
+## a balloon's hp and its pop are structural state, so the server owns them and a
+## client forwards the request). Floats a damage number at the bulb either way.
+func net_damage_balloon(i: int, amount: float) -> void:
+	if is_authority():
+		if i < 0 or i >= balloons.size():
+			return
+		var at := balloon_center(i)
+		damage_balloon(i, amount)
+		combat_damage.emit(at, amount)
+	else:
+		_request_balloon_damage.rpc_id(1, i, amount)
+
+
+@rpc("any_peer", "reliable")
+func _request_balloon_damage(i: int, amount: float) -> void:
+	if not multiplayer.is_server():
+		return  # a client must never act on another peer's request
+	net_damage_balloon(i, amount)
 
 
 ## The authority-side combat-damage path, shared by net_damage_cell and a

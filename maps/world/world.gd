@@ -2115,6 +2115,18 @@ func _watch_collisions() -> void:
 		# Gunfire floats through the SAME coalescing manager — a whale soaking a
 		# turret burst now shows one growing number, not silence (owner 2026-08-23).
 		ship.combat_damage.connect(_on_collision_damage.bind(ship))
+		# A balloon bursting is a moment: one loud float at the bulb, since the
+		# lift it was holding vanishes the same frame.
+		ship.balloon_popped.connect(_on_balloon_popped)
+
+
+## A tethered balloon BURST (Ship.balloon_popped): float a cue at the bulb. The
+## lift is already gone (the pop rebuilds the body), so this is the read on why
+## the airship just sagged.
+func _on_balloon_popped(at: Vector2, size: int) -> void:
+	if _pickups != null:
+		_pickups.add(at, "%s balloon POPPED" % _balloon_size_name(size).capitalize(),
+			float(world_scale))
 
 
 ## Wire the local player's `died` signal once, so a 0-HP death respawns the body.
@@ -2844,6 +2856,15 @@ func _ship_cell_under(cursor: Vector2) -> Array:
 	return [best, best_cell] if best != null else []
 
 
+## Display name for a Ship.BalloonSize — one place, so the cycle cue, the attach
+## cue and the HUD never disagree about what "medium" is called.
+static func _balloon_size_name(size: int) -> String:
+	match size:
+		Ship.BalloonSize.SMALL: return "small"
+		Ship.BalloonSize.MEDIUM: return "medium"
+	return "large"
+
+
 func _attach_balloon_at_cursor() -> void:
 	if player == null or not is_instance_valid(player) or player.is_piloting():
 		return
@@ -2866,7 +2887,7 @@ func try_attach_balloon(ship: Ship, cell: Vector2i, size: int) -> bool:
 		return false  # networked balloon attach is a seam, like harvest
 	if ship.attach_balloon(cell, size):
 		_notify("balloon tethered (%s) — lift +%d"
-			% ["large" if size == 1 else "small", int(Ship.BALLOON_LIFT[size])])
+			% [_balloon_size_name(size), int(Ship.BALLOON_LIFT[size])])
 		return true
 	return false
 
@@ -2895,6 +2916,11 @@ func balloons_to_draw() -> Array:
 				"radius": Ship.BALLOON_RADIUS_CELLS[size] * Ship.CELL * u,
 				"cables": int(Ship.BALLOON_CABLES[size]),
 				"unit": u,
+				# 1.0 = pristine, 0 = about to burst. The bulb darkens as it takes
+				# hits, so a balloon you have been shooting reads as nearly gone
+				# (it is ONE placeable — any hit hurts all of it).
+				"health": clampf(float(b.get("hp", Ship.BALLOON_HP[size]))
+					/ Ship.BALLOON_HP[size], 0.0, 1.0),
 			})
 			i += 1
 	return out
@@ -3259,7 +3285,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		# the action map), gated on not being over a UI panel.
 		KEY_Y:
 			_balloon_size = (_balloon_size + 1) % Ship.BALLOON_LIFT.size()
-			_notify("balloon size: %s" % ("large" if _balloon_size == 1 else "small"))
+			_notify("balloon: %s (%d tether%s, lift %d)" % [
+				_balloon_size_name(_balloon_size),
+				Ship.BALLOON_CABLES[_balloon_size],
+				"" if Ship.BALLOON_CABLES[_balloon_size] == 1 else "s",
+				int(Ship.BALLOON_LIFT[_balloon_size])])
 		KEY_U:
 			if not _ui_wants_mouse():
 				_attach_balloon_at_cursor()
