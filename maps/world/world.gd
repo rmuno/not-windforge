@@ -3243,10 +3243,11 @@ func _held_placeable() -> int:
 #
 # "There should be only ONE key for placing things." Q places whatever is
 # SELECTED; B cycles the selection (Shift+B backwards). The palette is one flat
-# list: every buildable ship block, then each terrain material actually carried,
-# then each crafted balloon size actually carried. Empty stacks are skipped, so
-# the list stays short early on and never offers something Q would refuse for
-# stock. Ship blocks are free-build today (BACKLOG) so they are always listed.
+# list: every buildable ship block, then each terrain material actually
+# carried (empty stacks skipped — materials are discovered by mining), then
+# the three tethered balloon sizes ALWAYS (hiding them while unstocked made
+# the feature undiscoverable — owner 2026-08-25). Ship blocks are free-build
+# today (BACKLOG) so they are always listed too.
 #
 # The selection is stored as a KIND plus the per-kind id (build_type /
 # _held_material / _balloon_size), never as a list index: stacks appear and
@@ -3280,9 +3281,17 @@ func _build_palette() -> Array:
 		for id in player.inventory.types():
 			if ItemDB.is_placeable_terrain(id) and player.inventory.count(id) > 0:
 				out.append({"kind": "terrain", "id": id})
-		for size in Ship.BALLOON_LIFT.size():
-			if player.inventory.count(ItemDB.balloon_item_for(size)) > 0:
-				out.append({"kind": "balloon", "id": size})
+	# The three TETHERED BALLOONS are ALWAYS in the cycle, stock or no stock
+	# (owner 2026-08-25: "I can't find the latched helium balloon — it was
+	# available in one of the previous iterations"). They used to be hidden
+	# while unstocked, which made the whole feature invisible to anyone who
+	# had not already crafted one. An empty size shows its x0 in the cue,
+	# reads RED in the ghost, and Q answers with the recipe to sew one —
+	# the path to the feature instead of its absence. Terrain stays
+	# skip-when-empty: materials are discovered by mining, and the carried
+	# pack is their natural roster.
+	for size in Ship.BALLOON_LIFT.size():
+		out.append({"kind": "balloon", "id": size})
 	return out
 
 
