@@ -84,6 +84,8 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 1.2, "min": 0.1, "max": 5.0, "step": 0.1},         # world.ENEMY_FIRE_COOLDOWN
 	{"id": "flee_hull_fraction", "label": "Bandit flee hull fraction", "group": "Combat",
 		"kind": KIND_FLOAT, "default": 0.45, "min": 0.0, "max": 1.0, "step": 0.05},       # ShipAI.FLEE_HULL_FRACTION
+	{"id": "kraken_wildness", "label": "Kraken wildness (wander accel)", "group": "Combat",
+		"kind": KIND_FLOAT, "default": 150.0, "min": 0.0, "max": 600.0, "step": 10.0},  # KrakenAI tamed/wild jitter — "a little wild in their movement" (owner)
 	{"id": "kraken_grab_dps", "label": "Kraken mouth-grab DPS", "group": "Combat",
 		"kind": KIND_FLOAT, "default": 120.0, "min": 0.0, "max": 1000.0, "step": 5.0},    # KrakenAI.GRAB_DPS
 	{"id": "kraken_grab_reach", "label": "Kraken mouth-grab reach (unscaled px)", "group": "Combat",
@@ -100,8 +102,8 @@ const _REGISTRY := [
 
 	# --- World (hazards, mining, repair) -------------------------------------
 	{"id": "terrain_subdiv", "label": "Terrain resolution (x finer; R regenerates)", "group": "World",
-		"kind": KIND_INT, "default": 8, "min": 1, "max": 8, "step": 1,
-		"note": "on world reset"},  # Terrain.subdiv — FULL 8x is the owner-approved default (player ~8 tiles tall); 1 = the legacy coarse world. Read at world BUILD only.
+		"kind": KIND_INT, "default": 4, "min": 1, "max": 8, "step": 1,
+		"note": "on world reset"},  # Terrain.subdiv — 4 (32px tiles, ~1/4 the cells of full-8x) per owner 2026-08-24: "WAY too many blocks... 1/4 or 1/8 the count, blocks bigger each". 8 = the too-fine full-8x; 1 = legacy coarse. Read at world BUILD only.
 	{"id": "mine_power", "label": "Mining power (hp/s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 240.0, "min": 10.0, "max": 2000.0, "step": 10.0},  # world.MINE_POWER
 	{"id": "mine_reach_cells", "label": "Mining reach (cells)", "group": "World",

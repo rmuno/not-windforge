@@ -22,14 +22,22 @@
 # Composition: K 54 (32.5%), M 112 (67.5%), no W. 166 solid cells, one island.
 # The shell is the SKIN (thin casing); the meat is the BULK it encloses.
 
-origin 11 4
+# MIRRORED 2026-08-24 (owner: "it is attacking with its meaty side and hurt
+# itself to death"): a creature's drawn facing follows its motion with the +x
+# side LEADING, so the old tip-LEFT/mouth-RIGHT authoring led with the MOUTH on
+# every ram and the meat paid the bill. Flipped: the armored shell tip is now on
+# the RIGHT (+x, leading -- squids jet mantle-first, tentacles trailing) and the
+# exposed mouth/meat trails on the LEFT. Directional words in the prose above
+# predate the flip; trust the grid.
 
-.....KKKKKKKKKKKKKKK..
-...KKKMMMMMMMMMMMMMKK.
-..KKMMMMMMMMMMMMMMMMKK
-.KKMMMMMMMMMMMMMMMMMM.
-KKMMMMMM..MMMMMMMMMMMM
-.KKMMMMMMMMMMMMMMMMMM.
-..KKMMMMMMMMMMMMMMMMKK
-...KKKMMMMMMMMMMMMMKK.
-.....KKKKKKKKKKKKKKK..
+origin 10 4
+
+..KKKKKKKKKKKKKKK.....
+.KKMMMMMMMMMMMMMKKK...
+KKMMMMMMMMMMMMMMMMKK..
+.MMMMMMMMMMMMMMMMMMKK.
+MMMMMMMMMMMM..MMMMMMKK
+.MMMMMMMMMMMMMMMMMMKK.
+KKMMMMMMMMMMMMMMMMKK..
+.KKMMMMMMMMMMMMMKKK...
+..KKKKKKKKKKKKKKK.....
