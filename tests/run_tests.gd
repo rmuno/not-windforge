@@ -45,6 +45,7 @@ func _initialize() -> void:
 	await _test_prop_wash_bends_slow_shots_more()
 	await _test_props_alone_hold_altitude()
 	await _test_balloons_lift_and_detach()
+	await _test_balloons_are_one_destructible_placeable()
 	await _test_whale_is_a_whale()
 	await _test_whale_is_one_unit_until_dead()
 	await _test_shots_snap_to_the_nearest_block_on_a_creature()
@@ -957,6 +958,82 @@ func _test_balloons_lift_and_detach() -> void:
 	_check(clone.balloons.size() == 1, "balloons ride the payload (%d)" % clone.balloons.size())
 	s.queue_free()
 	clone.queue_free()
+	await process_frame
+
+
+## THE SOURCE MODEL (owner 2026-08-24): balloons are RIGID PREBUILT PLACEABLES —
+## three fixed sizes with SET tether counts (1 / 2 / 3), and NOT independently
+## destructible: "when the balloon is damaged or destroyed, the entire placeable
+## has the same effect — no need to destroy EVERY block, just hit it from
+## anywhere". One pool per balloon; a hit anywhere on the bulb hurts all of it;
+## at zero the WHOLE thing pops and takes its lift with it.
+func _test_balloons_are_one_destructible_placeable() -> void:
+	_t("a balloon is ONE placeable: 3 prebuilt sizes, fixed tethers, pops whole")
+	_check(Ship.BALLOON_LIFT.size() == 3 and Ship.BALLOON_CABLES.size() == 3
+			and Ship.BALLOON_HP.size() == 3 and Ship.BALLOON_RADIUS_CELLS.size() == 3,
+		"three prebuilt balloon sizes, fully specified")
+	_check(Ship.BALLOON_CABLES == [1, 2, 3],
+		"tether counts are fixed per size: smallest 1, largest 3 (%s)"
+			% str(Ship.BALLOON_CABLES))
+	_check(Ship.BALLOON_LIFT[0] < Ship.BALLOON_LIFT[2]
+			and Ship.BALLOON_HP[0] < Ship.BALLOON_HP[2],
+		"a bigger bag lifts more and takes more to burst")
+
+	var b := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HULL})
+	b.position = Vector2(-64000, 0)
+	_check(b.attach_balloon(Vector2i(0, 0), Ship.BalloonSize.MEDIUM),
+		"a MEDIUM balloon (the new middle size) attaches")
+	var blift := b.balloon_lift_total()
+	_check(is_equal_approx(blift, Ship.BALLOON_LIFT[Ship.BalloonSize.MEDIUM]),
+		"and contributes its size's lift (%.0f)" % blift)
+
+	# A HIT ANYWHERE ON THE BULB counts: the edge is as good as the centre,
+	# because the whole placeable is one target.
+	var centre := b.balloon_center(0)
+	var rad: float = Ship.BALLOON_RADIUS_CELLS[Ship.BalloonSize.MEDIUM] * Ship.CELL * b.scale_unit
+	_check(b.balloon_at_global(centre) == 0, "the bulb centre hits the balloon")
+	_check(b.balloon_at_global(centre + Vector2(rad * 0.9, 0.0)) == 0,
+		"so does its EDGE — any part of the placeable is the whole placeable")
+	_check(b.balloon_at_global(centre + Vector2(rad * 3.0, 0.0)) == -1,
+		"a miss well clear of the bulb hits nothing")
+
+	# PARTIAL damage does NOT shrink it: still one whole balloon, still lifting
+	# exactly the same, just closer to bursting.
+	var popped := b.damage_balloon(0, Ship.BALLOON_HP[Ship.BalloonSize.MEDIUM] * 0.5)
+	_check(not popped and b.balloons.size() == 1,
+		"half its hp gone: still ONE whole balloon, no partial bag")
+	_check(is_equal_approx(b.balloon_lift_total(), blift),
+		"and its lift is undiminished until it bursts (%.0f)" % b.balloon_lift_total())
+
+	# The rest of the pool POPS the whole thing, and the lift vanishes with it.
+	var saw_pop := [false]
+	b.balloon_popped.connect(func(_at: Vector2, _size: int) -> void: saw_pop[0] = true)
+	popped = b.damage_balloon(0, Ship.BALLOON_HP[Ship.BalloonSize.MEDIUM])
+	_check(popped and b.balloons.is_empty(),
+		"the finishing hit pops the ENTIRE placeable at once")
+	_check(saw_pop[0], "and announces it (balloon_popped)")
+	_check(is_equal_approx(b.balloon_lift_total(), 0.0),
+		"its lift is gone the same frame — a shot balloon drops what it held")
+
+	# Battle damage RIDES the payload: a half-shot balloon reloads half-shot.
+	_check(b.attach_balloon(Vector2i(1, 0), Ship.BalloonSize.LARGE), "a large balloon attaches")
+	b.damage_balloon(0, Ship.BALLOON_HP[Ship.BalloonSize.LARGE] * 0.5)
+	var hurt: float = float(b.balloons[0]["hp"])
+	var clone2 := Ship.from_data(b.to_payload())
+	root.add_child(clone2)
+	_check(clone2.balloons.size() == 1
+			and absf(float(clone2.balloons[0]["hp"]) - hurt) < 0.02,
+		"a damaged balloon round-trips its hp (%.1f)" % hurt)
+	# BACKWARD-COMPAT: the pre-hp payload packed THREE ints per balloon; such a
+	# save must still load its airship (healed to full), not lose it.
+	var old_style := Ship._decode_balloons(
+		PackedInt32Array([1, 0, Ship.BalloonSize.SMALL]))
+	_check(old_style.size() == 1
+			and is_equal_approx(float(old_style[0]["hp"]), Ship.BALLOON_HP[Ship.BalloonSize.SMALL]),
+		"a legacy 3-int balloon payload still loads, healed to full")
+
+	b.queue_free()
+	clone2.queue_free()
 	await process_frame
 
 

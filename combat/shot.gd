@@ -114,6 +114,29 @@ func fire(impulse: Vector2, platform_velocity := Vector2.ZERO) -> void:
 	position += platform_velocity / float(Engine.physics_ticks_per_second)
 
 
+## Did this step's flight segment [from, to] strike a tethered balloon? Damages
+## the whole placeable if so (Ship.damage_balloon — one pool, pops entirely) and
+## returns true, so the shell stops there. Faction rule as for hulls: a friendly
+## shell passes harmlessly through its own side's balloons.
+func _hit_a_balloon(from: Vector2, to: Vector2) -> bool:
+	for node in get_tree().get_nodes_in_group("ships"):
+		var ship := node as Ship
+		if ship == null or ship.balloons.is_empty() or ship.faction == faction:
+			continue
+		for i in ship.balloons.size():
+			var c := ship.balloon_center(i)
+			var r: float = Ship.BALLOON_RADIUS_CELLS[int(ship.balloons[i]["size"])] \
+				* Ship.CELL * ship.scale_unit
+			# Distance from the bulb centre to the segment this step covers.
+			var seg := to - from
+			var t := 0.0 if seg.length_squared() < 0.0001 \
+				else clampf((c - from).dot(seg) / seg.length_squared(), 0.0, 1.0)
+			if (from + seg * t).distance_to(c) <= r:
+				ship.net_damage_balloon(i, damage)
+				return true
+	return false
+
+
 func _physics_process(delta: float) -> void:
 	velocity.y += gravity * delta  # the arc is real
 	# Prop wash bends the flight (owner survey: the original's props
@@ -123,6 +146,14 @@ func _physics_process(delta: float) -> void:
 		velocity += (ship as Ship).wash_accel_at(position) * delta
 	var to := position + velocity * delta
 	_travelled += velocity.length() * delta
+	# BALLOONS FIRST: a tethered balloon is a rendered placeable with no physics
+	# body (its lift is applied at its anchor), so the raycast below cannot see
+	# it. Test this step's segment against every balloon bulb — a hit ANYWHERE on
+	# one damages the WHOLE placeable (owner's rule), and a burst drops the lift
+	# it was providing. Cheap: ships carry no balloons in the common case.
+	if _hit_a_balloon(position, to):
+		queue_free()
+		return
 	var space := get_world_2d().direct_space_state
 	# Mask layers 1|2|4: hulls, terrain, shield furniture (the control panel and
 	# closed doors block bullets), AND characters (layer 2) — so hostile fire can
