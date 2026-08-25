@@ -175,6 +175,19 @@ func _initialize() -> void:
 		_ok(mapv.visible, "Tab shows the map")
 		world._toggle_map()
 		_ok(not mapv.visible, "and Tab hides it again")
+		# THE MAP FRAMES THE WHOLE WORLD (owner 2026-08-25: "the map doesn't
+		# seem to have scaled with the world changes"). The true world px
+		# extent is subdiv-INVARIANT — WORLD_CELLS × CELL × world_scale, the
+		# same rect the boundary walls frame — and the map must read exactly
+		# it. Before the fix it read 1/subdiv of the world (a quarter at the
+		# shipped subdiv 4: this world's, since Tunables defaults subdiv 4).
+		var want: Vector2 = Vector2(IslandGen.WORLD_CELLS.size) 			* TerrainDB.CELL * float(world.world_scale)
+		var got: Vector2 = mapv._world_px_rect().size
+		_ok(got.is_equal_approx(want),
+			"the map frames the WHOLE subdiv-scaled world (%s of %s px)"
+				% [str(got), str(want)])
+		_ok(mapv._world_px_rect().has_point(world.get("_world_rect").get_center()),
+			"and it is the same rect the boundary walls frame")
 	if helpp != null:
 		world._toggle_help()
 		_ok(helpp.visible, "F1 shows the help/controls panel")

@@ -44,9 +44,17 @@ func toggle() -> void:
 
 func _world_px_rect() -> Rect2:
 	var cp := 16.0
-	if terrain != null:
-		cp = terrain.cell_px()
 	var wr := IslandGen.WORLD_CELLS
+	if terrain != null:
+		# SUBDIV-AWARE (owner 2026-08-25, "the map doesn't seem to have scaled
+		# with the world changes"): the world's CELL extent scales UP by subdiv
+		# exactly as cell_px scales DOWN by it, so the true px rect is their
+		# subdiv-invariant product — the same formula the boundary walls and
+		# the save's location label already use (CELL × world_scale). Reading
+		# raw WORLD_CELLS against the subdiv-divided cell_px framed only
+		# 1/subdiv of the world: a QUARTER of it at the shipped subdiv 4.
+		cp = terrain.cell_px()
+		wr = IslandGen.world_cells(terrain.subdiv)
 	return Rect2(Vector2(wr.position) * cp, Vector2(wr.size) * cp)
 
 
