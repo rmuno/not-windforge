@@ -183,6 +183,8 @@ func _initialize() -> void:
 	# transport silently refused would leave joiners staring at empty sky.
 	# (The 1× startup test asserts the crew/whale/one-ship-each properties;
 	# here the question is only whether it survives at full size.)
+	await _check_machine_bundles(world, local)
+
 	var before_count: int = fleet.ships().size()
 	var before_blocks: int = fleet.ships().reduce(
 		func(acc: int, s) -> int: return acc + s.blocks.size(), 0)
@@ -205,6 +207,83 @@ func _initialize() -> void:
 			net_node.stop()
 
 	_finish()
+
+
+## MACHINES PLACE AS BUNDLES at 8× (owner 2026-08-25: "an engine will never
+## be a single block, but a rectangle or square"). The real 8× world is the
+## only place this is observable — at 1× every bundle collapses to one cell
+## by design — so the whole verb path runs here: stamp on, all-or-nothing,
+## deconstruct whole, primitives untouched.
+func _check_machine_bundles(world: Node, local) -> void:
+	# A spot where a 4×4 engine fits: scan for an aim cell whose stamp is
+	# all-empty and touches the hull (the deck top guarantees candidates).
+	var aim := Vector2i.ZERO
+	var found_spot := false
+	for b in local.blocks:
+		var c: Vector2i = b + Vector2i(0, -2)
+		if BuildPreview.stamp_valid(local,
+				BuildPreview.stamp_cells(local, c, BlockDB.Type.ENGINE)):
+			aim = c
+			found_spot = true
+			break
+	_ok(found_spot, "a 4×4 engine stamp fits somewhere against the hull")
+	if not found_spot:
+		return
+
+	var before: int = local.blocks.size()
+	world.select_build("block", BlockDB.Type.ENGINE)
+	_ok(world.build_selection_label() == "build: Engine 4×4",
+		"the cycle cue names the engine's shape (%s)" % world.build_selection_label())
+	_ok(world.try_build_block(local, aim), "Q stamps the engine")
+	_ok(local.blocks.size() == before + 16,
+		"and the WHOLE 4×4 lands — 16 cells, never a single block (%d -> %d)"
+			% [before, local.blocks.size()])
+	var all_engine := true
+	var engine_cell := Vector2i.ZERO
+	for c in BuildPreview.stamp_cells(local, aim, BlockDB.Type.ENGINE):
+		if not local.has_block(c) or int(local.blocks[c]["type"]) != BlockDB.Type.ENGINE:
+			all_engine = false
+		else:
+			engine_cell = c
+	_ok(all_engine, "every stamped cell is an engine cell")
+
+	# ALL-OR-NOTHING: aiming the stamp into the machine that now stands there
+	# overlaps — refused outright, zero cells placed.
+	_ok(not world.try_build_block(local, aim),
+		"re-stamping onto the machine is refused (all-or-nothing)")
+	_ok(local.blocks.size() == before + 16, "and the refusal placed nothing")
+
+	# DECONSTRUCT WHOLE: C on any engine cell removes the machine, not a sliver.
+	_ok(world.try_remove_block(local, engine_cell),
+		"C on one engine cell deconstructs")
+	_ok(local.blocks.size() == before,
+		"...the WHOLE machine — all 16 cells gone (%d)" % local.blocks.size())
+
+	# PRIMITIVES are untouched: hull still places and removes cell by cell.
+	world.select_build("block", BlockDB.Type.HULL)
+	var hull_at := aim + Vector2i(0, 1)  # right against the deck block the scan anchored on
+	_ok(world.try_build_block(local, hull_at), "a hull block still places")
+	_ok(local.blocks.size() == before + 1, "...as ONE cell (freeform sculpting)")
+	_ok(world.try_remove_block(local, hull_at) and local.blocks.size() == before,
+		"and C takes back exactly that one cell")
+
+	# The 8× palette lists the propeller twice — both mountings, chosen by
+	# the cycle key, no new binding.
+	var rots := 0
+	var blocks_listed := 0
+	for e in world._build_palette():
+		if e["kind"] == "block":
+			blocks_listed += 1
+			if int(e["id"]) == BlockDB.Type.PROPELLER:
+				rots += 1
+	_ok(rots == 2 and blocks_listed == BlockDB.type_count(),
+		"the 8× palette offers both propeller mountings (%d block entries)"
+			% blocks_listed)
+	world.select_build("block", BlockDB.Type.PROPELLER, true)
+	_ok(world.build_selection_label() == "build: Propeller 2×6",
+		"the rotated propeller reads 2×6 (%s)" % world.build_selection_label())
+	world.select_build("block", BlockDB.Type.HULL)
+	await process_frame
 
 
 func _enemy_shot_exists(world: Node) -> bool:

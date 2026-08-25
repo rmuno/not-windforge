@@ -138,6 +138,7 @@ func _initialize() -> void:
 	await _test_crafting_consumes_inputs_and_yields_output()
 	await _test_craft_all_makes_the_whole_stack_in_one_action()
 	await _test_balloons_are_crafted_items()
+	await _test_machine_bundles_geometry()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
 	await _test_map_view_toggles_visibility()
@@ -6548,6 +6549,89 @@ func _test_balloons_are_crafted_items() -> void:
 		"an over-range size clamps to the largest balloon")
 	_check(ItemDB.balloon_item_for(-3) == ItemDB.balloon_item_for(Ship.BalloonSize.SMALL),
 		"and an under-range one to the smallest")
+	await _step(1)
+
+
+## MACHINES PLACE AS BUNDLES (owner 2026-08-25: "an engine will never be a
+## single block, but a rectangle or square — same for other NONPRIMITIVE
+## buildables"). The geometry layer: BlockDB.BUNDLE_8X shapes must agree with
+## the FOOTPRINT_8X areas the output normalisation already assumes (a drifted
+## shape would make a full hand-built machine out-produce or under-produce its
+## rating), stamps must be all-or-nothing, and the BFS order must satisfy the
+## per-cell can_place_at law the server enforces.
+func _test_machine_bundles_geometry() -> void:
+	_t("machine bundles: shapes match footprints; stamps land whole and in legal order")
+
+	# --- Shape × area consistency (break-the-fix for a careless reshape) ----
+	for type in BlockDB.BUNDLE_8X:
+		if BlockDB.FOOTPRINT_8X.has(type):
+			var dims: Vector2i = BlockDB.bundle_dims(type, 8.0)
+			_check(dims.x * dims.y == int(BlockDB.FOOTPRINT_8X[type]),
+				"%s bundle %d×%d covers exactly its normalised footprint (%d cells)"
+					% [BlockDB.get_def(type)["name"], dims.x, dims.y,
+						int(BlockDB.FOOTPRINT_8X[type])])
+	var eng: Vector2i = BlockDB.bundle_dims(BlockDB.Type.ENGINE, 8.0)
+	_check(eng == Vector2i(4, 4), "the engine is the owner's surveyed 4×4 square")
+	_check(BlockDB.bundle_dims(BlockDB.Type.PROPELLER, 8.0, true) == Vector2i(2, 6),
+		"rot swaps the propeller to its 2×6 mounting")
+	_check(BlockDB.bundle_dims(BlockDB.Type.ENGINE, 1.0) == Vector2i.ONE,
+		"at 1× every bundle collapses to one cell (the legacy fixtures)")
+	_check(BlockDB.bundle_dims(BlockDB.Type.HULL, 8.0) == Vector2i.ONE,
+		"hull is a PRIMITIVE — single-cell freeform at any scale")
+	_check(BlockDB.is_bundle(BlockDB.Type.ENGINE, 8.0)
+			and not BlockDB.is_bundle(BlockDB.Type.ENGINE, 1.0)
+			and not BlockDB.is_bundle(BlockDB.Type.GASBAG, 8.0),
+		"is_bundle says machine-at-8× and nothing else")
+
+	# --- Stamp geometry + validity on a real grid ---------------------------
+	# A 10-wide hull wall at y=0, scale_unit 8 so bundles are live.
+	var cells := {}
+	for x in 10:
+		cells[Vector2i(x, 0)] = BlockDB.Type.HULL
+	var s8 := _make_ship(cells)
+	s8.position = Vector2(-56000, 0)
+	s8.scale_unit = 8.0
+
+	var stamp := BuildPreview.stamp_cells(s8, Vector2i(4, -2), BlockDB.Type.ENGINE)
+	_check(stamp.size() == 16, "an engine stamp is 16 cells")
+	_check(stamp[0] == Vector2i(2, -4),
+		"...centred on the cursor (origin %s)" % str(stamp[0]))
+	_check(BuildPreview.stamp_valid(s8, stamp),
+		"empty cells touching the wall from outside — a legal stamp")
+	_check(not BuildPreview.stamp_valid(s8,
+			BuildPreview.stamp_cells(s8, Vector2i(4, -1), BlockDB.Type.ENGINE)),
+		"a stamp overlapping the wall is refused outright (all-or-nothing)")
+	_check(not BuildPreview.stamp_valid(s8,
+			BuildPreview.stamp_cells(s8, Vector2i(40, -40), BlockDB.Type.ENGINE)),
+		"a stamp floating in the void is refused (grow off a neighbour)")
+	_check(BuildPreview.stamp_cells(s8, Vector2i(3, -1), BlockDB.Type.HULL) == [Vector2i(3, -1)],
+		"a primitive's stamp is exactly the cursor cell")
+
+	# --- The order really satisfies the per-cell law ------------------------
+	# net_set_block enforces can_place_at cell by cell; walking stamp_order
+	# through it must land ALL 16. (A naive row-major order fails: the top
+	# rows have no neighbour yet.)
+	var placed := 0
+	for c in BuildPreview.stamp_order(s8, stamp):
+		s8.net_set_block(c, BlockDB.Type.ENGINE)
+	for c in stamp:
+		if s8.has_block(c) and int(s8.blocks[c]["type"]) == BlockDB.Type.ENGINE:
+			placed += 1
+	_check(placed == 16,
+		"stamp_order lands every cell through net_set_block's own gate (%d/16)" % placed)
+
+	# --- The machine region is the whole machine and only the machine -------
+	var region := BuildPreview.machine_region(s8, Vector2i(3, -4))
+	_check(region.size() == 16, "the engine's region is its 16 cells (%d)" % region.size())
+	var leaked := false
+	for c in region:
+		if int(s8.blocks[c]["type"]) != BlockDB.Type.ENGINE:
+			leaked = true
+	_check(not leaked, "...and never leaks into the hull it stands on")
+	_check(BuildPreview.machine_region(s8, Vector2i(0, 0)).size() == 10,
+		"a same-type region follows type boundaries (the hull wall is one region)")
+
+	s8.queue_free()
 	await _step(1)
 
 
