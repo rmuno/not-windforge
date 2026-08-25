@@ -2303,6 +2303,29 @@ func _test_kraken_ai_grabs_hovers_and_rams() -> void:
 	_check(kdrop < fdrop * 0.4,
 		"the wild kraken hovers, holding the deep (%.0f vs %.0f px dropped)" % [kdrop, fdrop])
 
+	# --- THE HUNT MUST NOT FALL EITHER (owner 2026-08-25: "they just fall
+	# endlessly when I spawn them"). A kraken restamps its own provocation
+	# every tick, so a spawned one lives almost entirely in the ram loop —
+	# whose PUSH and GLIDE phases used to apply no vertical support at all.
+	# Fine for a buoyant whale (net gravity ~0 during the coast), free-fall
+	# for a lift-less kraken; the unified swim bladder now spans every living
+	# phase. Prey far to the SIDE and frozen, so the brain cycles
+	# align→push→glide continuously while the altitude is watched.
+	var lure := _make_ship(_starter_ship())
+	lure.faction = 0
+	lure.scale_unit = 8.0
+	lure.position = kraken.global_position + Vector2(60000, 0)
+	lure.freeze = true
+	var hy0 := kraken.global_position.y
+	for i in 180:
+		ai.tick(1.0 / 60.0, lure)
+		await physics_frame
+	var hunt_drop := kraken.global_position.y - hy0
+	_check(absf(hunt_drop) < 3000.0,
+		"a HUNTING kraken holds its band through push and glide (drifted %.0f px; free fall would be ~35k)"
+			% hunt_drop)
+	lure.queue_free()
+
 	# MOUTH GRAB + AGGRESSION: place a prey ship right at the kraken's mouth. The
 	# kraken is never provoked by hand — it must hunt on sight and chew. Freeze both
 	# so the ram physics doesn't drift the jaws off the prey mid-measure; the grab
@@ -6579,9 +6602,14 @@ func _test_machine_bundles_geometry() -> void:
 	_check(BlockDB.bundle_dims(BlockDB.Type.HULL, 8.0) == Vector2i.ONE,
 		"hull is a PRIMITIVE — single-cell freeform at any scale")
 	_check(BlockDB.is_bundle(BlockDB.Type.ENGINE, 8.0)
-			and not BlockDB.is_bundle(BlockDB.Type.ENGINE, 1.0)
-			and not BlockDB.is_bundle(BlockDB.Type.GASBAG, 8.0),
-		"is_bundle says machine-at-8× and nothing else")
+			and not BlockDB.is_bundle(BlockDB.Type.ENGINE, 1.0),
+		"is_bundle says bundled-at-8×, collapses at 1×")
+	_check(BlockDB.bundle_dims(BlockDB.Type.GASBAG, 8.0) == Vector2i(4, 4),
+		"the gasbag PLACES as a 4×4 bag — the helium-balloon rule, never a loose cell")
+	_check(BlockDB.deconstructs_whole(BlockDB.Type.ENGINE, 8.0)
+			and not BlockDB.deconstructs_whole(BlockDB.Type.GASBAG, 8.0)
+			and not BlockDB.deconstructs_whole(BlockDB.Type.HULL, 8.0),
+		"machines deconstruct whole; the gasbag (bulk) and hull sculpt cell by cell")
 
 	# --- Stamp geometry + validity on a real grid ---------------------------
 	# A 10-wide hull wall at y=0, scale_unit 8 so bundles are live.
@@ -6630,6 +6658,35 @@ func _test_machine_bundles_geometry() -> void:
 	_check(not leaked, "...and never leaks into the hull it stands on")
 	_check(BuildPreview.machine_region(s8, Vector2i(0, 0)).size() == 10,
 		"a same-type region follows type boundaries (the hull wall is one region)")
+
+	# --- THE MAGNET (owner 2026-08-25: "almost impossible to place... it does
+	# not snap"). The engine placed above occupies rows -4..-1 over the wall;
+	# clear it first so the snap probes a clean sky.
+	for c in BuildPreview.machine_region(s8, Vector2i(3, -4)):
+		s8.remove_block(c)
+	# Aim 3 cells too high: the centred stamp floats (refused before the snap
+	# existed) — snapped_stamp slides it down onto the wall.
+	var snapped := BuildPreview.snapped_stamp(s8, Vector2i(4, -5), BlockDB.Type.ENGINE)
+	_check(not snapped.is_empty(), "a floating aim near the wall SNAPS to a legal spot")
+	_check(BuildPreview.stamp_valid(s8, snapped),
+		"...and the snapped stamp is itself legal")
+	var touches_wall := false
+	for c in snapped:
+		if s8.blocks.has(c + Vector2i(0, 1)):
+			touches_wall = true
+	_check(touches_wall, "...seated against the wall, not floating")
+	_check(BuildPreview.snapped_stamp(s8, Vector2i(4, -40), BlockDB.Type.ENGINE).is_empty(),
+		"an aim far out in the void snaps to nothing — the magnet has a range")
+	_check(BuildPreview.snapped_stamp(s8, Vector2i(4, -5), BlockDB.Type.HULL).is_empty(),
+		"a PRIMITIVE never snaps — a floating hull cell is simply refused")
+
+	# --- Gasbag: stamps as a bag, sculpts cell by cell ----------------------
+	var bag := BuildPreview.snapped_stamp(s8, Vector2i(4, -3), BlockDB.Type.GASBAG)
+	_check(bag.size() == 16, "the gasbag stamps 16 cells (4×4)")
+	for c in BuildPreview.stamp_order(s8, bag):
+		s8.net_set_block(c, BlockDB.Type.GASBAG)
+	_check(BuildPreview.machine_region(s8, bag[0]).size() == 16,
+		"the placed bag is one 16-cell region")
 
 	s8.queue_free()
 	await _step(1)

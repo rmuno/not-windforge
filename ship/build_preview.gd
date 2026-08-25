@@ -116,6 +116,38 @@ static func stamp_order(ship: Ship, cells: Array) -> Array:
 	return out
 
 
+## How far (Chebyshev cells) a bundle stamp hunts for a legal spot around the
+## cursor. 6 cells at 8× is under one authored block — a firm magnet, not
+## teleportation.
+const SNAP_RANGE := 6
+
+
+## The stamp the verb AND the ghost use: the cursor's own stamp when legal,
+## else the nearest legal stamp within SNAP_RANGE (ring search, deterministic
+## order so the ghost always shows exactly where Q will land). Owner 2026-08-25:
+## "it's almost impossible to place certain items because placement starts on
+## mouse and it does not snap" — a 4×4 engine needed a pixel-perfect hover
+## where every cell was empty AND one edge kissed the hull; now aiming roughly
+## at the deck magnetises the machine against it. Primitives do NOT snap: a
+## single hull cell goes where you point it or nowhere (freeform sculpting
+## would fight a magnet). Empty when nothing legal is in range.
+static func snapped_stamp(ship: Ship, cell: Vector2i, type: int, rot := false) -> Array:
+	var stamp := stamp_cells(ship, cell, type, rot)
+	if stamp_valid(ship, stamp):
+		return stamp
+	if not BlockDB.is_bundle(type, ship.scale_unit):
+		return []
+	for r in range(1, SNAP_RANGE + 1):
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if maxi(absi(dx), absi(dy)) != r:
+					continue
+				var shifted := stamp_cells(ship, cell + Vector2i(dx, dy), type, rot)
+				if stamp_valid(ship, shifted):
+					return shifted
+	return []
+
+
 ## The whole MACHINE under `cell`: the 4-connected region of same-type cells.
 ## What C deconstructs when the type is a bundle — "an engine is never a
 ## single block" cuts both ways, so you cannot whittle one down to a sliver

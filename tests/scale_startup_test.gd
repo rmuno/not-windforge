@@ -247,17 +247,37 @@ func _check_machine_bundles(world: Node, local) -> void:
 			engine_cell = c
 	_ok(all_engine, "every stamped cell is an engine cell")
 
-	# ALL-OR-NOTHING: aiming the stamp into the machine that now stands there
-	# overlaps — refused outright, zero cells placed.
-	_ok(not world.try_build_block(local, aim),
-		"re-stamping onto the machine is refused (all-or-nothing)")
-	_ok(local.blocks.size() == before + 16, "and the refusal placed nothing")
+	# ALL-OR-NOTHING still holds UNDERNEATH the magnet: the raw stamp over the
+	# standing machine is illegal — the snap (checked further down) is what
+	# finds a seat beside it, never a partial overlap.
+	_ok(not BuildPreview.stamp_valid(local,
+			BuildPreview.stamp_cells(local, aim, BlockDB.Type.ENGINE)),
+		"the raw stamp over the standing machine stays refused (all-or-nothing)")
+	_ok(local.blocks.size() == before + 16, "and probing placed nothing")
 
 	# DECONSTRUCT WHOLE: C on any engine cell removes the machine, not a sliver.
 	_ok(world.try_remove_block(local, engine_cell),
 		"C on one engine cell deconstructs")
 	_ok(local.blocks.size() == before,
 		"...the WHOLE machine — all 16 cells gone (%d)" % local.blocks.size())
+
+	# THE MAGNET (owner 2026-08-25: "almost impossible to place... it does not
+	# snap"): aim 3 cells above the seat that worked — the centred stamp
+	# floats there, which the old all-or-nothing simply refused — and the
+	# snap slides it to the nearest legal seat instead.
+	world.select_build("block", BlockDB.Type.ENGINE)
+	var seat: Array = BuildPreview.snapped_stamp(
+		local, aim + Vector2i(0, -3), BlockDB.Type.ENGINE)
+	_ok(not seat.is_empty(), "the snap finds a legal seat for the floating aim")
+	_ok(world.try_build_block(local, aim + Vector2i(0, -3)),
+		"and Q places there — no pixel-perfect hover needed")
+	_ok(local.blocks.size() == before + 16, "...the whole machine, as ever")
+	# Clean up the exact seat directly (the starter carries AUTHORED engines,
+	# so a scan-for-any-engine-cell would risk deleting one of those).
+	for c in seat:
+		if local.has_block(c):
+			local.net_remove_block(c)
+	_ok(local.blocks.size() == before, "the snapped machine cleans up exactly")
 
 	# PRIMITIVES are untouched: hull still places and removes cell by cell.
 	world.select_build("block", BlockDB.Type.HULL)
