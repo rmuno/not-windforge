@@ -252,11 +252,12 @@ func tick(delta: float, target: Node2D) -> void:
 		var throttle := Tunables.get_num("whale_ride_accel") * u * whale.ride_speed_mult
 		var s := steer.limit_length(1.0)
 		accel = s * throttle
-		# Tread water: when the rider is NOT driving vertically, the whale holds
-		# altitude by muscle instead of sinking (RIDE_HOLD_DAMP). Horizontal steer
-		# is untouched; the hold takes over only the vertical axis.
+		# Tread water: when the rider is NOT driving vertically, damp vertical
+		# drift toward zero (RIDE_HOLD_DAMP). The gravity-cancel half of the old
+		# _altitude_hold_accel now comes from the unified swim bladder below,
+		# so it holds in EVERY phase, not just the coasting deadzone.
 		if absf(s.y) < RIDE_STEER_DEADZONE:
-			accel.y = _altitude_hold_accel()
+			accel.y = -whale.linear_velocity.y * RIDE_HOLD_DAMP
 	elif tamed:
 		# A calm ally: never rams, never provoked — just the lazy roam around
 		# home, exactly as a peaceful wild whale drifts (below), so a tamed
@@ -267,10 +268,8 @@ func tick(delta: float, target: Node2D) -> void:
 		var to := desired - whale.global_position
 		if to.length() > 30.0 * u:
 			accel = to.normalized() * ROAM_ACCEL * u
-		# A tamed ally holds its band too, so one you dismount high up does not
-		# quietly sink out of the thin air while it loiters. Just cancel the
-		# unsupported weight — no drift damping, so the lazy roam stays lazy.
-		accel.y += _gravity_cancel_accel()
+		# (Altitude support comes from the unified swim bladder below — a
+		# tamed ally you dismount high up keeps its band while it loiters.)
 	elif Time.get_ticks_msec() < _provoked_until \
 			and (_attacker() != null or (target != null and is_instance_valid(target))):
 		# RETALIATION: the prey is the ATTACKER when we know who hit us (a ship
@@ -307,10 +306,8 @@ func tick(delta: float, target: Node2D) -> void:
 				_align_t += delta
 				accel = Vector2(signf(to.x) * 0.3, signf(to.y)).normalized() \
 					* Tunables.get_num("whale_align_accel") * u
-				# Hold station against gravity while manoeuvring (the hover
-				# exception): 0 for a buoyant whale, real muscle for a lift-less
-				# kraken that would otherwise sink out of the deep as it aligns.
-				accel.y += _gravity_cancel_accel()
+				# (Station-holding against gravity is the unified swim
+				# bladder below — it spans this align AND the push/glide.)
 		if _phase == Phase.PUSH:
 			_phase_t += delta
 			# One heavy horizontal force, purely sideways — as with the
@@ -345,11 +342,19 @@ func tick(delta: float, target: Node2D) -> void:
 		var to := desired - whale.global_position
 		if to.length() > 30.0 * u:
 			accel = to.normalized() * ROAM_ACCEL * u
-		# THE HOVER EXCEPTION (owner 2026-08-23): a WILD lift-less creature holds
-		# its band by muscle instead of sinking — a living kraken swims the deep,
-		# a carcass (early-out above) falls. `_gravity_cancel_accel` is 0 wherever
-		# buoyancy already floats the body, so a blubber whale is UNCHANGED.
-		accel.y += _gravity_cancel_accel()
+	# THE SWIM BLADDER (owner 2026-08-23 "hover exception"; unified 2026-08-25
+	# after "krakens fall endlessly"): a LIVING creature ALWAYS cancels its
+	# unsupported weight — buoyancy does it where there is lift
+	# (`_gravity_cancel_accel` is ~0 for a blubber whale, so whale feel is
+	# byte-identical), muscle does it where there is none (the kraken). It
+	# used to be sprinkled per-branch and MISSING from the ram's PUSH and
+	# GLIDE phases — harmless for buoyant whales, but a hunting kraken (which
+	# restamps its own provocation every tick) lived almost entirely in those
+	# phases and free-fell out of the world. The "thrown rock" glide feel was
+	# tuned on whales whose net gravity during the coast was already ~zero;
+	# this gives a lift-less creature that same coast, not a plummet. A
+	# carcass returned above — the dead still fall.
+	accel.y += _gravity_cancel_accel()
 	if accel != Vector2.ZERO:
 		whale.apply_central_force(accel * whale.mass)
 

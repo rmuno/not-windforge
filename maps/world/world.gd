@@ -2481,10 +2481,13 @@ func _build_target(cursor: Vector2) -> Ship:
 func try_build_block(ship: Ship, cell: Vector2i) -> bool:
 	if ship == null or not is_instance_valid(ship):
 		return false
+	# snapped_stamp magnetises a bundle to the nearest legal spot around the
+	# cursor (owner 2026-08-25: "almost impossible to place... does not snap");
+	# the ghost runs through the same call, so what it shows is what lands.
 	var order := BuildPreview.stamp_order(
-		ship, BuildPreview.stamp_cells(ship, cell, build_type, build_rot))
+		ship, BuildPreview.snapped_stamp(ship, cell, build_type, build_rot))
 	if order.is_empty():
-		return false  # overlaps something, or floats free — nothing placed
+		return false  # nothing legal near the cursor — nothing placed
 	for c in order:
 		ship.net_set_block(c, build_type)
 	return true
@@ -2499,7 +2502,10 @@ func try_remove_block(ship: Ship, cell: Vector2i) -> bool:
 	if ship == null or not is_instance_valid(ship) or not ship.has_block(cell):
 		return false
 	var type: int = ship.blocks[cell]["type"]
-	if not BlockDB.is_bundle(type, ship.scale_unit):
+	# deconstructs_whole, not is_bundle: the gasbag is bundle-PLACED but bulk
+	# — C sculpts it cell by cell (an authored ship's bag is one huge region;
+	# whole-region removal there turns a misclick into deleting the lift).
+	if not BlockDB.deconstructs_whole(type, ship.scale_unit):
 		ship.net_remove_block(cell)
 		return true
 	for c in BuildPreview.machine_region(ship, cell):
@@ -2521,8 +2527,16 @@ func _update_build_ghost(ship: Ship, cell: Vector2i) -> void:
 	# player a rule the game does not have. Note the game imposes no reach
 	# limit on building on YOUR ship; a carcass target is already
 	# reach-gated by _build_target.
-	var stamp := BuildPreview.stamp_cells(ship, cell, build_type, build_rot)
-	_ghost_valid = is_instance_valid(ship) and BuildPreview.stamp_valid(ship, stamp)
+	# The SNAPPED stamp — the same call the verb places through, so the green
+	# preview sits exactly where Q will land (possibly magnetised a few cells
+	# off the cursor). When even the snap finds nothing, fall back to the raw
+	# cursor stamp so the red preview still shows what was refused.
+	var stamp: Array = []
+	if is_instance_valid(ship):
+		stamp = BuildPreview.snapped_stamp(ship, cell, build_type, build_rot)
+	_ghost_valid = not stamp.is_empty()
+	if stamp.is_empty():
+		stamp = BuildPreview.stamp_cells(ship, cell, build_type, build_rot)
 	_ghost_shown = is_instance_valid(ship) and player != null \
 		and not player.is_piloting() \
 		and (_ghost_valid or ship.has_block(cell))

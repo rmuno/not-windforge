@@ -135,6 +135,14 @@ static func footprint_cells(type: int, su: float) -> float:
 ## door passes nobody. Types absent here are PRIMITIVES (hull, gasbag,
 ## ballast, platform, strut, flesh): freeform bulk, placed cell by cell.
 const BUNDLE_8X := {
+	# GASBAG (owner 2026-08-25, "a gasbag is just placeable as a single block
+	# — what happened to the helium balloon test?"): a helium bag is a
+	# prebuilt THING in the source, never a loose cell. It stamps 4×4 but
+	# stays BULK — lift per cell, no output normalisation, and C sculpts it
+	# cell by cell (see deconstructs_whole: the starter carries ~49k gasbag
+	# cells in a few connected bags; region-removal there would let one
+	# misclick delete the ship's whole lift).
+	Type.GASBAG: Vector2i(4, 4),
 	Type.ENGINE: Vector2i(4, 4),
 	Type.PROPELLER: Vector2i(6, 2),  # or 2×6 by mounting — see bundle_dims(rot)
 	Type.TURRET: Vector2i(2, 8),
@@ -154,9 +162,18 @@ static func bundle_dims(type: int, su: float, rot := false) -> Vector2i:
 	return Vector2i.ONE
 
 
-## Does `type` place (and deconstruct) as a bundle at this scale?
+## Does `type` PLACE as a bundle at this scale?
 static func is_bundle(type: int, su: float) -> bool:
 	return bundle_dims(type, su) != Vector2i.ONE
+
+
+## Does C remove `type` as a whole machine (the 4-connected region)? True for
+## the MACHINES — discrete units whose region is one authored component. The
+## gasbag is deliberately excluded: it is bundle-PLACED but BULK — authored
+## ships carry contiguous bags tens of thousands of cells large, and "remove
+## the whole region" there turns a misclick into deleting the ship's lift.
+static func deconstructs_whole(type: int, su: float) -> bool:
+	return is_bundle(type, su) and type != Type.GASBAG
 
 static func get_def(type: int) -> Dictionary:
 	return BLOCKS.get(type, BLOCKS[Type.HULL])
