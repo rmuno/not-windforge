@@ -5,6 +5,9 @@
 
 $ErrorActionPreference = "Stop"
 
+# Gentle on the play machine (see run_all.ps1): children inherit BelowNormal.
+try { (Get-Process -Id $PID).PriorityClass = "BelowNormal" } catch {}
+
 $godot = "D:\software\godot-4.6.0\Godot_v4.6-stable_win64.exe\Godot_v4.6-stable_win64_console.exe"
 if (-not (Test-Path $godot)) {
     Write-Error "Godot not found at $godot - update the path in this script."
