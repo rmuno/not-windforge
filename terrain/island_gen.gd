@@ -42,7 +42,7 @@ extends RefCounted
 ##   ~1 MiB — trivial against the desktop budget (DECISIONS 2026-08-18 sizes the
 ##   full 29×18-square original at a few hundred MB worst case). Empty sky costs
 ##   nothing because an all-air chunk has no dictionary entry at all.
-const WORLD_CELLS := Rect2i(-1536, -1152, 3072, 2304)
+const WORLD_CELLS := Rect2i(-6144, -4608, 12288, 9216)
 
 ## The default world seed — a fixed number gives a fixed world. Exposed through
 ## world.gd's `world_seed` export so the owner can reroll.
@@ -79,67 +79,131 @@ static func world_cells(sub: int) -> Rect2i:
 	return Rect2i(WORLD_CELLS.position * s, WORLD_CELLS.size * s)
 
 
-## Fill `terrain` with the seeded, banded world. `world` is the cell rect to
-## populate (defaults to the subdiv-scaled WORLD_CELLS); `seed` selects the world.
-## Every cell CONSTANT below is multiplied by the terrain's SUBDIV so the islands
-## keep their pixel size and position while gaining SUBDIV× finer detail — and the
-## RNG stream draws the identical count of values at any subdiv (the candidate
-## lattice count is world/SPACING, both ×SUBDIV, so it is invariant), which means
-## the subdiv=8 world is literally the subdiv=1 world at 8× resolution.
+## LAZY, REGION-AT-A-TIME GENERATION (2026-08-24 — the ×4 world). The candidate
+## lattice is anchored at cell 0 in ABSOLUTE index space: candidate (i, j) sits
+## at cell (i·SPACING·sub, j·SPACING·sub) and draws its OWN RandomNumberGenerator
+## seeded hash([seed, i, j]) — deterministic regardless of generation ORDER, and
+## invariant under both terrain SUBDIV (indices don't scale) and future world
+## EXTENT changes (growing the rect adds rim candidates without moving existing
+## ones). This replaced the single serial RNG stream because a ×4-linear world
+## made eager generation a ~25 s boot stall ("no loading screens ever" — the
+## charter): now the world generates region by region as foci approach
+## (ensure_generated, driven from world._stream_terrain), and world build only
+## plants the spawn floor (prime). NOTE: the RNG change means a given seed makes
+## a DIFFERENT world than pre-v0.45.1 builds — the save format gates this.
+
+## Prime a fresh world: the guaranteed spawn floor only (islands arrive lazily
+## via ensure_generated). Kept within the old hand-placed floor's footprint so
+## the startup/mining checks keep their known solid cells.
+static func prime(terrain: Terrain) -> void:
+	_spawn_floor(terrain, maxi(terrain.subdiv, 1))
+
+
+## Generate every not-yet-generated lattice region whose island could reach
+## within `radius_px` of any of `centers` (world px), up to `budget` regions per
+## call (amortization — a region is a bounded one-island paint, ~2-10 ms).
+## Returns how many regions were generated. Regions are remembered on the
+## terrain (gen_regions), so this is cheap when everything nearby exists.
+## After generating, RE-APPLIES the terrain's recorded edits — a loaded save's
+## diffs (or a late-join client's) may predate the region, and the island paint
+## must never clobber a player's recorded dig/place.
+static func ensure_generated(terrain: Terrain, seed_value: int,
+		centers: Array, radius_px: float, budget: int = 2) -> int:
+	var sub := maxi(terrain.subdiv, 1)
+	var world := world_cells(sub)
+	var spacing := SPACING * sub
+	var cp := terrain.cell_px()
+	# An island can reach (JITTER + R_MAX) cells from its lattice point.
+	var reach_cells := (JITTER + R_MAX) * sub
+	var margin_px := float(reach_cells) * cp + radius_px
+	var made := 0
+	for c in centers:
+		if made >= budget:
+			break
+		var centre_cell := terrain.world_to_cell(c)
+		# Index box: lattice points within margin_px of the focus.
+		var lo_i := floori((float(centre_cell.x) * cp - margin_px) / (spacing * cp))
+		var hi_i := floori((float(centre_cell.x) * cp + margin_px) / (spacing * cp))
+		var lo_j := floori((float(centre_cell.y) * cp - margin_px) / (spacing * cp))
+		var hi_j := floori((float(centre_cell.y) * cp + margin_px) / (spacing * cp))
+		for j in range(lo_j, hi_j + 1):
+			for i in range(lo_i, hi_i + 1):
+				if made >= budget:
+					break
+				var key := Vector2i(i, j)
+				if terrain.gen_regions.has(key):
+					continue
+				# Outside the world rect there is nothing to make — mark it so
+				# the rim never re-scans.
+				var px := i * spacing
+				var py := j * spacing
+				if px < world.position.x or px >= world.end.x \
+						or py < world.position.y or py >= world.end.y:
+					terrain.gen_regions[key] = true
+					continue
+				terrain.gen_regions[key] = true
+				if _generate_region(terrain, seed_value, i, j, world, sub, cp):
+					made += 1
+	if made > 0:
+		terrain.reapply_all_edits()
+	return made
+
+
+## Fill `terrain` with the seeded, banded world EAGERLY — every lattice region
+## covering `world` (defaults to the subdiv-scaled WORLD_CELLS) plus the spawn
+## floor. The test/tool path (and small explicit windows); the live world uses
+## prime + ensure_generated instead, because the full ×4 world is ~25 s of
+## painting. Cell-identical to the lazy path: both call _generate_region per
+## absolute lattice index.
 static func generate(terrain: Terrain, seed_value: int = DEFAULT_SEED,
 		world: Rect2i = Rect2i()) -> void:
 	var sub := maxi(terrain.subdiv, 1)
 	if world.size == Vector2i.ZERO:
 		world = world_cells(sub)
 	var spacing := SPACING * sub
-	var jitter := JITTER * sub
-	var r_min := R_MIN * sub
-	var r_max := R_MAX * sub
-	var spawn_clear := SPAWN_CLEAR * sub
-
-	var rng := RandomNumberGenerator.new()
-	rng.seed = seed_value
-
-	# Activate the band model over the world rect FOR PLACEMENT, in px so it is
-	# correct if this is ever left active on ships. Restored at the end — this
-	# round is generation-only (no wind/gravity/ceiling change in flight).
-	var prev_bounds := Airspace.bounds
 	var cp := terrain.cell_px()
-	Airspace.bounds = Rect2(Vector2(world.position) * cp, Vector2(world.size) * cp)
-
-	# Guaranteed solid ground under SHIP_START (origin), placed first so nothing
-	# below overwrites it. Kept within the old hand-placed floor's footprint so
-	# the startup/mining checks keep their known solid cells.
 	_spawn_floor(terrain, sub)
+	var lo_i := int(ceil(float(world.position.x) / spacing))
+	var hi_i := int(floor(float(world.end.x - 1) / spacing))
+	var lo_j := int(ceil(float(world.position.y) / spacing))
+	var hi_j := int(floor(float(world.end.y - 1) / spacing))
+	for j in range(lo_j, hi_j + 1):
+		for i in range(lo_i, hi_i + 1):
+			terrain.gen_regions[Vector2i(i, j)] = true
+			_generate_region(terrain, seed_value, i, j, world, sub, cp)
 
-	# Walk the candidate lattice in a fixed order. Every candidate draws the SAME
-	# number of RNG values whether or not it ends up placing an island, so the
-	# stream stays aligned and the world is reproducible.
-	var gx := world.position.x
-	while gx < world.end.x:
-		var gy := world.position.y
-		while gy < world.end.y:
-			var cx := gx + rng.randi_range(-jitter, jitter)
-			var cy := gy + rng.randi_range(-jitter, jitter)
-			var place_roll := rng.randf()
-			var radius := rng.randi_range(r_min, r_max)
-			var shape_seed := rng.randi()
-			gy += spacing
 
-			var centre := Vector2i(cx, cy)
-			# Spawn keep-out: leave the starting neighbourhood as clear sky.
-			if maxi(absi(cx), absi(cy)) <= spawn_clear:
-				continue
-			# NONE in the vertical wind columns — and never let a body spill in.
-			if _touches_wind_column(cx, radius, cp):
-				continue
-			var band := Airspace.band_at(Vector2(centre) * cp)
-			if place_roll > _band_density(band):
-				continue
-			_place_island(terrain, centre, radius, band, shape_seed, sub)
-		gx += spacing
+## ONE lattice candidate: its own order-independent RNG, the same keep-outs and
+## banded density as ever, painting CLIPPED to the world rect (owner 2026-08-24:
+## "generated terrain appears out of bounds of the map" — an island centred near
+## the rim used to spill past the boundary walls). Returns whether an island was
+## actually placed. Sets/restores Airspace.bounds around the band query so it is
+## correct whether or not the live world keeps bounds active.
+static func _generate_region(terrain: Terrain, seed_value: int, i: int, j: int,
+		world: Rect2i, sub: int, cp: float) -> bool:
+	var spacing := SPACING * sub
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash([seed_value, i, j])
+	var cx := i * spacing + rng.randi_range(-JITTER * sub, JITTER * sub)
+	var cy := j * spacing + rng.randi_range(-JITTER * sub, JITTER * sub)
+	var place_roll := rng.randf()
+	var radius := rng.randi_range(R_MIN * sub, R_MAX * sub)
+	var shape_seed := rng.randi()
 
+	# Spawn keep-out: leave the starting neighbourhood as clear sky.
+	if maxi(absi(cx), absi(cy)) <= SPAWN_CLEAR * sub:
+		return false
+	var prev_bounds := Airspace.bounds
+	Airspace.bounds = Rect2(Vector2(world.position) * cp, Vector2(world.size) * cp)
+	var placed := false
+	# NONE in the vertical wind columns — and never let a body spill in.
+	if not _touches_wind_column(cx, radius, cp):
+		var band := Airspace.band_at(Vector2(cx, cy) * cp)
+		if place_roll <= _band_density(band):
+			_place_island(terrain, Vector2i(cx, cy), radius, band, shape_seed, sub, world)
+			placed = true
 	Airspace.bounds = prev_bounds
+	return placed
 
 
 ## Placement probability per band: normal in the three bands, very sparse in the
@@ -182,7 +246,8 @@ static func _touches_wind_column(cx: int, radius: int, cp: float) -> bool:
 ## per-cell noise); cap and pocket only overwrite interior body cells, so
 ## connectivity is preserved.
 static func _place_island(terrain: Terrain, centre: Vector2i, radius: int,
-		band: int, shape_seed: int, sub: int = 1) -> void:
+		band: int, shape_seed: int, sub: int = 1,
+		clip: Rect2i = Rect2i(-(1 << 29), -(1 << 29), 1 << 30, 1 << 30)) -> void:
 	var mats := TerrainDB.band_materials(band)
 	var rx := radius
 	var ry := maxi(3 * sub, int(round(radius * 0.7)))   # flatter than wide — an island
@@ -199,6 +264,10 @@ static func _place_island(terrain: Terrain, centre: Vector2i, radius: int,
 	# stall) and walks ONLY the thin wobble band per cell. The produced cell set
 	# is IDENTICAL to the per-cell rule.
 	for dy in range(-ry, ry + 1):
+		# CLIP to the world rect (owner: islands used to spill past the
+		# boundary walls above/below/beside the map).
+		if centre.y + dy < clip.position.y or centre.y + dy >= clip.end.y:
+			continue
 		var ny := float(dy) / float(ry)
 		var ny2 := ny * ny
 		if ny2 > 1.1:
@@ -206,13 +275,16 @@ static func _place_island(terrain: Terrain, centre: Vector2i, radius: int,
 		var dx_in := int(floor(float(rx) * sqrt(maxf(0.0, 0.9 - ny2))))
 		var dx_out := mini(rx, int(floor(float(rx) * sqrt(maxf(0.0, 1.1 - ny2)))))
 		if dx_in > 0:
-			terrain.fill_row(centre.x - dx_in, centre.x + dx_in, centre.y + dy, body)
+			terrain.fill_row(maxi(centre.x - dx_in, clip.position.x),
+				mini(centre.x + dx_in, clip.end.x - 1), centre.y + dy, body)
 		# The wobble band: the exact per-cell test, both signs of dx (dx=0 only
 		# when there is no interior run at all, so it is never written twice).
 		for adx in range(dx_in + 1 if dx_in > 0 else 0, dx_out + 1):
 			var signs: Array = [adx, -adx] if adx > 0 else [0]
 			for sdx in signs:
 				var dx := int(sdx)
+				if centre.x + dx < clip.position.x or centre.x + dx >= clip.end.x:
+					continue
 				var nx := float(dx) / float(rx)
 				var wobble := 0.10 * sin(float(shape_seed % 17) + float(dx) * 0.7 + float(dy) * 0.9)
 				if nx * nx + ny2 <= 1.0 - wobble:
@@ -227,12 +299,15 @@ static func _place_island(terrain: Terrain, centre: Vector2i, radius: int,
 	var cap: int = mats["cap"]
 	var cap_rows := (2 if radius >= 9 * sub else 1) * sub
 	for dx in range(-rx, rx + 1):
+		if centre.x + dx < clip.position.x or centre.x + dx >= clip.end.x:
+			continue
 		var nx := float(dx) / float(rx)
 		if absf(nx) > 1.0:
 			continue
 		var top := int(floor(float(ry) * sqrt(maxf(0.0, 1.0 - nx * nx))))
 		terrain.overwrite_col_where_solid(centre.x + dx,
-			centre.y - top, centre.y - top + cap_rows - 1, cap)
+			maxi(centre.y - top, clip.position.y),
+			mini(centre.y - top + cap_rows - 1, clip.end.y - 1), cap)
 
 	# POCKET: the ore/exotic core, buried below the island's midline so it is
 	# genuinely enclosed by the body (a reason to dig in). Row spans, and no
@@ -243,8 +318,11 @@ static func _place_island(terrain: Terrain, centre: Vector2i, radius: int,
 	var pr := maxi(1, int(round(minf(rx, ry) * POCKET_FRAC)))
 	var pcentre := centre + Vector2i(0, int(round(ry * 0.3)))
 	for dy in range(-pr, pr + 1):
+		if pcentre.y + dy < clip.position.y or pcentre.y + dy >= clip.end.y:
+			continue
 		var half := int(floor(sqrt(float(pr * pr - dy * dy))))
-		terrain.fill_row(pcentre.x - half, pcentre.x + half, pcentre.y + dy, pocket)
+		terrain.fill_row(maxi(pcentre.x - half, clip.position.x),
+			mini(pcentre.x + half, clip.end.x - 1), pcentre.y + dy, pocket)
 
 
 ## Guaranteed starting ground under SHIP_START (~origin). A strict SUBSET of the
