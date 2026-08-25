@@ -750,31 +750,41 @@ func _check_unified_controls(world: Node) -> void:
 		"the palette lists every ship block except the open door (%d)"
 			% int(kinds.get("block", 0)))
 	_ok(int(kinds.get("terrain", 0)) == 1, "the carried stone is one terrain entry")
-	_ok(int(kinds.get("balloon", 0)) == 1, "the carried balloon is one balloon entry")
+	_ok(int(kinds.get("balloon", 0)) == 3,
+		"ALL THREE balloon sizes ride the cycle, stocked or not (owner: they were undiscoverable hidden)")
 	_ok(palette[0]["kind"] == "block" and palette[-1]["kind"] == "balloon",
 		"blocks lead the cycle and balloons close it")
 
 	# Cycling wraps THROUGH the kinds: from the last block, forward reaches the
-	# stone, then the balloon, then wraps back to the first block.
+	# stone, then the three balloons, then wraps back to the first block.
 	world.select_build("block", int(palette[int(kinds["block"]) - 1]["id"]))
 	world._cycle_build(1)
 	_ok(world._sel_kind == "terrain", "cycling off the last block reaches the terrain")
 	world._cycle_build(1)
-	_ok(world._sel_kind == "balloon", "then the balloon")
+	_ok(world._sel_kind == "balloon", "then the balloons")
+	world._cycle_build(1)
+	world._cycle_build(1)
 	world._cycle_build(1)
 	_ok(world._sel_kind == "block" and world.build_type == int(palette[0]["id"]),
-		"then wraps to the first block")
+		"then (after all three sizes) wraps to the first block")
 	world._cycle_build(-1)
 	_ok(world._sel_kind == "balloon", "and Shift+B steps the same ring backwards")
 
-	# An emptied stack falls out of the rotation — B never offers a place Q
-	# would refuse for stock.
+	# A spent BALLOON stays in the rotation (the whole point of the fix): x0
+	# in the cue, red ghost, and Q answers with the recipe — but a spent
+	# TERRAIN stack still drops out (materials come from mining).
 	pl.inventory.remove(ItemDB.balloon_item_for(Ship.BalloonSize.SMALL), 1)
-	var has_balloon := false
+	pl.inventory.remove(TerrainDB.Type.STONE, 5)
+	var balloons_left := 0
+	var terrain_left := 0
 	for e in world._build_palette():
 		if e["kind"] == "balloon":
-			has_balloon = true
-	_ok(not has_balloon, "the spent balloon stack drops out of the cycle")
+			balloons_left += 1
+		elif e["kind"] == "terrain":
+			terrain_left += 1
+	_ok(balloons_left == 3, "an empty balloon stack STAYS in the cycle (x0, red, craft-hint)")
+	_ok(terrain_left == 0, "an empty terrain stack still drops out")
+	pl.inventory.add(TerrainDB.Type.STONE, 5)
 
 	# Exactly one ghost: with a BLOCK selected the balloon ghost stays dark even
 	# over a valid target — the block preview owns the cursor.
