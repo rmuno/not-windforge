@@ -1025,7 +1025,13 @@ func damage_balloon(i: int, amount: float) -> bool:
 
 # --- Derivation from the grid --------------------------------------------
 
+## Diagnostic twin of TerrainChunk.rebuild_count — the stamp-batching tests
+## pin "one stamp, one rebuild" on it.
+var rebuild_count := 0
+
+
 func rebuild() -> void:
+	rebuild_count += 1
 	# Instrumentation: count every rebuild so the diagnostic can surface a
 	# rebuild storm (the FPS suspect). Inert — a lone int, read+reset by the
 	# diagnostic; nobody reads it in normal play.
@@ -2045,6 +2051,28 @@ func damage_at_global(global_pos: Vector2, amount: float) -> void:
 ## update mass / CoM / collider incrementally without a full rebuild (see
 ## net_damage_cell → _combat_incremental_drop). A fresh [] is the default, so
 ## callers that don't care (the crush walk, build/repair) are unaffected.
+## The 6-step damage shade _draw quantises hp into. Damage/repair redraws are
+## GATED on this bucket changing (owner lag audit 2026-08-25): the regroup
+## behind a redraw is O(all cells) — 38-53 ms on a creature, ~1.1 s on the
+## 194k-cell starter — and continuous damage (a chewing kraken, sustained
+## fire, the repair wand's per-tick heal) used to queue one EVERY tick for hp
+## deltas the eye cannot even see.
+static func shade_bucket(hp: float, hp_max: float) -> int:
+	if hp_max <= 0.0:
+		return 5
+	return roundi(clampf(hp / hp_max, 0.0, 1.0) * 5.0)
+
+
+## Diagnostic: how many gated redraws were actually queued — the batching
+## tests pin "invisible damage queues nothing" on it.
+var redraw_marks := 0
+
+
+func _mark_redraw() -> void:
+	redraw_marks += 1
+	queue_redraw()
+
+
 func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 		dead_out: Array = []) -> bool:
 	if not blocks.has(cell):
@@ -2053,9 +2081,14 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 	# break only on a carcass (see "Creature body" above). Still emits
 	# `damaged`, so provocation works; still redraws, so the wound shows.
 	if shared_health_max > 0.0 and shared_health > 0.0:
+		var pool_bucket := shade_bucket(shared_health, shared_health_max)
 		shared_health = maxf(0.0, shared_health - amount)
 		damaged.emit(cell, amount)
-		queue_redraw()
+		# Whole-body wound shading has 6 visible steps; only a step change is
+		# worth the O(cells) regroup a redraw costs. (The killing hit falls
+		# through to the rebuild below, which redraws regardless.)
+		if shade_bucket(shared_health, shared_health_max) != pool_bucket:
+			_mark_redraw()
 		# The living→carcass transition: the coarse living collider must switch
 		# to the exact per-cell grid the moment the pool empties, so a corpse
 		# mines and crushes cell-by-cell (see _use_coarse_collider). A full
@@ -2070,15 +2103,21 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 		return false
 	var members: Array = _component_members(cell)
 	var dead: Array[Vector2i] = []
+	var shade_moved := false
 	for c in members:
 		if not blocks.has(c):
 			continue  # cluster map can be stale mid-batch
+		var hp_max := BlockDB.max_hp(blocks[c]["type"])
+		var was := shade_bucket(blocks[c]["hp"], hp_max)
 		blocks[c]["hp"] -= amount
 		if blocks[c]["hp"] <= 0.0:
 			dead.append(c)
+		elif shade_bucket(blocks[c]["hp"], hp_max) != was:
+			shade_moved = true
 	damaged.emit(cell, amount)
 	if dead.is_empty():
-		queue_redraw()
+		if shade_moved:
+			_mark_redraw()  # a visible darkening step — worth the regroup
 		return false
 	for c in dead:
 		var type: int = blocks[c]["type"]
@@ -2578,8 +2617,12 @@ func repair_cell(cell: Vector2i, amount: float) -> bool:
 	if blocks.has(cell):
 		if blocks[cell]["hp"] >= max_hp:
 			return false
+		var was := shade_bucket(blocks[cell]["hp"], max_hp)
 		blocks[cell]["hp"] = minf(blocks[cell]["hp"] + amount, max_hp)
-		queue_redraw()
+		# The wand heals in per-tick sips; only a visible lightening step is
+		# worth the O(cells) regroup (owner lag audit 2026-08-25).
+		if shade_bucket(blocks[cell]["hp"], max_hp) != was:
+			_mark_redraw()
 		return true
 
 	# Destroyed outright. Only rebuild where it can attach, so repairing a hull
@@ -2695,6 +2738,45 @@ func net_set_block(cell: Vector2i, type: int) -> void:
 			set_block(cell, type)
 	else:
 		_request_set_block.rpc_id(1, cell, type)
+
+
+## Place a whole STAMP with ONE rebuild (owner lag audit 2026-08-25: rebuild
+## is O(all cells) — ~90-190 ms on a creature, seconds on the starter — and
+## the machine stamp paid it PER CELL, 16-64 times per press). `cells` must
+## arrive in an order where each lands legally (BuildPreview.stamp_order);
+## an illegal cell is skipped exactly as net_set_block would refuse it.
+## Clients fall back to per-cell requests (networked build stays the
+## documented seam).
+func net_set_blocks(cells: Array, type: int) -> void:
+	if is_authority():
+		var placed := false
+		for c in cells:
+			if can_place_at(c):
+				set_block(c, type, false)
+				placed = true
+		if placed:
+			rebuild()
+	else:
+		for c in cells:
+			_request_set_block.rpc_id(1, c, type)
+
+
+## Remove a whole machine/region with ONE rebuild and ONE severance pass —
+## sixteen incremental removals end in the same grid, minus fifteen rebuilds
+## and fifteen island scans.
+func net_remove_blocks(cells: Array) -> void:
+	if is_authority():
+		var removed := false
+		for c in cells:
+			if blocks.has(c) or walls.has(c):
+				remove_block(c, false)
+				removed = true
+		if removed:
+			rebuild()
+			_resolve_severing()
+	else:
+		for c in cells:
+			_request_remove_block.rpc_id(1, c)
 
 
 func net_remove_block(cell: Vector2i) -> void:

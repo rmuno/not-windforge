@@ -140,6 +140,7 @@ func _initialize() -> void:
 	await _test_craft_all_makes_the_whole_stack_in_one_action()
 	await _test_balloons_are_crafted_items()
 	await _test_machine_bundles_geometry()
+	await _test_redraws_and_rebuilds_are_batched()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
 	await _test_map_view_toggles_visibility()
@@ -6724,6 +6725,87 @@ func _test_machine_bundles_geometry() -> void:
 	_check(BuildPreview.machine_region(s8, bag[0]).size() == 16,
 		"the placed bag is one 16-cell region")
 
+	s8.queue_free()
+	await _step(1)
+
+
+## THE REDRAW/REBUILD BATCH (owner lag audit 2026-08-25, "are they really
+## being clustered properly?"): the cluster OUTPUTS were fine — the cost was
+## re-clustering per event. A redraw regroups every cell (38-53 ms on a
+## creature, ~1.1 s on the 194k-cell starter) and used to queue on EVERY
+## damage/repair tick; a rebuild is O(all cells) and fired once PER CELL of a
+## machine stamp. Now: redraws gate on the 6-step shade BUCKET actually
+## moving, and a stamp/machine-removal pays exactly ONE rebuild.
+func _test_redraws_and_rebuilds_are_batched() -> void:
+	_t("invisible damage queues no redraw; a stamp or machine removal is one rebuild")
+
+	# --- The bucket math _draw and the gate share ---------------------------
+	_check(Ship.shade_bucket(100.0, 100.0) == 5 and Ship.shade_bucket(0.0, 100.0) == 0,
+		"full hp is shade 5, dead is shade 0")
+	_check(Ship.shade_bucket(95.0, 100.0) == 5 and Ship.shade_bucket(84.0, 100.0) == 4,
+		"the six steps quantise where _draw does")
+
+	# --- A LIVING creature: sub-bucket chewing queues nothing ---------------
+	var cells := {}
+	for x in 6:
+		for y in 2:
+			cells[Vector2i(x, y)] = BlockDB.Type.MEAT
+	var beast := _make_ship(cells.duplicate())
+	beast.position = Vector2(-58000, 0)
+	beast.shared_health_max = 1000.0
+	beast.shared_health = 1000.0
+	var marks0: int = beast.redraw_marks
+	for i in 8:
+		beast.damage_cell(Vector2i(0, 0), 1.0)  # 8 hp off 1000 — invisible
+	_check(beast.redraw_marks == marks0,
+		"8 ticks of invisible pool damage queue ZERO redraws (was: 8 full regroups)")
+	beast.damage_cell(Vector2i(0, 0), 200.0)  # 992 -> 792: bucket 5 -> 4
+	_check(beast.redraw_marks == marks0 + 1,
+		"the hit that crosses a shade step queues exactly one")
+
+	# --- A VESSEL: same gate per cell ---------------------------------------
+	var hull := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HULL})
+	hull.position = Vector2(-58000, -4000)
+	var h0: int = hull.redraw_marks
+	hull.damage_cell(Vector2i(0, 0), 4.0)   # 100 -> 96: still shade 5
+	_check(hull.redraw_marks == h0, "a scratch below the first step queues nothing")
+	hull.damage_cell(Vector2i(0, 0), 20.0)  # 96 -> 76: shade 5 -> 4
+	_check(hull.redraw_marks == h0 + 1, "crossing a step queues one")
+
+	# --- The repair wand's sips ---------------------------------------------
+	var r0: int = hull.redraw_marks
+	hull.repair_cell(Vector2i(0, 0), 2.0)   # 76 -> 78: still shade 4
+	_check(hull.redraw_marks == r0, "a sip of repair below the step queues nothing")
+	hull.repair_cell(Vector2i(0, 0), 15.0)  # 78 -> 93: shade 4 -> 5
+	_check(hull.redraw_marks == r0 + 1, "and the visible lightening queues one")
+
+	# --- One stamp, ONE rebuild ---------------------------------------------
+	var wall := {}
+	for x in 10:
+		wall[Vector2i(x, 0)] = BlockDB.Type.HULL
+	var s8 := _make_ship(wall)
+	s8.position = Vector2(-58000, -8000)
+	s8.scale_unit = 8.0
+	var stamp := BuildPreview.stamp_cells(s8, Vector2i(4, -2), BlockDB.Type.ENGINE)
+	var rb0: int = s8.rebuild_count
+	s8.net_set_blocks(BuildPreview.stamp_order(s8, stamp), BlockDB.Type.ENGINE)
+	_check(s8.rebuild_count == rb0 + 1,
+		"a 16-cell engine stamp pays ONE rebuild (was 16; %d)" % (s8.rebuild_count - rb0))
+	var landed := 0
+	for c in stamp:
+		if s8.has_block(c) and int(s8.blocks[c]["type"]) == BlockDB.Type.ENGINE:
+			landed += 1
+	_check(landed == 16, "and the whole machine landed (%d/16)" % landed)
+
+	# --- One machine removal, ONE rebuild + ONE severance pass --------------
+	rb0 = s8.rebuild_count
+	s8.net_remove_blocks(BuildPreview.machine_region(s8, stamp[0]))
+	_check(s8.rebuild_count == rb0 + 1,
+		"removing the whole machine pays ONE rebuild (%d)" % (s8.rebuild_count - rb0))
+	_check(s8.blocks.size() == 10, "the wall stands, the machine is gone")
+
+	beast.queue_free()
+	hull.queue_free()
 	s8.queue_free()
 	await _step(1)
 

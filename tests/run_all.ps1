@@ -87,6 +87,18 @@ if ($LASTEXITCODE -ne 0) { $failed += "net_smoke" }
 Get-Process "Godot_v4.6-stable_win64_console" -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
 
+# WEB RENDERER GUARD (owner 2026-08-25): editor re-saves of project.godot have
+# twice DROPPED the [rendering] section, and without the gl_compatibility web
+# override every Pages deploy black-screens. Always on, -Quick included.
+Write-Output "=== web renderer guard ==="
+$projRaw = Get-Content (Join-Path $project "project.godot") -Raw
+if ($projRaw -notmatch 'rendering_method\.web="gl_compatibility"') {
+    Write-Output "  project.godot LOST the [rendering] web override - restore renderer/rendering_method.web='gl_compatibility' or the web build black-screens"
+    $failed += "web_renderer_guard"
+} else {
+    Write-Output "  gl_compatibility web override present"
+}
+
 # Version gate (owner 2026-08-20): anything merged to main MUST carry a new
 # x.y.z in project.godot's config/version. Enforced here because run_all is
 # the mandatory pre-merge step (AGENTS.md workflow) and there is no remote

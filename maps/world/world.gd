@@ -2504,8 +2504,9 @@ func try_build_block(ship: Ship, cell: Vector2i) -> bool:
 		ship, BuildPreview.snapped_stamp(ship, cell, build_type, build_rot))
 	if order.is_empty():
 		return false  # nothing legal near the cursor — nothing placed
-	for c in order:
-		ship.net_set_block(c, build_type)
+	# One bulk call, ONE rebuild — per-cell net_set_block paid a full O(cells)
+	# rebuild for every cell of the stamp (owner lag audit 2026-08-25).
+	ship.net_set_blocks(order, build_type)
 	return true
 
 
@@ -2524,9 +2525,8 @@ func try_remove_block(ship: Ship, cell: Vector2i) -> bool:
 	if not BlockDB.deconstructs_whole(type, ship.scale_unit):
 		ship.net_remove_block(cell)
 		return true
-	for c in BuildPreview.machine_region(ship, cell):
-		if ship.has_block(c):
-			ship.net_remove_block(c)
+	# One bulk call, ONE rebuild + ONE severance pass for the whole machine.
+	ship.net_remove_blocks(BuildPreview.machine_region(ship, cell))
 	return true
 
 
