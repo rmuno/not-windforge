@@ -172,6 +172,9 @@ func _build_spawn_tab() -> void:
 	_hint(box, "Spawns near the player (authority / single-player).")
 	_action_button(box, "Spawn hulk (bandit)", func() -> void: _spawn("hulk"))
 	_action_button(box, "Spawn whale (random variant)", func() -> void: _spawn("whale"))
+	_action_button(box, "Spawn critter (small tameable)", func() -> void: _spawn("critter"))
+	_action_button(box, "Spawn KRAKEN (deep hunter!)", func() -> void: _spawn("kraken"))
+	_action_button(box, "Spawn whale CARCASS (corpse-airship bench)", func() -> void: _spawn("carcass"))
 
 
 func _build_player_tab() -> void:

@@ -261,7 +261,9 @@ func _ready() -> void:
 		# 8× smaller, and per-chunk map cells would octuple the fog granularity
 		# and the draw cost); "does this region hold land?" buckets fine chunks
 		# down to this grid in MapView.
-		_discovery.cell_px = terrain.chunk_px() * terrain.subdiv
+		# One map-cell = 512×512 FINE tiles (owner 2026-08-24) — two coarse
+		# chunks. Constant px at any terrain resolution.
+		_discovery.cell_px = terrain.chunk_px() * terrain.subdiv * 2.0
 		_discovery.reveal_radius = terrain.chunk_px() * terrain.subdiv * 2.5
 
 	var layer := CanvasLayer.new()
@@ -995,10 +997,16 @@ func _build_generated_terrain() -> void:
 	terrain.dug.connect(_on_terrain_dug)
 	terrain.placed.connect(_on_terrain_placed)
 
-	# The generator sets Airspace.bounds for band-aware PLACEMENT and restores it
-	# afterwards (generation-only — wind/gravity/ceiling stay off in flight this
-	# round). See IslandGen and docs/DECISIONS.md.
-	IslandGen.generate(terrain, world_seed)
+	# LAZY WORLD (the ×4 extent, 2026-08-24): build plants only the spawn floor;
+	# islands generate region-by-region as foci approach (ensure_generated in
+	# _stream_terrain). Eager generation of the full ×4 world was a ~25 s boot
+	# stall — "no loading screens ever" is charter. See IslandGen.
+	IslandGen.prime(terrain)
+	# Give the immediate spawn neighbourhood its islands NOW (one bounded burst,
+	# a handful of regions) so the first camera frame is never empty sky where
+	# land belongs.
+	IslandGen.ensure_generated(terrain, world_seed, [SHIP_START],
+		terrain.chunk_px() * terrain.subdiv * 3.0, 64)
 
 	# Hidden easter egg: plant the secret Cairn beacon after normal generation so
 	# it always exists (maps/world/easter_eggs.gd → the Cairn). Not surfaced in
@@ -1034,6 +1042,13 @@ func _stream_terrain() -> void:
 				primary.append(ship.global_position)
 			else:
 				secondary.append(ship.global_position)
+	# Lazy generation runs ahead of promotion: regions whose islands could
+	# reach any focus generate first (amortized), so a chunk always promotes
+	# with its data present. Budget 2/frame — a fresh area trickles in over a
+	# few frames instead of hitching one.
+	IslandGen.ensure_generated(terrain, world_seed, primary + secondary,
+		terrain.primary_range_px if terrain.primary_range_px > 0.0
+			else terrain.chunk_px() * terrain.subdiv * 2.0)
 	terrain.update_streaming(primary, secondary)
 
 
@@ -1272,8 +1287,11 @@ func _spawn_trainer() -> void:
 # arena uses, so a debug-spawned enemy is a real, crewed, correctly-collidered
 # ship the instant it appears.
 
-## Spawn `kind` ("hulk"/"bandit" or "whale") at world position `at`, returning the
-## new ship (null off the authority or if the spawner is not ready).
+## Spawn `kind` ("hulk"/"bandit", "whale", "critter", "kraken", "carcass") at
+## world position `at`, returning the new ship (null off the authority or if
+## the spawner is not ready). STANDING ORDER (owner 2026-08-24): every new
+## spawnable added to the game gets a kind here + a button in DebugWindow, in
+## the same round.
 func debug_spawn(kind: String, at: Vector2) -> Ship:
 	if Net.is_online() and not Net.is_server():
 		return null  # networked debug spawns are a seam — authority only
@@ -1282,7 +1300,29 @@ func debug_spawn(kind: String, at: Vector2) -> Ship:
 			return _spawn_hulk_at(at)
 		"whale":
 			return _spawn_whale_at(at)
+		"critter":
+			return _spawn_one_critter(at)
+		"kraken":
+			# Alternate the two adopted bodies — the deep hunter on demand
+			# (owner 2026-08-24: "I can't find krakens").
+			_debug_kraken_flip = not _debug_kraken_flip
+			return _spawn_one_kraken("res://ships/kraken_%s.ship"
+				% ("b" if _debug_kraken_flip else "c"), at)
+		"carcass":
+			# A DEAD whale on demand — the corpse-airship / harvest / cavity
+			# test bench (bolt on thrust and fly it). A real variant body whose
+			# pool is drained AFTER the spawn ordering, then rebuilt so it
+			# flips to the precise, breakable carcass collider.
+			var corpse := _spawn_whale_at(at)
+			if corpse != null:
+				corpse.shared_health = 0.0
+				corpse.rebuild()
+			return corpse
 	return null
+
+
+## Alternates the debug kraken spawn between the two adopted bodies (b/c).
+var _debug_kraken_flip := false
 
 
 ## A single whale of a random body plan at `at` — the debug "spawn whale" button.

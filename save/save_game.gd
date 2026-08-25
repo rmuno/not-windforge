@@ -32,7 +32,11 @@ extends RefCounted
 
 ## Format-version of the on-disk save. Bump when the shape changes and add a
 ## migration branch in `restore`; `_supported` refuses anything else.
-const FORMAT_VERSION := 1
+# 2 (2026-08-24): the world generator changed (serial RNG stream -> per-region
+# hashed RNG for the lazy ×4 world), so a v1 save's terrain diffs refer to a
+# world its seed can no longer regenerate — v1 saves are REFUSED by the
+# existing graceful gate rather than loaded wrong.
+const FORMAT_VERSION := 2
 
 ## Where saves live. FileAccess/DirAccess understand the `user://` scheme.
 const SAVE_DIR := "user://saves"
@@ -181,7 +185,12 @@ static func restore(world: Object, data: Dictionary) -> bool:
 	if world.terrain != null:
 		world.terrain.subdiv = maxi(1, int(data.get("terrain_subdiv", 1)))
 		world.terrain.clear_all()
-		IslandGen.generate(world.terrain, world.world_seed)
+		# LAZY world (v0.45.1): prime the floor + Cairn; islands regenerate
+		# region-by-region as foci approach (world._stream_terrain). The diffs
+		# go on now and are RE-APPLIED after each lazy region generation
+		# (Terrain.reapply_all_edits), so a fresh island can never clobber a
+		# saved dig/place.
+		IslandGen.prime(world.terrain)
 		EasterEggs.plant_cairn(world.terrain)
 		apply_terrain_diffs(world.terrain, data.get("terrain_diffs", []))
 

@@ -123,6 +123,7 @@ func _initialize() -> void:
 	await _test_island_gen_is_banded_and_columns_clear()
 	await _test_island_gen_islands_are_coherent()
 	await _test_island_gen_is_data_only_and_sparse()
+	await _test_lazy_generation_matches_eager_and_clips()
 	await _test_fill_row_matches_set_cell()
 	await _test_streaming_is_tiered_and_skips_still_frames()
 	await _test_subdiv_world_is_the_same_world_finer()
@@ -5287,14 +5288,14 @@ func _hazard_count(h: Hazards) -> int:
 
 func _test_hazards_gate_on_band() -> void:
 	_t("hazards spawn only when a focus is in a hazard band — off-cost otherwise")
-	# altitude_frac = (end.y - y)/size.y with this rect: end.y = 18432, size.y =
-	# 36864. TOP band is frac >= GAP_HIGH_TOP (0.68); the DEEP/floor gate is frac
-	# <= DEEP_TOP (0.34). Pick foci deep inside TOP, MID, and near the floor.
-	var top := Vector2(0.0, -13000.0)   # frac ~0.85 — up in the TOP band
-	var mid := Vector2(0.0, 0.0)        # frac ~0.50 — home, mid-band
-	var flr := Vector2(0.0, 17000.0)    # frac ~0.04 — near the floor
-
+	# Foci as FRACTIONS of the live world rect (hard px broke when the world
+	# went ×4 — altitude_frac = (end.y - y)/size.y). TOP band is frac >=
+	# GAP_HIGH_TOP (0.68); the DEEP/floor gate is frac <= DEEP_TOP (0.34).
 	var h := _make_hazards()
+	var wr: Rect2 = h.world_rect
+	var top := Vector2(0.0, wr.end.y - 0.85 * wr.size.y)  # deep inside TOP
+	var mid := Vector2(0.0, wr.end.y - 0.50 * wr.size.y)  # home, mid-band
+	var flr := Vector2(0.0, wr.end.y - 0.04 * wr.size.y)  # near the floor
 	_check(h.any_in_top([top]) and not h.any_in_top([mid]),
 		"the TOP-band gate reads true up top, false mid-band")
 	_check(h.any_near_floor([flr]) and not h.any_near_floor([mid]),
@@ -5668,9 +5669,17 @@ func _test_terrain_promotion_is_amortized() -> void:
 ## Build a terrain, generate a seeded world into it, and return it. scale_unit 1
 ## so the tests reason in plain cells; the banding is scale-invariant anyway
 ## (Airspace works in fractions), so a seed pins the same CELLS at any scale.
+## Generated over the ORIGINAL 3072×2304 window (the pre-×4 world size), so the
+## banding/coherence tests' hardcoded band ranges — written for that geometry —
+## stay valid. Band fractions follow the generated window's px, so this window
+## reproduces the old world's band layout exactly (and generates 16× faster
+## than the full ×4 default).
+const GEN_TEST_WINDOW := Rect2i(-1536, -1152, 3072, 2304)
+
+
 func _make_generated_terrain(seed_value: int) -> Terrain:
 	var t := _make_terrain()
-	IslandGen.generate(t, seed_value)
+	IslandGen.generate(t, seed_value, GEN_TEST_WINDOW)
 	return t
 
 
@@ -5874,6 +5883,70 @@ func _test_island_gen_is_data_only_and_sparse() -> void:
 		"there is solid spawn ground directly under SHIP_START")
 
 	t.queue_free()
+	await process_frame
+
+
+## The ×4 world (owner 2026-08-24: "the world still feels TINY") forced LAZY
+## region generation — eager painting of the full extent was a ~25 s boot. Pins:
+## the lazy path is CELL-IDENTICAL to the eager path (both call the same
+## per-lattice-index hashed-RNG region painter, order-independent); the region
+## ledger makes re-asking free; a recorded EDIT survives a later region
+## generation (the reapply guarantee — a loaded save's dig must never be
+## painted back over); and islands CLIP to the world rect (owner: "generated
+## terrain appears out of bounds of the map").
+func _test_lazy_generation_matches_eager_and_clips() -> void:
+	_t("lazy region generation == eager, edits survive, islands clip to the world")
+	var world := IslandGen.world_cells(1)
+	_check(world.size == Vector2i(12288, 9216),
+		"the world is ×4 the old extent (%s)" % world.size)
+
+	# Eager reference over a mid-band window away from spawn.
+	var probe := Vector2i(2000, 500)
+	var eager := _make_terrain()
+	IslandGen.generate(eager, 7, Rect2i())  # full default world (×4)
+	# Lazy: prime + ensure around the probe point (px).
+	var lazy := _make_terrain()
+	IslandGen.prime(lazy)
+	var probe_px := lazy.cell_center(probe)
+	var made := IslandGen.ensure_generated(lazy, 7, [probe_px], 3000.0, 1000)
+	_check(made > 0, "lazy generation made regions near the focus (%d)" % made)
+	var same := true
+	for y in range(probe.y - 150, probe.y + 150, 3):
+		for x in range(probe.x - 150, probe.x + 150, 3):
+			if eager.cell_type(Vector2i(x, y)) != lazy.cell_type(Vector2i(x, y)):
+				same = false
+	_check(same, "lazy cells == eager cells around the focus (order-independent RNG)")
+	_check(IslandGen.ensure_generated(lazy, 7, [probe_px], 3000.0, 1000) == 0,
+		"asking again generates nothing — the region ledger holds")
+
+	# THE EDIT GUARANTEE: record a dig (as a load would) BEFORE the region
+	# exists, then generate it — the recorded edit must win over the paint.
+	var solid := Vector2i.ZERO
+	var found := false
+	for y in range(probe.y - 150, probe.y + 150):
+		for x in range(probe.x - 150, probe.x + 150):
+			if eager.is_solid(Vector2i(x, y)):
+				solid = Vector2i(x, y)
+				found = true
+				break
+		if found:
+			break
+	_check(found, "found a cell an island will occupy")
+	var fresh := _make_terrain()
+	IslandGen.prime(fresh)
+	fresh.apply_diffs({solid: TerrainDB.Type.AIR})  # the "saved dig"
+	IslandGen.ensure_generated(fresh, 7, [fresh.cell_center(solid)], 3000.0, 1000)
+	_check(not fresh.is_solid(solid),
+		"a recorded dig SURVIVES lazy region generation (reapply_all_edits)")
+
+	# THE CLIP: nothing solid outside the world rect on any side (strips at a
+	# mid-band latitude for the sides; above/below scan the full width edges).
+	var oob := _solid_in_window(eager, world.position.x - 100, 300, world.position.x - 1, 900) 		+ _solid_in_window(eager, world.end.x, 300, world.end.x + 99, 900) 		+ _solid_in_window(eager, 1500, world.position.y - 100, 2500, world.position.y - 1) 		+ _solid_in_window(eager, 1500, world.end.y, 2500, world.end.y + 99)
+	_check(oob == 0, "no generated cell lies outside the world rect (%d)" % oob)
+
+	eager.queue_free()
+	lazy.queue_free()
+	fresh.queue_free()
 	await process_frame
 
 
