@@ -419,6 +419,7 @@ func _check_terrain() -> void:
 	var round_tripped := await _wait_until(func() -> bool:
 		return not terrain.is_solid(T_CLIENT_DIG), 8.0)
 	_ok(round_tripped, "a client-requested dig reached the server and replicated back")
+	terrain.flush_rebuilds()  # batched per frame since 2026-08-25; force it for the assert
 	_ok(chunk.collider_cell_count() == before - 1,
 		"and the client's promoted collider shrank by the one dug cell (%d → %d)"
 			% [before, chunk.collider_cell_count()])

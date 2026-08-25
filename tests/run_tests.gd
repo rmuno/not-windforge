@@ -117,6 +117,7 @@ func _initialize() -> void:
 	await _test_terrain_far_chunk_is_inert()
 	await _test_terrain_promotes_and_demotes_with_hysteresis()
 	await _test_terrain_dig_removes_cell_and_shrinks_collider()
+	await _test_terrain_edits_batch_into_one_rebuild_per_frame()
 	await _test_terrain_edit_replication_applies_and_diffs()
 	await _test_body_rests_on_promoted_terrain()
 	await _test_terrain_promote_demote_leaks_no_nodes()
@@ -5378,6 +5379,36 @@ func _test_terrain_promotes_and_demotes_with_hysteresis() -> void:
 	await process_frame
 
 
+## THE DIRTY BATCH (owner 2026-08-25, "considerable FPS drop from just moving
+## slowly"): a promoted chunk used to rebuild — full rescan, greedy merge, every
+## collision shape freed and recreated — PER CELL WRITTEN. A subdiv-4 scoop is
+## 16 cells, a ram-mining whale digs a swath per frame, and reapply_all_edits
+## replays every recorded edit after each lazy region: all rebuild storms. Edits
+## now mark the chunk dirty and flush_rebuilds rebuilds it ONCE per frame.
+func _test_terrain_edits_batch_into_one_rebuild_per_frame() -> void:
+	_t("many terrain edits into one chunk cost ONE rebuild at the flush")
+	var t := _make_terrain()
+	t.fill_rect(Rect2i(0, 0, 12, 12), TerrainDB.Type.STONE)
+	t.update_streaming([_chunk_centre(t, 0, 0)])
+	var chunk := t.promoted_chunk(Vector2i(0, 0))
+	_check(chunk != null, "the chunk promoted")
+	var rb0: int = chunk.rebuild_count
+	# A scoop-sized burst of writes — the storm case.
+	for i in 16:
+		t.set_cell(Vector2i(i % 4, 3 + i / 4), TerrainDB.Type.AIR)
+	_check(chunk.rebuild_count == rb0,
+		"16 writes trigger ZERO inline rebuilds (they mark the chunk dirty)")
+	t.flush_rebuilds()
+	_check(chunk.rebuild_count == rb0 + 1,
+		"...and the flush pays exactly ONE (%d)" % (chunk.rebuild_count - rb0))
+	_check(t.solid_cells_in_chunk(Vector2i(0, 0)) == chunk.collider_cell_count(),
+		"after which the collider matches the data exactly")
+	t.flush_rebuilds()
+	_check(chunk.rebuild_count == rb0 + 1, "a clean flush is free — no dirty, no rebuild")
+	t.queue_free()
+	await _step(1)
+
+
 func _test_terrain_dig_removes_cell_and_shrinks_collider() -> void:
 	_t("dig removes a cell from data AND the collider, returns its type")
 	var t := _make_terrain()
@@ -5394,7 +5425,10 @@ func _test_terrain_dig_removes_cell_and_shrinks_collider() -> void:
 	_check(t.cell_type(Vector2i(5, 5)) == TerrainDB.Type.AIR,
 		"the cell is gone from the resident data")
 	_check(not t.is_solid(Vector2i(5, 5)), "and reads as not solid")
-	# The promoted chunk re-merged in place: coverage shrank by EXACTLY one cell.
+	# The promoted chunk re-merged ON THE FLUSH (edits are batched per frame
+	# since 2026-08-25 — the per-cell inline rebuild was the moving-FPS drop):
+	# coverage shrinks by EXACTLY one cell.
+	t.flush_rebuilds()
 	_check(chunk.collider_cell_count() == 63,
 		"the promoted collider shrank by exactly the dug cell (%d)"
 			% chunk.collider_cell_count())
@@ -5404,6 +5438,7 @@ func _test_terrain_dig_removes_cell_and_shrinks_collider() -> void:
 	# Digging air returns AIR and changes nothing.
 	_check(t.dig(Vector2i(5, 5)) == TerrainDB.Type.AIR,
 		"digging an already-empty cell returns AIR")
+	t.flush_rebuilds()
 	_check(chunk.collider_cell_count() == 63, "and touches nothing")
 
 	# A re-promote reflects the dug hole (the data is the truth, not the node).
@@ -5447,6 +5482,7 @@ func _test_terrain_edit_replication_applies_and_diffs() -> void:
 		"the peer starts with the full 24-cell collider")
 	peer._apply_edit(Vector2i(1, 1), TerrainDB.Type.AIR)  # a broadcast dig
 	_check(not peer.is_solid(Vector2i(1, 1)), "a broadcast dig removed the cell on the peer")
+	peer.flush_rebuilds()  # the batched rebuild (one per frame in live play)
 	_check(chunk.collider_cell_count() == 23,
 		"and re-merged the promoted collider (24 → %d)" % chunk.collider_cell_count())
 	_check(peer.edit_diffs().has(Vector2i(1, 1)),

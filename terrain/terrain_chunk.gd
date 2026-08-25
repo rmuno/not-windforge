@@ -44,7 +44,13 @@ func _ready() -> void:
 ## (rather than deferring) is safe — and it keeps the coverage correct the
 ## instant a dig re-merges (godot-quirks: don't mutate colliders inside the
 ## physics step; this is outside it).
+## Diagnostic: how many times this chunk has rebuilt — the dirty-batch tests
+## pin "many edits, ONE rebuild per flush" on it (the 2026-08-25 moving-FPS fix).
+var rebuild_count := 0
+
+
 func rebuild() -> void:
+	rebuild_count += 1
 	var solid := {}
 	_draw_groups = {}
 	var base := chunk_coord * chunk_cells

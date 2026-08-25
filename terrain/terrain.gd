@@ -52,7 +52,11 @@ const DEMOTE_RADIUS := 3
 ## Demotion stays immediate (freeing is cheap and starving it risks colliders
 ## lingering where a body has already left). K small so no single frame hitches;
 ## nearest-first (below) so the chunk you are flying INTO promotes first.
-const PROMOTE_PER_CALL := 2
+# 2 — 1 (2026-08-25, with the dirty-batch fix): a promote is a full chunk
+# rebuild (~9 ms worst at subdiv 4), and while the render edge moves the
+# candidate queue never drains — two per frame was a sustained stutter, one
+# per frame halves the worst frame for a slightly slower ring fill.
+const PROMOTE_PER_CALL := 1
 
 ## World feel multiplier, read from the world like Ship.scale_unit. 1 changes
 ## nothing; at S every terrain cell is S× bigger on screen.
@@ -184,9 +188,14 @@ func set_cell(cell: Vector2i, type: int) -> void:
 	var a: PackedByteArray = _chunks[ch]
 	a[_index_in_chunk(cell, ch)] = type
 	_chunks[ch] = a
-	# Keep a live view honest if this chunk happens to be promoted.
+	# A promoted chunk is marked DIRTY and rebuilt ONCE per physics frame
+	# (flush_rebuilds), never inline per cell. Inline rebuild was the owner's
+	# "FPS drop from just moving slowly" (2026-08-25): a rebuild is a full
+	# chunk rescan + greedy merge + freeing and recreating every collision
+	# shape, and a ram-mining whale, a subdiv-4 scoop (16 fine cells), or
+	# reapply_all_edits after a lazy region each fired it PER CELL WRITTEN.
 	if _live.has(ch):
-		(_live[ch] as TerrainChunk).rebuild()
+		_dirty_live[ch] = true
 
 
 ## Paint one horizontal RUN of cells [x0..x1] (inclusive) on row `y` — the bulk
@@ -219,7 +228,7 @@ func fill_row(x0: int, x1: int, y: int, type: int) -> void:
 			a[base + xi] = type
 		_chunks[ch] = a
 		if _live.has(ch):
-			(_live[ch] as TerrainChunk).rebuild()
+			_dirty_live[ch] = true  # batched — see set_cell / flush_rebuilds
 		x = xe + 1
 
 
@@ -527,6 +536,7 @@ var scan_count := 0
 ## loading screen. Call once per physics frame from the world. The old
 ## single-tier call shape still works: everything in `foci` is primary.
 func update_streaming(foci: Array, secondary: Array = []) -> void:
+	flush_rebuilds()  # batched edits land before this frame's promote/demote
 	var cpx := chunk_px()
 	var primary_chunks: Array[Vector2i] = []
 	for f in foci:
@@ -622,6 +632,29 @@ func _focus_distance(coord: Vector2i, focus_chunks: Array) -> int:
 	return best
 
 
+## Live chunks whose resident data changed since the last flush — each is
+## rebuilt ONCE in flush_rebuilds, however many cells were written into it.
+var _dirty_live := {}
+
+
+## Rebuild every dirty PROMOTED chunk, once each. Runs at the top of
+## update_streaming (the world calls that every physics frame) and from this
+## node's own _physics_process (bare-Terrain tests and tools have no world
+## loop), so an edit is visible — collider and pixels — by the next physics
+## frame at the latest; a demoted chunk simply drops out of the set.
+func flush_rebuilds() -> void:
+	if _dirty_live.is_empty():
+		return
+	for ch in _dirty_live:
+		if _live.has(ch):
+			(_live[ch] as TerrainChunk).rebuild()
+	_dirty_live.clear()
+
+
+func _physics_process(_delta: float) -> void:
+	flush_rebuilds()
+
+
 func _promote(coord: Vector2i) -> void:
 	var node := TerrainChunk.new()
 	node.terrain = self
@@ -690,6 +723,7 @@ func clear_all() -> void:
 	_last_primary_r = -1
 	_last_scan_drained = false
 	_stream_dirty = false
+	_dirty_live.clear()
 
 
 # --- Introspection (streaming loop + tests) -------------------------------
