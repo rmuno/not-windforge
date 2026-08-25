@@ -43,6 +43,36 @@ const RECIPES := [
 		"output": ItemDB.Crafted.LIFE_SUPPORT,
 		"count": 1,
 	},
+	# --- The three PREBUILT balloons (v0.49.0) -------------------------------
+	# Tethering a balloon was FREE BUILD from v0.43.0 to v0.48.0 — a placeholder
+	# waiting for the economy. A balloon is now a thing you MAKE and spend: a
+	# blubber-sealed envelope (the same rendering trick the source's whale-oil
+	# economy turns on) laced to copper cable fittings, one ingot per TETHER.
+	#
+	# The cost scales exactly with Ship.BALLOON_CABLES (1/2/3) so the ladder is
+	# legible from the item name alone, and both inputs are gathered in the
+	# BREATHABLE bands — blubber off whales, copper from the top-band pocket — so
+	# lift is something you can build before you ever go deep. Aetherite is
+	# deliberately NOT an input, exactly as with the Aether Lung: the deep's prize
+	# is a reward, never a prerequisite (DECISIONS 2026-08-23).
+	{
+		"name": "Sew Small Balloon",
+		"inputs": {ItemDB.Product.BLUBBER: 2, ItemDB.Crafted.INGOT: 1},
+		"output": ItemDB.Crafted.BALLOON_SMALL,
+		"count": 1,
+	},
+	{
+		"name": "Sew Medium Balloon",
+		"inputs": {ItemDB.Product.BLUBBER: 4, ItemDB.Crafted.INGOT: 2},
+		"output": ItemDB.Crafted.BALLOON_MEDIUM,
+		"count": 1,
+	},
+	{
+		"name": "Sew Large Balloon",
+		"inputs": {ItemDB.Product.BLUBBER: 6, ItemDB.Crafted.INGOT: 3},
+		"output": ItemDB.Crafted.BALLOON_LARGE,
+		"count": 1,
+	},
 ]
 
 

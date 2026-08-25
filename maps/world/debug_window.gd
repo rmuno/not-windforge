@@ -184,6 +184,9 @@ func _build_player_tab() -> void:
 		if world != null: world.call("debug_grant_money", 1000))
 	_action_button(box, "Heal to full", func() -> void:
 		if world != null: world.call("debug_heal_player"))
+	_action_button(box, "Grant 3 balloons of each size (U tethers, Y cycles)",
+		func() -> void:
+			if world != null: world.call("debug_grant_balloons", 3))
 	_action_button(box, "Max all stats", func() -> void:
 		if world != null: world.call("debug_max_stats"))
 

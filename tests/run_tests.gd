@@ -137,6 +137,7 @@ func _initialize() -> void:
 	await _test_whale_carcass_harvest_yields_products()
 	await _test_crafting_consumes_inputs_and_yields_output()
 	await _test_craft_all_makes_the_whole_stack_in_one_action()
+	await _test_balloons_are_crafted_items()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
 	await _test_map_view_toggles_visibility()
@@ -6481,6 +6482,73 @@ func _test_crafting_consumes_inputs_and_yields_output() -> void:
 	_check(poor.count(ItemDB.Product.BLUBBER) == need - 1 and poor.total() == need - 1,
 		"and the inventory is untouched — no partial spend")
 	await process_frame
+
+
+## Balloons became CRAFTED, SPENDABLE items (v0.49.0) — the end of free-build
+## lift. Three things have to hold together or the loop breaks silently: the
+## size<->item mapping is a bijection (a size that maps to the wrong item spends
+## the wrong stack), every size has a recipe whose output is exactly that item
+## (a missing one is an unobtainable balloon), and the cost tracks the TETHER
+## COUNT so the ladder means something.
+func _test_balloons_are_crafted_items() -> void:
+	_t("every balloon size is a crafted item with a recipe priced by its tethers")
+
+	var seen := {}
+	for size in Ship.BALLOON_LIFT.size():
+		var item := ItemDB.balloon_item_for(size)
+		_check(ItemDB.is_crafted(item),
+			"%s is in the CRAFTED id range" % ItemDB.name_of(item))
+		_check(ItemDB.balloon_size_of(item) == size,
+			"and maps back to its own size (%d)" % size)
+		_check(not seen.has(item), "no two sizes share an item id")
+		seen[item] = true
+
+		# The recipe for exactly this item.
+		var recipe := {}
+		for r in Recipes.RECIPES:
+			if int(r["output"]) == item:
+				recipe = r
+		_check(not recipe.is_empty(), "a recipe outputs the %s" % ItemDB.name_of(item))
+		if recipe.is_empty():
+			continue
+		# Priced by tethers: one copper ingot per cable, blubber twice that. The
+		# break-the-fix for a flat price list — make all three cost the same and
+		# this fails.
+		var cables: int = Ship.BALLOON_CABLES[size]
+		_check(int(recipe["inputs"].get(ItemDB.Crafted.INGOT, 0)) == cables,
+			"%s costs one ingot per tether (%d)" % [ItemDB.name_of(item), cables])
+		_check(int(recipe["inputs"].get(ItemDB.Product.BLUBBER, 0)) == cables * 2,
+			"and twice that in blubber (%d)" % (cables * 2))
+		_check(not recipe["inputs"].has(TerrainDB.Type.AETHERITE),
+			"aetherite is NOT an input — the deep's prize is a reward, not a gate")
+
+		# It actually crafts, from an inventory holding exactly the cost.
+		var inv := Inventory.new()
+		for id in recipe["inputs"]:
+			inv.add(id, int(recipe["inputs"][id]))
+		_check(Recipes.craft(inv, recipe) and inv.count(item) == 1,
+			"and the exact cost buys one %s" % ItemDB.name_of(item))
+		_check(inv.count(ItemDB.Crafted.INGOT) == 0 and inv.count(ItemDB.Product.BLUBBER) == 0,
+			"spending everything it needed and nothing it did not")
+
+		# GEAR, NOT SALVAGE: a balloon must be worth 0 to the bulk sell, exactly
+		# like the Aether Lung. "Sell salvage" is one keypress that dumps
+		# everything with a price — a balloon with a price is lift you can lose
+		# by leaning on 0 at a trainer.
+		_check(Economy.sell_value(item) == 0,
+			"%s is not swept up by the bulk salvage sale" % ItemDB.name_of(item))
+
+	# A non-balloon item is not mistaken for one (the -1 contract).
+	_check(ItemDB.balloon_size_of(ItemDB.Crafted.WHALE_OIL) == -1,
+		"whale oil is not a balloon")
+	_check(ItemDB.balloon_size_of(TerrainDB.Type.STONE) == -1, "and neither is stone")
+	# An out-of-range size clamps rather than crashing (a caller bug must not
+	# take the frame down mid-attach).
+	_check(ItemDB.balloon_item_for(99) == ItemDB.balloon_item_for(Ship.BalloonSize.LARGE),
+		"an over-range size clamps to the largest balloon")
+	_check(ItemDB.balloon_item_for(-3) == ItemDB.balloon_item_for(Ship.BalloonSize.SMALL),
+		"and an under-range one to the smallest")
+	await _step(1)
 
 
 ## Crafting without repetition (items/recipes.gd, v0.44.x): craftable_count is the
