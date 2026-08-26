@@ -62,6 +62,8 @@ func _initialize() -> void:
 		await _shoot(world, mine, "", SpawnSites.nest_for(kind), kind)
 
 	await _fire_alone(world, mine)
+	await _fire_on_a_creature(world, mine, "whale")
+	await _fire_on_a_creature(world, mine, "critter")
 	quit(0)
 
 
@@ -135,10 +137,17 @@ func _shoot(world: Node, gunner: Ship, kind: String, nest_path: String,
 
 
 ## And the threat that needs no shooter: a fire nobody fights.
-func _fire_alone(world: Node, _gunner: Ship) -> void:
+##
+## NEAR THE GUNNER, like every other target here, and for the reason written at
+## RANGE above: `_update_fires` skips a DORMANT body ("its fire waits with it"),
+## and the first version of this parked the carcass at 20,000 x world_scale =
+## 160,000 px — thirteen times `dormant_range_px`. It reported a 90-second fire
+## with ONE cell alight and nothing lost, which is not fire being weak, it is
+## fire being asleep. Units against world constants, for the fifth time.
+func _fire_alone(world: Node, gunner: Ship) -> void:
 	print("")
 	Tunables.set_value("fire_enabled", true)
-	var at: Vector2 = Vector2(0.0, -20000.0 * world.world_scale)
+	var at: Vector2 = gunner.global_position + Vector2(0.0, -RANGE)
 	var hulk = world.debug_spawn("carcass", at)
 	if hulk == null:
 		return
@@ -156,12 +165,73 @@ func _fire_alone(world: Node, _gunner: Ship) -> void:
 		return
 	var t := 0.0
 	var peak := 0
+	var slept := 0
 	while t < LIMIT_SECONDS and not hulk.burning.is_empty():
 		await physics_frame
+		if hulk.dormant:
+			slept += 1
 		peak = maxi(peak, hulk.burning.size())
 		t += STEP
+	if slept > 0:
+		print("(WARNING: the carcass was DORMANT for %.0f s — its fire waited)"
+			% (float(slept) * STEP))
 	print("a fire NOBODY FIGHTS, on a %d-cell carcass: %.0f s, peak %d cells alight, %d cells lost (%.0f%%)"
 		% [cells0, t, peak, cells0 - hulk.blocks.size(),
 			100.0 * (cells0 - hulk.blocks.size()) / maxf(float(cells0), 1.0)])
 	hulk.queue_free()
+	await process_frame
+
+
+## AND FIRE ON A LIVING CREATURE, which is a different question from fire on a
+## hull and was never measured. A pooled body loses no blocks until it dies, so
+## every burning cell bills BURN_DPS straight into the SHARED POOL: the cost is
+## (cells alight) x 12 dps, and a fire that reaches twenty cells is 240 dps
+## against a pool the 30-second ceiling sized for the guns' 40. `fire_probe.gd`
+## cannot see this — it burns unpooled bodies, which is why its whale "loses
+## 84% of itself" instead of simply dying.
+##
+## Reported as SECONDS TO DEATH, next to the same creature's gunnery time.
+func _fire_on_a_creature(world: Node, gunner: Ship, kind: String) -> void:
+	Tunables.set_value("fire_enabled", true)
+	var at: Vector2 = gunner.global_position + Vector2(-RANGE, -RANGE)
+	var beast: Ship = world.debug_spawn(kind, at)
+	if beast == null:
+		print("fire on a %s: (could not spawn)" % kind)
+		return
+	beast.freeze = true
+	for i in 120:
+		await physics_frame
+	var pool0: float = beast.shared_health_max
+	var lit := false
+	for c in beast.blocks:
+		if Fire.burns(int(beast.blocks[c]["type"])):
+			lit = world.ignite_cell(beast, c)
+			if lit:
+				break
+	if not lit:
+		print("fire on a %s: nothing on it burns" % kind)
+		beast.queue_free()
+		return
+	var t := 0.0
+	var peak := 0
+	var slept := 0
+	while t < LIMIT_SECONDS:
+		if not is_instance_valid(beast) or beast.shared_health <= 0.0:
+			break
+		if beast.dormant:
+			slept += 1
+		if beast.burning.is_empty():
+			break
+		peak = maxi(peak, beast.burning.size())
+		await physics_frame
+		t += STEP
+	var alive: bool = is_instance_valid(beast) and beast.shared_health > 0.0
+	print("fire on a LIVING %s (pool %.0f): %.1f s%s, peak %d cells alight, pool %.0f left"
+		% [kind, pool0, t, (" (SURVIVED — fire went out)" if alive else " to DEATH"),
+			peak, (beast.shared_health if is_instance_valid(beast) else 0.0)])
+	if slept > 0:
+		print("(WARNING: it was DORMANT for %.0f s — its fire waited)"
+			% (float(slept) * STEP))
+	if is_instance_valid(beast):
+		beast.queue_free()
 	await process_frame
