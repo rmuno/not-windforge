@@ -122,6 +122,8 @@ const _REGISTRY := [
 	{"id": "wash_chop_dps", "label": "Prop wash CHOP damage (near jet only)",
 		"group": "Combat", "kind": KIND_FLOAT, "default": 45.0, "min": 0.0,
 		"max": 400.0, "step": 5.0},
+	{"id": "wash_chop_friendly", "label": "Prop chop bites your OWN crew too",
+		"group": "Combat", "kind": KIND_BOOL, "default": false},  # world._apply_prop_wash — off: your blades spare your side (owner 2026-08-26)
 	# --- Basilisk (the top-band fire-spitter) --------------------------------
 	{"id": "basilisk_health", "label": "Basilisk health pool", "group": "Whale",
 		"kind": KIND_FLOAT, "default": 700.0, "min": 50.0, "max": 30000.0,

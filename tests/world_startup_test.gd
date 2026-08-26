@@ -962,6 +962,23 @@ func _check_unified_controls(world: Node) -> void:
 	world.select_build("block", BlockDB.Type.HULL)
 	pl.inventory.clear()
 
+	# --- PROP CHOP SPARES YOUR OWN CREW (owner 2026-08-26) -------------------
+	# "Should it bite your own crew?" — no. `_wash_chops` is the one place the
+	# rule lives (both chop sites call it): a faction-0 (player-side) prop chops
+	# only strangers, and a tamed creature is faction 0, so allies are covered.
+	# The lever wash_chop_friendly flips it back. Tested directly — the
+	# push/geometry is the unit suite's _test_prop_wash_pushes_and_chops; this
+	# is only the friend/foe gate.
+	Tunables.set_value("wash_chop_friendly", false)
+	_ok(not world._wash_chops(0, 0), "your prop spares your own side")
+	_ok(not world._wash_chops(2, 2), "and a wild pod does not carve its own")
+	_ok(world._wash_chops(0, 1), "but your blades DO chop an enemy")
+	_ok(world._wash_chops(1, 0), "...and a bandit's chop you")
+	Tunables.set_value("wash_chop_friendly", true)
+	_ok(world._wash_chops(0, 0),
+		"the wash_chop_friendly lever restores everyone-bleeds")
+	Tunables.set_value("wash_chop_friendly", false)
+
 
 func _spawn_flesh(world: Node, cells: Dictionary, pool_now: float) -> Ship:
 	var s := Ship.new()
