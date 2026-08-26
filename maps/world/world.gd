@@ -1243,8 +1243,8 @@ func _spawn_kraken() -> void:
 
 ## Spawn ONE kraken of body plan `path` at `pos` (null if the spawner is not ready).
 ## Mirrors _spawn_one_whale's pool-then-rebuild coarse-collider ordering; marks it a
-## kraken (creature_kind → the KrakenAI + untameable) and leaves tame_level at the
-## plain default (it never enters the taming filters, being untameable).
+## kraken (creature_kind → the two-ended KrakenAI) and sets its taming tier to 3 —
+## the top one, above the whale's 2 and the critter's 1 (owner 2026-08-24).
 ##
 ## DEEP-SPAWN KEEP-OUT: the deep band is where the island field is thickest, so
 ## the computed `pos` can be inside rock. The footprint is probed and scattered

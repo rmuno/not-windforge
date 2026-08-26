@@ -21,9 +21,14 @@ extends WhaleAI
 ##      that builds up fast (owner). This is active damage the brain applies —
 ##      unlike the ram, which is pure collision momentum.
 ##
-## Krakens are UNTAMEABLE (world.try_tame refuses `creature_kind == "kraken"`), so
-## the tamed/ridden branches inherited from WhaleAI never engage here; a kraken is
-## always the wild, hunting brain. Aggression: it does not wait to be attacked —
+## Krakens ARE tameable, at the TOP tier (owner 2026-08-24, reversing the earlier
+## untameable ruling: "you can tame krakens, they just are a little wild in their
+## movement and always do damage if you touch their mouth parts"). `world.try_tame`
+## gates on `tame_level` alone — a kraken carries 3, above the whale's 2 and the
+## critter's 1 — so the tamed/ridden branches inherited from WhaleAI DO engage for
+## a player whose LORE reaches it. (This comment said the opposite until
+## 2026-08-26; the code had been right since v0.40.x.)
+## Aggression: it does not wait to be attacked —
 ## while a prey ship is alive it keeps itself "provoked" so the whale ram doctrine
 ## (align to altitude, then shove) runs on sight.
 
@@ -148,7 +153,8 @@ func _mouth_grab(delta: float, target: Ship) -> void:
 ## distance test against the mouth point, no per-cell scan and no coarse gate.
 ## `take_damage` is duck-typed rather than cast to Player — see `prey_player`.
 ## (The tamed guard lives in tick(), shared with the ship grab, so the two bite
-## paths cannot drift apart; krakens are untameable, but the base class is not.)
+## paths cannot drift apart; a kraken tames only at the top tier, but the base
+## class serves every creature that does.)
 func _mouth_grab_player(delta: float) -> void:
 	if prey_player == null or not is_instance_valid(prey_player) \
 			or not prey_player.has_method("take_damage"):

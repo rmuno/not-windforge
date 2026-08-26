@@ -322,7 +322,7 @@ var ride_speed_mult := 1.0
 
 ## Which brain a faction-2 creature gets, and the taming/AI switch. "" (a plain
 ## whale/critter) uses WhaleAI; "kraken" uses the two-ended KrakenAI (mouth grab +
-## shell-tip ram) and is UNTAMEABLE (world.try_tame refuses it). Rides the payload
+## shell-tip ram) and tames only at the TOP tier (tame_level 3). Rides the payload
 ## so a rehomed/loaded kraken stays a kraken; default "" keeps every legacy ship a
 ## whale-brained creature, unchanged.
 var creature_kind := ""

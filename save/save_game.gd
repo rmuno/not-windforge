@@ -340,7 +340,7 @@ static func spawn_ship_from_encoded(fleet: Object, sd: Dictionary) -> Object:
 		# save → from_data defaults to a plain vessel's values, unchanged.
 		"tame_level": int(sd.get("tame_level", 1)),
 		"ride_speed_mult": float(sd.get("ride_speed_mult", 1.0)),
-		# Which creature brain (a kraken keeps its two-ended KrakenAI + untameable
+		# Which creature brain (a kraken keeps its two-ended KrakenAI + top-tier
 		# status). Absent in a legacy save → "" → a plain whale-brained creature.
 		"creature_kind": String(sd.get("creature_kind", "")),
 		# Site residency. Absent in a legacy save → not a resident, which is
