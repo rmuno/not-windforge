@@ -2624,6 +2624,16 @@ func ride_mine_pulse() -> int:
 const WASH_CHOP_FRAC := 0.34
 
 
+## Does a prop wash CHOP a body, given the two sides? (owner 2026-08-26: "should
+## it bite your own crew?" — no.) The blades spare your own side; a tamed
+## creature is faction 0, the player's side, so this covers allies too. Push is
+## unaffected — shoving is physics, not friendly fire. `wash_chop_friendly`
+## (default off) turns everyone-bleeds back on. One place, so the two chop sites
+## and the test cannot drift.
+func _wash_chops(emitter_faction: int, victim_faction: int) -> bool:
+	return emitter_faction != victim_faction 		or Tunables.get_bool("wash_chop_friendly")
+
+
 func _apply_prop_wash(delta: float) -> void:
 	if not Net.is_server() or fleet == null or not is_instance_valid(fleet):
 		return
@@ -2649,18 +2659,22 @@ func _apply_prop_wash(delta: float) -> void:
 				continue
 			if push_mult > 0.0:
 				body.apply_central_force(a * push_mult * body.mass)
-			if chop_dps > 0.0 and body.shared_health_max > 0.0 					and body.shared_health > 0.0 					and emitter.is_in_near_wash(body.global_position, WASH_CHOP_FRAC):
+			# The CHOP spares your own side (see _wash_chops); the PUSH above is
+			# universal.
+			if chop_dps > 0.0 and _wash_chops(emitter.faction, body.faction) 					and body.shared_health_max > 0.0 					and body.shared_health > 0.0 					and emitter.is_in_near_wash(body.global_position, WASH_CHOP_FRAC):
 				# A living creature only: a hull is not chopped by a fan, and a
 				# carcass in the blades is already salvage.
 				body.net_damage_cell(body.cell_at_global(body.global_position),
 					chop_dps * delta)
-		# And the person standing in it.
+		# And the person standing in it. Your OWN ship's blades do not chop you
+		# (emitter.faction 0 == the player's side); a stranger's still do,
+		# unless wash_chop_friendly turns friendly fire back on.
 		if player != null and is_instance_valid(player) and not player.is_piloting():
 			var pa: Vector2 = emitter.wash_accel_at(player.global_position)
 			if pa != Vector2.ZERO:
 				if push_mult > 0.0:
 					player.velocity += pa * push_mult * delta
-				if chop_dps > 0.0 and emitter.is_in_near_wash(
+				if chop_dps > 0.0 and _wash_chops(emitter.faction, 0) 						and emitter.is_in_near_wash(
 						player.global_position, WASH_CHOP_FRAC):
 					player.take_damage(chop_dps * delta)
 
