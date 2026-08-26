@@ -171,6 +171,26 @@ func is_solid(cell: Vector2i) -> bool:
 	return TerrainDB.is_solid(cell_type(cell))
 
 
+## The raw bytes of ONE chunk, or an EMPTY array when that chunk has never had
+## anything solid written into it (chunks allocate lazily — see set_cell).
+##
+## For a caller that walks a whole chunk, this replaces CHUNK² `cell_type`
+## calls, each of which re-derives the chunk coord with two float divides and
+## re-hashes this dictionary for a chunk the caller already named. Measured on
+## the live world (tools/render_cost_probe.gd, 2026-08-25): that scan was
+## 33 ms of a 77 ms rebuild pass over 27 promoted chunks — 43%, spent
+## rediscovering a known answer 27,648 times. An empty return also lets a
+## caller skip an all-AIR chunk without looking at a single cell, which is
+## most of the sky.
+##
+## The array is Godot-COPY-ON-WRITE, so a caller that only reads pays nothing
+## and a caller that writes cannot corrupt the resident data by accident;
+## writes still go through set_cell, which is the only path that records an
+## edit for the save.
+func chunk_bytes(chunk: Vector2i) -> PackedByteArray:
+	return _chunks.get(chunk, PackedByteArray())
+
+
 ## Write a cell into the resident data. Allocates the chunk's byte array lazily
 ## (a chunk stays absent — fully inert — until something solid is written into
 ## it). PackedByteArray is copy-on-write, so the modified array is written back

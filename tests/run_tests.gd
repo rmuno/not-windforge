@@ -144,6 +144,8 @@ func _initialize() -> void:
 	await _test_harvest_rebuilds_coalesce_per_frame()
 	await _test_incremental_edits_match_full_rebuild()
 	await _test_skin_sectors_partition_and_localise_redraws()
+	await _test_greedy_rects_order_and_partition()
+	await _test_chunk_bytes_feed_the_rebuild()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
 	await _test_map_view_toggles_visibility()
@@ -7101,6 +7103,187 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	s8.queue_free()
 	beast.queue_free()
 	yard.queue_free()
+	await _step(1)
+
+
+## THE GREEDY COVER'S ORDERING (v0.55.2). `Ship._greedy_rects` is the hottest
+## function in the project — ship colliders, every skin tile, and BOTH of a
+## terrain chunk's derivations — and its row-major ordering moved off a
+## `sort_custom` GDScript lambda (O(n log n) script calls, measured at 80% of
+## the whole merge) onto a packed key and a native sort. The output must be
+## IDENTICAL, so this pins it against the retired implementation directly,
+## over random sets — sparse and dense, at positive and NEGATIVE origins,
+## which is where a packed key would break first.
+func _test_greedy_rects_order_and_partition() -> void:
+	_t("the greedy cover: same rects as the retired comparator, and a true partition")
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260825
+	var mismatched := 0
+	var broken := 0
+	var trials := 0
+	var biggest := 0
+	for trial in 60:
+		var ox := rng.randi_range(-4000, 4000)
+		var oy := rng.randi_range(-4000, 4000)
+		var w := rng.randi_range(1, 26)
+		var h := rng.randi_range(1, 26)
+		var density := rng.randf_range(0.12, 1.0)
+		var cells := {}
+		for y in h:
+			for x in w:
+				if rng.randf() <= density:
+					cells[Vector2i(ox + x, oy + y)] = true
+		if cells.is_empty():
+			continue
+		trials += 1
+		biggest = maxi(biggest, cells.size())
+		var got := Ship._greedy_rects(cells.duplicate())
+		var want := _greedy_rects_retired(cells.duplicate())
+		if str(got) != str(want):
+			mismatched += 1
+		# ...and independently of the old code: the cover must be a PARTITION.
+		var seen := {}
+		var bad := false
+		for r in got:
+			for y in r.size.y:
+				for x in r.size.x:
+					var c: Vector2i = r.position + Vector2i(x, y)
+					if seen.has(c) or not cells.has(c):
+						bad = true
+					seen[c] = true
+		if bad or seen.size() != cells.size():
+			broken = broken + 1
+	_check(trials > 50, "the property ran on %d random sets (up to %d cells)"
+		% [trials, biggest])
+	_check(mismatched == 0,
+		"the packed ordering yields the SAME rects as the comparator (%d differed)"
+			% mismatched)
+	_check(broken == 0,
+		"every cover is a partition: no cell twice, none stray, none missed (%d bad)"
+			% broken)
+
+	# The degenerate shapes the packing could get wrong on its own: one column
+	# (width 1), one row, and a set straddling the origin.
+	var column := {}
+	for y in range(-3, 4):
+		column[Vector2i(-7, y)] = true
+	var col_rects := Ship._greedy_rects(column.duplicate())
+	_check(col_rects.size() == 1 and col_rects[0] == Rect2i(-7, -3, 1, 7),
+		"a single column merges into one tall rect (%s)" % str(col_rects))
+
+	var row := {}
+	for x in range(-3, 4):
+		row[Vector2i(x, 11)] = true
+	var row_rects := Ship._greedy_rects(row.duplicate())
+	_check(row_rects.size() == 1 and row_rects[0] == Rect2i(-3, 11, 7, 1),
+		"a single row merges into one wide rect (%s)" % str(row_rects))
+
+	_check(Ship._greedy_rects({}).is_empty(), "an empty set covers nothing")
+	await _step(1)
+
+
+## The RETIRED implementation, kept only as this test's oracle: the exact
+## comparator-sorted body from before v0.55.2. If the fast version ever drifts
+## from it, the check above says so in the same run.
+func _greedy_rects_retired(remaining: Dictionary) -> Array[Rect2i]:
+	var ordered := remaining.keys()
+	ordered.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		return a.y < b.y if a.y != b.y else a.x < b.x)
+	var rects: Array[Rect2i] = []
+	for cell in ordered:
+		if not remaining.has(cell):
+			continue
+		var w := 1
+		while remaining.has(cell + Vector2i(w, 0)):
+			w += 1
+		var h := 1
+		while true:
+			var row_full := true
+			for i in w:
+				if not remaining.has(cell + Vector2i(i, h)):
+					row_full = false
+					break
+			if not row_full:
+				break
+			h += 1
+		for j in h:
+			for i in w:
+				remaining.erase(cell + Vector2i(i, j))
+		rects.append(Rect2i(cell, Vector2i(w, h)))
+	return rects
+
+
+## A CHUNK READS ITS OWN BYTES (v0.55.2). TerrainChunk.rebuild used to call
+## terrain.cell_type() once per cell — CHUNK² float divides and dictionary
+## hashes to re-find a chunk the node already names, 43% of the rebuild pass.
+## It now takes the byte array once. The two things that must stay true: the
+## derived collider still matches the data exactly (the existing coverage
+## invariant, re-pinned here through the new path), and an ALL-AIR chunk —
+## which now skips the scan entirely — still does its bookkeeping.
+func _test_chunk_bytes_feed_the_rebuild() -> void:
+	_t("a chunk rebuilds from its own bytes; an all-air chunk skips the scan safely")
+
+	var t := _make_terrain()
+	t.fill_rect(Rect2i(3, 3, 9, 5), TerrainDB.Type.STONE)
+	t.fill_rect(Rect2i(3, 8, 9, 2), TerrainDB.Type.DIRT)
+
+	var bytes: PackedByteArray = t.chunk_bytes(Vector2i(0, 0))
+	_check(bytes.size() == Terrain.CHUNK * Terrain.CHUNK,
+		"a written chunk's byte array is CHUNK² long (%d)" % bytes.size())
+	var agree := true
+	for probe in [Vector2i(3, 3), Vector2i(11, 7), Vector2i(5, 8), Vector2i(0, 0),
+			Vector2i(20, 20)]:
+		if bytes[probe.y * Terrain.CHUNK + probe.x] != t.cell_type(probe):
+			agree = false
+	_check(agree, "indexing the bytes agrees with cell_type() cell for cell")
+	_check(t.chunk_bytes(Vector2i(9, 9)).is_empty(),
+		"a chunk nothing was ever written into has NO array (the sky's early-out)")
+
+	t.update_streaming([_chunk_centre(t, 0, 0)])
+	var chunk := t.promoted_chunk(Vector2i(0, 0))
+	_check(chunk != null and chunk.collider_cell_count() == 9 * 5 + 9 * 2,
+		"the collider built from the bytes covers every solid cell (%d)"
+			% (chunk.collider_cell_count() if chunk != null else -1))
+
+	# The DRAW regions are merged once at rebuild now, not re-merged per
+	# repaint: they must partition the solid cells, per type.
+	var painted := {}
+	var twice := false
+	var wrong_type := false
+	for entry in chunk._draw_regions:
+		var r: Rect2i = entry[0]
+		for y in r.size.y:
+			for x in r.size.x:
+				var lc := r.position + Vector2i(x, y)
+				if painted.has(lc):
+					twice = true
+				painted[lc] = true
+				if t.cell_type(lc) != entry[1]:
+					wrong_type = true
+	_check(not twice and not wrong_type
+			and painted.size() == chunk.collider_cell_count(),
+		"the cached draw regions partition the solid cells, each in its own type")
+
+	# Dig the whole lot out. The array survives (dug cells are AIR bytes), so
+	# this is the "was solid, now empty" path, not the never-written one.
+	for y in range(3, 10):
+		for x in range(3, 12):
+			t.dig(Vector2i(x, y))
+	t.flush_rebuilds()
+	_check(chunk.collider_cell_count() == 0 and chunk._draw_regions.is_empty(),
+		"an emptied chunk drops every collider and every drawn region")
+
+	# And a chunk that never held anything: promoting it must be inert, not a
+	# crash, and must not invent coverage.
+	t.update_streaming([_chunk_centre(t, 4, 4)])
+	var sky := t.promoted_chunk(Vector2i(4, 4))
+	if sky != null:
+		_check(sky.collider_cell_count() == 0 and sky._draw_regions.is_empty(),
+			"an all-air chunk promotes to nothing at all")
+	else:
+		_check(true, "an all-air chunk is not promoted (nothing to build)")
+	t.queue_free()
 	await _step(1)
 
 

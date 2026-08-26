@@ -27,8 +27,13 @@ var cell_px := 16.0
 ## same call — no waiting for a deferred free.
 var _collider_rects: Array[Rect2i] = []
 var _shapes: Array[CollisionShape2D] = []
-## type -> {local Vector2i: true}, the per-type groups the batched _draw merges.
-var _draw_groups := {}
+## The regions _draw emits, merged ONCE at rebuild: [Rect2i in local cells,
+## TerrainDB type]. It used to be the per-type cell GROUPS, re-merged (over a
+## `duplicate()`, because the greedy merge consumes its input) on every single
+## repaint — a second O(cells) pass over the same data the rebuild had just
+## grouped. The groups only change when the chunk rebuilds, so the merge
+## belongs there and a repaint is now pure emission.
+var _draw_regions: Array = []
 
 
 func _ready() -> void:
@@ -52,18 +57,31 @@ var rebuild_count := 0
 func rebuild() -> void:
 	rebuild_count += 1
 	var solid := {}
-	_draw_groups = {}
-	var base := chunk_coord * chunk_cells
-	for ly in chunk_cells:
-		for lx in chunk_cells:
-			var t: int = terrain.cell_type(base + Vector2i(lx, ly))
-			if not TerrainDB.is_solid(t):
-				continue
-			var lc := Vector2i(lx, ly)
-			solid[lc] = true
-			if not _draw_groups.has(t):
-				_draw_groups[t] = {}
-			(_draw_groups[t] as Dictionary)[lc] = true
+	var groups := {}  # type -> {local Vector2i: true}, spent by the merge below
+	# Read the chunk's bytes ONCE and index them directly, rather than calling
+	# terrain.cell_type() per cell — that path re-derives the chunk coord with
+	# two float divides and re-hashes the chunk dictionary every single time,
+	# for a chunk this node already names. Measured (render_cost_probe,
+	# 2026-08-25): 43% of the rebuild pass, spent rediscovering a known
+	# answer.
+	# Typed explicitly: `terrain` is a bare Node2D here (the chunk is a pure
+	# view and must not depend on Terrain's class), so inference has nothing.
+	var bytes: PackedByteArray = terrain.chunk_bytes(chunk_coord)
+	# An EMPTY array means nothing solid was ever written into this chunk —
+	# most of the sky. Skip the scan, but never the bookkeeping below: a chunk
+	# whose last solid cell was just dug out still has colliders to drop.
+	if not bytes.is_empty():
+		for ly in chunk_cells:
+			var row := ly * chunk_cells
+			for lx in chunk_cells:
+				var t: int = bytes[row + lx]
+				if not TerrainDB.is_solid(t):
+					continue
+				var lc := Vector2i(lx, ly)
+				solid[lc] = true
+				if not groups.has(t):
+					groups[t] = {}
+				(groups[t] as Dictionary)[lc] = true
 
 	# Drop the previous shapes immediately (not queue_free), so the merged
 	# coverage below is the only coverage the space sees this frame.
@@ -84,6 +102,13 @@ func rebuild() -> void:
 		add_child(cs)
 		_shapes.append(cs)
 
+	# Merge the draw regions here, consuming the groups: nothing outside this
+	# call ever needs the cell sets again.
+	_draw_regions.clear()
+	for type in groups:
+		for r in Ship._greedy_rects(groups[type] as Dictionary):
+			_draw_regions.append([r, type])
+
 	queue_redraw()
 
 
@@ -98,13 +123,13 @@ func collider_cell_count() -> int:
 
 
 func _draw() -> void:
-	# Batched placeholder art, same idiom as Ship._draw: one filled rect per
-	# contiguous same-type region, plus a darker border. Merges per type through
-	# the very same greedy helper (duplicating the group each call because the
-	# merge consumes it, and _draw runs every redraw).
-	for type in _draw_groups:
-		var color: Color = TerrainDB.color_of(type)
-		for r in Ship._greedy_rects((_draw_groups[type] as Dictionary).duplicate()):
-			var rect := Rect2(Vector2(r.position) * cell_px, Vector2(r.size) * cell_px)
-			draw_rect(rect, color)
-			draw_rect(rect, color.darkened(0.35), false, 1.0)
+	# Batched placeholder art, same idiom as the ship skin: one filled rect per
+	# contiguous same-type region, plus a darker border. The regions were
+	# merged at rebuild (through the very same shared greedy helper), so a
+	# repaint is emission and nothing else.
+	for entry in _draw_regions:
+		var r: Rect2i = entry[0]
+		var color: Color = TerrainDB.color_of(entry[1])
+		var rect := Rect2(Vector2(r.position) * cell_px, Vector2(r.size) * cell_px)
+		draw_rect(rect, color)
+		draw_rect(rect, color.darkened(0.35), false, 1.0)
