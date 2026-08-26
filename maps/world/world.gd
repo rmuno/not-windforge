@@ -2491,6 +2491,71 @@ func ride_mine_pulse() -> int:
 # hazard band, so this is free in the common case (mid-band flight, and the whole
 # normal startup, since the arena spawn is mid-band).
 
+# --- Propeller wash on BODIES (owner survey 2026-08-18) ---------------------
+#
+# "Just past a propeller's facing direction there is finnickiness — props
+# pull/push nearby things and CHOP THEM UP." Shells and hazard slugs already
+# sample `Ship.wash_accel_at`; this is the half that reaches things with mass.
+#
+# Two effects, deliberately different in reach:
+#   * PUSH, the whole length of the jet. A running propeller shoves creatures,
+#     hulls and people. It is the same acceleration the projectiles feel,
+#     applied as a force, so a light critter is thrown and a whale barely
+#     notices — which is the mass doing the work, not a table of exceptions.
+#   * CHOP, only the near third. Standing in the draught is weather; standing
+#     in the BLADES is an injury. It bites creatures and people, never hulls:
+#     a ship shredding its own structure with its own propellers is the
+#     "far too easy to damage your own ship" clunk the playtest complained of.
+#
+# Cost: only ships whose props are actually turning emit, and each emitter
+# tests a handful of bodies with a distance early-out. A fleet of twenty is a
+# few hundred cheap checks a frame, and a fleet with no throttle open is none.
+
+## How far into the jet the blades reach, as a fraction of its length.
+const WASH_CHOP_FRAC := 0.34
+
+
+func _apply_prop_wash(delta: float) -> void:
+	if not Net.is_server() or fleet == null or not is_instance_valid(fleet):
+		return
+	var push_mult := Tunables.get_num("wash_push_mult")
+	var chop_dps := Tunables.get_num("wash_chop_dps")
+	if push_mult <= 0.0 and chop_dps <= 0.0:
+		return
+	var ships: Array = fleet.ships()
+	var reach := Ship.WASH_RANGE_CELLS * Ship.CELL * world_scale * 1.5
+	for emitter in ships:
+		if not is_instance_valid(emitter) or emitter.dormant:
+			continue
+		if emitter.wash_accel_at(emitter.global_position + Vector2(0.0, 1.0)) 				== Vector2.ZERO and not emitter.has_running_props():
+			continue
+		# Other bodies in the draught.
+		for body in ships:
+			if body == emitter or not is_instance_valid(body) or body.dormant:
+				continue
+			if body.global_position.distance_to(emitter.global_position) > reach 					+ body.solid_bounds.size.length():
+				continue
+			var a: Vector2 = emitter.wash_accel_at(body.global_position)
+			if a == Vector2.ZERO:
+				continue
+			if push_mult > 0.0:
+				body.apply_central_force(a * push_mult * body.mass)
+			if chop_dps > 0.0 and body.shared_health_max > 0.0 					and body.shared_health > 0.0 					and emitter.is_in_near_wash(body.global_position, WASH_CHOP_FRAC):
+				# A living creature only: a hull is not chopped by a fan, and a
+				# carcass in the blades is already salvage.
+				body.net_damage_cell(body.cell_at_global(body.global_position),
+					chop_dps * delta)
+		# And the person standing in it.
+		if player != null and is_instance_valid(player) and not player.is_piloting():
+			var pa: Vector2 = emitter.wash_accel_at(player.global_position)
+			if pa != Vector2.ZERO:
+				if push_mult > 0.0:
+					player.velocity += pa * push_mult * delta
+				if chop_dps > 0.0 and emitter.is_in_near_wash(
+						player.global_position, WASH_CHOP_FRAC):
+					player.take_damage(chop_dps * delta)
+
+
 # --- Fire (roadmap Phase 4; combat/fire.gd) ---------------------------------
 #
 # The source's fire was its main threat multiplier and its buggiest system, so
@@ -2846,6 +2911,7 @@ func _physics_process(delta: float) -> void:
 	_handle_taming(delta)
 	_handle_riding(delta)
 	_handle_ridden_mining(delta)
+	_apply_prop_wash(delta)
 	_update_fires(delta)
 	_update_hazards(delta)
 	_update_suffocation(delta)

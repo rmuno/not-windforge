@@ -153,6 +153,7 @@ func _initialize() -> void:
 	await _test_spawn_sites_are_places()
 	await _test_fire_spreads_burns_and_can_be_beaten()
 	await _test_basilisk_stands_off_and_telegraphs()
+	await _test_prop_wash_pushes_and_chops()
 	await _test_chunk_bytes_feed_the_rebuild()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
@@ -7253,6 +7254,82 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	s8.queue_free()
 	beast.queue_free()
 	yard.queue_free()
+	await _step(1)
+
+
+## PROP WASH ON BODIES (owner survey 2026-08-18, v0.65.0): "props pull/push
+## nearby things and CHOP THEM UP", and the emergent defence the owner liked —
+## a slow projectile passing a propeller can be REPELLED by sliding the ship.
+## Shells already sampled the jet; this pins the rest of it, and the DIVISION
+## between the two effects: the draught pushes anything with mass, the blades
+## only bite what is alive, and never a hull (a ship shredding its own
+## structure with its own propellers is the "far too easy to damage your own
+## ship" clunk the playtest complained about).
+func _test_prop_wash_pushes_and_chops() -> void:
+	_t("prop wash: the draught pushes, the blades bite, and an idle prop does neither")
+
+	var cells := {
+		Vector2i(0, 0): BlockDB.Type.ENGINE,
+		Vector2i(1, 0): BlockDB.Type.PROPELLER,
+		Vector2i(2, 0): BlockDB.Type.HULL,
+	}
+	var fan := _make_ship(cells)
+	fan.position = Vector2(-210000, 0)
+	# A lone propeller mounts HORIZONTAL (glyph cluster "PH"), so the throttle
+	# that turns it is x, and its jet blows opposite the thrust: pushing the
+	# ship right blasts air to the LEFT.
+	fan.thrust_input = Vector2(1.0, 0.0)
+	await _step(2)
+
+	_check(fan.has_running_props(), "a powered prop with the throttle open is running")
+	var astern := fan.to_global(Vector2(-Ship.CELL * 2.0, 0.0))
+	var jet := fan.wash_accel_at(astern)
+	_check(jet.x < 0.0, "...and blasts air ASTERN of the thrust (%.0f px/s²)" % jet.x)
+	_check(fan.is_in_near_wash(astern, 1.0), "a point in the jet reads as in the jet")
+
+	var ahead := fan.to_global(Vector2(Ship.CELL * 4.0, 0.0))
+	_check(fan.wash_accel_at(ahead) == Vector2.ZERO,
+		"nothing blows on the INTAKE side — a jet has a direction")
+
+	# An idle prop is a windmill, not a fan.
+	fan.thrust_input = Vector2.ZERO
+	await _step(1)
+	_check(not fan.has_running_props() and fan.wash_accel_at(astern) == Vector2.ZERO,
+		"an idle prop blows nothing at all")
+	fan.thrust_input = Vector2(1.0, 0.0)
+	await _step(1)
+
+	# THE BLADES vs THE DRAUGHT. The chop reaches the near third only, so a
+	# body at the far end of the jet is pushed and not cut.
+	# Six cells astern of the hull is ~seven from the prop itself — well past
+	# the blades, still inside the eight-cell jet.
+	var deep := fan.to_global(Vector2(-Ship.CELL * 6.0, 0.0))
+	_check(fan.wash_accel_at(deep) != Vector2.ZERO,
+		"the far end of the jet still pushes")
+	_check(not fan.is_in_near_wash(deep, 0.34),
+		"...but the blades do not reach it")
+
+	# A creature dropped into the jet is shoved along it.
+	var body := {}
+	for x in 3:
+		body[Vector2i(x, 0)] = BlockDB.Type.BLUBBER
+	var critter := _make_ship(body)
+	critter.shared_health_max = 500.0
+	critter.shared_health = 500.0
+	critter.global_position = astern
+	await _step(1)
+	var a := fan.wash_accel_at(critter.global_position)
+	_check(a.x < 0.0, "a creature standing in the jet is in the draught")
+	var v0 := critter.linear_velocity.x
+	for i in 20:
+		critter.apply_central_force(fan.wash_accel_at(critter.global_position)
+			* critter.mass)
+		await _step(1)
+	_check(critter.linear_velocity.x < v0,
+		"...and is pushed along it (%.0f -> %.0f px/s)" % [v0, critter.linear_velocity.x])
+
+	fan.queue_free()
+	critter.queue_free()
 	await _step(1)
 
 

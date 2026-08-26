@@ -1916,8 +1916,15 @@ func unsupported_weight() -> float:
 ## props visibly bend slow projectiles — heavy artillery lobs deflect
 ## hard, machine-gun rounds barely notice). The slow-bends-more rule is
 ## EMERGENT: deflection scales with time spent in the jet, so nothing is
-## special-cased per projectile. Projectiles only for now — wash on
-## bodies and ships is the full Sprint-4 propeller-wash item (BACKLOG).
+## special-cased per projectile.
+##
+## v0.65.0 gives the jet the other half the owner's survey describes — "props
+## pull/push nearby things and CHOP THEM UP". `wash_accel_at` is the one
+## function that answers "what is the air doing here", and everything that can
+## be moved by air now asks it: shells, hazard slugs, creatures, hulls and
+## people. The chop is separate (see world._apply_prop_wash): it is a hazard of
+## standing in the blades, not of standing in the draught, so it only reaches
+## the near third of the jet.
 const WASH_RANGE_CELLS := 8.0   ## jet length, in cells (×scale_unit)
 const WASH_ACCEL := 2600.0      ## px/s² at full power (×scale_unit)
 
@@ -1952,6 +1959,46 @@ func wash_accel_at(global_pos: Vector2) -> Vector2:
 			continue
 		out += jet * WASH_ACCEL * ratio * scale_unit * (1.0 - along / range_px)
 	return out
+
+
+## Is anything blowing at all? A cheap gate for the world's per-frame wash
+## sweep: a ship with no props, no power or no throttle open emits nothing, and
+## most of the fleet is in that state most of the time.
+func has_running_props() -> bool:
+	if _wash_props.is_empty() or _power_ratio() <= 0.01:
+		return false
+	if not is_zero_approx(thrust_input.x) or not is_zero_approx(thrust_input.y):
+		return true
+	return _hover_engaged
+
+
+## Is `global_pos` in the BLADES rather than merely the draught — the near
+## `frac` of any of this ship's jets? The chop reaches here and no further.
+func is_in_near_wash(global_pos: Vector2, frac: float) -> bool:
+	if _wash_props.is_empty() or _power_ratio() <= 0.01:
+		return false
+	var range_px := WASH_RANGE_CELLS * CELL * scale_unit * frac
+	var facing := transform.basis_xform(Vector2.RIGHT).normalized()
+	for prop in _wash_props:
+		var jet := Vector2.ZERO
+		if prop["vertical"]:
+			var v := thrust_input.y
+			if _hover_engaged:
+				v = 1.0
+			if is_zero_approx(v):
+				continue
+			jet = Vector2.DOWN * signf(v)
+		else:
+			if is_zero_approx(thrust_input.x):
+				continue
+			jet = -facing * signf(thrust_input.x)
+		var rel := global_pos - to_global(prop["center"])
+		var along := rel.dot(jet)
+		if along < 0.0 or along > range_px:
+			continue
+		if absf(rel.dot(Vector2(-jet.y, jet.x))) <= float(prop["half_width"]) * 1.5:
+			return true
+	return false
 
 
 ## Impact detection measures the ship's actual killed momentum — mass times
