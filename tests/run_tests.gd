@@ -145,6 +145,7 @@ func _initialize() -> void:
 	await _test_incremental_edits_match_full_rebuild()
 	await _test_skin_sectors_partition_and_localise_redraws()
 	await _test_greedy_rects_order_and_partition()
+	await _test_attitude_reads_the_same_in_world_and_map()
 	await _test_chunk_bytes_feed_the_rebuild()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
@@ -7103,6 +7104,67 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	s8.queue_free()
 	beast.queue_free()
 	yard.queue_free()
+	await _step(1)
+
+
+## FRIEND/FOE READS THE SAME EVERYWHERE (v0.56.0). Attitude has to be legible
+## BEFORE you are in range (BACKLOG, from the playtest scar where a man in a
+## mine was assumed recruitable and attacked). Hostiles already wore a red
+## cast; TAMING shipped with no visual confirmation at all — `world.try_tame`
+## flips a bonded whale to faction 0 and it then looked exactly like the wild
+## whale beside it. The cast and the map blip now come from one place each, so
+## this pins the whole language in one go.
+func _test_attitude_reads_the_same_in_world_and_map() -> void:
+	_t("attitude: hostiles red, tamed allies teal, wildlife and your own hulls plain")
+
+	var plain := Color(0.5, 0.5, 0.5)
+
+	# A VESSEL on the player's side must keep its true colours — tinting your
+	# own ship green would be the loudest possible false signal.
+	var mine := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	mine.position = Vector2(-70000, 0)
+	_check(not mine.is_tamed_ally(), "your own vessel is not a 'tamed ally' (no pool)")
+	_check(mine.attitude_cast(plain) == plain, "...and wears no cast at all")
+	_check(MapView.blip_color(mine) == Color(0.55, 0.80, 1.0),
+		"...and blips as a vessel")
+
+	var foe := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	foe.position = Vector2(-70000, -3000)
+	foe.faction = 1
+	_check(foe.attitude_cast(plain) == plain.lerp(Ship.CAST_HOSTILE, Ship.CAST_STRENGTH),
+		"a hostile hull wears the red cast")
+	_check(MapView.blip_color(foe) == Color(0.95, 0.40, 0.35), "...and a red blip")
+
+	# A WILD creature: neutral. It must never read as an enemy.
+	var wild := _make_ship({Vector2i(0, 0): BlockDB.Type.MEAT})
+	wild.position = Vector2(-70000, -6000)
+	wild.faction = 2
+	wild.shared_health_max = 500.0
+	wild.shared_health = 500.0
+	_check(not wild.is_tamed_ally() and wild.attitude_cast(plain) == plain,
+		"wildlife keeps its natural colours — neutral is not hostile")
+	_check(MapView.blip_color(wild) == Color(0.85, 0.70, 0.95), "...and its own blip")
+
+	# THE BOND. Taming is allegiance, so the cast follows the flip.
+	wild.faction = 0
+	_check(wild.is_tamed_ally(), "a bonded creature (faction 0, living pool) is an ally")
+	_check(wild.attitude_cast(plain) == plain.lerp(Ship.CAST_ALLY, Ship.CAST_STRENGTH),
+		"...and wears the ally cast — the confirmation taming shipped without")
+	_check(MapView.blip_color(wild) == Ship.CAST_ALLY,
+		"...and blips in that same teal, not as one more vessel")
+	_check(Ship.CAST_ALLY != Ship.CAST_HOSTILE,
+		"the two casts are not the same colour (they are read at a glance)")
+
+	# DEATH ends the allegiance. A leftover ally cast on a corpse would say the
+	# bond survived, and it is also the case where the paint path changes: a
+	# carcass bakes per-cell shading again (v0.55.1).
+	wild.shared_health = 0.0
+	_check(not wild.is_tamed_ally(), "a tamed creature's CARCASS is nobody's ally")
+	_check(wild.attitude_cast(plain) == plain, "...and the cast is gone with it")
+
+	mine.queue_free()
+	foe.queue_free()
+	wild.queue_free()
 	await _step(1)
 
 

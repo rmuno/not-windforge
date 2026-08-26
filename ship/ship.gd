@@ -408,6 +408,40 @@ var pilot_peer := 1
 ## combat/whale_ai.gd).
 var faction := 0
 
+## THE FRIEND/FOE LANGUAGE, in one place (BACKLOG "friend/foe readability":
+## an attitude must be readable BEFORE you are in range of it). Hostiles wear
+## a red cast; a TAMED creature wears a calm teal one; wildlife and your own
+## hulls keep their true colours.
+##
+## The ally cast closes a gap in taming, which shipped without any visual
+## confirmation at all: `world.try_tame` flips a bonded whale to faction 0,
+## after which it looked exactly like the wild whale beside it. Gated on a
+## LIVING creature (`shared_health`), which does two things at once — a
+## VESSEL on the player's side is never tinted (your own ship must show its
+## real colours), and a tamed whale's carcass stops reading as an ally the
+## moment it dies, because it is no longer anybody's ally.
+##
+## Kept as one function rather than colour literals at each site so the world
+## body, the map blip and whatever reads it next cannot drift apart.
+const CAST_HOSTILE := Color(0.80, 0.18, 0.15)
+const CAST_ALLY := Color(0.22, 0.82, 0.68)
+const CAST_STRENGTH := 0.4  ## how far a cast pulls the true colour (0..1)
+
+
+## `color` washed by this body's attitude, or unchanged when it has none.
+func attitude_cast(color: Color) -> Color:
+	if faction == 1:
+		return color.lerp(CAST_HOSTILE, CAST_STRENGTH)
+	if is_tamed_ally():
+		return color.lerp(CAST_ALLY, CAST_STRENGTH)
+	return color
+
+
+## A LIVING creature on the player's side — i.e. one that was tamed. A vessel
+## has no shared pool, so it can never match; a carcass has an empty one.
+func is_tamed_ally() -> bool:
+	return faction == 0 and shared_health_max > 0.0 and shared_health > 0.0
+
 ## Cosmetic-only body tint, multiplied over every block colour in _draw. White
 ## (identity) for every normal ship — the sole use today is a hidden easter-egg
 ## whale variant (maps/world/easter_eggs.gd → the Pale Wanderer). Never touches
@@ -3276,9 +3310,7 @@ func _paint_sector(on: ShipSkinSector) -> void:
 		for rect in _greedy_rects(g["cells"]):
 			_draw_region(on, rect, g["type"], g["color"])
 	if bag_edges.size() >= 4:
-		var line := BlockDB.color_of(BlockDB.Type.GASBAG).darkened(0.35)
-		if faction == 1:
-			line = line.lerp(Color(0.80, 0.18, 0.15), 0.4)
+		var line := attitude_cast(BlockDB.color_of(BlockDB.Type.GASBAG).darkened(0.35))
 		line *= body_tint
 		on.draw_multiline(bag_edges, line, 1.0)
 
@@ -3308,12 +3340,9 @@ func sector_paint_plan(cell_set: Dictionary) -> Dictionary:
 		var key := type * 8 + shade
 		if not groups.has(key):
 			var color := BlockDB.color_of(type).darkened((1.0 - shade / 5.0) * 0.6)
-			if faction == 1:
-				# Friend/foe must read before range (playtest scar):
-				# HOSTILE hulls wear their allegiance as a red cast.
-				# Wildlife (faction 2) keeps its natural colours — a
-				# neutral whale must not read as an enemy.
-				color = color.lerp(Color(0.80, 0.18, 0.15), 0.4)
+			# Friend/foe must read before range (playtest scar): hostiles wear
+			# a red cast, a tamed ally a teal one, wildlife its own colours.
+			color = attitude_cast(color)
 			color *= body_tint  # cosmetic (identity white for all normal ships)
 			groups[key] = {"cells": {}, "color": color, "type": type}
 		(groups[key]["cells"] as Dictionary)[cell] = true

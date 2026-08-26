@@ -994,6 +994,15 @@ func _check_taming(world: Node, fleet) -> void:
 	_ok(p.stats.taming_level() == 3, "Master Trader = taming tier 3 (whales + krakens)")
 	_ok(world.try_tame(whale), "the top tier tames the whale")
 	_ok(whale.faction == 0, "the tamed whale's allegiance flips to the player's side")
+	# ...and the flip has to be VISIBLE, end to end through the real verb:
+	# taming shipped with no confirmation, so a bonded whale looked exactly
+	# like the wild one beside it (v0.56.0).
+	_ok(whale.is_tamed_ally(), "the bond reads as an allegiance the paint can see")
+	_ok(whale.attitude_cast(Color(0.5, 0.5, 0.5))
+			== Color(0.5, 0.5, 0.5).lerp(Ship.CAST_ALLY, Ship.CAST_STRENGTH),
+		"the tamed whale wears the ally cast in the world")
+	_ok(MapView.blip_color(whale) == Ship.CAST_ALLY,
+		"...and blips as YOUR creature on the map, not as one more vessel")
 	var ai = world._whale_ai_for(whale)
 	ai.provoke()
 	_ok(ai.tamed and ai.phase() == WhaleAI.Phase.NONE,

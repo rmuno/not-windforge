@@ -70,6 +70,24 @@ func _map_rect() -> Array:
 	return [morigin, msize, sc]
 
 
+## A ship's blip colour — the MAP half of the friend/foe language (Ship's
+## attitude_cast is the world half). Pulled out of _draw so it is a value the
+## suite can assert on: a colour buried in a draw call is a colour no test
+## can see.
+##
+## A tamed creature is yours, but it is not a VESSEL — reading it as one is
+## how you lose track of your whale among your ships — so it takes the same
+## teal it wears in the world.
+static func blip_color(ship: Ship) -> Color:
+	if ship.faction == 1:
+		return Color(0.95, 0.40, 0.35)             # hostile
+	if ship.is_tamed_ally():
+		return Ship.CAST_ALLY                      # your tamed creature
+	if ship.faction == 2:
+		return Color(0.85, 0.70, 0.95)             # wildlife
+	return Color(0.55, 0.80, 1.0)                  # player / vessel
+
+
 func _w2m(world_pos: Vector2, mr: Array) -> Vector2:
 	var wpx := _world_px_rect()
 	return (mr[0] as Vector2) + (world_pos - wpx.position) * float(mr[2])
@@ -262,13 +280,8 @@ func _draw_markers(mr: Array, font: Font) -> void:
 		for ship in fleet.ships():
 			if not is_instance_valid(ship):
 				continue
-			var col := Color(0.55, 0.80, 1.0)          # player/vessel
-			if ship.faction == 1:
-				col = Color(0.95, 0.40, 0.35)          # hostile
-			elif ship.faction == 2:
-				col = Color(0.85, 0.70, 0.95)          # wildlife
 			var p := _w2m(ship.global_position, mr)
-			draw_circle(p, 3.0, col)
+			draw_circle(p, 3.0, blip_color(ship))
 	var player: Variant = world.get("player")
 	if player != null and is_instance_valid(player):
 		var pp := _w2m(player.global_position, mr)
