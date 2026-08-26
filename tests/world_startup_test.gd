@@ -246,6 +246,7 @@ func _initialize() -> void:
 	await _check_save_load(world)
 	await _check_taming(world, fleet)
 	await _check_fire(world, fleet)
+	await _check_basilisk(world, fleet)
 	await _check_spawn_sites(world, fleet)
 	await _check_debug_window(world, fleet)
 	await _check_lava_core(world, fleet)
@@ -1269,6 +1270,50 @@ func _check_fire(world: Node, fleet) -> void:
 		if is_instance_valid(ship):
 			(ship as Ship).burning.clear()
 	Tunables.set_value("fire_enabled", false)
+
+
+
+## THE BASILISK against the REAL world (v0.64.0). The unit test owns the brain;
+## what only the live world can show is the HAND-OFF — the brain raises a spit
+## request, the world spawns the slug through the one projectile path, and the
+## slug is the same HazardFireball a meteor is. Damage and ignition are turned
+## OFF for the check: this is about the mechanism, and the suite's later checks
+## count the hull cells this would otherwise chew.
+func _check_basilisk(world: Node, fleet) -> void:
+	var mine = world.get("local_ship")
+	if mine == null or not is_instance_valid(mine):
+		return
+	var dmg := Tunables.get_num("basilisk_spit_damage")
+	var ignite := Tunables.get_num("fire_ignite_chance")
+	Tunables.set_value("basilisk_spit_damage", 0.0)
+	Tunables.set_value("fire_ignite_chance", 0.0)
+	Tunables.set_value("basilisk_spit_seconds", 0.5)
+
+	var beast = world.debug_spawn("basilisk", mine.global_position
+		+ Vector2(2600.0 * world.world_scale, -400.0 * world.world_scale))
+	_ok(beast != null, "a basilisk spawns through the real Fleet path")
+	if beast != null:
+		_ok(beast.creature_kind == "basilisk" and beast.shared_health > 0.0,
+			"...as a living creature with the basilisk brain")
+		_ok(world._whale_ai_for(beast) is BasiliskAI,
+			"...and the world gives it the BasiliskAI, not the whale brain")
+		var seen := 0
+		for i in 400:
+			await world.get_tree().physics_frame
+			seen = maxi(seen, world.get_tree()
+				.get_nodes_in_group("hazard_fireballs").size())
+			if seen > 0:
+				break
+		_ok(seen > 0,
+			"...and it actually spits: the world spawned its fireball (%d live)" % seen)
+		for fb in world.get_tree().get_nodes_in_group("hazard_fireballs"):
+			(fb as Node).queue_free()
+		beast.queue_free()
+		await world.get_tree().process_frame
+
+	Tunables.set_value("basilisk_spit_damage", dmg)
+	Tunables.set_value("fire_ignite_chance", ignite)
+	Tunables.reset("basilisk_spit_seconds")
 
 
 ## WORLD-ANCHORED SPAWN SITES against the REAL world (charter §4, v0.61.0).

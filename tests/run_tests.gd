@@ -152,6 +152,7 @@ func _initialize() -> void:
 	await _test_dormant_creatures_migrate_in_a_circuit()
 	await _test_spawn_sites_are_places()
 	await _test_fire_spreads_burns_and_can_be_beaten()
+	await _test_basilisk_stands_off_and_telegraphs()
 	await _test_chunk_bytes_feed_the_rebuild()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
@@ -7252,6 +7253,80 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	s8.queue_free()
 	beast.queue_free()
 	yard.queue_free()
+	await _step(1)
+
+
+## THE BASILISK (owner survey 2026-08-18, v0.64.0). The source's version is
+## remembered as "spams fireballs... the fire is the main problem" — a
+## compliment to the idea and a complaint about everything around it. What is
+## pinned here is the three answers: it holds a RANGE (so closing on it is
+## counter-play, not a stat check), it TELEGRAPHS (charter §5 — a ranged
+## attacker with no wind-up is weather, not a fight), and its spit is a
+## REQUEST the world fulfils (one spawn path for projectiles, as with every
+## gun in the game).
+func _test_basilisk_stands_off_and_telegraphs() -> void:
+	_t("a basilisk holds its range, rears before it spits, and asks the world to fire")
+
+	var cells := ShipLayout.load_cells("res://ships/basilisk.ship")
+	_check(cells.size() > 30, "the basilisk has a body plan (%d cells)" % cells.size())
+	var shell := 0
+	for c in cells:
+		if int(cells[c]) == BlockDB.Type.SHELL:
+			shell += 1
+	_check(shell > 0, "...with a plated skull (%d shell cells) — fight it from the side" % shell)
+
+	var beast := _make_ship(cells)
+	beast.position = Vector2(-180000, 0)
+	beast.shared_health_max = 2600.0
+	beast.shared_health = 2600.0
+	var ai := BasiliskAI.new()
+	ai.whale = beast
+	ai.home = beast.global_position
+
+	# A target well OUTSIDE its preferred range: it closes.
+	var prey := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	prey.position = beast.position + Vector2(BasiliskAI.PREFERRED_RANGE * 3.0, 0.0)
+	var before := beast.global_position.distance_to(prey.global_position)
+	for i in 40:
+		ai.tick(1.0 / 60.0, prey)
+		await _step(1)
+	var after := beast.global_position.distance_to(prey.global_position)
+	_check(before - after > 20.0,
+		"a basilisk closes on a target that is too far (%.0f -> %.0f px)"
+			% [before, after])
+
+	# THE TELL. Somewhere in the cadence it rears, and only then does it spit.
+	var reared := false
+	var spat := Vector2.INF
+	var reared_before_spit := false
+	for i in 600:
+		ai.tick(1.0 / 60.0, prey)
+		if ai.is_rearing():
+			reared = true
+		var at: Vector2 = ai.take_spit()
+		if at.x != INF:
+			spat = at
+			reared_before_spit = reared
+			break
+		await _step(0)
+	_check(spat.x != INF, "it spits, on a cadence rather than continuously")
+	_check(reared_before_spit,
+		"...and REARS first — the telegraph charter §5 asks for")
+	_check(ai.take_spit().x == INF,
+		"...and the request is taken exactly once (no double-fire)")
+
+	# A tamed basilisk does not shoot at your fleet.
+	ai.tamed = true
+	var quiet := true
+	for i in 600:
+		ai.tick(1.0 / 60.0, prey)
+		if ai.take_spit().x != INF:
+			quiet = false
+		await _step(0)
+	_check(quiet, "a TAMED basilisk never spits at you")
+
+	beast.queue_free()
+	prey.queue_free()
 	await _step(1)
 
 

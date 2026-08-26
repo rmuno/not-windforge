@@ -62,7 +62,8 @@ const REGEN_SECONDS := 240.0
 ## past the dormancy range, so nothing is reclaimed anywhere near the player.
 const RECLAIM_PX := 45000.0
 
-enum Kind { NONE, WHALE_GROUND, CRITTER_MEADOW, BANDIT_ROOST, KRAKEN_DEN }
+enum Kind { NONE, WHALE_GROUND, CRITTER_MEADOW, BANDIT_ROOST, KRAKEN_DEN,
+	BASILISK_EYRIE }
 
 
 ## The site in lattice cell `coord`, or an empty Dictionary for a cell that
@@ -115,10 +116,15 @@ static func kind_for(pos: Vector2, world_rect: Rect2, rng: RandomNumberGenerator
 			# the green band (WORLD_SPEC / roadmap).
 			return Kind.BANDIT_ROOST if roll < 0.45 else Kind.CRITTER_MEADOW
 		Airspace.Band.GAP_HIGH:
-			return Kind.WHALE_GROUND if roll < 0.6 else Kind.CRITTER_MEADOW
+			if roll < 0.5:
+				return Kind.WHALE_GROUND
+			return Kind.BASILISK_EYRIE if roll < 0.7 else Kind.CRITTER_MEADOW
 		Airspace.Band.TOP:
-			# The richest fauna is up top — the reason to build a better ship.
-			return Kind.WHALE_GROUND if roll < 0.8 else Kind.BANDIT_ROOST
+			# The richest fauna is up top — the reason to build a better ship —
+			# and so is the thing that sets it on fire.
+			if roll < 0.55:
+				return Kind.WHALE_GROUND
+			return Kind.BASILISK_EYRIE if roll < 0.85 else Kind.BANDIT_ROOST
 	return Kind.NONE
 
 
@@ -132,6 +138,10 @@ static func pool_for(kind: Kind) -> int:
 		Kind.BANDIT_ROOST:
 			return 2
 		Kind.KRAKEN_DEN:
+			return 2
+		Kind.BASILISK_EYRIE:
+			# Two is a fight; three of anything that shoots from range is a
+			# firing squad, and the top band already has meteors in it.
 			return 2
 	return 0
 
@@ -195,6 +205,8 @@ static func nest_for(kind: Kind) -> String:
 			return "res://ships/nest_den.ship"
 		Kind.CRITTER_MEADOW:
 			return "res://ships/nest_hive.ship"
+		Kind.BASILISK_EYRIE:
+			return "res://ships/nest_eyrie.ship"
 	return ""
 
 
@@ -215,6 +227,8 @@ static func kind_name(kind: Kind) -> String:
 			return "bandit roost"
 		Kind.KRAKEN_DEN:
 			return "kraken den"
+		Kind.BASILISK_EYRIE:
+			return "basilisk eyrie"
 	return "empty"
 
 
@@ -230,4 +244,6 @@ static func kind_color(kind: Kind) -> Color:
 			return Color(0.90, 0.45, 0.40)
 		Kind.KRAKEN_DEN:
 			return Color(0.70, 0.50, 0.85)
+		Kind.BASILISK_EYRIE:
+			return Color(0.95, 0.62, 0.30)
 	return Color.GRAY

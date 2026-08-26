@@ -1276,6 +1276,31 @@ func _spawn_one_kraken(path: String, pos: Vector2) -> Ship:
 	return kraken
 
 
+## Spawn ONE basilisk at `pos` — the top-band fire-spitter. Same pool-then-
+## rebuild ordering as every other creature (a living creature must rebuild after
+## its pool is set or it keeps the precise collider for life), and the same
+## deep-spawn keep-out, since an eyrie can sit against an island.
+func _spawn_one_basilisk(pos: Vector2) -> Ship:
+	var cells := ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/basilisk.ship"), world_scale)
+	var spawn_pos := WhaleSpawn.clear_spawn_pos(
+		terrain, pos, WhaleSpawn.footprint_of(cells), float(world_scale))
+	var beast := fleet.spawn_ship_from_cells(cells, spawn_pos, 0, 0.0,
+		float(world_scale), 2)
+	if beast == null:
+		return null
+	var hp := Tunables.get_num("basilisk_health")
+	beast.shared_health = hp
+	beast.shared_health_max = hp
+	beast.creature_kind = "basilisk"   # → BasiliskAI (stand off and spit)
+	# Top taming tier, like a kraken: a fire-breathing serpent is not an early
+	# mount. It stays outside the whale (2) and critter (1) startup filters.
+	beast.tame_level = 3
+	beast.body_tint = Color(0.86, 0.72, 0.52)
+	beast.rebuild()
+	return beast
+
+
 ## Plant the trainer station near spawn (rpg/trainer.gd). A world marker, not a
 ## ship — so it never touches fleet.ships() or the hosting rehome. Single-player /
 ## host only; joiners do not receive it yet (a seam — real trainers live in towns,
@@ -1313,6 +1338,8 @@ func debug_spawn(kind: String, at: Vector2) -> Ship:
 			return _spawn_whale_at(at)
 		"critter":
 			return _spawn_one_critter(at)
+		"basilisk":
+			return _spawn_one_basilisk(at)
 		"kraken":
 			# Alternate the two adopted bodies — the deep hunter on demand
 			# (owner 2026-08-24: "I can't find krakens").
@@ -1729,6 +1756,13 @@ func _creature_swim(delta: float) -> void:
 		if ai is KrakenAI:
 			(ai as KrakenAI).prey_player = _on_foot_player()
 		ai.tick(delta, target)
+		# A basilisk's spit is a PROJECTILE, and projectiles are spawned by the
+		# world — one spawn path, as with every gun. The brain raises a request
+		# and the world takes it.
+		if ai is BasiliskAI:
+			var at: Vector2 = (ai as BasiliskAI).take_spit()
+			if at.x != INF:
+				_spit_fire(ship, at)
 
 
 ## --- Dormancy -------------------------------------------------------------
@@ -2057,6 +2091,8 @@ func _release_resident(site: Dictionary, index: int) -> Ship:
 			body = _spawn_one_critter(pos)
 		SpawnSites.Kind.BANDIT_ROOST:
 			body = _spawn_hulk_at(pos)
+		SpawnSites.Kind.BASILISK_EYRIE:
+			body = _spawn_one_basilisk(pos)
 		SpawnSites.Kind.KRAKEN_DEN:
 			body = _spawn_one_kraken(
 				KRAKEN_PLANS[index % KRAKEN_PLANS.size()], pos)
@@ -2178,8 +2214,14 @@ func _whale_ai_for(creature: Ship) -> WhaleAI:
 		# A kraken gets the two-ended KrakenAI (mouth grab + shell-tip ram); every
 		# other faction-2 creature (whale, critter) gets the plain WhaleAI. Both
 		# are WhaleAI, so the swim loop / taming / riding paths are identical.
-		var ai: WhaleAI = KrakenAI.new() if creature.creature_kind == "kraken" \
-			else WhaleAI.new()
+		var ai: WhaleAI
+		match creature.creature_kind:
+			"kraken":
+				ai = KrakenAI.new()      # two-ended deep hunter: ram + mouth grab
+			"basilisk":
+				ai = BasiliskAI.new()    # stands off and spits fire
+			_:
+				ai = WhaleAI.new()       # whale, critter: roam and ram
 		ai.whale = creature
 		ai.home = creature.global_position
 		_whale_ais[id] = ai
@@ -2213,6 +2255,36 @@ var _tame_progress := 0.0
 ## The creature we last refused to tame, so the "no perk" line is said once per
 ## grapple rather than every frame the hook is held.
 var _tame_refused_id := 0
+
+
+## One basilisk fireball, from `beast` toward `at`. It is the SAME slug the sky
+## already throws — meteors and lava bombs are HazardFireball too — so it
+## damages through the same path, digs ground through the same seam, and rolls
+## to set what it hits alight through the same rule. A creature that invented
+## its own projectile would be a second physics model to keep honest.
+func _spit_fire(beast: Ship, at: Vector2) -> HazardFireball:
+	var muzzle := beast.global_position + Vector2(
+		beast.solid_bounds.size.x * 0.5 * (1.0 if beast.visual_facing >= 0 else -1.0),
+		0.0)
+	var dir := (at - muzzle).normalized()
+	if dir == Vector2.ZERO:
+		return null
+	var fb := HazardFireball.new()
+	fb.kind = HazardFireball.Kind.LAVA   # the arcing, glowing one
+	fb.position = muzzle
+	var speed := Tunables.get_num("basilisk_spit_speed") * world_scale
+	# Lofted, not flat: the slug arcs, so a basilisk's fire has to be READ and
+	# dodged rather than merely out-ranged. Same first-order compensation every
+	# gunner in this game uses.
+	fb.gravity = 980.0 * world_scale * 0.25
+	var t := muzzle.distance_to(at) / maxf(speed, 1.0)
+	var lead := at + Vector2.UP * 0.5 * fb.gravity * t * t
+	fb.velocity = (lead - muzzle).normalized() * speed
+	fb.damage = Tunables.get_num("basilisk_spit_damage")
+	fb.terrain = terrain
+	fb.visual_scale = float(world_scale)
+	add_child(fb)
+	return fb
 
 
 ## Try to tame `creature` NOW (the testable gate). Refuses a non-creature, a

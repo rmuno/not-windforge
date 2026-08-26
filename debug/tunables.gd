@@ -112,6 +112,19 @@ const _REGISTRY := [
 		"min": 2000.0, "max": 60000.0, "step": 500.0},           # world._update_dormancy
 	{"id": "dormant_tick_seconds", "label": "Dormant tick (s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 3.0, "min": 0.5, "max": 30.0, "step": 0.5},
+	# --- Basilisk (the top-band fire-spitter) --------------------------------
+	{"id": "basilisk_health", "label": "Basilisk health pool", "group": "Whale",
+		"kind": KIND_FLOAT, "default": 2600.0, "min": 100.0, "max": 30000.0,
+		"step": 100.0},   # world._spawn_one_basilisk
+	{"id": "basilisk_spit_seconds", "label": "Basilisk spit interval (s)",
+		"group": "Combat", "kind": KIND_FLOAT, "default": 3.4, "min": 0.5,
+		"max": 20.0, "step": 0.1},   # BasiliskAI._interval
+	{"id": "basilisk_spit_damage", "label": "Basilisk fireball damage",
+		"group": "Combat", "kind": KIND_FLOAT, "default": 55.0, "min": 0.0,
+		"max": 400.0, "step": 5.0},
+	{"id": "basilisk_spit_speed", "label": "Basilisk fireball speed",
+		"group": "Combat", "kind": KIND_FLOAT, "default": 900.0, "min": 100.0,
+		"max": 4000.0, "step": 50.0},
 	# --- Fire (roadmap Phase 4: a fight, not a verdict) ----------------------
 	{"id": "fire_enabled", "label": "Fire (spreads cell to cell; X douses)",
 		"group": "World", "kind": KIND_BOOL, "default": true},   # world._update_fires
