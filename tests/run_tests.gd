@@ -151,6 +151,7 @@ func _initialize() -> void:
 	await _test_dormancy_leaves_and_rejoins_the_simulation()
 	await _test_dormant_creatures_migrate_in_a_circuit()
 	await _test_spawn_sites_are_places()
+	await _test_no_target_outlives_the_ceiling()
 	await _test_fire_spreads_burns_and_can_be_beaten()
 	await _test_basilisk_stands_off_and_telegraphs()
 	await _test_prop_wash_pushes_and_chops()
@@ -7587,6 +7588,63 @@ func _test_fire_spreads_burns_and_can_be_beaten() -> void:
 ## is that a site is a PLACE — the same seed puts the same population in the
 ## same spot forever — and that what lives there is decided by the BAND, which
 ## is what makes altitude mean something.
+## THE 30-SECOND CEILING (owner 2026-08-26): "5 full minutes of sustained fire
+## to kill something is not ok. at most it should be 30 seconds, for now, if
+## anything, for something that just continuously takes damage."
+##
+## `tools/balance_probe.gd` measures the real seconds by shooting the real
+## bodies, but it takes minutes and a whole world, so it is not in the suite.
+## THIS is the cheap guard that keeps the ceiling from rotting: every authored
+## health pool in the game, divided by the starter's own dps, has to come out
+## under 30 seconds. It is arithmetic — the probe is the truth — but it catches
+## the thing that actually happens, which is somebody typing a bigger number.
+##
+## The dps is DERIVED, not written down: turret_damage / TURRET_COOLDOWN, one
+## gun bearing (the probe's condition — turrets only fire inside their 180°
+## arc, so one is what a held-still target eats).
+func _test_no_target_outlives_the_ceiling() -> void:
+	_t("nothing in the game outlives the owner's 30-second kill ceiling")
+	const CEILING_SECONDS := 30.0
+	var world_gd := load("res://maps/world/world.gd") as GDScript
+	var world_consts: Dictionary = world_gd.get_script_constant_map()
+	# The AUTHORED defaults, not the live levers: a lever another test left
+	# pushed is not what ships, and this guard is about what ships.
+	var cooldown: float = maxf(float(world_consts["TURRET_COOLDOWN"]), 0.001)
+	var dps: float = float(Tunables.def("turret_damage")["default"]) / cooldown
+	_check(dps > 0.0, "the starter's one bearing gun lands %.0f dps" % dps)
+
+	var pools := {
+		"whale": float(world_consts["WHALE_HEALTH"]),
+		"critter": float(world_consts["CRITTER_HEALTH"]),
+		"kraken": float(world_consts["KRAKEN_HEALTH"]),
+		"basilisk": float(Tunables.def("basilisk_health")["default"]),
+	}
+	for k in [SpawnSites.Kind.BANDIT_ROOST, SpawnSites.Kind.KRAKEN_DEN,
+			SpawnSites.Kind.CRITTER_MEADOW, SpawnSites.Kind.BASILISK_EYRIE]:
+		pools["nest: " + SpawnSites.kind_name(k)] = SpawnSites.nest_pool(k)
+	for what in pools:
+		var seconds: float = float(pools[what]) / dps
+		_check(seconds <= CEILING_SECONDS,
+			"%s: %.0f hp = %.0f s of unbroken fire (ceiling %.0f)"
+				% [what, pools[what], seconds, CEILING_SECONDS])
+
+	# A CRASH IS STILL A BRUISE. The two creature impact factors are absolute-hp
+	# knobs tuned as a PERCENT of the whale pool, so shrinking the pool without
+	# them would let a whale die of scenery — the exact 2026-08-21 owner report.
+	# Bill the worst crash the anchor comment describes (`available` ~20,500 for
+	# terrain, ~10,000 for a vessel ram) and require it stays a fraction.
+	var whale_hp: float = float(world_consts["WHALE_HEALTH"])
+	var ram_hp := 10000.0 * float(Tunables.def("creature_impact_factor")["default"])
+	var terrain_factor: float = float(Tunables.def("creature_terrain_impact_factor")["default"])
+	var crash_hp := 20500.0 * terrain_factor
+	_check(ram_hp < 0.10 * whale_hp,
+		"a full vessel ram costs %.0f of %.0f (%.1f%%) — a bruise, not a death"
+			% [ram_hp, whale_hp, 100.0 * ram_hp / whale_hp])
+	_check(crash_hp < 0.10 * whale_hp,
+		"a full-speed terrain crash costs %.0f of %.0f (%.1f%%)"
+			% [crash_hp, whale_hp, 100.0 * crash_hp / whale_hp])
+
+
 func _test_spawn_sites_are_places() -> void:
 	_t("spawn sites: a place, not a ring — deterministic, band-decided, bounded")
 
@@ -9286,9 +9344,14 @@ func _find_air_above(t: Terrain, from: Vector2i) -> Vector2i:
 
 func _test_tunables_get_set_reset_and_clamp() -> void:
 	_t("Tunables: get / set / reset-to-default, clamped to min/max")
-	# Defaults mirror the origin consts (parity — behaviour identical until touched).
-	_check_approx(Tunables.get_num("whale_health"), 15000.0, 0.001,
-		"whale_health default = WHALE_HEALTH")
+	# Defaults mirror the origin consts (parity — behaviour identical until
+	# touched). Read the CONST, not a copy of its value: the copy went stale
+	# the moment the 30-second ceiling moved WHALE_HEALTH (2026-08-26).
+	var world_gd := load("res://maps/world/world.gd") as GDScript
+	var world_consts: Dictionary = world_gd.get_script_constant_map()
+	var whale_hp: float = float(world_consts["WHALE_HEALTH"])
+	_check_approx(Tunables.get_num("whale_health"), whale_hp, 0.001,
+		"whale_health default = WHALE_HEALTH (%.0f)" % whale_hp)
 	_check(Tunables.get_int("whale_pod_size") == 3,
 		"whale_pod_size default = WHALE_POD_SIZE (3)")
 
@@ -9315,7 +9378,7 @@ func _test_tunables_get_set_reset_and_clamp() -> void:
 
 	# reset one, reset all.
 	Tunables.reset("whale_health")
-	_check_approx(Tunables.get_num("whale_health"), 15000.0, 0.001,
+	_check_approx(Tunables.get_num("whale_health"), whale_hp, 0.001,
 		"reset restores the default")
 	Tunables.reset_all()
 	_check(Tunables.get_int("whale_pod_size") == 3, "reset_all restores every default")

@@ -1100,13 +1100,25 @@ func _spawn_hulk_at(pos: Vector2) -> Ship:
 
 
 ## The living whale's shared health pool (owner: one "whale unit" — no
-## block breaks until it is dead). 5× the first tuning (owner 2026-08-21:
-## "whales should have a LOT more health, they're made of paper") —
-## roughly three minutes of sustained two-turret starter fire: hunting a
-## whale is an undertaking, not a drive-by. Scale-free, since damage
-## amounts are. THE health feel knob; ram lethality is PUSH_ACCEL
-## (whale_ai) and hull toughness is per-cell hp (block_db).
-const WHALE_HEALTH := 15000.0
+## block breaks until it is dead).
+##
+## THE 30-SECOND CEILING (owner 2026-08-26, on reading balance_probe's
+## seconds): "5 full minutes of sustained fire to kill something is not ok.
+## at most it should be 30 seconds, for now, if anything, for something that
+## just continuously takes damage." At 15,000 this pool measured ~6 MINUTES
+## against the starter's 40 dps (turret_damage 20 / TURRET_COOLDOWN 0.5) —
+## the tuning before it was three minutes, and both were an undertaking
+## nobody asked for. Every authored pool in the game now sits under
+## CEILING_SECONDS × 40 dps = 1,200 hp — the ladder is `tools/balance_probe.gd`
+## output, and the guard is run_tests' `_test_no_target_outlives_the_ceiling`.
+## Scale-free, since damage amounts are. THE health feel knob; ram lethality
+## is PUSH_ACCEL (whale_ai) and hull toughness is per-cell hp (block_db).
+##
+## ANCHORED TO THIS NUMBER: Ship.CREATURE_IMPACT_FACTOR and
+## CREATURE_TERRAIN_IMPACT_FACTOR are absolute-hp knobs tuned as a PERCENT of
+## this pool ("a bruise, never a death"). Both were divided by the same 15
+## when this went 15,000 → 1,000, so a crash still costs the same ~3%.
+const WHALE_HEALTH := 1000.0
 
 
 ## How many whales roam the sky at once — a small POD so variety is visible
@@ -1176,8 +1188,11 @@ func _spawn_one_whale(path: String, pos: Vector2) -> Ship:
 ## easy to find. Shared by the shipped scene and reset (the startup suites assert
 ## the total ship count includes these).
 const CRITTER_COUNT := 2
-## A critter's shared pool — a fraction of a whale's, so it is a light early
-## target and a nimble ride, not a tank.
+## A critter's shared pool — the FLOOR of the balance ladder: ~10 s of starter
+## fire, the shortest fight in the game, so the first creature you ever shoot
+## at dies while you are still learning the guns. Unchanged by the 30-second
+## ceiling (2026-08-26) because it was already well inside it; what changed is
+## that it is now 40% of a whale rather than 2.7% of one.
 const CRITTER_HEALTH := 400.0
 
 
@@ -1220,7 +1235,12 @@ const KRAKEN_COUNT := 3
 ## A kraken's shared pool. Tough, but the real defence is the SHELL casing (armor
 ## divides ram/crush damage): shots barely dent shell, so you must snipe the small
 ## exposed-meat mouth. THE kraken survivability knob (ram lethality is PUSH_ACCEL).
-const KRAKEN_HEALTH := 12000.0
+##
+## 12,000 → 1,200 under the owner's 30-second ceiling (2026-08-26): the deep
+## hunter sits AT the ceiling, the toughest single body in the game at ~30 s
+## of unbroken starter fire — and that is the floor of a real kraken fight,
+## since the shell casing means most shots never reach the pool at all.
+const KRAKEN_HEALTH := 1200.0
 ## The two owner-adopted kraken body plans (both shell-casing-surrounds-meat with a
 ## tiny exposed-meat mouth): kraken_b (giant squid) and kraken_c (ammonite conch).
 const KRAKEN_PLANS := ["res://ships/kraken_c.ship", "res://ships/kraken_b.ship"]

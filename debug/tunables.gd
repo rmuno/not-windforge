@@ -41,8 +41,8 @@ const KIND_BOOL := "bool"
 const _REGISTRY := [
 	# --- Whale (owner-named first: health, pod count, ram, impact) -----------
 	{"id": "whale_health", "label": "Whale health", "group": "Whale",
-		"kind": KIND_FLOAT, "default": 15000.0, "min": 100.0, "max": 60000.0, "step": 100.0,
-		"note": "next spawn"},                                    # world.WHALE_HEALTH
+		"kind": KIND_FLOAT, "default": 1000.0, "min": 50.0, "max": 60000.0, "step": 50.0,
+		"note": "next spawn"},                                    # world.WHALE_HEALTH — 15000 measured ~6 MIN; ~25 s now (30-s ceiling, owner 2026-08-26)
 	{"id": "whale_pod_size", "label": "Pod count", "group": "Whale",
 		"kind": KIND_INT, "default": 3, "min": 1, "max": 8, "step": 1,
 		"note": "next spawn"},                                    # world.WHALE_POD_SIZE
@@ -54,10 +54,13 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 360.0, "min": 0.0, "max": 1500.0, "step": 20.0},   # WhaleAI.ALIGN_ACCEL
 	{"id": "whale_anger_seconds", "label": "Anger duration (s)", "group": "Whale",
 		"kind": KIND_FLOAT, "default": 30.0, "min": 0.0, "max": 120.0, "step": 1.0},      # WhaleAI.ANGER_SECONDS
+	# Both divided by 15 with WHALE_HEALTH (15000 -> 1000) so a crash costs the
+	# same PERCENT of the pool it did before the 30-second ceiling. The step is
+	# finer than the old 0.01 because the whole useful range now lives below it.
 	{"id": "creature_impact_factor", "label": "Creature ram-damage factor", "group": "Whale",
-		"kind": KIND_FLOAT, "default": 0.05, "min": 0.0, "max": 1.0, "step": 0.01},       # Ship.CREATURE_IMPACT_FACTOR
+		"kind": KIND_FLOAT, "default": 0.0033, "min": 0.0, "max": 1.0, "step": 0.0005},   # Ship.CREATURE_IMPACT_FACTOR
 	{"id": "creature_terrain_impact_factor", "label": "Creature terrain-crash factor", "group": "Whale",
-		"kind": KIND_FLOAT, "default": 0.02, "min": 0.0, "max": 1.0, "step": 0.01},       # Ship.CREATURE_TERRAIN_IMPACT_FACTOR
+		"kind": KIND_FLOAT, "default": 0.0013, "min": 0.0, "max": 1.0, "step": 0.0005},   # Ship.CREATURE_TERRAIN_IMPACT_FACTOR
 	{"id": "whale_mine_interval", "label": "Ridden-mine pulse interval (s)", "group": "Whale",
 		"kind": KIND_FLOAT, "default": 0.15, "min": 0.02, "max": 2.0, "step": 0.01},      # world ride-mining RATE
 	{"id": "whale_mine_reach", "label": "Ridden-mine depth (cells)", "group": "Whale",
@@ -121,8 +124,8 @@ const _REGISTRY := [
 		"max": 400.0, "step": 5.0},
 	# --- Basilisk (the top-band fire-spitter) --------------------------------
 	{"id": "basilisk_health", "label": "Basilisk health pool", "group": "Whale",
-		"kind": KIND_FLOAT, "default": 2600.0, "min": 100.0, "max": 30000.0,
-		"step": 100.0},   # world._spawn_one_basilisk
+		"kind": KIND_FLOAT, "default": 700.0, "min": 50.0, "max": 30000.0,
+		"step": 50.0},   # world._spawn_one_basilisk — 2600 measured 64 s; ~18 s now (30-s ceiling, owner 2026-08-26)
 	{"id": "basilisk_spit_seconds", "label": "Basilisk spit interval (s)",
 		"group": "Combat", "kind": KIND_FLOAT, "default": 3.4, "min": 0.5,
 		"max": 20.0, "step": 0.1},   # BasiliskAI._interval

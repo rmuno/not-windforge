@@ -224,19 +224,24 @@ static func nest_faction(kind: Kind) -> int:
 ## a roost broke in 0.6 SECONDS (one volley popped its gasbag canopy whole).
 ## Neither is a fight.
 ##
-## At the starter's measured ~40 dps these read: hive ~30 s (the early-game
-## place, clearable before your ship is worth the name), roost ~60 s, eyrie
-## ~75 s, den ~150 s (the deep, behind the life-support gate — bring the ship).
+## THE 30-SECOND CEILING (owner 2026-08-26): "5 full minutes of sustained fire
+## to kill something is not ok. at most it should be 30 seconds, for now." The
+## first pass at these pools read 29 s / 60 s / 75 s / 150 s — three of the
+## four over the line. They are now, at the starter's 40 dps (turret_damage 20
+## / TURRET_COOLDOWN 0.5): hive ~12 s (the early-game place, clearable before
+## your ship is worth the name), roost ~20 s, eyrie ~25 s, den ~30 s — the
+## deep, behind the life-support gate, sitting AT the ceiling with the kraken
+## because it is the last place you learn to clear.
 static func nest_pool(kind: Kind) -> float:
 	match kind:
 		Kind.CRITTER_MEADOW:
-			return 1200.0
+			return 500.0
 		Kind.BANDIT_ROOST:
-			return 2400.0
+			return 800.0
 		Kind.BASILISK_EYRIE:
-			return 3000.0
+			return 1000.0
 		Kind.KRAKEN_DEN:
-			return 6000.0
+			return 1200.0
 	return 0.0
 
 

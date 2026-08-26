@@ -90,17 +90,26 @@ const IMPACT_DAMAGE_SCALE := 0.01
 ## death report was fixed. That report was chiefly a BILLING bug (the
 ## ram-immunity race, see _is_ram_immune); the terrain factor below is the
 ## smaller magnitude half.
-const CREATURE_IMPACT_FACTOR := 0.05
+##
+## DIVIDED BY 15 (0.05 → 0.0033) on 2026-08-26 with WHALE_HEALTH, which went
+## 15,000 → 1,000 under the owner's 30-second kill ceiling. This is an
+## ABSOLUTE-hp knob whose whole tuning was a percentage of that pool, so
+## leaving it alone would have turned every clout into half a whale: the ~500
+## hp vessel ram becomes ~33, the ~1,024 hp terrain crash ~68 — the same 3.3%
+## and 6.8% bruise as before. Anything that changes WHALE_HEALTH again has to
+## move these two with it, or a creature dies of scenery.
+const CREATURE_IMPACT_FACTOR := 0.0033
 
 ## Terrain crashes bill a living creature at this GENTLER factor than a
 ## vessel ram (above). A whale CHOOSES to ram a ship — that is its attack,
 ## and the victim pays the vessel factor — but it does not choose to clip
 ## the scenery mid-chase; an incidental clout off a world block should
-## sting, not gut it. At 0.02 a full-speed 8× terrain crash costs ~410 hp
-## (2.7% of WHALE_HEALTH) instead of ~1,024 (6.8%), so a whole angry chase
+## sting, not gut it. At 0.0013 a full-speed 8× terrain crash costs ~27 hp
+## (2.7% of WHALE_HEALTH) instead of ~68 (6.8%), so a whole angry chase
 ## that crashes a few times stays a bruise. Vessels never reach this path
 ## (living creatures only); a carcass crushes per-cell like any hull.
-const CREATURE_TERRAIN_IMPACT_FACTOR := 0.02
+## (0.02 → 0.0013: the same ÷15 as the ram factor above — see its note.)
+const CREATURE_TERRAIN_IMPACT_FACTOR := 0.0013
 
 ## cell -> {"type": int, "hp": float}
 var blocks: Dictionary = {}
