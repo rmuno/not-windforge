@@ -245,6 +245,7 @@ func _initialize() -> void:
 	await _check_progression(world)
 	await _check_save_load(world)
 	await _check_taming(world, fleet)
+	await _check_fire(world, fleet)
 	await _check_spawn_sites(world, fleet)
 	await _check_debug_window(world, fleet)
 	await _check_lava_core(world, fleet)
@@ -1215,6 +1216,60 @@ func _check_hosting_after_offline_play(world: Node, fleet) -> void:
 ## Fleet, the whale's health comes from the live tunable, and mine_power changes
 ## dig-time. Runs BEFORE hosting (authority-only path) and frees what it spawns so
 ## the hosting-rehome count is unchanged.
+
+
+## FIRE against the REAL world (roadmap Phase 4, v0.63.0). The unit test owns
+## the rules; what only the live world can show is that the whole loop is
+## reachable from the controls the player actually has: something catches, it
+## spreads and hurts on the world's own tick, and the repair wand — the ONE key
+## that already means "put this right" — beats it.
+func _check_fire(world: Node, fleet) -> void:
+	var pl = world.get("player")
+	if pl == null or pl.is_piloting():
+		return
+	Tunables.set_value("fire_enabled", true)
+	var target: Ship = null
+	for ship in (fleet.call("ships") as Array):
+		if not is_instance_valid(ship):
+			continue
+		for cell in (ship as Ship).blocks:
+			if Fire.burns(int((ship as Ship).blocks[cell]["type"])):
+				target = ship
+				break
+		if target != null:
+			break
+	if target == null:
+		_ok(false, "the shipped world holds something that can burn")
+		return
+
+	var lit := Vector2i.ZERO
+	for cell in target.blocks:
+		if Fire.burns(int(target.blocks[cell]["type"])):
+			lit = cell
+			break
+	_ok(world.ignite_cell(target, lit), "a cell of the real world catches fire")
+	for i in 60:
+		await world.get_tree().physics_frame
+	_ok(target.burning.size() >= 1,
+		"the world's own tick keeps it burning (%d cells)" % target.burning.size())
+	_ok(not world.burning_points().is_empty(),
+		"...and the overlay can see it (fire is a block-state, not a node)")
+
+	# The wand. Sweep it over the fire and the fire loses.
+	var at := target.to_global(target.local_pos_of(lit))
+	var doused := 0
+	for i in 30:
+		doused += Fire.douse(target, at, Ship.CELL * 6.0 * world.world_scale,
+			0.05, world._fire_clock)
+		await world.get_tree().physics_frame
+	_ok(doused > 0, "the repair wand smothers what it sweeps (%d cells out)" % doused)
+
+	# Leave nothing burning behind — later checks count ships and cells.
+	for ship in (fleet.call("ships") as Array):
+		if is_instance_valid(ship):
+			(ship as Ship).burning.clear()
+	Tunables.set_value("fire_enabled", false)
+
 
 ## WORLD-ANCHORED SPAWN SITES against the REAL world (charter §4, v0.61.0).
 ## The unit test owns the site arithmetic — determinism, band rules, bounds.

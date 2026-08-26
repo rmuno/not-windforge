@@ -87,6 +87,14 @@ func _impact(hit: Dictionary) -> void:
 		# the struck cell, not its empty neighbour (Ship contact-rounding lesson).
 		var cell := ship.cell_at_global(at + into * Ship.CELL * 0.4)
 		ship.net_damage_cell(cell, damage)
+		# A burning rock sets things alight (roadmap: fire is the hazard's real
+		# threat multiplier). The world owns the roll and the rule — a hull that
+		# cannot burn simply declines.
+		var w := get_parent()
+		while w != null and not w.has_method("hazard_ignite"):
+			w = w.get_parent()
+		if w != null:
+			w.call("hazard_ignite", ship, cell)
 	elif terrain != null:
 		# Ground: dig the struck COARSE-CELL crater through the mining seam
 		# (net_dig — authority owns terrain edits). At terrain subdiv S the

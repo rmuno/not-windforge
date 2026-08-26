@@ -194,6 +194,11 @@ func _build_spawn_tab() -> void:
 	_action_button(box, "Spawn critter (small tameable)", func() -> void: _spawn("critter"))
 	_action_button(box, "Spawn KRAKEN (deep hunter!)", func() -> void: _spawn("kraken"))
 	_action_button(box, "Spawn whale CARCASS (corpse-airship bench)", func() -> void: _spawn("carcass"))
+	# Fire is not a spawnable body, but it is a thing the owner has to be able
+	# to CAUSE on demand to playtest it at all (standing order: a feature F2
+	# cannot reach is invisible).
+	_action_button(box, "SET FIRE to the nearest ship (X douses it)",
+		func() -> void: _ignite())
 
 
 func _build_player_tab() -> void:
@@ -243,6 +248,12 @@ func _spawn(kind: String) -> void:
 	if world == null:
 		return
 	world.call("debug_spawn", kind, _spawn_pos())
+
+
+## Light the nearest burnable body at the spawn point — the fire playtest hook.
+func _ignite() -> void:
+	if world != null and world.has_method("debug_ignite"):
+		world.call("debug_ignite", _spawn_pos())
 
 
 ## Where a debug spawn appears: a little to port of the player (or the local

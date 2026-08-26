@@ -1102,6 +1102,20 @@ var dormant_velocity := Vector2.ZERO
 var from_spawn_site := false
 var spawn_site := Vector2i.ZERO
 
+## FIRE, as a grid block-state (combat/fire.gd). `burning` maps a cell to the
+## time its fire started; `burn_ash` maps a cell to the time its fire went out,
+## so a beaten fire cannot immediately re-light off its own neighbours. Both are
+## plain dictionaries beside `blocks` and `walls` — fire is never a node, never
+## a particle and never a body, which is the whole point of the spec.
+##
+## DERIVED-ONLY, deliberately: fire is not in the payload or the save. A fire
+## burns out in twelve seconds, and a save that restored one would be restoring
+## a moment, not a state. (If fires ever need to survive a reload — a burning
+## derelict as a set piece — this is the seam.)
+var burning := {}
+var burn_ash := {}
+
+
 ## This body is a site's STRUCTURE — the nest, not one of its residents. It is
 ## frozen in place, it is never reclaimed (it IS the place), and breaking half
 ## of it clears the site for good.
