@@ -907,6 +907,12 @@ func _check_save_load(world: Node) -> void:
 
 	var ships_before: int = fleet.ships().size()
 
+	# A CLEARED SPAWN SITE is the one piece of site state worth persisting —
+	# everything else about a site is derived from the seed, but "I broke this
+	# nest" is a thing the player DID. Mark one before the save.
+	var cleared_coord := Vector2i(-31, 17)
+	world.set_cleared_sites(PackedInt32Array([cleared_coord.x, cleared_coord.y]))
+
 	_ok(world.save_game(slot), "the world saved to disk")
 
 	# Now mutate EVERYTHING the load must undo: money, inventory, position, and the
@@ -920,7 +926,18 @@ func _check_save_load(world: Node) -> void:
 		f += Vector2i(0, -1)
 	terr.place(f, TerrainDB.Type.STONE)  # post-save placement, not in the save
 
+	# Forget it, so the load has something to restore rather than something to
+	# leave alone.
+	world.set("_site_state", {})
 	_ok(world.load_game(slot), "the world loaded from disk")
+	var back: PackedInt32Array = world.cleared_sites()
+	var found_cleared := false
+	for i in range(0, back.size(), 2):
+		if Vector2i(back[i], back[i + 1]) == cleared_coord:
+			found_cleared = true
+	_ok(found_cleared,
+		"a nest you broke stays broken across a save/load (%d cleared sites)"
+			% (back.size() / 2))
 
 	# Player progress restored.
 	_ok(pl.wallet.balance == 777, "money restored (777, got %d)" % pl.wallet.balance)
