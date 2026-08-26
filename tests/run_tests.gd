@@ -143,6 +143,7 @@ func _initialize() -> void:
 	await _test_redraws_and_rebuilds_are_batched()
 	await _test_harvest_rebuilds_coalesce_per_frame()
 	await _test_incremental_edits_match_full_rebuild()
+	await _test_skin_sectors_partition_and_localise_redraws()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
 	await _test_map_view_toggles_visibility()
@@ -6915,6 +6916,99 @@ func _test_incremental_edits_match_full_rebuild() -> void:
 
 	s8.queue_free()
 	truth.queue_free()
+	await _step(1)
+
+
+## THE SECTORED SKIN (lag audit phase B, 2026-08-25): the drawn body tiles
+## into 64×64-cell child canvas items so an edit repaints one sector, never
+## the whole body (~1.1 s on the 194k starter). Headless has no renderer, so
+## the tests pin the INVALIDATION contract: which sectors are asked to
+## repaint, and that the population tracks the grid.
+func _test_skin_sectors_partition_and_localise_redraws() -> void:
+	_t("skin sectors partition the grid; an edit invalidates one sector, a wound all")
+
+	_check(Ship.skin_sector_of(Vector2i(0, 0)) == Vector2i(0, 0)
+			and Ship.skin_sector_of(Vector2i(63, 63)) == Vector2i(0, 0)
+			and Ship.skin_sector_of(Vector2i(64, 0)) == Vector2i(1, 0)
+			and Ship.skin_sector_of(Vector2i(-1, -1)) == Vector2i(-1, -1)
+			and Ship.skin_sector_of(Vector2i(-64, 0)) == Vector2i(-1, 0),
+		"sector coords floor-divide by 64, negatives included")
+
+	# A body spanning three sectors: a 130-cell-wide hull strip.
+	var cells := {}
+	for x in range(-10, 120):
+		cells[Vector2i(x, 0)] = BlockDB.Type.HULL
+	var s8 := _make_ship(cells)
+	s8.position = Vector2(-64000, 0)
+	s8.scale_unit = 8.0
+	await process_frame
+
+	var coords := {}
+	for cell in s8.blocks:
+		coords[Ship.skin_sector_of(cell)] = true
+	_check(s8._skin_sectors.size() == coords.size() and coords.size() == 3,
+		"every occupied 64×64 range has exactly one sector node (%d)"
+			% s8._skin_sectors.size())
+	var glyph_last: bool = s8.get_child(s8.get_child_count() - 1) is ShipGlyphLayer
+	_check(glyph_last, "the glyph overlay rides ABOVE every sector (last child)")
+
+	# One damaged cell (crossing a shade step) invalidates ONE sector.
+	var inv0 := {}
+	for c in s8._skin_sectors:
+		inv0[c] = (s8._skin_sectors[c] as ShipSkinSector).invalidations
+	s8.damage_cell(Vector2i(70, 0), 30.0)  # shade 5 -> 4, sector (1,0)
+	var touched: Array = []
+	for c in s8._skin_sectors:
+		if (s8._skin_sectors[c] as ShipSkinSector).invalidations != inv0[c]:
+			touched.append(c)
+	_check(touched == [Vector2i(1, 0)],
+		"a damaged cell repaints exactly its own sector (%s)" % str(touched))
+
+	# An incremental bulk add in fresh ground OPENS a new sector. The
+	# detached probe first: the adjacency law still refuses a floating cell,
+	# so "fresh ground" can only ever be REACHED ground.
+	s8.net_set_block(Vector2i(-10, -70), BlockDB.Type.HULL)
+	_check(not s8.blocks.has(Vector2i(-10, -70)),
+		"a floating add is refused — the adjacency law is unchanged")
+	s8.net_set_block(Vector2i(-10, -1), BlockDB.Type.HULL)
+	_check(s8._skin_sectors.has(Vector2i(-1, -1)),
+		"an incremental add in fresh ground opens its sector on demand")
+
+	# A creature WOUND is whole-body: every sector repaints.
+	var beast_cells := {}
+	for x in 70:
+		beast_cells[Vector2i(x, 0)] = BlockDB.Type.MEAT
+	var beast := _make_ship(beast_cells)
+	beast.position = Vector2(-64000, -6000)
+	beast.shared_health_max = 1000.0
+	beast.shared_health = 1000.0
+	await process_frame
+	var b0 := {}
+	for c in beast._skin_sectors:
+		b0[c] = (beast._skin_sectors[c] as ShipSkinSector).invalidations
+	beast.damage_cell(Vector2i(0, 0), 300.0)  # bucket 5 -> 4: visible wound
+	var all_touched := true
+	for c in beast._skin_sectors:
+		if (beast._skin_sectors[c] as ShipSkinSector).invalidations == b0[c]:
+			all_touched = false
+	_check(all_touched and beast._skin_sectors.size() == 2,
+		"a creature's wound shade repaints the WHOLE body (all %d sectors)"
+			% beast._skin_sectors.size())
+
+	# Sector population follows the grid through a rebuild: harvest one whole
+	# 64-wide range away (bulk removals + flush) and its sector dies with it.
+	beast.shared_health = 0.0
+	beast.rebuild()
+	await process_frame
+	for x in range(64, 70):
+		beast.harvest_cell(Vector2i(x, 0))
+	beast.rebuild()  # an explicit re-derive, as severing/loading would run
+	_check(not beast._skin_sectors.has(Vector2i(1, 0))
+			and beast._skin_sectors.has(Vector2i(0, 0)),
+		"an emptied 64-range's sector is freed on the next rebuild")
+
+	s8.queue_free()
+	beast.queue_free()
 	await _step(1)
 
 

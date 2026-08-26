@@ -220,8 +220,9 @@ func _update_visual_facing(delta: float) -> void:
 		# authored grid and are untouched.
 		_rebuild_collider()
 		# _draw output persists until the next redraw (godot-quirks), and a
-		# creature that is only being mirrored has no other reason to redraw.
-		queue_redraw()
+		# creature that is only being mirrored has no other reason to repaint.
+		# The mirror is a whole-body transform — every sector rides it.
+		_invalidate_skin()
 
 
 ## True when the DRAWN body — and now the collider — is reflected about the
@@ -738,7 +739,7 @@ func harvest_cell(cell: Vector2i) -> int:
 	remove_block(cell, false)
 	if _is_bulk(flesh_type) and blocks.size() > 1 and not _use_coarse_collider():
 		_combat_incremental_drop([{"cell": cell, "type": flesh_type}])
-		_mark_redraw()
+		_mark_redraw_cell(cell)
 	else:
 		_rebuild_dirty = true
 	_sever_dirty = true
@@ -1158,7 +1159,7 @@ func rebuild() -> void:
 		thrust_input = Vector2.ZERO
 
 	_rebuild_collider()
-	queue_redraw()
+	_sync_skin_sectors()
 
 	# rebuild() is called exactly when the grid changes structurally, which is
 	# exactly when clients need the new grid. One hook covers building, mining,
@@ -2115,9 +2116,86 @@ static func shade_bucket(hp: float, hp_max: float) -> int:
 var redraw_marks := 0
 
 
+## --- The SECTORED SKIN (lag audit phase B, 2026-08-25) --------------------
+## The drawn body is tiled into 64×64-cell child canvas items
+## (ShipSkinSector) plus one glyph overlay on top (ShipGlyphLayer). An edit
+## invalidates only its own sector, so a harvest swing or a placed block
+## repaints ~one sector (bounded), never the whole body (~1.1 s on the
+## 194k-cell starter). Whole-body invalidations remain for the rare true
+## whole-body changes: rebuild, the creature wound shade, the facing flip.
+const SKIN_SECTOR := 64
+
+var _skin_sectors := {}          # Vector2i sector coord -> ShipSkinSector
+var _glyph_layer: ShipGlyphLayer = null
+
+
+static func skin_sector_of(cell: Vector2i) -> Vector2i:
+	return Vector2i(cell.x >> 6, cell.y >> 6)  # floor-div by SKIN_SECTOR
+
+
+## Rebuild the sector population from the grid (called from rebuild(), which
+## is already O(cells)): create missing sectors, free ones with no cells left,
+## keep the glyph layer as the LAST child so letters draw over every tile,
+## and invalidate everything — a rebuild IS a whole-body visual change.
+func _sync_skin_sectors() -> void:
+	var needed := {}
+	for cell in blocks:
+		needed[skin_sector_of(cell)] = true
+	for coord in _skin_sectors.keys():
+		if not needed.has(coord):
+			(_skin_sectors[coord] as Node).queue_free()
+			_skin_sectors.erase(coord)
+	for coord in needed:
+		if not _skin_sectors.has(coord):
+			_make_skin_sector(coord)
+	if _glyph_layer == null or not is_instance_valid(_glyph_layer):
+		_glyph_layer = ShipGlyphLayer.new()
+		_glyph_layer.ship = self
+		add_child(_glyph_layer)
+	move_child(_glyph_layer, get_child_count() - 1)
+	_invalidate_skin()
+
+
+func _make_skin_sector(coord: Vector2i) -> ShipSkinSector:
+	var sec := ShipSkinSector.new()
+	sec.ship = self
+	sec.sector = coord
+	add_child(sec)
+	_skin_sectors[coord] = sec
+	if _glyph_layer != null and is_instance_valid(_glyph_layer):
+		move_child(_glyph_layer, get_child_count() - 1)
+	return sec
+
+
+## Whole-body invalidation: every sector + the glyphs.
+func _invalidate_skin() -> void:
+	for coord in _skin_sectors:
+		(_skin_sectors[coord] as ShipSkinSector).invalidate()
+	if _glyph_layer != null and is_instance_valid(_glyph_layer):
+		_glyph_layer.queue_redraw()
+
+
+## Single-cell invalidation: just that cell's sector (created on demand — an
+## incremental add can open fresh ground).
+func _invalidate_skin_cell(cell: Vector2i) -> void:
+	var coord := skin_sector_of(cell)
+	var sec: ShipSkinSector = _skin_sectors.get(coord)
+	if sec == null or not is_instance_valid(sec):
+		sec = _make_skin_sector(coord)
+	sec.invalidate()
+
+
+## Gated whole-body redraw (the creature wound shade, a non-bulk resurrect).
 func _mark_redraw() -> void:
 	redraw_marks += 1
-	queue_redraw()
+	_invalidate_skin()
+
+
+## Gated single-sector redraw — the common case: one damaged, repaired,
+## placed or harvested cell.
+func _mark_redraw_cell(cell: Vector2i) -> void:
+	redraw_marks += 1
+	_invalidate_skin_cell(cell)
 
 
 func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
@@ -2164,7 +2242,14 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 	damaged.emit(cell, amount)
 	if dead.is_empty():
 		if shade_moved:
-			_mark_redraw()  # a visible darkening step — worth the regroup
+			# One gated mark; the struck component's cells can straddle a
+			# sector seam, so every member's sector repaints (usually one).
+			redraw_marks += 1
+			var seen := {}
+			for c in members:
+				if blocks.has(c) and not seen.has(skin_sector_of(c)):
+					seen[skin_sector_of(c)] = true
+					_invalidate_skin_cell(c)
 		return false
 	for c in dead:
 		var type: int = blocks[c]["type"]
@@ -2220,6 +2305,7 @@ func _combat_incremental_drop(dead: Array) -> void:
 		center_of_mass = weighted / mass if new_mass > 0.0 else Vector2.ZERO
 		_total_lift = maxf(0.0, _total_lift - def["lift"])
 		_drop_cell_from_collider(cell)
+		_invalidate_skin_cell(cell)  # the hole shows this frame (no mark: not a gated event)
 	# 0 is the "recompute from the new shapes" sentinel (godot-quirks); the
 	# collider changed, so the physics inertia must be re-derived.
 	inertia = 0.0
@@ -2262,7 +2348,7 @@ func _bulk_incremental_add(cell: Vector2i) -> void:
 		_adds_since_merge = 0
 		_rebuild_dirty = true
 	_sync_dirty = true
-	_mark_redraw()
+	_mark_redraw_cell(cell)
 
 
 ## Punch one dead cell out of the hull collider: find the merged rect that
@@ -2707,9 +2793,9 @@ func repair_cell(cell: Vector2i, amount: float) -> bool:
 		var was := shade_bucket(blocks[cell]["hp"], max_hp)
 		blocks[cell]["hp"] = minf(blocks[cell]["hp"] + amount, max_hp)
 		# The wand heals in per-tick sips; only a visible lightening step is
-		# worth the O(cells) regroup (owner lag audit 2026-08-25).
+		# worth a repaint — and only of this cell's own sector (phase B).
 		if shade_bucket(blocks[cell]["hp"], max_hp) != was:
-			_mark_redraw()
+			_mark_redraw_cell(cell)
 		return true
 
 	# Destroyed outright. Only rebuild where it can attach, so repairing a hull
@@ -2902,7 +2988,7 @@ func net_remove_block(cell: Vector2i) -> void:
 			remove_block(cell, false)
 			_combat_incremental_drop(drop)
 			_sever_dirty = true
-			_mark_redraw()
+			_mark_redraw_cell(cell)
 		else:
 			remove_block(cell)
 	else:
@@ -3038,27 +3124,31 @@ func _request_controls(h: float, v: float) -> void:
 ## carry a letter glyph (E engine, P propeller, V lift prop, H helm, T turret)
 ## so a ship's anatomy is readable at a glance — the helm being findable is
 ## what makes the ship pilotable at all.
-func _draw() -> void:
-	var font := ThemeDB.fallback_font
-	# THE SKIN FLIP (see visual_facing / ROADMAP Q10). One canvas transform,
-	# set before a single command is emitted, so the region-batched rects,
-	# the gasbag edges, the damage and whole-body wound shading and the
-	# glyphs all ride it for free. It mirrors about the vertical axis
-	# through the centre of the SOLID footprint, so the mirrored drawing
-	# occupies exactly the AABB the untouched collider still occupies —
-	# the body turns without the geometry moving a hair, which is the whole
-	# point (the source's real mirror dumps riders off the head).
-	# Only a creature can ever hold facing -1; vessels never reach here.
+## THE SKIN FLIP (see visual_facing / ROADMAP Q10). One canvas transform per
+## painter, set before a single command is emitted, so the region-batched
+## rects, the gasbag edges, the damage shading and the glyphs all ride it for
+## free. It mirrors about the vertical axis through the centre of the SOLID
+## footprint, so the mirrored drawing occupies exactly the AABB the untouched
+## collider still occupies — the body turns without the geometry moving a
+## hair (the source's real mirror dumps riders off the head). Every sector
+## and the glyph layer sit at the ship's origin, so the same body-local
+## transform serves them all. Only a creature ever holds facing -1.
+func _apply_facing_transform(on: CanvasItem) -> void:
 	if visual_facing < 0 and solid_bounds.size.x > 0.0:
 		var axis_x := solid_bounds.position.x + solid_bounds.size.x * 0.5
-		draw_set_transform(Vector2(axis_x * 2.0, 0.0), 0.0, Vector2(-1.0, 1.0))
-	# Batched placeholder art (owner report: 22 FPS with nothing going
-	# on). One filled rect per contiguous same-type, same-damage-shade
-	# region instead of one per cell: the per-block version retained ~23k
-	# canvas commands across the 8× ships, and the renderer replays every
-	# retained command every frame. Damage still darkens, in 6 visible
-	# steps; balloons keep their per-cell borders (owner: a blimp LOOKS
-	# like the list of blocks it is) via a single multiline command.
+		on.draw_set_transform(Vector2(axis_x * 2.0, 0.0), 0.0, Vector2(-1.0, 1.0))
+
+
+## Paint ONE skin sector's cell range (phase B — called from
+## ShipSkinSector._draw). This is the old whole-body _draw, filtered to the
+## sector's 64×64 cells: batched placeholder art, one filled rect per
+## contiguous same-type same-shade region (the per-block version retained
+## ~23k canvas commands across the 8× ships), damage darkening in 6 steps,
+## per-cell gasbag borders via one multiline. The scan is the RANGE, not the
+## body — 4,096 lookups whatever the ship's size — which is the whole
+## point: repainting a sector costs the sector.
+func _paint_sector(on: CanvasItem, sector: Vector2i) -> void:
+	_apply_facing_transform(on)
 	var groups := {}  # type*8+shade -> {"cells": {}, "color": Color, "type": int}
 	var bag_edges := PackedVector2Array()
 	# A living creature wounds as a WHOLE: one shade for the whole body,
@@ -3066,44 +3156,56 @@ func _draw() -> void:
 	var creature_shade := -1
 	if shared_health_max > 0.0 and shared_health > 0.0:
 		creature_shade = roundi(clampf(shared_health / shared_health_max, 0.0, 1.0) * 5.0)
-	for cell in blocks:
-		var type: int = blocks[cell]["type"]
-		var frac: float = clampf(blocks[cell]["hp"] / BlockDB.max_hp(type), 0.0, 1.0)
-		var shade := creature_shade if creature_shade >= 0 else roundi(frac * 5.0)
-		var key := type * 8 + shade
-		if not groups.has(key):
-			var color := BlockDB.color_of(type).darkened((1.0 - shade / 5.0) * 0.6)
-			if faction == 1:
-				# Friend/foe must read before range (playtest scar):
-				# HOSTILE hulls wear their allegiance as a red cast.
-				# Wildlife (faction 2) keeps its natural colours — a
-				# neutral whale must not read as an enemy.
-				color = color.lerp(Color(0.80, 0.18, 0.15), 0.4)
-			color *= body_tint  # cosmetic (identity white for all normal ships)
-			groups[key] = {"cells": {}, "color": color, "type": type}
-		(groups[key]["cells"] as Dictionary)[cell] = true
-		if type == BlockDB.Type.GASBAG:
-			var tl := local_pos_of(cell) - Vector2.ONE * CELL * 0.5
-			bag_edges.append_array(PackedVector2Array([
-				tl, tl + Vector2(CELL, 0),
-				tl + Vector2(CELL, 0), tl + Vector2(CELL, CELL),
-				tl + Vector2(CELL, CELL), tl + Vector2(0, CELL),
-				tl + Vector2(0, CELL), tl,
-			]))
+	var base := sector * SKIN_SECTOR
+	for ly in SKIN_SECTOR:
+		for lx in SKIN_SECTOR:
+			var cell := base + Vector2i(lx, ly)
+			if not blocks.has(cell):
+				continue
+			var type: int = blocks[cell]["type"]
+			var frac: float = clampf(blocks[cell]["hp"] / BlockDB.max_hp(type), 0.0, 1.0)
+			var shade := creature_shade if creature_shade >= 0 else roundi(frac * 5.0)
+			var key := type * 8 + shade
+			if not groups.has(key):
+				var color := BlockDB.color_of(type).darkened((1.0 - shade / 5.0) * 0.6)
+				if faction == 1:
+					# Friend/foe must read before range (playtest scar):
+					# HOSTILE hulls wear their allegiance as a red cast.
+					# Wildlife (faction 2) keeps its natural colours — a
+					# neutral whale must not read as an enemy.
+					color = color.lerp(Color(0.80, 0.18, 0.15), 0.4)
+				color *= body_tint  # cosmetic (identity white for all normal ships)
+				groups[key] = {"cells": {}, "color": color, "type": type}
+			(groups[key]["cells"] as Dictionary)[cell] = true
+			if type == BlockDB.Type.GASBAG:
+				var tl := local_pos_of(cell) - Vector2.ONE * CELL * 0.5
+				bag_edges.append_array(PackedVector2Array([
+					tl, tl + Vector2(CELL, 0),
+					tl + Vector2(CELL, 0), tl + Vector2(CELL, CELL),
+					tl + Vector2(CELL, CELL), tl + Vector2(0, CELL),
+					tl + Vector2(0, CELL), tl,
+				]))
 
 	for key in groups:
 		var g: Dictionary = groups[key]
 		for rect in _greedy_rects(g["cells"]):
-			_draw_region(rect, g["type"], g["color"])
+			_draw_region(on, rect, g["type"], g["color"])
 	if bag_edges.size() >= 4:
 		var line := BlockDB.color_of(BlockDB.Type.GASBAG).darkened(0.35)
 		if faction == 1:
 			line = line.lerp(Color(0.80, 0.18, 0.15), 0.4)
 		line *= body_tint
-		draw_multiline(bag_edges, line, 1.0)
+		on.draw_multiline(bag_edges, line, 1.0)
 
+
+## Paint the component glyphs (ShipGlyphLayer._draw). Clusters span sector
+## seams, so they draw once from the top layer; cost follows the CLUSTER
+## count, and clusters only change on a full rebuild.
+func _paint_glyphs(on: CanvasItem) -> void:
+	_apply_facing_transform(on)
+	var font := ThemeDB.fallback_font
 	for cluster in _glyph_clusters:
-		_draw_cluster_glyph(font, cluster)
+		_draw_cluster_glyph(on, font, cluster)
 
 
 ## Contiguous same-labelled cells become one cluster; the label is drawn
@@ -3161,7 +3263,7 @@ func _glyph_key(cell: Vector2i) -> String:
 	return BlockDB.get_def(type)["glyph"]
 
 
-func _draw_cluster_glyph(font: Font, cluster: Dictionary) -> void:
+func _draw_cluster_glyph(on: CanvasItem, font: Font, cluster: Dictionary) -> void:
 	var rect: Rect2 = cluster["rect"]
 	var key: String = cluster["key"]
 	if key == "G":
@@ -3172,7 +3274,7 @@ func _draw_cluster_glyph(font: Font, cluster: Dictionary) -> void:
 		# Two Ds at 25% and 75% of the door's height (owner spec).
 		var dfs := clampf(minf(rect.size.x * 0.8, rect.size.y * 0.3), 9.0, 60.0)
 		for frac in [0.25, 0.75]:
-			draw_string(font,
+			on.draw_string(font,
 				Vector2(rect.position.x, rect.position.y + rect.size.y * frac + dfs * 0.36),
 				"D", HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, int(dfs), color)
 		return
@@ -3184,14 +3286,14 @@ func _draw_cluster_glyph(font: Font, cluster: Dictionary) -> void:
 		"PV": label = "V" if single else "P(V)"
 		"PH": label = "P" if single else "P(H)"
 	var fs := clampf(minf(rect.size.y * 0.7, rect.size.x * 1.5 / label.length()), 9.0, 110.0)
-	draw_string(font,
+	on.draw_string(font,
 		Vector2(rect.position.x, rect.position.y + rect.size.y * 0.5 + fs * 0.36),
 		label, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, int(fs), color)
 
 
 ## Draw one merged region in its type's idiom: platforms as top planks,
 ## struts as one pole per cell column, everything else as a bordered slab.
-func _draw_region(cells: Rect2i, type: int, color: Color) -> void:
+func _draw_region(on: CanvasItem, cells: Rect2i, type: int, color: Color) -> void:
 	var origin := Vector2(cells.position) * CELL - Vector2.ONE * CELL * 0.5
 	var size := Vector2(cells.size) * CELL
 	if BlockDB.get_def(type)["platform"]:
@@ -3199,8 +3301,8 @@ func _draw_region(cells: Rect2i, type: int, color: Color) -> void:
 		# world scale (owner: too thin at 8×); the walkable strip stays
 		# the 4px top — the bar is presence, not floor.
 		var bar := Rect2(origin, Vector2(size.x, clampf(5.0 * scale_unit, 5.0, 12.0)))
-		draw_rect(bar, color)
-		draw_rect(bar, color.darkened(0.35), false, 1.0)
+		on.draw_rect(bar, color)
+		on.draw_rect(bar, color.darkened(0.35), false, 1.0)
 		return
 	if type == BlockDB.Type.STRUT:
 		# Scaffold poles, not tiles (born of the owner's review: "did you
@@ -3210,12 +3312,12 @@ func _draw_region(cells: Rect2i, type: int, color: Color) -> void:
 		for i in cells.size.x:
 			var pole := Rect2(origin + Vector2(i * CELL + CELL * 0.36, 0.0),
 				Vector2(CELL * 0.28, size.y))
-			draw_rect(pole, color)
-			draw_rect(pole, color.darkened(0.35), false, 1.0)
+			on.draw_rect(pole, color)
+			on.draw_rect(pole, color.darkened(0.35), false, 1.0)
 		return
 	var rect := Rect2(origin, size)
-	draw_rect(rect, color)
-	draw_rect(rect, color.darkened(0.35), false, 1.0)
+	on.draw_rect(rect, color)
+	on.draw_rect(rect, color.darkened(0.35), false, 1.0)
 
 
 # --- Stats ----------------------------------------------------------------
