@@ -3609,6 +3609,21 @@ func _paint_sector(on: ShipSkinSector) -> void:
 		for rect in _greedy_rects(g["cells"]):
 			_draw_region(on, rect, g["type"], g["color"])
 			regions += 1
+	# THE WOUND, ON TOP (v0.69.1). Damage used to be baked into the group key,
+	# which broke the merge at every shade boundary — measured at 174 regions
+	# on a 576-cell slab with one cell in seven merely damaged, against 1 when
+	# intact. Overlaying black at alpha `1 - shade/5 * 0.6` is arithmetically
+	# the SAME pixel as `Color.darkened` gave (both multiply rgb by 1-k), so
+	# the look is unchanged; what changes is that only DAMAGED cells cost
+	# anything, and an intact body merges whole.
+	var wounds: Dictionary = plan["wounds"]
+	for shade in wounds:
+		var w: Dictionary = wounds[shade]
+		var ink := Color(0.0, 0.0, 0.0, float(w["alpha"]))
+		for rect in _greedy_rects(w["cells"]):
+			on.draw_rect(Rect2(Vector2(rect.position) * CELL - Vector2.ONE * CELL * 0.5,
+				Vector2(rect.size) * CELL), ink)
+			regions += 1
 	on.regions = regions
 	if bag_edges.size() >= 4:
 		var line := attitude_cast(BlockDB.color_of(BlockDB.Type.GASBAG).darkened(0.35))
@@ -3617,15 +3632,26 @@ func _paint_sector(on: ShipSkinSector) -> void:
 
 
 ## Group a set of cells into the regions a paint would emit: batched
-## placeholder art, one filled rect per contiguous same-type same-shade
-## region (the per-block version retained ~23k canvas commands across the 8×
-## ships), damage darkening in 6 steps, per-cell gasbag borders collected for
-## one multiline. `cell_set` is any dictionary keyed by cell — a sector's own
+## placeholder art, one filled rect per contiguous same-type region (the
+## per-block version retained ~23k canvas commands across the 8× ships),
+## damage darkening in 6 steps as a SEPARATE overlay, per-cell gasbag borders
+## collected for one multiline.
+##
+## THE SHADE IS NOT IN THE GROUP KEY (v0.69.1, owner's call). It was, and that
+## made the drawn skin fragment exactly the way the collider did before v0.59.0
+## — same greedy merge, same cells, and a shade boundary ends a run just as a
+## hole does. Measured: a 576-cell slab paints ONE region intact and **174**
+## with one cell in seven merely DAMAGED, no cell lost; a 10,624-cell kraken
+## went 42 → 1,792 regions and the world 253 → 3,758 draw calls. Retained
+## canvas items re-submit their whole command list every visible frame, so that
+## is a STANDING cost, not a repaint spike. Now the base art merges by type and
+## the wound is drawn over it, so only damaged cells cost extra. `cell_set` is any dictionary keyed by cell — a sector's own
 ## cells in the live path, whole `blocks` when the probe measures the
 ## single-canvas baseline; cells no longer in the grid are skipped, so a
 ## stale set degrades to a missing rect, never a crash.
 func sector_paint_plan(cell_set: Dictionary) -> Dictionary:
-	var groups := {}  # type*8+shade -> {"cells": {}, "color": Color, "type": int}
+	var groups := {}  # type -> {"cells": {}, "color": Color, "type": int}
+	var wounds := {}  # shade (0..4) -> {"cells": {}, "alpha": float}
 	var bag_edges := PackedVector2Array()
 	# A LIVING creature's blocks are all pristine (the pool absorbs the
 	# damage), and its whole-body wound shade rides self_modulate — see
@@ -3638,9 +3664,14 @@ func sector_paint_plan(cell_set: Dictionary) -> Dictionary:
 		var type: int = blocks[cell]["type"]
 		var frac: float = clampf(blocks[cell]["hp"] / BlockDB.max_hp(type), 0.0, 1.0)
 		var shade := 5 if living else roundi(frac * 5.0)
-		var key := type * 8 + shade
+		if shade < 5:
+			if not wounds.has(shade):
+				wounds[shade] = {"cells": {},
+					"alpha": (1.0 - shade / 5.0) * 0.6}
+			(wounds[shade]["cells"] as Dictionary)[cell] = true
+		var key := type
 		if not groups.has(key):
-			var color := BlockDB.color_of(type).darkened((1.0 - shade / 5.0) * 0.6)
+			var color := BlockDB.color_of(type)
 			# Friend/foe must read before range (playtest scar): hostiles wear
 			# a red cast, a tamed ally a teal one, wildlife its own colours.
 			color = attitude_cast(color)
@@ -3655,7 +3686,7 @@ func sector_paint_plan(cell_set: Dictionary) -> Dictionary:
 				tl + Vector2(CELL, CELL), tl + Vector2(0, CELL),
 				tl + Vector2(0, CELL), tl,
 			]))
-	return {"groups": groups, "bag_edges": bag_edges}
+	return {"groups": groups, "wounds": wounds, "bag_edges": bag_edges}
 
 
 ## Paint the component glyphs (ShipGlyphLayer._draw). Clusters span sector

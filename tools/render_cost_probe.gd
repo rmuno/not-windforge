@@ -102,6 +102,9 @@ func _initialize() -> void:
 			var plan: Dictionary = ship.sector_paint_plan(sec.cells)
 			for key in plan["groups"]:
 				s_regions += ship._greedy_rects(plan["groups"][key]["cells"]).size()
+			# The wound overlay is retained too (v0.69.1).
+			for shade in plan["wounds"]:
+				s_regions += ship._greedy_rects(plan["wounds"][shade]["cells"]).size()
 	print("\nSHIPS    %d bodies, %d cells" % [fleet.ships().size(), s_cells])
 	print("  draw regions      %6d   (%d retained commands)"
 		% [s_regions, s_regions * 2])

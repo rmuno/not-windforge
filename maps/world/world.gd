@@ -432,6 +432,8 @@ func _build_help_panel() -> PanelContainer:
 		"CONTROLS   (%s to close)" % k_help,
 		"A/D walk    Space jump    E use — helm, door, step off",
 		"LMB shoot    RMB grapple (W/S reel, jump to sling; hold a whale to TAME it, release to let go)",
+		"RIDING: the HOOK is the reins — no helm, no panel. Hold a tamed beast",
+		"  with RMB and WASD steers it; let go of the hook and you step off.",
 		"Q place    B next thing to place — blocks, terrain, balloons (Shift+B back)    C remove",
 		"Z mine / harvest (hold)    X repair AND smother fire (hold, sweep)",
 		"M craft    N next recipe    Shift+M craft all — the deep's air needs an Aether Lung",
@@ -4637,6 +4639,27 @@ func _update_hud(_cell: Vector2i) -> void:
 	# The ship whose numbers the helm HUD shows is the one being PILOTED —
 	# which need not be local_ship: flying a built corpse-airship while the
 	# starter still lives used to show the STARTER's lift/power up here.
+	# RIDING IS A CONTROL MODE, and it says so (owner 2026-08-26: "rideable
+	# creatures don't need a PANEL to be controlled from — the grappling hook
+	# is the override"). It never did: the ride has been the LATCH itself since
+	# 2026-08-24 and a creature has no helm at all (world._handle_riding routes
+	# WASD straight into its AI). What was missing was any sign of it up here —
+	# the only status line the game had said AT THE HELM, so a mount read as a
+	# thing you were merely stuck to.
+	if player != null and is_instance_valid(player) and player.is_riding():
+		var mount: Ship = player.riding
+		if is_instance_valid(mount):
+			hud.text = "
+".join([
+				"RIDING — WASD steers   ·   release the hook (RMB) to let go",
+				"Beast:  %.0f / %.0f%s" % [mount.shared_health,
+					mount.shared_health_max,
+					"   ·   DRILLING (ram terrain to dig)" if mount.ridden_mining
+						else ""],
+				"Altitude:  %.0f    Speed:  %.0f" % [
+					-mount.global_position.y, mount.linear_velocity.length()],
+			])
+			return
 	var flown: Ship = player.piloting if (player != null
 		and is_instance_valid(player) and player.is_piloting()) else null
 	if flown == null or not is_instance_valid(flown):
