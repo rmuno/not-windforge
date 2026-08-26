@@ -148,6 +148,7 @@ func _initialize() -> void:
 	await _test_greedy_rects_order_and_partition()
 	await _test_attitude_reads_the_same_in_world_and_map()
 	await _test_physics_census_reports_the_step()
+	await _test_frame_census_prices_the_drawn_skin()
 	await _test_dormancy_leaves_and_rejoins_the_simulation()
 	await _test_dormant_creatures_migrate_in_a_circuit()
 	await _test_spawn_sites_are_places()
@@ -7966,6 +7967,71 @@ func _test_dormancy_leaves_and_rejoins_the_simulation() -> void:
 
 	ship.queue_free()
 	await _step(1)
+
+
+## THE FRAME CENSUS (v0.69.0). The owner's SECOND 3-FPS capture ruled the
+## solver out — `pairs=4 active=13 shapes=45`, a physics world with essentially
+## nothing in it — and the only render number in the log was `draws`, which is
+## the BATCHED total and says nothing about the geometry inside it. This census
+## is the render-side twin of the physics one, and what the tests pin is the
+## number that mattered: a body's SKIN fragments exactly like its collider,
+## because both are the same greedy merge over cells and a hole ends a run.
+##
+## Measured with a renderer (tools/render_probe.gd) on the same 10,624-cell
+## kraken: intact 42 regions / 253 draw calls world-wide; one cell in seven
+## shot out, 1,792 regions / 3,758 draw calls. Retained canvas items re-submit
+## their whole command list every visible frame, so that is a STANDING cost,
+## not a repaint spike. Headless cannot draw, but it CAN count.
+func _test_frame_census_prices_the_drawn_skin() -> void:
+	_t("the frame census: a holed body's SKIN fragments like its collider")
+
+	var cold := FrameCensus.of_world(null)
+	for key in ["fps", "draws", "prims", "items", "regions", "worst",
+			"onscreen", "on_regions"]:
+		_check(cold.has(key), "the census always reports '%s'" % key)
+	_check(int(cold["regions"]) == 0 and int(cold["items"]) == 0,
+		"with no world it counts nothing rather than crashing")
+	_check(FrameCensus.line(null).contains("regions="),
+		"...and still renders a log line")
+
+	# A solid slab, then the same slab with one cell in seven shot out. Region
+	# counts come from the paint plan the sectors actually run, so this is the
+	# renderer's own arithmetic, not a model of it.
+	var solid := {}
+	for x in 24:
+		for y in 24:
+			solid[Vector2i(x, y)] = BlockDB.Type.HULL
+	var whole := _make_ship(solid)
+	whole.position = Vector2(-9000, -9000)
+	await _step(2)
+	var intact := _paint_regions(whole)
+	_check(intact > 0, "an intact slab paints %d merged regions" % intact)
+
+	var n := 0
+	for c in whole.blocks.keys():
+		if n % 7 == 0:
+			whole.damage_cell(c, 100000.0)
+		n += 1
+	whole.rebuild()
+	await _step(2)
+	var holed := _paint_regions(whole)
+	_check(holed > intact * 4,
+		"...and %d once one cell in seven is gone — a hole ends a run, "
+			% holed + "the same way it ends a collider run")
+	whole.queue_free()
+	await _step(1)
+
+
+## How many regions this body's skin WOULD submit, from the same paint plan
+## the sectors run. Headless never calls _draw, so ask the plan directly.
+func _paint_regions(ship: Ship) -> int:
+	var n := 0
+	for coord in ship._skin_sectors:
+		var sec: ShipSkinSector = ship._skin_sectors[coord]
+		var plan: Dictionary = ship.sector_paint_plan(sec.cells)
+		for key in (plan["groups"] as Dictionary):
+			n += ship._greedy_rects((plan["groups"][key] as Dictionary)["cells"]).size()
+	return n
 
 
 ## THE PHYSICS CENSUS (v0.57.0). The owner's 3-FPS capture proved the frame

@@ -193,6 +193,7 @@ var _lava_core: LavaCore = null
 
 
 func _ready() -> void:
+	_build_systems()
 	# Frame the whole generated world (IslandGen.WORLD_CELLS) in world px at this
 	# scale, then bound it with walls + a ceiling. cell_px = CELL × world_scale.
 	var cp := TerrainDB.CELL * world_scale
@@ -2997,33 +2998,87 @@ func _starter_cells() -> Dictionary:
 
 
 # --- Loop ------------------------------------------------------------------
+#
+# THE PER-SYSTEM STOPWATCH (owner capture, 2026-08-26). The world's physics
+# tick is a fixed sequence of systems, and the second 3-FPS capture proved the
+# frame was NOT the solver — `pairs=4 shapes=45` is an empty physics world —
+# which leaves our own script inside the physics frame as the thing to measure.
+# So the sequence lives in ONE named list instead of a flat call block, and
+# while the F3 diagnostic is recording each entry is timed into `_sys_ms`.
+#
+# The list is built once (no per-tick allocation) and the untimed path is a
+# plain loop of `Callable.call` — about 20 calls per tick, microseconds — so
+# normal play pays nothing measurable for the ability to answer this question
+# the next time it is asked. Order is behaviour: it is the order the flat block
+# ran in, and it must stay that way.
+
+## [name, Callable(delta)] in tick order. Built in _ready.
+var _systems: Array = []
+## name -> ms accumulated since the last take_system_ms(). Only written while
+## the F3 diagnostic is recording.
+var _sys_ms := {}
+var _sys_timing := false
+## Probes (tools/tick_probe.gd) turn the stopwatch on WITHOUT starting a
+## recording, so measuring the tick never overwrites the owner's capture file.
+var sys_timing_forced := false
+
+
+func _build_systems() -> void:
+	_systems = [
+		["local", func(_d: float) -> void:
+			_refresh_local_ship()
+			_refresh_local_player()],
+		["terrain", func(_d: float) -> void: _stream_terrain()],
+		["discovery", func(_d: float) -> void: _update_discovery()],
+		["collisions", func(_d: float) -> void: _watch_collisions()],
+		["death", func(_d: float) -> void: _watch_player_death()],
+		["damagenums", func(d: float) -> void:
+			if _damage_numbers != null:
+				_damage_numbers.update(d)],
+		["enemyfire", func(d: float) -> void: _enemy_fire(d)],
+		["enemypilot", func(d: float) -> void: _enemy_pilot(d)],
+		["swim", func(d: float) -> void: _creature_swim(d)],
+		["dormancy", func(d: float) -> void: _update_dormancy(d)],
+		["sites", func(d: float) -> void: _update_spawn_sites(d)],
+		["taming", func(d: float) -> void: _handle_taming(d)],
+		["riding", func(d: float) -> void: _handle_riding(d)],
+		["ridemine", func(d: float) -> void: _handle_ridden_mining(d)],
+		["wash", func(d: float) -> void: _apply_prop_wash(d)],
+		["fire", func(d: float) -> void: _update_fires(d)],
+		["hazards", func(d: float) -> void: _update_hazards(d)],
+		["suffocation", func(d: float) -> void: _update_suffocation(d)],
+		["lava", func(d: float) -> void: _update_lava_core(d)],
+	]
+
+
+func _step_systems(delta: float) -> void:
+	if not _sys_timing:
+		for e in _systems:
+			(e[1] as Callable).call(delta)
+		return
+	for e in _systems:
+		var t0 := Time.get_ticks_usec()
+		(e[1] as Callable).call(delta)
+		var ms := float(Time.get_ticks_usec() - t0) * 0.001
+		_sys_ms[e[0]] = float(_sys_ms.get(e[0], 0.0)) + ms
+
+
+## The accumulated per-system milliseconds, and RESET — the diagnostic calls
+## this on its window boundary, so each SYS line covers exactly one window.
+func take_system_ms() -> Dictionary:
+	var out := _sys_ms.duplicate()
+	_sys_ms.clear()
+	return out
+
 
 func _physics_process(delta: float) -> void:
-	_refresh_local_ship()
-	_refresh_local_player()
-	_stream_terrain()
-	_update_discovery()
-	_watch_collisions()
-	_watch_player_death()
-	if _damage_numbers != null:
-		_damage_numbers.update(delta)
-	_enemy_fire(delta)
-	_enemy_pilot(delta)
-	_creature_swim(delta)
-	_update_dormancy(delta)
-	_update_spawn_sites(delta)
-	_handle_taming(delta)
-	_handle_riding(delta)
-	_handle_ridden_mining(delta)
-	_apply_prop_wash(delta)
-	_update_fires(delta)
-	_update_hazards(delta)
-	_update_suffocation(delta)
-	_update_lava_core(delta)
+	var recording: bool = _whale_diag != null and _whale_diag.enabled
+	_sys_timing = sys_timing_forced or recording
+	_step_systems(delta)
 
 	# Whale/collision diagnostic: one row per whale per frame while ON. Gated
 	# on a single bool so it costs nothing in normal play (see whale_diag.gd).
-	if _whale_diag != null and _whale_diag.enabled:
+	if _sys_timing:
 		# The live-Shot population is the swarm the old whale-only log was blind
 		# to; the group lookup runs ONLY while recording (see whale_diag.gd).
 		_whale_diag.world = self  # for the SUM's physics census (cheap, idempotent)

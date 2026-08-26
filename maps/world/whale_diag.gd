@@ -68,6 +68,10 @@ var _win_frames := 0
 ## swarm size an FPS drop rode in on (the old whale-only log was blind to it).
 var _win_shots_max := 0
 var _win_ships_max := 0
+## Engine frame counters at the last window boundary, for `ticks` (physics
+## steps per rendered frame — the catch-up tell).
+var _prev_phys_frames := 0
+var _prev_drawn_frames := 0
 ## Last counts the caller handed us, echoed on every ROW.
 var _last_shots := -1
 var _last_ships := 0
@@ -112,6 +116,17 @@ func start(ships: Array) -> void:
 	_write("#   proc/phys = Performance TIME_PROCESS / TIME_PHYSICS_PROCESS "
 		+ "(engine-wide script cost); draws = render draw calls this frame. "
 		+ "A drop with high phys/shots is the shot swarm; high draws is render.")
+	_write("# PHY f=<frame> ... what the PHYSICS step is made of "
+		+ "(debug/physics_census.gd)")
+	_write("# SYS f=<frame> <name>=<ms/frame> ... total=<ms/frame> "
+		+ "— the world's own systems inside the physics tick, in tick order. "
+		+ "`phys` above MINUS `total` is everything else in the step: the "
+		+ "solver, and every Ship's and the player's own _physics_process.")
+	_write("# RND f=<frame> ... what the RENDERED frame is made of "
+		+ "(debug/frame_census.gd). `ticks` is physics steps per drawn frame: "
+		+ "1 is healthy, 8 is the catch-up ceiling. `regions` is the standing "
+		+ "cost of the drawn skins — retained canvas items re-submit their "
+		+ "whole command list every visible frame.")
 	_flush_buffer()  # the header lands on disk immediately; rows are buffered
 	_attach(ships)
 	print("[whale-diag] ON  -> %s" % resolved_path())
@@ -246,10 +261,55 @@ func _write_summary() -> void:
 	# frame was `phys` and then had nothing further to say, because no
 	# physics-side number was recorded anywhere. See debug/physics_census.gd.
 	_write("PHY f=%d %s" % [_frame, PhysicsCensus.line(world)])
+	# SYS: WHICH of the world's systems the physics tick went into. The
+	# 2026-08-26 capture ruled the solver out (pairs=4) and then had nothing
+	# further to say, because no script-side number was recorded per system.
+	_write("SYS f=%d %s" % [_frame, _system_line()])
+	# RND: and what the RENDERED frame is made of. `phys` and `proc` together
+	# accounted for ~36 ms of a ~250 ms frame in that capture; the rest was
+	# never measured at all.
+	_write("RND f=%d %s" % [_frame, FrameCensus.line(world, _ticks_per_frame())])
 	# Compact stdout echo so an FPS drop shows up in the console too.
 	print("[whale-diag] f=%d avg_dt=%.2fms max=%.2fms rebuilds/%df=%d proc=%.2f phys=%.2f draws=%d shots=%s" % [
 		_frame, avg * 1000.0, _win_dt_max * 1000.0, _win_frames, _win_rebuilds,
 		proc_ms, phys_ms, draws, shots_str])
+
+
+## The world's per-system milliseconds, as ms PER FRAME over the window just
+## closed, biggest first, with the total. Reads and RESETS the world's
+## accumulator, so consecutive SYS lines never double-count.
+func _system_line() -> String:
+	if world == null or not is_instance_valid(world) or not world.has_method("take_system_ms"):
+		return "(no world)"
+	var acc: Dictionary = world.call("take_system_ms")
+	var frames := maxi(_win_frames, 1)
+	var rows: Array = []
+	var total := 0.0
+	for key in acc:
+		var ms: float = float(acc[key]) / float(frames)
+		total += ms
+		rows.append([key, ms])
+	rows.sort_custom(func(a, b): return float(a[1]) > float(b[1]))
+	var parts: Array = []
+	for r in rows:
+		parts.append("%s=%.2f" % [r[0], r[1]])
+	parts.append("total=%.2f" % total)
+	return " ".join(PackedStringArray(parts))
+
+
+## Physics steps per RENDERED frame across the window — 1 is healthy, 8 is
+## Godot's catch-up ceiling and means the frame is losing the race. Both
+## counters are engine-wide and monotonic, so the window's delta is exact.
+func _ticks_per_frame() -> int:
+	var phys := Engine.get_physics_frames()
+	var drawn := Engine.get_frames_drawn()
+	var d_phys := int(phys) - _prev_phys_frames
+	var d_drawn := int(drawn) - _prev_drawn_frames
+	_prev_phys_frames = int(phys)
+	_prev_drawn_frames = int(drawn)
+	if d_drawn <= 0:
+		return 0
+	return int(round(float(d_phys) / float(d_drawn)))
 
 
 func _reset_window() -> void:
