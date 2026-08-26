@@ -33,6 +33,12 @@ const ROAM_ACCEL := 8.0       ## px/s² ×scale_unit — a drifting mountain
 ## clumsiness (no ram immunity — see below).
 const ALIGN_ACCEL := 360.0    ## px/s² ×scale_unit
 const ANGER_SECONDS := 30.0
+
+## How much of the body has to be alight before the creature panics, and how
+## hard it swims away when it does. One or two cells is a singe; a real fire is
+## a reason to run. (v0.65.1 — the fire system's missing reaction.)
+const PANIC_BURNING_CELLS := 3
+const PANIC_ACCEL := 520.0    ## px/s² ×scale_unit — faster than a roam, short of a ram
 const WANDER_FREQ := Vector2(0.13, 0.09)
 ## Vertical speed (unscaled ×scale_unit) at which the pitch pose reaches
 ## the full ±POSE_MAX (~30°, the source's observed range).
@@ -258,6 +264,27 @@ func tick(delta: float, target: Node2D) -> void:
 		# so it holds in EVERY phase, not just the coasting deadzone.
 		if absf(s.y) < RIDE_STEER_DEADZONE:
 			accel.y = -whale.linear_velocity.y * RIDE_HOLD_DAMP
+	elif whale.burning.size() >= PANIC_BURNING_CELLS:
+		# ON FIRE. A creature that is burning stops doing whatever it was doing
+		# and RUNS — away from whatever it last had reason to fear, or simply
+		# away from where it is if there is nobody to blame. Fire is meant to be
+		# a threat multiplier (roadmap Phase 4); a whale that keeps calmly
+		# ramming while its own flank burns is a creature that does not believe
+		# in the fire, and neither will the player.
+		#
+		# It is also mercy in a system sense: a panicking creature carries its
+		# fire AWAY from the fleet and the island, rather than dying on your
+		# deck and setting it alight.
+		_end_attack()
+		var away := Vector2.UP
+		var fear: Node2D = _attacker()
+		if fear == null:
+			fear = target
+		if fear != null and is_instance_valid(fear):
+			away = (whale.global_position - fear.global_position).normalized()
+		if away == Vector2.ZERO:
+			away = Vector2.UP
+		accel = away * PANIC_ACCEL * u
 	elif tamed:
 		# A calm ally: never rams, never provoked — just the lazy roam around
 		# home, exactly as a peaceful wild whale drifts (below), so a tamed
