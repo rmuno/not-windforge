@@ -432,7 +432,7 @@ func _build_help_panel() -> PanelContainer:
 		"A/D walk    Space jump    E use — helm, door, step off",
 		"LMB shoot    RMB grapple (W/S reel, jump to sling; hold a whale to TAME it, release to let go)",
 		"Q place    B next thing to place — blocks, terrain, balloons (Shift+B back)    C remove",
-		"Z mine / harvest (hold)    X repair (hold)",
+		"Z mine / harvest (hold)    X repair AND smother fire (hold, sweep)",
 		"M craft    N next recipe    Shift+M craft all — the deep's air needs an Aether Lung",
 		"K character sheet (at a trainer: 1-4 train, 0 sell salvage)    Tab map",
 		"T respawn    R reset world    Esc quit    wheel zoom",
@@ -445,6 +445,16 @@ func _build_help_panel() -> PanelContainer:
 		"thin plank = platform — S+jump drops through",
 		"pale = gasbag (lift)    pink = blubber    dark = ballast",
 		"pink/red beast = sky whale — neutral; shoot it and it RAMS",
+		"",
+		"THE SKY IS INHABITED",
+		"places hold populations — nests, dens, roosts, eyries. Break the nest",
+		"and nothing more comes from there (and its cache spills). Tab shows",
+		"every place you have found; a struck-through one is a place you broke.",
+		"basilisk = the fire-spitter up high; it REARS before every spit",
+		"FIRE spreads cell to cell through what burns (gasbag, blubber, hull).",
+		"X smothers it; a row of removed blocks is a firebreak; it burns out.",
+		"a running propeller pushes what is behind it and CHOPS what stands in",
+		"the blades — and it can blow an incoming fireball off course.",
 	])
 	scroll.add_child(label)
 	_help_scroll = scroll
