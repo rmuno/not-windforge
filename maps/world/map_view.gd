@@ -275,6 +275,20 @@ func _draw_frame(map_area: Rect2) -> void:
 func _draw_markers(mr: Array, font: Font) -> void:
 	if world == null:
 		return
+	# WORLD-ANCHORED SITES first, UNDER the ships (charter §4: "the player can
+	# point at where enemies come from"). Only places already visited are drawn
+	# — the world holds hundreds, and a map that showed them all would hand over
+	# the exploration the fog exists to sell. A hollow diamond in the kind's own
+	# colour: distinct from a ship's filled dot at a glance, and quiet enough not
+	# to crowd the map (the clean-UI standing order).
+	if world.has_method("discovered_sites"):
+		for site in (world.call("discovered_sites") as Array):
+			var sp := _w2m(site["pos"] as Vector2, mr)
+			var col: Color = SpawnSites.kind_color(site["kind"])
+			var d := PackedVector2Array([
+				sp + Vector2(0, -5), sp + Vector2(5, 0),
+				sp + Vector2(0, 5), sp + Vector2(-5, 0), sp + Vector2(0, -5)])
+			draw_polyline(d, col, 1.5)
 	var fleet: Variant = world.get("fleet")
 	if fleet != null:
 		for ship in fleet.ships():
@@ -294,6 +308,6 @@ func _draw_markers(mr: Array, font: Font) -> void:
 func _draw_title(font: Font, morigin: Vector2, msize: Vector2) -> void:
 	draw_string(font, Vector2(morigin.x, morigin.y - 14.0),
 		"WORLD MAP", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.85, 0.90, 1.0))
-	var hint := "Tab to close   ·   ? = undiscovered   ·   fly near a region to chart it"
+	var hint := "Tab to close   ·   ? = undiscovered   ·   ◇ = a place you have found"
 	draw_string(font, Vector2(morigin.x, morigin.y + msize.y + 22.0),
 		hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.60, 0.66, 0.75))

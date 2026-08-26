@@ -1093,6 +1093,15 @@ var dormant := false
 ## through the slow tick.
 var dormant_velocity := Vector2.ZERO
 
+## The world-anchored spawn site this body came from, and whether it came from
+## one at all (combat/spawn_sites.gd). A site resident can be RECLAIMED when it
+## drifts far from every focus — freed, with its stock returned — which is how
+## the population stays bounded over a long flight. Everything the player made
+## a relationship with (a tamed creature, a carcass they may come back for) is
+## excluded from that by the world, not by this flag.
+var from_spawn_site := false
+var spawn_site := Vector2i.ZERO
+
 ## Where this body was standing when it went under. A dormant creature MIGRATES
 ## in a slow loop around it (Dormancy.migrate_velocity), so the anchor has to be
 ## stable — deriving the loop from the moving position instead would turn a
@@ -2843,6 +2852,13 @@ static func from_data(data: Dictionary) -> Ship:
 	s.tame_level = int(data.get("tame_level", 1))
 	s.ride_speed_mult = float(data.get("ride_speed_mult", 1.0))
 	s.creature_kind = String(data.get("creature_kind", ""))
+	# Which world-anchored site this body belongs to. It rides the PAYLOAD (not
+	# a post-spawn assignment) because a post-spawn field exists on the server
+	# only — and because hosting REHOMES every offline ship through this same
+	# path, which would otherwise strip the residency off a whole sky's worth of
+	# population and leave it un-reclaimable forever.
+	s.from_spawn_site = bool(data.get("from_site", false))
+	s.spawn_site = Vector2i(int(data.get("site_x", 0)), int(data.get("site_y", 0)))
 	s.scale_unit = float(data.get("unit", 1.0))
 	if s.scale_unit != 1.0:
 		# Gravity scales with the world so fall timing matches the bigger
@@ -2889,6 +2905,9 @@ func to_payload() -> Dictionary:
 		"tame_level": tame_level,
 		"ride_speed_mult": ride_speed_mult,
 		"creature_kind": creature_kind,
+		"from_site": from_spawn_site,
+		"site_x": spawn_site.x,
+		"site_y": spawn_site.y,
 		"blueprint": blueprint,
 		"walls": _encode_walls(),
 		"balloons": _encode_balloons(),

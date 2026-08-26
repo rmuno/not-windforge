@@ -297,6 +297,7 @@ func _fmt(id: String) -> String:
 ## simply prints the rates as 0).
 func _perf_text(window := 0.0) -> String:
 	var ships := 0
+	var residents := 0   # site-spawned bodies alive — the charter §4 population
 	var ship_cells := 0
 	var tiles := 0
 	var shots := 0
@@ -311,6 +312,8 @@ func _perf_text(window := 0.0) -> String:
 			for s in (fleet.call("ships") as Array):
 				var ship := s as Ship
 				ships += 1
+				if ship.from_spawn_site:
+					residents += 1
 				ship_cells += ship.blocks.size()
 				tiles += ship.skin_tile_count()
 				now["ship_rebuilds"] = int(now["ship_rebuilds"]) + ship.rebuild_count
@@ -352,6 +355,17 @@ func _perf_text(window := 0.0) -> String:
 		cen["shapes"], cen["worst"], cen["worst_cells"], cen["coarse"],
 		cen["chunks"], cen["chunk_shapes"], cen["dormant"]]
 
+	# WORLD-ANCHORED POPULATION (charter §4). Two numbers say whether sites are
+	# doing their job: how many residents are out (against the global cap that
+	# stops a tuning slip from filling the sky) and how many places the player
+	# has actually charted.
+	var sites := ""
+	if world != null and world.has_method("discovered_sites"):
+		sites = "
+Sites:    %-6d  charted, %d/%d residents out" % [
+			(world.call("discovered_sites") as Array).size(),
+			residents, Tunables.get_int("site_max_residents")]
+
 	# Retained rect COMMANDS: every merged region draws a fill and a border,
 	# and the renderer replays both every frame forever. Terrain's regions are
 	# cached (merged at rebuild) so this is a read; the ships' are not, so the
@@ -363,7 +377,7 @@ func _perf_text(window := 0.0) -> String:
 		+ "\nShips:    %-6d  %d cells in %d skin tiles"
 		+ "\nTerrain:  %-6d  chunks, %d cells, %d regions (%d cmds)"
 		+ "\nShots:    %-6d"
-		+ "%s"
+		+ "%s%s"
 		+ "\n\nper second \u2014 what a hitch is made of%s") % [
 		Engine.get_frames_per_second(),
 		Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
@@ -372,4 +386,4 @@ func _perf_text(window := 0.0) -> String:
 		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)),
 		ships, ship_cells, tiles,
 		chunks, chunk_cells, t_regions, t_regions * 2,
-		shots, physics, rates]
+		shots, sites, physics, rates]
