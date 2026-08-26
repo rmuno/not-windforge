@@ -2117,20 +2117,30 @@ var redraw_marks := 0
 
 
 ## --- The SECTORED SKIN (lag audit phase B, 2026-08-25) --------------------
-## The drawn body is tiled into 64×64-cell child canvas items
+## The drawn body is tiled into 32×32-cell child canvas items
 ## (ShipSkinSector) plus one glyph overlay on top (ShipGlyphLayer). An edit
 ## invalidates only its own sector, so a harvest swing or a placed block
-## repaints ~one sector (bounded), never the whole body (~1.1 s on the
-## 194k-cell starter). Whole-body invalidations remain for the rare true
-## whole-body changes: rebuild, the creature wound shade, the facing flip.
-const SKIN_SECTOR := 64
+## repaints ONE tile (bounded by tile area, whatever the body's size),
+## never the whole body. Whole-body invalidation survives for the two
+## changes that really are whole-body: a rebuild and the facing flip.
+##
+## THE SIZE IS MEASURED, not guessed (tools/skin_probe.gd, 2026-08-25).
+## Across the live fleet's ten bodies, going 64 → 32 cut the worst tile's
+## repaint from 1.9–4.1 ms to 1.0–1.6 ms — a quarter of a 60 Hz frame down
+## to a tenth, for ONE edit — while whole-body cost stayed flat. The price
+## is that greedy regions stop merging at a tile boundary: 35 → 42 retained
+## rects on the largest ship. That is the right trade only because the
+## rect counts are TINY (tens, not the ~23k the per-block design retained);
+## 16 halves the hitch again but triples the canvas-item population for
+## another ~30 rects a ship, which is paid every frame rather than per edit.
+const SKIN_SECTOR := 32
 
 var _skin_sectors := {}          # Vector2i sector coord -> ShipSkinSector
 var _glyph_layer: ShipGlyphLayer = null
 
 
 static func skin_sector_of(cell: Vector2i) -> Vector2i:
-	return Vector2i(cell.x >> 6, cell.y >> 6)  # floor-div by SKIN_SECTOR
+	return Vector2i(cell.x >> 5, cell.y >> 5)  # floor-div by SKIN_SECTOR
 
 
 ## Rebuild the sector population from the grid (called from rebuild(), which
@@ -2140,19 +2150,27 @@ static func skin_sector_of(cell: Vector2i) -> Vector2i:
 func _sync_skin_sectors() -> void:
 	var needed := {}
 	for cell in blocks:
-		needed[skin_sector_of(cell)] = true
+		var coord := skin_sector_of(cell)
+		if not needed.has(coord):
+			needed[coord] = {}
+		(needed[coord] as Dictionary)[cell] = true
 	for coord in _skin_sectors.keys():
 		if not needed.has(coord):
 			(_skin_sectors[coord] as Node).queue_free()
 			_skin_sectors.erase(coord)
 	for coord in needed:
-		if not _skin_sectors.has(coord):
-			_make_skin_sector(coord)
+		var sec: ShipSkinSector = _skin_sectors.get(coord)
+		if sec == null or not is_instance_valid(sec):
+			sec = _make_skin_sector(coord)
+		# Refilled wholesale, never patched here: a rebuild is exactly the
+		# moment the incremental hooks' bookkeeping is allowed to be wrong.
+		sec.cells = needed[coord]
 	if _glyph_layer == null or not is_instance_valid(_glyph_layer):
 		_glyph_layer = ShipGlyphLayer.new()
 		_glyph_layer.ship = self
 		add_child(_glyph_layer)
 	move_child(_glyph_layer, get_child_count() - 1)
+	_apply_creature_tint()
 	_invalidate_skin()
 
 
@@ -2160,11 +2178,40 @@ func _make_skin_sector(coord: Vector2i) -> ShipSkinSector:
 	var sec := ShipSkinSector.new()
 	sec.ship = self
 	sec.sector = coord
+	sec.self_modulate = _creature_tint()
 	add_child(sec)
 	_skin_sectors[coord] = sec
 	if _glyph_layer != null and is_instance_valid(_glyph_layer):
 		move_child(_glyph_layer, get_child_count() - 1)
 	return sec
+
+
+## A LIVING creature wounds as a WHOLE — one shade for the whole body, off
+## the shared pool — and that shade is a UNIFORM DARKENING, which is exactly
+## what a modulate is (Color.darkened multiplies rgb by 1-amount, and
+## self_modulate multiplies the canvas item's output by the same factor).
+## So the wound costs one property write per tile instead of a full-body
+## regroup: 15 ms on a 10k-cell body, every step of six, gone. Painted
+## colours therefore stay UNSHADED while the pool is alive, and the flesh
+## re-bakes its per-cell shading the moment the body becomes a carcass (a
+## rebuild runs on that transition and clears the tint back to white).
+##
+## self_modulate, not modulate: modulate would propagate into the glyph
+## layer, and component letters are not part of the wound.
+func _creature_tint() -> Color:
+	if shared_health_max <= 0.0 or shared_health <= 0.0:
+		return Color.WHITE
+	var shade := roundi(clampf(shared_health / shared_health_max, 0.0, 1.0) * 5.0)
+	var k := 1.0 - (1.0 - shade / 5.0) * 0.6
+	return Color(k, k, k, 1.0)
+
+
+## Push the current wound shade onto every tile. No queue_redraw anywhere:
+## that is the whole point.
+func _apply_creature_tint() -> void:
+	var tint := _creature_tint()
+	for coord in _skin_sectors:
+		(_skin_sectors[coord] as ShipSkinSector).self_modulate = tint
 
 
 ## Whole-body invalidation: every sector + the glyphs.
@@ -2175,13 +2222,35 @@ func _invalidate_skin() -> void:
 		_glyph_layer.queue_redraw()
 
 
-## Single-cell invalidation: just that cell's sector (created on demand — an
-## incremental add can open fresh ground).
-func _invalidate_skin_cell(cell: Vector2i) -> void:
+## Single-cell invalidation for a cell whose MEMBERSHIP did not change — a
+## damage shade step, a repair sip. Never creates: sectors are born when a
+## cell joins and reaped at the next rebuild, nowhere else.
+func _invalidate_sector_of(cell: Vector2i) -> void:
+	var sec: ShipSkinSector = _skin_sectors.get(skin_sector_of(cell))
+	if sec != null and is_instance_valid(sec):
+		sec.invalidate()
+
+
+## A cell JOINED the grid between rebuilds (the incremental add path). Opens
+## fresh ground on demand — an add can be the first cell of a sector.
+func _skin_cell_added(cell: Vector2i) -> void:
 	var coord := skin_sector_of(cell)
 	var sec: ShipSkinSector = _skin_sectors.get(coord)
 	if sec == null or not is_instance_valid(sec):
 		sec = _make_skin_sector(coord)
+	sec.cells[cell] = true
+	sec.invalidate()
+
+
+## A cell LEFT the grid between rebuilds (incremental combat drop, harvest).
+## An emptied sector is left standing: it paints nothing, costs nothing, and
+## the next rebuild reaps it — freeing a node mid-frame to re-create it on
+## the next placed cell would churn canvas items exactly during a fight.
+func _skin_cell_removed(cell: Vector2i) -> void:
+	var sec: ShipSkinSector = _skin_sectors.get(skin_sector_of(cell))
+	if sec == null or not is_instance_valid(sec):
+		return
+	sec.cells.erase(cell)
 	sec.invalidate()
 
 
@@ -2191,11 +2260,12 @@ func _mark_redraw() -> void:
 	_invalidate_skin()
 
 
-## Gated single-sector redraw — the common case: one damaged, repaired,
-## placed or harvested cell.
+## Gated single-sector redraw — the common case: one damaged, repaired or
+## harvested cell. Membership changes go through _skin_cell_added/_removed;
+## this is the gate counter plus the repaint.
 func _mark_redraw_cell(cell: Vector2i) -> void:
 	redraw_marks += 1
-	_invalidate_skin_cell(cell)
+	_invalidate_sector_of(cell)
 
 
 func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
@@ -2209,11 +2279,14 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 		var pool_bucket := shade_bucket(shared_health, shared_health_max)
 		shared_health = maxf(0.0, shared_health - amount)
 		damaged.emit(cell, amount)
-		# Whole-body wound shading has 6 visible steps; only a step change is
-		# worth the O(cells) regroup a redraw costs. (The killing hit falls
-		# through to the rebuild below, which redraws regardless.)
+		# Whole-body wound shading has 6 visible steps. The step is a uniform
+		# darkening, so it lands as a per-tile self_modulate — no repaint at
+		# all — but it stays GATED on the bucket so the tint write happens
+		# once per visible step rather than once per hit. (The killing hit
+		# falls through to the rebuild below, which repaints regardless.)
 		if shade_bucket(shared_health, shared_health_max) != pool_bucket:
-			_mark_redraw()
+			redraw_marks += 1
+			_apply_creature_tint()
 		# The living→carcass transition: the coarse living collider must switch
 		# to the exact per-cell grid the moment the pool empties, so a corpse
 		# mines and crushes cell-by-cell (see _use_coarse_collider). A full
@@ -2249,7 +2322,7 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 			for c in members:
 				if blocks.has(c) and not seen.has(skin_sector_of(c)):
 					seen[skin_sector_of(c)] = true
-					_invalidate_skin_cell(c)
+					_invalidate_sector_of(c)
 		return false
 	for c in dead:
 		var type: int = blocks[c]["type"]
@@ -2305,7 +2378,7 @@ func _combat_incremental_drop(dead: Array) -> void:
 		center_of_mass = weighted / mass if new_mass > 0.0 else Vector2.ZERO
 		_total_lift = maxf(0.0, _total_lift - def["lift"])
 		_drop_cell_from_collider(cell)
-		_invalidate_skin_cell(cell)  # the hole shows this frame (no mark: not a gated event)
+		_skin_cell_removed(cell)  # the hole shows this frame (no mark: not a gated event)
 	# 0 is the "recompute from the new shapes" sentinel (godot-quirks); the
 	# collider changed, so the physics inertia must be re-derived.
 	inertia = 0.0
@@ -2348,7 +2421,8 @@ func _bulk_incremental_add(cell: Vector2i) -> void:
 		_adds_since_merge = 0
 		_rebuild_dirty = true
 	_sync_dirty = true
-	_mark_redraw_cell(cell)
+	redraw_marks += 1
+	_skin_cell_added(cell)
 
 
 ## Punch one dead cell out of the hull collider: find the merged rect that
@@ -3139,53 +3213,15 @@ func _apply_facing_transform(on: CanvasItem) -> void:
 		on.draw_set_transform(Vector2(axis_x * 2.0, 0.0), 0.0, Vector2(-1.0, 1.0))
 
 
-## Paint ONE skin sector's cell range (phase B — called from
-## ShipSkinSector._draw). This is the old whole-body _draw, filtered to the
-## sector's 64×64 cells: batched placeholder art, one filled rect per
-## contiguous same-type same-shade region (the per-block version retained
-## ~23k canvas commands across the 8× ships), damage darkening in 6 steps,
-## per-cell gasbag borders via one multiline. The scan is the RANGE, not the
-## body — 4,096 lookups whatever the ship's size — which is the whole
-## point: repainting a sector costs the sector.
-func _paint_sector(on: CanvasItem, sector: Vector2i) -> void:
+## Paint ONE skin sector (phase B — called from ShipSkinSector._draw). The
+## work is the old whole-body _draw over the tile's own cells; splitting the
+## PLAN out of the emission is what lets a headless probe measure it
+## (tools/skin_probe.gd), since draw calls only exist inside _draw.
+func _paint_sector(on: ShipSkinSector) -> void:
 	_apply_facing_transform(on)
-	var groups := {}  # type*8+shade -> {"cells": {}, "color": Color, "type": int}
-	var bag_edges := PackedVector2Array()
-	# A living creature wounds as a WHOLE: one shade for the whole body,
-	# from the shared pool. (Its blocks are all pristine while it lives.)
-	var creature_shade := -1
-	if shared_health_max > 0.0 and shared_health > 0.0:
-		creature_shade = roundi(clampf(shared_health / shared_health_max, 0.0, 1.0) * 5.0)
-	var base := sector * SKIN_SECTOR
-	for ly in SKIN_SECTOR:
-		for lx in SKIN_SECTOR:
-			var cell := base + Vector2i(lx, ly)
-			if not blocks.has(cell):
-				continue
-			var type: int = blocks[cell]["type"]
-			var frac: float = clampf(blocks[cell]["hp"] / BlockDB.max_hp(type), 0.0, 1.0)
-			var shade := creature_shade if creature_shade >= 0 else roundi(frac * 5.0)
-			var key := type * 8 + shade
-			if not groups.has(key):
-				var color := BlockDB.color_of(type).darkened((1.0 - shade / 5.0) * 0.6)
-				if faction == 1:
-					# Friend/foe must read before range (playtest scar):
-					# HOSTILE hulls wear their allegiance as a red cast.
-					# Wildlife (faction 2) keeps its natural colours — a
-					# neutral whale must not read as an enemy.
-					color = color.lerp(Color(0.80, 0.18, 0.15), 0.4)
-				color *= body_tint  # cosmetic (identity white for all normal ships)
-				groups[key] = {"cells": {}, "color": color, "type": type}
-			(groups[key]["cells"] as Dictionary)[cell] = true
-			if type == BlockDB.Type.GASBAG:
-				var tl := local_pos_of(cell) - Vector2.ONE * CELL * 0.5
-				bag_edges.append_array(PackedVector2Array([
-					tl, tl + Vector2(CELL, 0),
-					tl + Vector2(CELL, 0), tl + Vector2(CELL, CELL),
-					tl + Vector2(CELL, CELL), tl + Vector2(0, CELL),
-					tl + Vector2(0, CELL), tl,
-				]))
-
+	var plan := sector_paint_plan(on.cells)
+	var groups: Dictionary = plan["groups"]
+	var bag_edges: PackedVector2Array = plan["bag_edges"]
 	for key in groups:
 		var g: Dictionary = groups[key]
 		for rect in _greedy_rects(g["cells"]):
@@ -3196,6 +3232,51 @@ func _paint_sector(on: CanvasItem, sector: Vector2i) -> void:
 			line = line.lerp(Color(0.80, 0.18, 0.15), 0.4)
 		line *= body_tint
 		on.draw_multiline(bag_edges, line, 1.0)
+
+
+## Group a set of cells into the regions a paint would emit: batched
+## placeholder art, one filled rect per contiguous same-type same-shade
+## region (the per-block version retained ~23k canvas commands across the 8×
+## ships), damage darkening in 6 steps, per-cell gasbag borders collected for
+## one multiline. `cell_set` is any dictionary keyed by cell — a sector's own
+## cells in the live path, whole `blocks` when the probe measures the
+## single-canvas baseline; cells no longer in the grid are skipped, so a
+## stale set degrades to a missing rect, never a crash.
+func sector_paint_plan(cell_set: Dictionary) -> Dictionary:
+	var groups := {}  # type*8+shade -> {"cells": {}, "color": Color, "type": int}
+	var bag_edges := PackedVector2Array()
+	# A LIVING creature's blocks are all pristine (the pool absorbs the
+	# damage), and its whole-body wound shade rides self_modulate — see
+	# _creature_tint. So its flesh paints at full shade 5 and never needs
+	# repainting for a wound at all.
+	var living := shared_health_max > 0.0 and shared_health > 0.0
+	for cell in cell_set:
+		if not blocks.has(cell):
+			continue
+		var type: int = blocks[cell]["type"]
+		var frac: float = clampf(blocks[cell]["hp"] / BlockDB.max_hp(type), 0.0, 1.0)
+		var shade := 5 if living else roundi(frac * 5.0)
+		var key := type * 8 + shade
+		if not groups.has(key):
+			var color := BlockDB.color_of(type).darkened((1.0 - shade / 5.0) * 0.6)
+			if faction == 1:
+				# Friend/foe must read before range (playtest scar):
+				# HOSTILE hulls wear their allegiance as a red cast.
+				# Wildlife (faction 2) keeps its natural colours — a
+				# neutral whale must not read as an enemy.
+				color = color.lerp(Color(0.80, 0.18, 0.15), 0.4)
+			color *= body_tint  # cosmetic (identity white for all normal ships)
+			groups[key] = {"cells": {}, "color": color, "type": type}
+		(groups[key]["cells"] as Dictionary)[cell] = true
+		if type == BlockDB.Type.GASBAG:
+			var tl := local_pos_of(cell) - Vector2.ONE * CELL * 0.5
+			bag_edges.append_array(PackedVector2Array([
+				tl, tl + Vector2(CELL, 0),
+				tl + Vector2(CELL, 0), tl + Vector2(CELL, CELL),
+				tl + Vector2(CELL, CELL), tl + Vector2(0, CELL),
+				tl + Vector2(0, CELL), tl,
+			]))
+	return {"groups": groups, "bag_edges": bag_edges}
 
 
 ## Paint the component glyphs (ShipGlyphLayer._draw). Clusters span sector

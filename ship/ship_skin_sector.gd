@@ -11,13 +11,28 @@ extends Node2D
 ##
 ## Sits at the parent Ship's origin (position ZERO), so its local space IS
 ## the ship's -- the paint code (Ship._paint_sector) is the very code the
-## whole-body _draw ran, filtered to the range. Draw calls are not clipped
-## to a canvas item, so region rects that touch the sector edge draw
+## whole-body _draw ran, over a subset of the cells. Draw calls are not
+## clipped to a canvas item, so region rects that touch the sector edge draw
 ## complete; each cell belongs to exactly one sector, so nothing paints
 ## twice.
 
 var ship: Ship = null
 var sector := Vector2i.ZERO
+
+## The cells this tile owns — the sector's share of Ship.blocks, and the
+## ONLY thing its paint iterates. The first cut scanned the 64x64 RANGE
+## instead (4,096 `blocks.has` probes whatever the tile held), which made a
+## whole-body repaint of a SPARSE body cost `4096 x sectors` where the old
+## single-canvas pass cost `cells` -- a regression in exactly the
+## creature-under-fire case, since a wound shade is whole-body. Owning the
+## set makes every repaint proportional to what is actually drawn.
+##
+## Truth is Ship.blocks; this is a partition of it, refilled from scratch by
+## Ship._sync_skin_sectors on every rebuild and patched by the two
+## incremental hooks (_skin_cell_added / _skin_cell_removed) between
+## rebuilds. The suite pins the union against blocks after a rebuild-free
+## building session.
+var cells := {}
 
 ## Diagnostics. `paints` counts real repaints (only meaningful with a live
 ## renderer); `invalidations` counts queue_redraw requests, which IS
@@ -35,4 +50,4 @@ func _draw() -> void:
 	if ship == null or not is_instance_valid(ship):
 		return
 	paints += 1
-	ship._paint_sector(self, sector)
+	ship._paint_sector(self)

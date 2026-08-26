@@ -6920,21 +6920,23 @@ func _test_incremental_edits_match_full_rebuild() -> void:
 
 
 ## THE SECTORED SKIN (lag audit phase B, 2026-08-25): the drawn body tiles
-## into 64×64-cell child canvas items so an edit repaints one sector, never
-## the whole body (~1.1 s on the 194k starter). Headless has no renderer, so
-## the tests pin the INVALIDATION contract: which sectors are asked to
-## repaint, and that the population tracks the grid.
+## into SKIN_SECTOR-square child canvas items so an edit repaints one tile,
+## never the whole body. Headless has no renderer, so the tests pin what IS
+## observable: the INVALIDATION contract (which tiles are asked to repaint),
+## the PARTITION invariant (each tile owns its share of the grid, exactly),
+## and that a creature's wound costs no repaint at all.
 func _test_skin_sectors_partition_and_localise_redraws() -> void:
-	_t("skin sectors partition the grid; an edit invalidates one sector, a wound all")
+	_t("skin sectors partition the grid; an edit invalidates one tile, a wound none")
 
+	var sz := Ship.SKIN_SECTOR
 	_check(Ship.skin_sector_of(Vector2i(0, 0)) == Vector2i(0, 0)
-			and Ship.skin_sector_of(Vector2i(63, 63)) == Vector2i(0, 0)
-			and Ship.skin_sector_of(Vector2i(64, 0)) == Vector2i(1, 0)
+			and Ship.skin_sector_of(Vector2i(sz - 1, sz - 1)) == Vector2i(0, 0)
+			and Ship.skin_sector_of(Vector2i(sz, 0)) == Vector2i(1, 0)
 			and Ship.skin_sector_of(Vector2i(-1, -1)) == Vector2i(-1, -1)
-			and Ship.skin_sector_of(Vector2i(-64, 0)) == Vector2i(-1, 0),
-		"sector coords floor-divide by 64, negatives included")
+			and Ship.skin_sector_of(Vector2i(-sz, 0)) == Vector2i(-1, 0),
+		"sector coords floor-divide by SKIN_SECTOR (%d), negatives included" % sz)
 
-	# A body spanning three sectors: a 130-cell-wide hull strip.
+	# A body spanning several tiles: a 130-cell-wide hull strip.
 	var cells := {}
 	for x in range(-10, 120):
 		cells[Vector2i(x, 0)] = BlockDB.Type.HULL
@@ -6946,8 +6948,8 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	var coords := {}
 	for cell in s8.blocks:
 		coords[Ship.skin_sector_of(cell)] = true
-	_check(s8._skin_sectors.size() == coords.size() and coords.size() == 3,
-		"every occupied 64×64 range has exactly one sector node (%d)"
+	_check(s8._skin_sectors.size() == coords.size() and coords.size() > 1,
+		"every occupied range has exactly one sector node (%d)"
 			% s8._skin_sectors.size())
 	var glyph_last: bool = s8.get_child(s8.get_child_count() - 1) is ShipGlyphLayer
 	_check(glyph_last, "the glyph overlay rides ABOVE every sector (last child)")
@@ -6956,25 +6958,27 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	var inv0 := {}
 	for c in s8._skin_sectors:
 		inv0[c] = (s8._skin_sectors[c] as ShipSkinSector).invalidations
-	s8.damage_cell(Vector2i(70, 0), 30.0)  # shade 5 -> 4, sector (1,0)
+	var struck := Vector2i(70, 0)
+	s8.damage_cell(struck, 30.0)  # shade 5 -> 4
 	var touched: Array = []
 	for c in s8._skin_sectors:
 		if (s8._skin_sectors[c] as ShipSkinSector).invalidations != inv0[c]:
 			touched.append(c)
-	_check(touched == [Vector2i(1, 0)],
+	_check(touched == [Ship.skin_sector_of(struck)],
 		"a damaged cell repaints exactly its own sector (%s)" % str(touched))
 
 	# An incremental bulk add in fresh ground OPENS a new sector. The
 	# detached probe first: the adjacency law still refuses a floating cell,
 	# so "fresh ground" can only ever be REACHED ground.
-	s8.net_set_block(Vector2i(-10, -70), BlockDB.Type.HULL)
-	_check(not s8.blocks.has(Vector2i(-10, -70)),
+	s8.net_set_block(Vector2i(-10, -sz - 6), BlockDB.Type.HULL)
+	_check(not s8.blocks.has(Vector2i(-10, -sz - 6)),
 		"a floating add is refused — the adjacency law is unchanged")
 	s8.net_set_block(Vector2i(-10, -1), BlockDB.Type.HULL)
 	_check(s8._skin_sectors.has(Vector2i(-1, -1)),
 		"an incremental add in fresh ground opens its sector on demand")
 
-	# A creature WOUND is whole-body: every sector repaints.
+	# A creature's WOUND is whole-body — and therefore a uniform darkening,
+	# which is exactly what self_modulate is for. It must cost ZERO repaints.
 	var beast_cells := {}
 	for x in 70:
 		beast_cells[Vector2i(x, 0)] = BlockDB.Type.MEAT
@@ -6986,29 +6990,117 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	var b0 := {}
 	for c in beast._skin_sectors:
 		b0[c] = (beast._skin_sectors[c] as ShipSkinSector).invalidations
-	beast.damage_cell(Vector2i(0, 0), 300.0)  # bucket 5 -> 4: visible wound
-	var all_touched := true
+	var white_before := true
 	for c in beast._skin_sectors:
-		if (beast._skin_sectors[c] as ShipSkinSector).invalidations == b0[c]:
-			all_touched = false
-	_check(all_touched and beast._skin_sectors.size() == 2,
-		"a creature's wound shade repaints the WHOLE body (all %d sectors)"
-			% beast._skin_sectors.size())
+		var pale: ShipSkinSector = beast._skin_sectors[c]
+		white_before = white_before and pale.self_modulate.is_equal_approx(Color.WHITE)
+	_check(white_before, "an unwounded creature's tiles paint at full brightness")
 
-	# Sector population follows the grid through a rebuild: harvest one whole
-	# 64-wide range away (bulk removals + flush) and its sector dies with it.
+	var marks_before: int = beast.redraw_marks
+	beast.damage_cell(Vector2i(0, 0), 300.0)  # bucket 5 -> 4: visible wound
+	var repainted := 0
+	var darkened := 0
+	for c in beast._skin_sectors:
+		var sec: ShipSkinSector = beast._skin_sectors[c]
+		if sec.invalidations != b0[c]:
+			repainted += 1
+		if sec.self_modulate.r < 0.999:
+			darkened += 1
+	_check(repainted == 0,
+		"a creature's wound shade repaints NOTHING (%d tiles asked)" % repainted)
+	_check(darkened == beast._skin_sectors.size() and darkened > 1,
+		"...it darkens every tile through self_modulate instead (%d)" % darkened)
+	_check(beast.redraw_marks == marks_before + 1,
+		"...and the six-step gate still fires exactly once per visible step")
+
+	# Death clears the tint: a carcass's flesh bakes its own per-cell shading
+	# again, so a leftover modulate would double-darken the corpse.
 	beast.shared_health = 0.0
 	beast.rebuild()
 	await process_frame
-	for x in range(64, 70):
+	var still_dark := 0
+	for c in beast._skin_sectors:
+		var sec2: ShipSkinSector = beast._skin_sectors[c]
+		if not sec2.self_modulate.is_equal_approx(Color.WHITE):
+			still_dark += 1
+	_check(still_dark == 0,
+		"death clears the wound tint (%d tiles left dark)" % still_dark)
+
+	# Sector population follows the grid through a rebuild: harvest one whole
+	# tile-range away (bulk removals, no rebuild) and its sector dies at the
+	# next re-derive.
+	var last := Ship.skin_sector_of(Vector2i(69, 0))
+	for x in range(last.x * sz, 70):
 		beast.harvest_cell(Vector2i(x, 0))
+	_check((beast._skin_sectors[last] as ShipSkinSector).cells.is_empty(),
+		"a harvest swing empties the tile's cell set with no rebuild at all")
 	beast.rebuild()  # an explicit re-derive, as severing/loading would run
-	_check(not beast._skin_sectors.has(Vector2i(1, 0))
+	_check(not beast._skin_sectors.has(last)
 			and beast._skin_sectors.has(Vector2i(0, 0)),
-		"an emptied 64-range's sector is freed on the next rebuild")
+		"an emptied range's sector is freed on the next rebuild")
+
+	# THE PARTITION INVARIANT. Between rebuilds the sector cell sets are
+	# maintained by hand (_skin_cell_added / _skin_cell_removed), so they can
+	# drift from the grid the way phase A's derived body could — and a drifted
+	# set paints a cell that is gone, or misses one that is there. Run a
+	# building session through the real verbs with NO rebuild, then prove the
+	# union of every sector's cells is exactly `blocks`.
+	var yard_cells := {}
+	for x in 6:
+		for y in 3:
+			yard_cells[Vector2i(x, y)] = BlockDB.Type.HULL
+	var yard := _make_ship(yard_cells)
+	yard.position = Vector2(-64000, -12000)
+	await process_frame
+	var rebuilds_before: int = yard.rebuild_count
+
+	# Build a run that walks off the edge of tile (0,0) across several more,
+	# then carve some of it back out — placement and deconstruct, the verbs
+	# that move cells between rebuilds.
+	for x in range(6, 70):
+		yard.net_set_block(Vector2i(x, 0), BlockDB.Type.HULL)
+	for x in range(20, 26):
+		yard.net_remove_block(Vector2i(x, 0))
+	_check(yard._skin_sectors.size() > 2,
+		"the session really did cross tile boundaries (%d tiles)"
+			% yard._skin_sectors.size())
+
+	var union := {}
+	var doubled := false
+	for coord in yard._skin_sectors:
+		var sec: ShipSkinSector = yard._skin_sectors[coord]
+		for cell in sec.cells:
+			if union.has(cell):
+				doubled = true
+			union[cell] = true
+			if Ship.skin_sector_of(cell) != coord:
+				doubled = true  # a cell filed under the wrong tile
+	_check(not doubled, "no cell is owned by two sectors, or by the wrong one")
+	_check(union.size() == yard.blocks.size(),
+		"the sector sets cover the grid exactly (%d owned vs %d blocks)"
+			% [union.size(), yard.blocks.size()])
+	var missing := 0
+	for cell in yard.blocks:
+		if not union.has(cell):
+			missing += 1
+	_check(missing == 0, "every live block is owned by a sector (%d orphans)" % missing)
+	_check(yard.rebuild_count == rebuilds_before,
+		"...and the whole session paid ZERO rebuilds (%d)"
+			% (yard.rebuild_count - rebuilds_before))
+
+	# The rebuild is the resync point: it refills the sets wholesale, so a
+	# rebuild after the incremental session must not change the partition.
+	yard.rebuild()
+	var after := {}
+	for coord in yard._skin_sectors:
+		for cell in (yard._skin_sectors[coord] as ShipSkinSector).cells:
+			after[cell] = true
+	_check(after.size() == union.size() and after.size() == yard.blocks.size(),
+		"a rebuild re-derives the SAME partition the hooks maintained")
 
 	s8.queue_free()
 	beast.queue_free()
+	yard.queue_free()
 	await _step(1)
 
 
