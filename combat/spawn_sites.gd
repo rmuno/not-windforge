@@ -216,6 +216,33 @@ static func nest_faction(kind: Kind) -> int:
 	return 1 if kind == Kind.BANDIT_ROOST else 2
 
 
+## What a broken nest spills, as [item id, count, ...]. Charter §4 says
+## clearing a place should MEAN something; safety alone is a thin reward for a
+## fight, so a cleared site pays out once.
+##
+## Deliberately NO NEW ITEM IDS. The item budget is still an open owner question
+## (ORIGINAL_PLAYTEST: "49 distinct items after only 30 minutes. Plainly
+## excessive"), so a cache is a bundle of goods that already exist — which also
+## means every one of them already has a name, a colour, a value in the economy
+## and a use in a recipe.
+static func nest_cache(kind: Kind) -> Array:
+	match kind:
+		Kind.BANDIT_ROOST:
+			# What raiders keep: smelted metal and traded oil.
+			return [ItemDB.Crafted.INGOT, 4, ItemDB.Crafted.WHALE_OIL, 2]
+		Kind.KRAKEN_DEN:
+			# The deep pays in the deep's own currency (WORLD_SPEC: aetherite is
+			# the prize down there), plus the meat of what the den has eaten.
+			return [TerrainDB.Type.AETHERITE, 3, ItemDB.Product.MEAT, 6]
+		Kind.CRITTER_MEADOW:
+			return [ItemDB.Product.BLUBBER, 4, ItemDB.Product.MEAT, 3]
+		Kind.BASILISK_EYRIE:
+			# A scorched cache: copper from the crag, and whatever the brood
+			# has been swallowing.
+			return [TerrainDB.Type.COPPER, 4, ItemDB.Product.STOMACH_LOOT, 1]
+	return []
+
+
 ## Human-readable name — the map legend and the debug window read this.
 static func kind_name(kind: Kind) -> String:
 	match kind:

@@ -2046,6 +2046,7 @@ func _tick_site(site: Dictionary, points: Array, radius: float,
 		st["stock"] = 0
 		_notify("%s broken — nothing more will come from here"
 			% SpawnSites.kind_name(site["kind"]).capitalize())
+		_award_nest_cache(site, nest.global_position)
 		nest.is_nest = false      # a wreck now: reclaimable like anything else
 		nest.from_spawn_site = true
 		st["nest"] = 0
@@ -2100,6 +2101,28 @@ func _release_resident(site: Dictionary, index: int) -> Ship:
 		body.spawn_site = site["coord"]
 		body.from_spawn_site = true
 	return body
+
+
+## Pay out a broken nest's cache, once. Charter §4 wants clearing a place to
+## MEAN something, and safety alone is a thin reward for a fight — so the wreck
+## spills goods that already exist in the economy (no new item ids while the
+## item budget is still an open owner question).
+##
+## Awarded to the local player, like every other pickup today; a networked
+## "whoever broke it" is the same seam harvesting already has.
+func _award_nest_cache(site: Dictionary, at: Vector2) -> void:
+	if player == null or not is_instance_valid(player) or player.inventory == null:
+		return
+	var cache: Array = SpawnSites.nest_cache(site["kind"])
+	var i := 0
+	while i + 1 < cache.size():
+		var item: int = cache[i]
+		var n: int = cache[i + 1]
+		player.inventory.add(item, n)
+		if _pickups != null:
+			_pickups.add(at + Vector2(0.0, -60.0 * i * world_scale),
+				"+%d %s" % [n, ItemDB.name_of(item)], float(world_scale))
+		i += 2
 
 
 ## Raise a site's structure. FROZEN: a nest hangs where it was built rather
