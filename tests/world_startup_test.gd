@@ -1215,6 +1215,19 @@ func _check_debug_window(world: Node, fleet) -> void:
 	if pl.is_piloting():
 		pl.disembark()
 
+	# THE PHYSICS CENSUS against a REAL world (v0.57.0) -- the numbers the
+	# owner's 3-FPS capture was missing.
+	var cen := PhysicsCensus.of_world(world)
+	_ok(int(cen["chunks"]) > 0 and int(cen["chunk_shapes"]) > 0,
+		"the census sees the promoted terrain (%d chunks, %d shapes)"
+			% [cen["chunks"], cen["chunk_shapes"]])
+	_ok(int(cen["shapes"]) > 0 and int(cen["worst"]) > 0,
+		"...and the fleet's collision shapes (%d, worst body %d)"
+			% [cen["shapes"], cen["worst"]])
+	_ok(int(cen["active"]) > 0,
+		"...and the solver's active bodies (%d) \u2014 Ship sets can_sleep=false, so "
+			% cen["active"] + "this never falls on its own")
+
 	# THE PERF READOUT against a REAL world (v0.55.3). Headless has no
 	# renderer, but every number here is a script-side count, so the live
 	# world is exactly where it can be checked.

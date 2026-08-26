@@ -336,6 +336,21 @@ func _perf_text(window := 0.0) -> String:
 		rates += "\n  %-16s %6.1f" % [key.replace("_", " "), per_sec]
 	_perf_prev = now
 
+	# THE PHYSICS BLOCK. The owner's 3-FPS capture was a physics frame
+	# overrunning its 16.67 ms budget, after which Godot runs up to 8 catch-up
+	# steps per rendered frame -- so `phys` over ~16 is the number that matters
+	# most on this panel, and pairs/active say why. Ship sets can_sleep=false,
+	# so `active` never falls on its own: every ship is simulated forever,
+	# near or far.
+	var cen := PhysicsCensus.of_world(world)
+	var physics := ("\n\nphysics  \u2014 over ~16 ms/frame and the engine starts"
+		+ " catching up (8x)\n  broadphase pairs %-6d  active bodies %d, %d islands"
+		+ "\n  ship shapes     %-6d  worst body %d shapes (%d cells), %d coarse"
+		+ "\n  terrain bodies  %-6d  %d shapes") % [
+		cen["pairs"], cen["active"], cen["islands"],
+		cen["shapes"], cen["worst"], cen["worst_cells"], cen["coarse"],
+		cen["chunks"], cen["chunk_shapes"]]
+
 	# Retained rect COMMANDS: every merged region draws a fill and a border,
 	# and the renderer replays both every frame forever. Terrain's regions are
 	# cached (merged at rebuild) so this is a read; the ships' are not, so the
@@ -347,6 +362,7 @@ func _perf_text(window := 0.0) -> String:
 		+ "\nShips:    %-6d  %d cells in %d skin tiles"
 		+ "\nTerrain:  %-6d  chunks, %d cells, %d regions (%d cmds)"
 		+ "\nShots:    %-6d"
+		+ "%s"
 		+ "\n\nper second \u2014 what a hitch is made of%s") % [
 		Engine.get_frames_per_second(),
 		Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
@@ -355,4 +371,4 @@ func _perf_text(window := 0.0) -> String:
 		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)),
 		ships, ship_cells, tiles,
 		chunks, chunk_cells, t_regions, t_regions * 2,
-		shots, rates]
+		shots, physics, rates]

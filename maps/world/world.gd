@@ -2251,6 +2251,7 @@ func _physics_process(delta: float) -> void:
 	if _whale_diag != null and _whale_diag.enabled:
 		# The live-Shot population is the swarm the old whale-only log was blind
 		# to; the group lookup runs ONLY while recording (see whale_diag.gd).
+		_whale_diag.world = self  # for the SUM's physics census (cheap, idempotent)
 		_whale_diag.capture_frame(fleet.ships(), delta,
 			get_tree().get_nodes_in_group("shots").size())
 

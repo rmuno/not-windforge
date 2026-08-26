@@ -146,6 +146,7 @@ func _initialize() -> void:
 	await _test_skin_sectors_partition_and_localise_redraws()
 	await _test_greedy_rects_order_and_partition()
 	await _test_attitude_reads_the_same_in_world_and_map()
+	await _test_physics_census_reports_the_step()
 	await _test_chunk_bytes_feed_the_rebuild()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
@@ -7104,6 +7105,71 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	s8.queue_free()
 	beast.queue_free()
 	yard.queue_free()
+	await _step(1)
+
+
+## THE PHYSICS CENSUS (v0.57.0). The owner's 3-FPS capture proved the frame
+## was the PHYSICS step -- script was ~2 ms, render 95 draw calls -- and then
+## had nothing further to say, because neither the F2 readout nor the F3 log
+## recorded a single physics-side number. This is the fix for that blindness,
+## so what the tests pin is that the numbers are REAL and SHARED: the same
+## census feeds both surfaces, and it survives having no world at all.
+func _test_physics_census_reports_the_step() -> void:
+	_t("the physics census: real counts, one source, safe with no world")
+
+	var cold := PhysicsCensus.of_world(null)
+	for key in ["pairs", "active", "islands", "shapes", "worst", "coarse",
+			"chunks", "chunk_shapes"]:
+		_check(cold.has(key), "the census always reports '%s'" % key)
+	_check(int(cold["shapes"]) == 0 and int(cold["chunks"]) == 0,
+		"with no world it counts nothing rather than crashing")
+	_check(PhysicsCensus.line(null).contains("pairs="),
+		"...and still renders a log line")
+
+	# Against real bodies: a VESSEL carries per-cell merged shapes, a LIVING
+	# creature carries the single coarse box. Telling those apart is the whole
+	# point of `worst` and `coarse` -- an exact collider on a big body is the
+	# shape of problem this census exists to surface.
+	# An L of 69 cells, deliberately: a solid RECTANGLE greedy-merges to one
+	# rect, so exact and coarse would be indistinguishable and the comparison
+	# below would prove nothing — while a body under
+	# Ship.COARSE_COLLIDER_MIN_CELLS (64) never goes coarse at all. An L is
+	# connected (no severing) and needs two rects.
+	var cells := {}
+	for x in 40:
+		cells[Vector2i(x, 0)] = BlockDB.Type.HULL
+	for y in range(1, 30):
+		cells[Vector2i(0, y)] = BlockDB.Type.HULL
+	var vessel := _make_ship(cells.duplicate())
+	vessel.position = Vector2(-80000, 0)
+	var beast_cells := {}
+	for x in 40:
+		beast_cells[Vector2i(x, 0)] = BlockDB.Type.MEAT
+	for y in range(1, 30):
+		beast_cells[Vector2i(0, y)] = BlockDB.Type.MEAT
+	var beast := _make_ship(beast_cells)
+	beast.position = Vector2(-80000, -5000)
+	beast.shared_health_max = 900.0
+	beast.shared_health = 900.0
+	beast.rebuild()
+	await _step(2)
+
+	var v_shapes := 0
+	for c in vessel.get_children():
+		if c is CollisionShape2D:
+			v_shapes += 1
+	var b_shapes := 0
+	for c in beast.get_children():
+		if c is CollisionShape2D:
+			b_shapes += 1
+	_check(b_shapes < v_shapes,
+		"a LIVING creature is coarser than a vessel of the same shape (%d < %d)"
+			% [b_shapes, v_shapes])
+	_check(beast.shared_health > 0.0,
+		"...and it is the living pool that makes it coarse (the census's 'coarse')")
+
+	vessel.queue_free()
+	beast.queue_free()
 	await _step(1)
 
 

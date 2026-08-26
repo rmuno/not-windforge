@@ -49,6 +49,11 @@ var _frame := 0
 ## Ships we set `.diag` on, so stop() can clear every one (weakly held: a
 ## whale freed mid-recording must not keep us pointing at it).
 var _watched: Array = []
+## The world being recorded, for the SUM line's physics census (set by
+## world.gd when recording starts). Null-safe: a unit test driving
+## capture_frame directly just gets a census of zeroes.
+var world: Node = null
+
 ## instance_id -> shared_health at the last ROW, for the per-frame delta.
 var _prev_health := {}
 ## instance_id -> Array of source strings recorded since the last ROW.
@@ -237,6 +242,10 @@ func _write_summary() -> void:
 	_write("SUM f=%d frames=%d avg_dt=%.2f max_dt=%.2f rebuilds=%d proc=%.2f phys=%.2f draws=%d nodes=%d shots=%s ships=%d" % [
 		_frame, _win_frames, avg * 1000.0, _win_dt_max * 1000.0, _win_rebuilds,
 		proc_ms, phys_ms, draws, nodes, shots_str, _win_ships_max])
+	# PHY: what the physics step is made of. The 2026-08-25 capture proved the
+	# frame was `phys` and then had nothing further to say, because no
+	# physics-side number was recorded anywhere. See debug/physics_census.gd.
+	_write("PHY f=%d %s" % [_frame, PhysicsCensus.line(world)])
 	# Compact stdout echo so an FPS drop shows up in the console too.
 	print("[whale-diag] f=%d avg_dt=%.2fms max=%.2fms rebuilds/%df=%d proc=%.2f phys=%.2f draws=%d shots=%s" % [
 		_frame, avg * 1000.0, _win_dt_max * 1000.0, _win_frames, _win_rebuilds,
