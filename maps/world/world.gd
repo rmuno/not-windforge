@@ -2120,6 +2120,10 @@ func _release_resident(site: Dictionary, index: int) -> Ship:
 			body = _spawn_one_kraken(
 				KRAKEN_PLANS[index % KRAKEN_PLANS.size()], pos)
 	if body != null:
+		# Same reasoning as the nest: residency decides whether the world may
+		# later RECLAIM this body, so it has to survive a rehome or a load. It
+		# rides `to_payload` for those; the assignment here is what the local
+		# spawn needs, since the creature helpers do not take payload extras.
 		body.spawn_site = site["coord"]
 		body.from_spawn_site = true
 	return body
@@ -2157,12 +2161,16 @@ func _build_nest(site: Dictionary, path: String) -> Ship:
 		return null
 	var pos := WhaleSpawn.clear_spawn_pos(terrain, site["pos"] as Vector2,
 		WhaleSpawn.footprint_of(cells), float(world_scale))
+	# Nest-hood rides the PAYLOAD, not a post-spawn assignment: `is_nest` is
+	# what makes the receiver freeze it, and a post-spawn field exists on the
+	# server only — so a client saw the structure of a site tumbling out of the
+	# sky (net_smoke caught it, 2026-08-26).
+	var coord: Vector2i = site["coord"]
 	var nest := fleet.spawn_ship_from_cells(cells, pos, 0, 0.0, float(world_scale),
-		SpawnSites.nest_faction(site["kind"]))
+		SpawnSites.nest_faction(site["kind"]),
+		{"is_nest": true, "site_x": coord.x, "site_y": coord.y})
 	if nest == null:
 		return null
-	nest.is_nest = true
-	nest.spawn_site = site["coord"]
 	nest.freeze = true
 	return nest
 

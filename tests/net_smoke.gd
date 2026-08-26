@@ -25,6 +25,9 @@ const GROWN_BLOCKS := 5
 ## Tags so the client can tell the ships apart.
 const PILOT_EARLY := 1   # spawned before the client connected
 const PILOT_LIVE := 99   # spawned while the client was connected
+## A nest (a spawn-site STRUCTURE) and the site it belongs to — v0.62.0.
+const PILOT_NEST := 44
+const NEST_SITE := Vector2i(-7, 3)
 const PILOT_SEVER := 77  # the ship the server cuts in half over the wire
 const PILOT_WRECK := 0   # what _island_data stamps on severed pieces
 
@@ -169,6 +172,17 @@ func _run_server() -> void:
 	var live := fleet.spawn_ship_from_cells(_cells(), Vector2(400, -200), PILOT_LIVE)
 	print("[server] post-connect ship: %d blocks, node '%s'" % [live.blocks.size(), live.name])
 
+	# A NEST — the one body whose IDENTITY changes what the receiver does with
+	# it. `is_nest` rides the spawn payload, and on the far side `Ship.from_data`
+	# freezes it: get that wrong and every client sees a site's structure
+	# tumbling out of the sky. Tagged with a site coord too, because residency
+	# was lost on the hosting rehome once already (v0.61.0).
+	var nest := fleet.spawn_ship_from_cells(_cells(), Vector2(1200, -260),
+		PILOT_NEST, 0.0, 1.0, 1,
+		{"is_nest": true, "site_x": NEST_SITE.x, "site_y": NEST_SITE.y})
+	nest.freeze = true
+	print("[server] nest spawned at %s (site %s)" % [nest.position, NEST_SITE])
+
 	# Ship C is the severing fixture, parked well clear of the others.
 	var sever := fleet.spawn_ship_from_cells(_sever_cells(), Vector2(-800, -200), PILOT_SEVER)
 	print("[server] sever fixture: %d blocks" % sever.blocks.size())
@@ -218,6 +232,16 @@ func _run_client() -> void:
 		print("[client]   ship pilot=%d blocks=%d" % [s.pilot_peer, s.blocks.size()])
 
 	_ok(_find_ship(PILOT_LIVE) != null, "ship spawned while connected replicated")
+	# The nest crossed the wire AS A NEST. Identity that only exists on the
+	# server is identity the client renders wrong — a structure that should
+	# hang in place would fall.
+	var nest := _find_ship(PILOT_NEST)
+	_ok(nest != null, "a NEST replicated to the client")
+	if nest != null:
+		_ok(nest.is_nest, "...as a nest — the flag rode the spawn payload")
+		_ok(nest.spawn_site == NEST_SITE,
+			"...still tagged to its site (%s)" % str(nest.spawn_site))
+		_ok(nest.freeze, "...and frozen, so it hangs where it was raised")
 	_ok(_find_ship(PILOT_EARLY) != null, "ship spawned before connecting replicated (late join)")
 
 	var ship := _find_ship(PILOT_LIVE)

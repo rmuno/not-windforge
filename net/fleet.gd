@@ -120,7 +120,13 @@ func spawn_ship(data: Dictionary) -> Ship:
 ## `pilot` must be passed here rather than assigned to the returned Ship —
 ## anything not in the payload never reaches the clients, which would leave
 ## every remote peer thinking the ship belonged to someone else.
-func spawn_ship_from_cells(cells: Dictionary, pos: Vector2, pilot := 1, rot := 0.0, unit := 1.0, faction := 0) -> Ship:
+## `extra` is merged into the payload for the fields that are NOT arguments —
+## site residency, nest-hood, creature identity. It exists because "assign it on
+## the Ship afterwards" is the trap AGENTS.md names: a post-spawn field exists
+## on the server ONLY, so a nest arrived at every client as an ordinary ship and
+## fell out of the sky (caught by net_smoke, 2026-08-26). If a value changes
+## what the RECEIVER does with the body, it belongs in here.
+func spawn_ship_from_cells(cells: Dictionary, pos: Vector2, pilot := 1, rot := 0.0, unit := 1.0, faction := 0, extra := {}) -> Ship:
 	var grid := PackedInt32Array()
 	grid.resize(cells.size() * 4)
 	var i := 0
@@ -132,7 +138,7 @@ func spawn_ship_from_cells(cells: Dictionary, pos: Vector2, pilot := 1, rot := 0
 		grid[i + 3] = roundi(BlockDB.max_hp(type))
 		i += 4
 
-	return spawn_ship({
+	var payload := {
 		"grid": grid,
 		"pos": pos,
 		"rot": rot,
@@ -142,7 +148,10 @@ func spawn_ship_from_cells(cells: Dictionary, pos: Vector2, pilot := 1, rot := 0
 		"pilot": pilot,
 		"unit": unit,  # world-scale feel multiplier — see Ship.scale_unit
 		"faction": faction,
-	})
+	}
+	for key in extra:
+		payload[key] = extra[key]
+	return spawn_ship(payload)
 
 
 func ships() -> Array[Ship]:
