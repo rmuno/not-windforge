@@ -480,9 +480,13 @@ var _pending_impacts: Array[Dictionary] = []
 ## (remove_block, deconstruct, mining, severing) still rebuild immediately.
 var _rebuild_dirty := false
 ## Deferred SEVERING to resolve with the coalesced rebuild — set by paths
-## that remove WALLS (harvest); combat deaths never sever (walls hold), so
-## the plain _rebuild_dirty flush stays severance-free.
+## that remove WALLS (harvest, bulk deconstruct); combat deaths never sever
+## (walls hold), so the plain _rebuild_dirty flush stays severance-free.
 var _sever_dirty := false
+## Deferred grid REPLICATION: incremental edits skip rebuild() and therefore
+## its _broadcast_grid — this flag batches one whole-grid send per edited
+## frame instead (the same wire cadence the flush-rebuild already had).
+var _sync_dirty := false
 
 ## The hull collision shapes and their grid-space rects, kept parallel and in
 ## step by _rebuild_collider / _add_hull_shape. Combat damage on plain bulk
@@ -724,15 +728,19 @@ func harvest_cell(cell: Vector2i) -> int:
 	# because the cavity map has to be read off a body that still encloses it.
 	if not _cavity_breached and _breaches_cavity(cell):
 		_cavity_breached = true
-	# DEFERRED into the coalesced _process flush (owner lag audit 2026-08-25,
-	# the last rebuild storm): harvesting paid a full O(cells) rebuild + an
-	# island scan PER CELL — ~90-190 ms per swing on a big corpse. The block
-	# and wall are gone IMMEDIATELY (yields/breach/reach all read the grid);
-	# only the derived body (collider/mass/glyphs) and the severance resolve
-	# wait for the frame's single flush — the same one-frame contract as
-	# terrain edits (v0.52.0).
+	# INCREMENTAL (owner lag audit 2026-08-25): flesh is always BULK, so the
+	# harvested cell's mass/CoM/lift/collider are patched in O(1) — no
+	# rebuild at all, where a swing used to cost the whole O(cells) pass.
+	# Only the severance resolve waits for the frame's flush (mining a corpse
+	# apart must still drop the piece). Non-flesh would fall back to the
+	# coalesced rebuild — belt-and-braces, flesh types are all bulk today.
+	var flesh_type: int = blocks[cell]["type"]
 	remove_block(cell, false)
-	_rebuild_dirty = true
+	if _is_bulk(flesh_type) and blocks.size() > 1 and not _use_coarse_collider():
+		_combat_incremental_drop([{"cell": cell, "type": flesh_type}])
+		_mark_redraw()
+	else:
+		_rebuild_dirty = true
 	_sever_dirty = true
 	return product
 
@@ -1243,6 +1251,16 @@ func _rebuild_collider() -> void:
 ## the incremental combat drop, so both place shapes IDENTICALLY — reflected
 ## onto the drawn side for a mirrored creature, identity for every vessel and
 ## unflipped creature (see visual_facing).
+## Cells the hull collider currently covers (the sum of its merged rects) —
+## the incremental-edit tests pin "collider == data" on it, and it is the
+## cheap health-check that the patch paths never drift coverage.
+func collider_covers() -> int:
+	var n := 0
+	for r in _hull_rects:
+		n += r.size.x * r.size.y
+	return n
+
+
 func _add_hull_shape(rect: Rect2i) -> void:
 	var shape := RectangleShape2D.new()
 	shape.size = Vector2(rect.size) * CELL
@@ -1821,12 +1839,7 @@ func _process(_delta: float) -> void:
 	# this function. Take it directly — a frame with neither impacts nor a dirty
 	# grid is the common no-op return.
 	if _pending_impacts.is_empty():
-		if _rebuild_dirty:
-			_rebuild_dirty = false
-			rebuild()
-			if _sever_dirty:  # a harvest removed walls — resolve once
-				_sever_dirty = false
-				_resolve_severing()
+		_flush_grid_edits()
 		return
 	var impacts := _pending_impacts.duplicate()
 	_pending_impacts.clear()
@@ -1962,12 +1975,27 @@ func _process(_delta: float) -> void:
 	# the crash crush above and/or combat cell deaths deferred by
 	# net_damage_cell. Walls held through both, so no severing (N deaths → 1
 	# rebuild).
+	_flush_grid_edits()
+
+
+## The one-per-frame settlement of everything the incremental edit paths
+## deferred: the coalesced full rebuild (when some edit genuinely needed one),
+## the severance resolve (wall-removing edits — harvest, bulk deconstruct),
+## and the whole-grid replication send (rebuild() broadcasts itself, so the
+## explicit send only covers pure-incremental frames).
+func _flush_grid_edits() -> void:
+	var rebuilt := false
 	if _rebuild_dirty:
 		_rebuild_dirty = false
 		rebuild()
-		if _sever_dirty:  # harvested walls this frame — one severance pass
-			_sever_dirty = false
-			_resolve_severing()
+		rebuilt = true
+	if _sever_dirty:
+		_sever_dirty = false
+		_resolve_severing()  # rebuilds (and broadcasts) only if it severs
+	if _sync_dirty:
+		_sync_dirty = false
+		if not rebuilt:
+			_broadcast_grid()
 
 
 ## Is this contact the creature's own charge landing? The normal of a hit
@@ -2195,6 +2223,46 @@ func _combat_incremental_drop(dead: Array) -> void:
 	# 0 is the "recompute from the new shapes" sentinel (godot-quirks); the
 	# collider changed, so the physics inertia must be re-derived.
 	inertia = 0.0
+	_sync_dirty = true
+
+
+## The INVERSE patch (owner lag audit 2026-08-25, "incremental region
+## rebuilds"): fold ONE just-placed BULK cell into the derived body in O(1) —
+## mass, CoM, lift, a 1×1 collider shape, grown bounds — instead of the
+## O(cells) full rebuild, which is ~90-190 ms on a creature and SECONDS on
+## the 194k-cell starter. The un-merged 1×1 shapes creep up one per add, so
+## every REMERGE_AFTER_ADDS a single coalesced rebuild re-merges the collider
+## — hand-building stays O(1) per press with a bounded shape population.
+const REMERGE_AFTER_ADDS := 128
+var _adds_since_merge := 0
+
+
+func _bulk_incremental_add(cell: Vector2i) -> void:
+	if _use_coarse_collider():
+		# A LIVING creature's coarse box cannot be patched cell-wise — fall
+		# back to the coalesced full rebuild (unreachable from the build verbs,
+		# which target carcasses/vessels; this is belt-and-braces).
+		_rebuild_dirty = true
+		return
+	var type: int = blocks[cell]["type"]
+	var def := BlockDB.get_def(type)
+	var m: float = def["mass"] * _fp_norm(type)
+	var weighted := center_of_mass * mass + local_pos_of(cell) * m
+	mass = mass + m
+	center_of_mass = weighted / mass
+	_total_lift += def["lift"]
+	if def["solid"]:
+		_add_hull_shape(Rect2i(cell, Vector2i.ONE))
+		var cr := Rect2(Vector2(cell) * CELL - Vector2.ONE * CELL * 0.5,
+			Vector2.ONE * CELL)
+		solid_bounds = cr if solid_bounds.size == Vector2.ZERO else solid_bounds.merge(cr)
+	inertia = 0.0  # the collider changed — re-derive (godot-quirks sentinel)
+	_adds_since_merge += 1
+	if _adds_since_merge >= REMERGE_AFTER_ADDS:
+		_adds_since_merge = 0
+		_rebuild_dirty = true
+	_sync_dirty = true
+	_mark_redraw()
 
 
 ## Punch one dead cell out of the hull collider: find the merged rect that
@@ -2645,12 +2713,19 @@ func repair_cell(cell: Vector2i, amount: float) -> bool:
 		return true
 
 	# Destroyed outright. Only rebuild where it can attach, so repairing a hull
-	# cannot conjure back a section that was severed and drifted away.
+	# cannot conjure back a section that was severed and drifted away. A BULK
+	# resurrect folds in incrementally — the wand sweeps whole dead sections
+	# back to life, and each cell used to cost the full O(cells) rebuild.
 	if not can_place_at(cell):
 		return false
-	set_block(cell, type)
-	blocks[cell]["hp"] = minf(amount, max_hp)
-	queue_redraw()
+	if _is_bulk(type) and not blocks.is_empty():
+		set_block(cell, type, false)
+		blocks[cell]["hp"] = minf(amount, max_hp)
+		_bulk_incremental_add(cell)
+	else:
+		set_block(cell, type)
+		blocks[cell]["hp"] = minf(amount, max_hp)
+		_mark_redraw()
 	return true
 
 
@@ -2754,7 +2829,15 @@ func push_grid_to(peer: int) -> void:
 func net_set_block(cell: Vector2i, type: int) -> void:
 	if is_authority():
 		if can_place_at(cell):
-			set_block(cell, type)
+			# A BULK cell (hull, ballast, flesh — no glyphs, power or axes to
+			# re-derive) folds in incrementally: O(1) instead of the O(cells)
+			# rebuild. Components/gasbags/doors take the full path, as does
+			# the first block of an empty grid (wall-layer init).
+			if _is_bulk(type) and not blocks.is_empty():
+				set_block(cell, type, false)
+				_bulk_incremental_add(cell)
+			else:
+				set_block(cell, type)
 	else:
 		_request_set_block.rpc_id(1, cell, type)
 
@@ -2768,6 +2851,15 @@ func net_set_block(cell: Vector2i, type: int) -> void:
 ## documented seam).
 func net_set_blocks(cells: Array, type: int) -> void:
 	if is_authority():
+		# A stamp of BULK cells needs no re-derivation at all — each cell
+		# folds in incrementally and the stamp is O(its own size). Machines
+		# (glyphs, axes, power) still pay their one full rebuild.
+		if _is_bulk(type) and not blocks.is_empty():
+			for c in cells:
+				if can_place_at(c):
+					set_block(c, type, false)
+					_bulk_incremental_add(c)
+			return
 		var placed := false
 		for c in cells:
 			if can_place_at(c):
@@ -2800,7 +2892,19 @@ func net_remove_blocks(cells: Array) -> void:
 
 func net_remove_block(cell: Vector2i) -> void:
 	if is_authority():
-		remove_block(cell)
+		# A BULK cell leaves incrementally: O(1) patch now, severance at the
+		# frame's flush. Non-bulk (components, gasbags, wall-only ghosts) and
+		# the last blocks of a body keep the immediate full path — the
+		# final removal must run rebuild() to emit `destroyed` and free.
+		if blocks.has(cell) and _is_bulk(blocks[cell]["type"]) \
+				and blocks.size() > 2 and not _use_coarse_collider():
+			var drop := [{"cell": cell, "type": blocks[cell]["type"]}]
+			remove_block(cell, false)
+			_combat_incremental_drop(drop)
+			_sever_dirty = true
+			_mark_redraw()
+		else:
+			remove_block(cell)
 	else:
 		_request_remove_block.rpc_id(1, cell)
 

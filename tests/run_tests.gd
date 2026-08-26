@@ -142,6 +142,7 @@ func _initialize() -> void:
 	await _test_machine_bundles_geometry()
 	await _test_redraws_and_rebuilds_are_batched()
 	await _test_harvest_rebuilds_coalesce_per_frame()
+	await _test_incremental_edits_match_full_rebuild()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
 	await _test_map_view_toggles_visibility()
@@ -6837,11 +6838,11 @@ func _test_harvest_rebuilds_coalesce_per_frame() -> void:
 		"and the second, same frame")
 	_check(not corpse.has_block(Vector2i(0, 0)) and not corpse.has_block(Vector2i(1, 0)),
 		"both cells leave the grid at once (yields/reach read the truth)")
-	_check(corpse.rebuild_count == rb0,
-		"but ZERO rebuilds have run yet (was: one full rebuild PER cell)")
+	_check(corpse.collider_covers() == corpse.blocks.size(),
+		"the collider was PATCHED in place, cell for cell (incremental drop)")
 	await process_frame
-	_check(corpse.rebuild_count == rb0 + 1,
-		"the frame's flush pays exactly ONE (%d)" % (corpse.rebuild_count - rb0))
+	_check(corpse.rebuild_count == rb0,
+		"and NO full rebuild ever runs for a non-severing harvest (was: one per cell)")
 
 	# Disconnection: harvest the strand's middle — the far side must sever
 	# off this body at the SAME flush, exactly as the per-cell path did.
@@ -6855,6 +6856,65 @@ func _test_harvest_rebuilds_coalesce_per_frame() -> void:
 			% corpse.blocks.size())
 
 	corpse.queue_free()
+	await _step(1)
+
+
+## THE INCREMENTAL-EDIT INVARIANT (owner lag audit 2026-08-25, fix 3): bulk
+## cells now fold in and out of the derived body in O(1) — no rebuild — so
+## the one thing that must never drift is equivalence with the ground truth.
+## A body edited incrementally and the SAME grid derived fresh must agree on
+## mass, centre of mass, lift, and collider coverage exactly.
+func _test_incremental_edits_match_full_rebuild() -> void:
+	_t("incremental bulk edits equal a from-scratch rebuild, with zero rebuilds paid")
+
+	var cells := {}
+	for x in 10:
+		for y in 2:
+			cells[Vector2i(x, y)] = BlockDB.Type.HULL
+	var s8 := _make_ship(cells)
+	s8.position = Vector2(-62000, 0)
+	s8.scale_unit = 8.0
+	await process_frame  # settle construction
+
+	var rb0: int = s8.rebuild_count
+	# A hand-building session: place a parapet, a ballast keel, then carve a
+	# doorway back out — every op through the real net verbs.
+	for x in 5:
+		s8.net_set_block(Vector2i(x, -1), BlockDB.Type.HULL)
+	for x in 3:
+		s8.net_set_block(Vector2i(x + 2, 2), BlockDB.Type.BALLAST)
+	s8.net_remove_block(Vector2i(3, -1))
+	s8.net_remove_block(Vector2i(4, -1))
+	_check(s8.rebuild_count == rb0,
+		"ten bulk placements and two removals paid ZERO rebuilds")
+	_check(s8.blocks.size() == 26, "and the grid holds all %d cells" % s8.blocks.size())
+
+	# Ground truth: the same grid, derived from scratch through the payload.
+	var truth := Ship.from_data(s8.to_payload())
+	truth.position = s8.position
+	root.add_child(truth)
+	_check_approx(s8.mass, truth.mass, 0.01,
+		"incremental mass equals the from-scratch derivation")
+	_check(s8.center_of_mass.distance_to(truth.center_of_mass) < 0.5,
+		"and the centre of mass (off by %.3f px)"
+			% s8.center_of_mass.distance_to(truth.center_of_mass))
+	_check_approx(s8._total_lift, truth._total_lift, 0.001, "and the lift total")
+	_check(s8.collider_covers() == truth.collider_covers(),
+		"and the collider covers the same %d cells" % s8.collider_covers())
+
+	# The shape population is BOUNDED: the un-merged 1-cell shapes trigger a
+	# coalesced re-merge after REMERGE_AFTER_ADDS — force the counter there
+	# and confirm the next flush re-merges.
+	s8._adds_since_merge = Ship.REMERGE_AFTER_ADDS - 1
+	s8.net_set_block(Vector2i(9, -1), BlockDB.Type.HULL)
+	await process_frame
+	_check(s8.rebuild_count == rb0 + 1,
+		"the %d-add amortised re-merge paid its one rebuild" % Ship.REMERGE_AFTER_ADDS)
+	_check(s8.collider_covers() == s8.blocks.size(),
+		"and the re-merged collider still covers every cell")
+
+	s8.queue_free()
+	truth.queue_free()
 	await _step(1)
 
 
