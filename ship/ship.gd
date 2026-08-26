@@ -1374,6 +1374,21 @@ func _add_hull_shape(rect: Rect2i) -> void:
 ## mirror probes in the skin test) for no perf gain.
 const COARSE_COLLIDER_MIN_CELLS := 64
 
+## A merge this fragmented pays for the sealed-pocket flood fill (see
+## seal_pockets); anything under it is an intact body and skips the work
+## entirely. An undamaged whale merges to ~19 shapes and the starter hull to
+## a few tens, so the gate never fires on a healthy body.
+const SEAL_MIN_RECTS := 48
+
+## How many rows tall a pocket may be before a VESSEL refuses to seal it —
+## the "could a person be standing in there" guard. See seal_pockets.
+const SEAL_VESSEL_POCKET_ROWS := 1
+
+## 4-connected neighbour offsets, hoisted so the flood fills below do not
+## rebuild the array once per cell.
+const SEAL_NEIGHBOURS: Array[Vector2i] = [
+	Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)]
+
 
 ## A living creature (pool alive) large enough to have a many-shape collider
 ## takes the coarse path. shared_health_max == 0 is a vessel; pool 0 is a
@@ -1506,13 +1521,138 @@ func _rebuild_platforms() -> void:
 
 
 func _merge_rects(include_all := false) -> Array[Rect2i]:
-	var remaining := {}
+	var rects := _greedy_rects(_solid_cell_set(include_all))
+	if rects.size() < SEAL_MIN_RECTS:
+		return rects  # not fragmented — the flood fill would cost more than it saves
+	# FRAGMENTED. Every hole ends the run the greedy merge was extending, so a
+	# body with scattered damage merges into hundreds of shapes instead of tens
+	# (measured: a whale carcass with 12% of its cells gone, 19 shapes → 853).
+	# Sealed pockets cost nothing to fill and buy all of that back.
+	var solid := _solid_cell_set(include_all)
+	var sealed := seal_pockets(solid, 0 if shared_health_max > 0.0 else SEAL_VESSEL_POCKET_ROWS)
+	if sealed.size() == solid.size():
+		return rects  # nothing was enclosed; the holes are all real breaches
+	var sealed_rects := _greedy_rects(sealed)
+	return sealed_rects if sealed_rects.size() < rects.size() else rects
+
+
+## The solid cells this body collides with, as a set. Rebuilt rather than
+## duplicated because `_greedy_rects` CONSUMES its input and the fragmented
+## path needs the set twice — and a `duplicate()` of an 11k-cell hull is a
+## cost every intact body would pay for a case only a damaged one hits.
+func _solid_cell_set(include_all: bool) -> Dictionary:
+	var out := {}
 	for cell in blocks:
 		# Open doors/struts are structure without collision — openings you
 		# walk through. include_all is the all-scaffold-wreck fallback only.
 		if include_all or BlockDB.get_def(blocks[cell]["type"])["solid"]:
-			remaining[cell] = true
-	return _greedy_rects(remaining)
+			out[cell] = true
+	return out
+
+
+## `solid` plus every air cell SEALED inside it — air that cannot be reached
+## from outside the body without first destroying hull.
+##
+## WHY THIS IS FREE (the 3-FPS thread, 2026-08-25). The physics bill of a
+## damaged body is its broadphase PAIRS, and pairs scale with the shape count
+## the greedy merge produces: measured on landed carcasses, 12% of cells shot
+## out took one body from 19 shapes to 853, the world from 92 shapes to 4,531,
+## pairs from 100 to 6,030, and the physics tick from 1.4 ms to 15.8 (61 ms in
+## the worst-settling run — the owner's captured range exactly). Lifting the
+## same holed bodies into empty sky put the tick back at 2.2 ms with the SAME
+## shape count, which is the proof that pairs are the bill, not shapes
+## themselves. Filling sealed pockets rejoins the runs: 853 → 107 shapes.
+##
+## AND WHY IT CHANGES NOTHING PLAYABLE. A sealed pocket is, by construction,
+## unreachable: no body and no bullet can enter without destroying a hull cell
+## first, and the moment one does the pocket connects to the outside and stops
+## being sealed on the next rebuild. The silhouette is untouched — this only
+## ever fills INSIDE.
+##
+## `max_rows` guards the one case where something CAN be inside: a crew member
+## in a room behind a closed door. 0 means "seal any pocket" and is for
+## creatures, which have no interior anybody occupies. A vessel passes 1, so it
+## seals only pockets a single cell tall — a person is taller than one cell at
+## every scale we ship (18 px against CELL 16 at 1×, and both scale together),
+## so a one-row pocket can never hold one.
+static func seal_pockets(solid: Dictionary, max_rows: int) -> Dictionary:
+	if solid.is_empty():
+		return solid
+	var lo := Vector2i(0x7FFFFFFF, 0x7FFFFFFF)
+	var hi := Vector2i(-0x7FFFFFFF, -0x7FFFFFFF)
+	for c in solid:
+		lo = Vector2i(mini(lo.x, c.x), mini(lo.y, c.y))
+		hi = Vector2i(maxi(hi.x, c.x), maxi(hi.y, c.y))
+	# One cell of margin all round, so the flood always starts in open air.
+	lo -= Vector2i.ONE
+	hi += Vector2i.ONE
+	var w := hi.x - lo.x + 1
+	var h := hi.y - lo.y + 1
+	const AIR := 0
+	const SOLID := 1
+	const OUTSIDE := 2
+	const SEEN := 3
+	var grid := PackedByteArray()
+	grid.resize(w * h)
+	for c in solid:
+		grid[(c.y - lo.y) * w + (c.x - lo.x)] = SOLID
+
+	# 1. Flood the outside from the margin corner.
+	var stack := PackedInt32Array([0])
+	grid[0] = OUTSIDE
+	while not stack.is_empty():
+		var i: int = stack[stack.size() - 1]
+		stack.remove_at(stack.size() - 1)
+		var x := i % w
+		@warning_ignore("integer_division")
+		var y := i / w
+		for d in SEAL_NEIGHBOURS:
+			var nx := x + d.x
+			var ny := y + d.y
+			if nx < 0 or ny < 0 or nx >= w or ny >= h:
+				continue
+			var ni := ny * w + nx
+			if grid[ni] != AIR:
+				continue
+			grid[ni] = OUTSIDE
+			stack.push_back(ni)
+
+	# 2. What is left as AIR is enclosed. Take it one POCKET at a time so the
+	#    row limit can spare a room and still seal the pinholes beside it.
+	var out := solid.duplicate()
+	for start in w * h:
+		if grid[start] != AIR:
+			continue
+		var pocket := PackedInt32Array()
+		var min_y := 0x7FFFFFFF
+		var max_y := -0x7FFFFFFF
+		stack = PackedInt32Array([start])
+		grid[start] = SEEN
+		while not stack.is_empty():
+			var i: int = stack[stack.size() - 1]
+			stack.remove_at(stack.size() - 1)
+			pocket.push_back(i)
+			var x := i % w
+			@warning_ignore("integer_division")
+			var y := i / w
+			min_y = mini(min_y, y)
+			max_y = maxi(max_y, y)
+			for d in SEAL_NEIGHBOURS:
+				var nx := x + d.x
+				var ny := y + d.y
+				if nx < 0 or ny < 0 or nx >= w or ny >= h:
+					continue
+				var ni := ny * w + nx
+				if grid[ni] != AIR:
+					continue
+				grid[ni] = SEEN
+				stack.push_back(ni)
+		if max_rows > 0 and max_y - min_y + 1 > max_rows:
+			continue  # big enough to hold a person — leave it open
+		for i in pocket:
+			@warning_ignore("integer_division")
+			out[Vector2i(lo.x + i % w, lo.y + i / w)] = true
+	return out
 
 
 ## Greedy rectangle cover of a cell set (consumes `remaining`). Shared by

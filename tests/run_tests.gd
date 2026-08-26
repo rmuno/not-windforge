@@ -50,6 +50,7 @@ func _initialize() -> void:
 	await _test_whale_is_one_unit_until_dead()
 	await _test_shots_snap_to_the_nearest_block_on_a_creature()
 	await _test_living_creature_gets_a_coarse_collider()
+	await _test_sealed_pockets_cut_a_holed_body()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
 	await _test_creature_skin_faces_its_motion()
 	await _test_whale_pose_tilt_follows_its_facing()
@@ -1182,6 +1183,136 @@ func _test_shots_snap_to_the_nearest_block_on_a_creature() -> void:
 ## (a living whale between a ram and a wall): ~7 precise shapes → ~181 ms/frame
 ## TIME_PHYSICS_PROCESS; ~4 coarse shapes → ~34 ms (a ~5-6× cut). A carcass and
 ## every vessel keep the EXACT per-cell grid (mining needs it; vessels are
+## SEALED POCKETS (the 3-FPS thread, 2026-08-25). A damaged body is the
+## expensive body: every hole ends the run the greedy merge was extending, so
+## 12% of a carcass shot out takes it from 19 collision shapes to ~850, and
+## the broadphase pairs those shapes against the terrain it is lying on every
+## step -- measured at 15-61 ms per physics tick, the owner's captured range.
+## Filling air that is SEALED inside the body (unreachable without destroying
+## hull first) rejoins the runs and changes nothing playable.
+##
+## The row limit is the safety rule: a VESSEL seals only pockets one cell tall,
+## because a crew member can be standing in a room behind a closed door and a
+## person is taller than one cell at every scale we ship. A CREATURE has no
+## interior anybody occupies, so it seals everything.
+func _test_sealed_pockets_cut_a_holed_body() -> void:
+	_t("a damaged body seals its interior pockets: same silhouette, a tenth of the shapes")
+
+	# --- the rule itself, on hand-built cases -----------------------------
+	var ring := {}
+	for x in 5:
+		for y in 5:
+			if x == 0 or y == 0 or x == 4 or y == 4:
+				ring[Vector2i(x, y)] = true
+	var sealed := Ship.seal_pockets(ring, 0)
+	_check(sealed.has(Vector2i(2, 2)) and sealed.size() == ring.size() + 9,
+		"a sealed 3x3 pocket inside a ring is filled (%d -> %d cells)"
+			% [ring.size(), sealed.size()])
+	_check(not sealed.has(Vector2i(-1, -1)) and not sealed.has(Vector2i(2, -1)),
+		"nothing OUTSIDE the body is ever filled")
+
+	var breached := ring.duplicate()
+	breached.erase(Vector2i(0, 2))  # cut a doorway in the wall
+	_check(Ship.seal_pockets(breached, 0).size() == breached.size(),
+		"a breached pocket is reachable, so it stays open")
+
+	_check(Ship.seal_pockets(ring, 1).size() == ring.size(),
+		"a VESSEL leaves a 3-row pocket open (a person could be in there)")
+	var slot := {}
+	for x in 5:
+		slot[Vector2i(x, 0)] = true
+		slot[Vector2i(x, 2)] = true
+	slot[Vector2i(0, 1)] = true
+	slot[Vector2i(4, 1)] = true
+	_check(Ship.seal_pockets(slot, 1).size() == slot.size() + 3,
+		"a VESSEL still seals a one-row pocket (%d filled)"
+			% [Ship.seal_pockets(slot, 1).size() - slot.size()])
+
+	# --- the body it was built for ----------------------------------------
+	# A whale carcass with 12% of its cells shot out, at the shipped 8x.
+	var cells := ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/whale.ship"), 8)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 424242
+	var holed := {}
+	for c in cells:
+		if rng.randf() >= 0.12:
+			holed[c] = cells[c]
+	var carcass := _make_ship(holed)
+	carcass.position = Vector2(-90000, 0)
+	carcass.scale_unit = 8.0
+	carcass.shared_health_max = 15000.0
+	carcass.shared_health = 0.0  # dead: the precise per-cell collider
+	carcass.rebuild()
+
+	var solid := _solid_cells(carcass)
+	var exact: int = Ship._greedy_rects(solid.duplicate()).size()
+	var shapes := _shape_count(carcass)
+	_check(shapes * 3 < exact,
+		"the holed carcass merges to a fraction of the exact per-cell shapes (%d vs %d)"
+			% [shapes, exact])
+
+	# Correctness: it still covers every solid cell (nothing to fall through),
+	# and it never covers a cell a body or a bullet could have reached.
+	var covered := _covered_cells(carcass)
+	var missing := 0
+	for c in solid:
+		if not covered.has(c):
+			missing += 1
+	_check(missing == 0, "every solid cell is still covered (%d missed)" % missing)
+	var reachable := Ship.seal_pockets(solid, 0)
+	var overreach := 0
+	for c in covered:
+		if not reachable.has(c):
+			overreach += 1
+	_check(overreach == 0,
+		"no covered cell is reachable from outside the body (%d overreached)" % overreach)
+
+	# --- the person-safety rule, end to end -------------------------------
+	# A 30x30 hull with a 6x6 room inside and 80 scattered pinholes: the
+	# fragmentation trips the seal, and the ROOM must survive it on a vessel.
+	var hull := {}
+	for x in 30:
+		for y in 30:
+			hull[Vector2i(x, y)] = BlockDB.Type.HULL
+	for x in range(12, 18):
+		for y in range(12, 18):
+			hull.erase(Vector2i(x, y))  # the room
+	rng.seed = 99
+	var punched := 0
+	while punched < 80:
+		var c := Vector2i(rng.randi_range(0, 29), rng.randi_range(0, 29))
+		if c.x >= 11 and c.x <= 18 and c.y >= 11 and c.y <= 18:
+			continue  # keep the room's walls whole
+		if hull.has(c):
+			hull.erase(c)
+			punched += 1
+	var vessel := _make_ship(hull)
+	vessel.position = Vector2(-90000, -9000)
+	vessel.rebuild()
+	var v_cov := _covered_cells(vessel)
+	_check(not v_cov.has(Vector2i(15, 15)),
+		"a VESSEL never fills the room a crew member could be standing in")
+	_check(v_cov.has(Vector2i(5, 5)) or _shape_count(vessel) < Ship._greedy_rects(
+			_solid_cells(vessel).duplicate()).size(),
+		"the vessel still seals its pinholes (%d shapes vs %d exact)"
+			% [_shape_count(vessel),
+				Ship._greedy_rects(_solid_cells(vessel).duplicate()).size()])
+
+	var beast := _make_ship(hull)
+	beast.position = Vector2(-90000, -18000)
+	beast.shared_health_max = 500.0
+	beast.shared_health = 0.0
+	beast.rebuild()
+	_check(_covered_cells(beast).has(Vector2i(15, 15)),
+		"a CREATURE seals the same pocket -- nothing walks around inside a body")
+
+	carcass.queue_free()
+	vessel.queue_free()
+	beast.queue_free()
+	await process_frame
+
+
 ## untouched). mass / CoM / lift derive from the grid, never the collider, so
 ## coarse is contact-only.
 func _test_living_creature_gets_a_coarse_collider() -> void:
