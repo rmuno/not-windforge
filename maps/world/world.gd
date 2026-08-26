@@ -2591,8 +2591,11 @@ func _update_fires(delta: float) -> void:
 			continue
 		if ship.dormant:
 			continue  # out of the simulation: its fire waits with it
-		Fire.step(ship, dt * Tunables.get_num("fire_rate_scale"), _fire_clock,
-			_fire_rng)
+		var scaled := dt * Tunables.get_num("fire_rate_scale")
+		Fire.step(ship, scaled, _fire_clock, _fire_rng)
+		# ...and it can cross to a body it is TOUCHING (a burning wreck against
+		# your hull). Contact only, and much rarer than the cell-to-cell spread.
+		Fire.jump_between(ship, scaled, _fire_clock, _fire_rng)
 
 
 ## Try to set a cell alight — the one entry point every ignition source uses

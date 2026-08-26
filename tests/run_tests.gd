@@ -7489,6 +7489,61 @@ func _test_fire_spreads_burns_and_can_be_beaten() -> void:
 	_check(hulk.burning.size() == before,
 		"a sweep nowhere near the fire does nothing")
 
+	# FIRE HAS CONSEQUENCES (v0.65.1). A creature that is alight RUNS instead of
+	# ramming — a whale that keeps calmly charging while its own flank burns is
+	# a creature that does not believe in the fire, and neither will the player.
+	var beast := _make_ship(body)
+	beast.position = Vector2(-150000, -18000)
+	beast.shared_health_max = 900.0
+	beast.shared_health = 900.0
+	var brain := WhaleAI.new()
+	brain.whale = beast
+	brain.home = beast.global_position
+	var threat := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	threat.position = beast.position + Vector2(600.0, 0.0)
+	brain.provoke(threat)
+	for x in 4:
+		Fire.ignite(beast, Vector2i(x, 1), 200.0)
+	_check(beast.burning.size() >= WhaleAI.PANIC_BURNING_CELLS,
+		"a creature with several cells alight is properly on fire")
+	var gap0 := beast.global_position.distance_to(threat.global_position)
+	for i in 60:
+		brain.tick(1.0 / 60.0, threat)
+		await _step(1)
+	_check(beast.global_position.distance_to(threat.global_position) > gap0,
+		"a burning creature RUNS from what it was about to ram (%.0f -> %.0f px)"
+			% [gap0, beast.global_position.distance_to(threat.global_position)])
+
+	# FIRE JUMPS between bodies that TOUCH — the one place it crosses a gap.
+	# Not touching: nothing, however long it burns.
+	var jrng := RandomNumberGenerator.new()
+	jrng.seed = 3
+	var apart := 0
+	for i in 200:
+		apart += Fire.jump_between(beast, 0.2, 200.0 + i * 0.2, jrng)
+	_check(apart == 0 and threat.burning.is_empty(),
+		"fire never crosses open air to a body it is not touching (%d)" % apart)
+
+	# Touching: it crosses. Park a flammable hulk INSIDE the burning body so
+	# the solver reports them in contact, then let the jump roll.
+	var neighbour := _make_ship(body)
+	neighbour.shared_health_max = 0.0
+	neighbour.global_position = beast.global_position
+	for i in 6:
+		await _step(1)
+	var touching: bool = beast.get_colliding_bodies().size() > 0
+	var crossed := 0
+	for i in 400:
+		crossed += Fire.jump_between(beast, 0.2, 400.0 + i * 0.2, jrng)
+		if crossed > 0:
+			break
+	_check(not touching or crossed > 0,
+		"a burning body sets alight what it is TOUCHING (contact %s, jumps %d)"
+			% [str(touching), crossed])
+	neighbour.queue_free()
+	beast.queue_free()
+	threat.queue_free()
+
 	# NOT A VERDICT: a fire does damage over time, not instantly.
 	var slab := {}
 	for x in 4:

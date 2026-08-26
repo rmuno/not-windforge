@@ -44,6 +44,12 @@ const SPREAD_PER_SECOND := 1.0
 ## feel like sweeping, not like grinding.
 const DOUSE_SECONDS := 0.35
 
+## Chance per second that a burning body lights a body it is TOUCHING. Rare
+## next to the cell-to-cell spread: two hulls in contact share a seam, not a
+## body, and fire crossing that gap should feel like bad luck rather than
+## physics.
+const JUMP_PER_SECOND := 0.30
+
 ## Cells whose fire has burned out are ASH for this long — they cannot re-light,
 ## so a fire cannot oscillate forever over the same cell while its neighbours
 ## keep re-igniting it.
@@ -131,6 +137,41 @@ static func step(ship: Ship, dt: float, now: float,
 		if ignite(ship, cell, now):
 			report["caught"] = int(report["caught"]) + 1
 	return report
+
+
+## Fire JUMPS between bodies that are touching. A burning hulk drifting onto
+## your deck should be a problem, not scenery — and the same rule lets you use
+## one: shove a burning wreck into a bandit.
+##
+## Contact only, and at a much lower rate than the cell-to-cell spread: two
+## hulls in contact share a seam, not a continuous body, so this is the one
+## place fire crosses a gap and it has to be rarer than the spread that earns
+## its way there. Returns the number of bodies newly set alight.
+static func jump_between(ship: Ship, dt: float, now: float,
+		rng: RandomNumberGenerator) -> int:
+	if ship == null or not is_instance_valid(ship) or ship.burning.is_empty():
+		return 0
+	if rng.randf() > JUMP_PER_SECOND * dt:
+		return 0
+	var lit := 0
+	for other in ship.get_colliding_bodies():
+		var neighbour := other as Ship
+		if neighbour == null and other is Node:
+			neighbour = (other as Node).get_parent() as Ship
+		if neighbour == null or not is_instance_valid(neighbour):
+			continue
+		if not neighbour.burning.is_empty():
+			continue
+		# Light the neighbour cell NEAREST this body — the seam they share.
+		var cell := neighbour.cell_at_global(ship.global_position)
+		if not neighbour.blocks.has(cell):
+			for c in neighbour.blocks:
+				if burns(int(neighbour.blocks[c]["type"])):
+					cell = c
+					break
+		if ignite(neighbour, cell, now):
+			lit += 1
+	return lit
 
 
 ## Put out every burning cell within `radius` px of a world point, charging
