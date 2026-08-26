@@ -2419,6 +2419,108 @@ func ride_mine_pulse() -> int:
 # hazard band, so this is free in the common case (mid-band flight, and the whole
 # normal startup, since the arena spawn is mid-band).
 
+# --- Fire (roadmap Phase 4; combat/fire.gd) ---------------------------------
+#
+# The source's fire was its main threat multiplier and its buggiest system, so
+# ours is a grid BLOCK-STATE: a dictionary of burning cells on the Ship, ticked
+# here on a slow cadence. Never a node, never a particle, never a body.
+#
+# The cadence matters. Fire is a fight the player is supposed to be able to
+# win, so it has to be legible: five steps a second is fast enough that a
+# spreading fire reads as alive and slow enough that a hull's worth of burning
+# cells is a handful of damage calls per second rather than hundreds. Damage
+# goes through net_damage_cell — the shot path — so a burning ship uses the
+# incremental combat machinery instead of rebuilding once per burning cell.
+
+const FIRE_STEP_SECONDS := 0.2
+var _fire_t := 0.0
+var _fire_clock := 0.0
+var _fire_rng := RandomNumberGenerator.new()
+
+
+func _update_fires(delta: float) -> void:
+	if not Net.is_server() or fleet == null or not is_instance_valid(fleet):
+		return
+	if not Tunables.get_bool("fire_enabled"):
+		return
+	_fire_t += delta
+	if _fire_t < FIRE_STEP_SECONDS:
+		return
+	var dt := _fire_t
+	_fire_t = 0.0
+	_fire_clock += dt
+	for ship in fleet.ships():
+		if not is_instance_valid(ship) or ship.burning.is_empty():
+			continue
+		if ship.dormant:
+			continue  # out of the simulation: its fire waits with it
+		Fire.step(ship, dt * Tunables.get_num("fire_rate_scale"), _fire_clock,
+			_fire_rng)
+
+
+## Try to set a cell alight — the one entry point every ignition source uses
+## (hazard strikes, the debug button, and eventually incendiary weapons), so
+## the "does it catch?" rule lives in exactly one place.
+func ignite_cell(ship: Ship, cell: Vector2i) -> bool:
+	if ship == null or not is_instance_valid(ship):
+		return false
+	if not Tunables.get_bool("fire_enabled"):
+		return false
+	return Fire.ignite(ship, cell, _fire_clock)
+
+
+## A hazard strike (meteor, lava bomb) may set what it hit alight. Rolled here
+## rather than in the fireball so the chance is one tunable in one place, and
+## so a hull that simply cannot burn silently declines.
+func hazard_ignite(ship: Ship, cell: Vector2i) -> bool:
+	if ship == null or not is_instance_valid(ship):
+		return false
+	if randf() > Tunables.get_num("fire_ignite_chance"):
+		return false
+	return ignite_cell(ship, cell)
+
+
+## Every burning cell near the camera, as world points — what the fire overlay
+## draws. Nothing else reads it; a cell that is on fire is not a node, so this
+## is the only way to see one.
+func burning_points(limit := 400) -> Array:
+	var out: Array = []
+	if fleet == null or not is_instance_valid(fleet):
+		return out
+	for ship in fleet.ships():
+		if not is_instance_valid(ship) or ship.burning.is_empty() or ship.dormant:
+			continue
+		for cell in ship.burning:
+			out.append(ship.to_global(ship.local_pos_of(cell)))
+			if out.size() >= limit:
+				return out
+	return out
+
+
+## Debug: set the nearest burnable ship cell to `at` alight (F2 → Spawn).
+func debug_ignite(at: Vector2) -> bool:
+	var best: Ship = null
+	var best_d := INF
+	for ship in fleet.ships():
+		if not is_instance_valid(ship) or ship.blocks.is_empty():
+			continue
+		var d := ship.global_position.distance_to(at)
+		if d < best_d:
+			best_d = d
+			best = ship
+	if best == null:
+		return false
+	var cell := best.cell_at_global(at)
+	if not best.blocks.has(cell):
+		# Nothing under the cursor: light whatever of it burns, so the button
+		# always does something visible.
+		for c in best.blocks:
+			if Fire.burns(int(best.blocks[c]["type"])):
+				cell = c
+				break
+	return ignite_cell(best, cell)
+
+
 func _update_hazards(delta: float) -> void:
 	if _hazards == null:
 		return
@@ -2672,6 +2774,7 @@ func _physics_process(delta: float) -> void:
 	_handle_taming(delta)
 	_handle_riding(delta)
 	_handle_ridden_mining(delta)
+	_update_fires(delta)
 	_update_hazards(delta)
 	_update_suffocation(delta)
 	_update_lava_core(delta)
@@ -3037,8 +3140,18 @@ func _handle_repair(delta: float) -> void:
 		return
 	if not is_instance_valid(local_ship):
 		return
+	var at := get_global_mouse_position()
+	# THE SAME SWEEP SMOTHERS FIRE. No new key and no new tool (the owner's
+	# one-key-per-verb standing order): X already means "put this right", and
+	# a fire you cannot fight is a verdict rather than a fight. It douses on
+	# every ship in reach, not just your own — you can save a tamed whale.
+	if Tunables.get_bool("fire_enabled"):
+		var reach := Ship.CELL * 4.0 * world_scale
+		for ship in fleet.ships():
+			if is_instance_valid(ship) and not ship.burning.is_empty():
+				Fire.douse(ship, at, reach, delta, _fire_clock)
 	local_ship.net_repair_near(
-		local_ship.cell_at_global(get_global_mouse_position()),
+		local_ship.cell_at_global(at),
 		Tunables.get_num("repair_rate") * delta)
 
 

@@ -31,6 +31,36 @@ func _draw() -> void:
 	_draw_interact_prompt()
 	_draw_damage_numbers()
 	_draw_pickups()
+	_draw_fires()
+
+
+## FIRE. A burning cell is a grid block-state, not a node and not a particle,
+## so this is the only thing that shows one. Two stacked triangles per cell —
+## a hot core inside a bigger flame — flickering on a per-cell phase so a wall
+## of fire does not pulse in unison. Drawn on the overlay (above every hull)
+## rather than in the ship skin on purpose: the skin repaints per TILE, and
+## making a flicker a repaint would put a five-times-a-second churn storm
+## through the exact path v0.55.x spent a session making cheap.
+func _draw_fires() -> void:
+	if not world.has_method("burning_points"):
+		return
+	var pts: Array = world.call("burning_points")
+	if pts.is_empty():
+		return
+	var t := float(Time.get_ticks_msec()) * 0.001
+	var cell: float = Ship.CELL * maxf(float(world.get("world_scale")), 1.0)
+	for p in pts:
+		var at: Vector2 = p
+		# Per-cell phase from the position, so neighbours flicker out of step.
+		var phase := t * 7.0 + at.x * 0.013 + at.y * 0.017
+		var h := cell * (0.85 + 0.30 * sin(phase))
+		var w := cell * 0.62
+		draw_colored_polygon(PackedVector2Array([
+			at + Vector2(0.0, -h), at + Vector2(w * 0.5, cell * 0.45),
+			at + Vector2(-w * 0.5, cell * 0.45)]), Color(0.95, 0.45, 0.12, 0.75))
+		draw_colored_polygon(PackedVector2Array([
+			at + Vector2(0.0, -h * 0.55), at + Vector2(w * 0.24, cell * 0.42),
+			at + Vector2(-w * 0.24, cell * 0.42)]), Color(1.0, 0.86, 0.35, 0.85))
 
 
 ## The block that Q WOULD place, where it would land — green when the

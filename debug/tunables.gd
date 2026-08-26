@@ -112,6 +112,15 @@ const _REGISTRY := [
 		"min": 2000.0, "max": 60000.0, "step": 500.0},           # world._update_dormancy
 	{"id": "dormant_tick_seconds", "label": "Dormant tick (s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 3.0, "min": 0.5, "max": 30.0, "step": 0.5},
+	# --- Fire (roadmap Phase 4: a fight, not a verdict) ----------------------
+	{"id": "fire_enabled", "label": "Fire (spreads cell to cell; X douses)",
+		"group": "World", "kind": KIND_BOOL, "default": true},   # world._update_fires
+	{"id": "fire_rate_scale", "label": "Fire speed (spread + burn)",
+		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 5.0,
+		"step": 0.1},   # scales the dt handed to Fire.step
+	{"id": "fire_ignite_chance", "label": "Hazard strike sets fire (chance)",
+		"group": "World", "kind": KIND_FLOAT, "default": 0.35, "min": 0.0, "max": 1.0,
+		"step": 0.05},  # world.hazard_ignite
 	# --- Spawn sites (charter §4: population lives in the world) -------------
 	{"id": "spawn_sites_enabled", "label": "World spawn sites (danger has a place)",
 		"group": "World", "kind": KIND_BOOL, "default": true},   # world._update_spawn_sites

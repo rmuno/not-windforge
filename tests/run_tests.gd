@@ -151,6 +151,7 @@ func _initialize() -> void:
 	await _test_dormancy_leaves_and_rejoins_the_simulation()
 	await _test_dormant_creatures_migrate_in_a_circuit()
 	await _test_spawn_sites_are_places()
+	await _test_fire_spreads_burns_and_can_be_beaten()
 	await _test_chunk_bytes_feed_the_rebuild()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
@@ -7251,6 +7252,107 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	s8.queue_free()
 	beast.queue_free()
 	yard.queue_free()
+	await _step(1)
+
+
+## FIRE (roadmap Phase 4, v0.63.0). The spec was written before the code:
+## "a grid block-state (spread/douse cell-by-cell, never a free physics object;
+## a fight, not a verdict)". Each clause is a test here, because each one is a
+## way the source's fire is remembered as having failed.
+func _test_fire_spreads_burns_and_can_be_beaten() -> void:
+	_t("fire: spreads through what burns, stops at what does not, and can be beaten")
+
+	# WHAT BURNS is data, not a switch statement.
+	_check(Fire.burns(BlockDB.Type.BLUBBER) and Fire.burns(BlockDB.Type.GASBAG),
+		"blubber and lifting gas catch")
+	_check(not Fire.burns(BlockDB.Type.SHELL) and not Fire.burns(BlockDB.Type.BALLAST),
+		"shell and ballast do not burn at all")
+	_check(Fire.flammability(BlockDB.Type.GASBAG) > Fire.flammability(BlockDB.Type.HULL),
+		"a gasbag catches faster than hull (%.2f > %.2f)"
+			% [Fire.flammability(BlockDB.Type.GASBAG),
+				Fire.flammability(BlockDB.Type.HULL)])
+
+	# A STRIP OF BLUBBER WITH A SHELL WALL ACROSS IT. Fire lit at one end must
+	# eat its way along and STOP at the shell: the firebreak is the tactic the
+	# whole system exists to reward, and if fire crosses it the feature is a
+	# verdict again.
+	var cells := {}
+	for x in 20:
+		cells[Vector2i(x, 0)] = BlockDB.Type.BLUBBER if x != 10 else BlockDB.Type.SHELL
+	var ship := _make_ship(cells)
+	ship.position = Vector2(-150000, 0)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+
+	_check(Fire.ignite(ship, Vector2i(0, 0), 1.0), "a cell of blubber catches")
+	_check(not Fire.ignite(ship, Vector2i(10, 0), 1.0), "the shell cell refuses to")
+	_check(not Fire.ignite(ship, Vector2i(99, 0), 1.0), "and empty space cannot burn")
+
+	var now := 1.0
+	var burned_out := 0
+	for step in 400:
+		now += 0.2
+		var r := Fire.step(ship, 0.2, now, rng)
+		burned_out += int(r["out"])
+		if ship.burning.is_empty():
+			break
+	var lost_left := 0
+	var lost_right := 0
+	for x in 20:
+		if not ship.blocks.has(Vector2i(x, 0)):
+			if x < 10:
+				lost_left += 1
+			else:
+				lost_right += 1
+	_check(lost_left >= 2,
+		"fire eats the cells it is standing on (%d gone on the lit side)" % lost_left)
+	_check(lost_right == 0,
+		"...and NEVER crosses the shell firebreak (%d lost past it)" % lost_right)
+	_check(ship.burning.is_empty(),
+		"a fire that runs out of fuel goes out on its own — never a permanent burn")
+	_check(burned_out > 0, "burnt cells are recorded as out (%d)" % burned_out)
+	_check(not ship.burn_ash.is_empty(),
+		"...and leave ash, so the fire cannot re-light its own scar")
+	_check(not Fire.can_ignite(ship, ship.burn_ash.keys()[0], now),
+		"fresh ash refuses to catch")
+
+	# A FIGHT: the wand beats a fire in about a third of a second per cell.
+	var body := {}
+	for x in 6:
+		for y in 3:
+			body[Vector2i(x, y)] = BlockDB.Type.BLUBBER
+	var hulk := _make_ship(body)
+	hulk.position = Vector2(-150000, -6000)
+	for x in 6:
+		Fire.ignite(hulk, Vector2i(x, 1), 100.0)
+	_check(hulk.burning.size() == 6, "six cells alight")
+	var at := hulk.to_global(hulk.local_pos_of(Vector2i(2, 1)))
+	var put_out := Fire.douse(hulk, at, Ship.CELL * 2.5, Fire.DOUSE_SECONDS, 100.0)
+	_check(put_out > 0, "one sweep of the wand puts cells out (%d)" % put_out)
+	_check(hulk.burning.size() < 6,
+		"...and the fire is smaller than it was (%d left)" % hulk.burning.size())
+	var far := hulk.to_global(hulk.local_pos_of(Vector2i(5, 1))) + Vector2(1.0e5, 0.0)
+	var before := hulk.burning.size()
+	Fire.douse(hulk, far, Ship.CELL * 2.5, Fire.DOUSE_SECONDS, 100.0)
+	_check(hulk.burning.size() == before,
+		"a sweep nowhere near the fire does nothing")
+
+	# NOT A VERDICT: a fire does damage over time, not instantly.
+	var slab := {}
+	for x in 4:
+		slab[Vector2i(x, 0)] = BlockDB.Type.BLUBBER
+	var target := _make_ship(slab)
+	target.position = Vector2(-150000, -12000)
+	var hp0: float = target.blocks[Vector2i(1, 0)]["hp"]
+	Fire.ignite(target, Vector2i(1, 0), 5.0)
+	Fire.step(target, 0.2, 5.2, rng)
+	var hp1: float = target.blocks[Vector2i(1, 0)]["hp"]
+	_check(hp1 < hp0 and hp1 > hp0 * 0.5,
+		"one step of fire is a bite, not a kill (%.0f -> %.0f)" % [hp0, hp1])
+
+	ship.queue_free()
+	hulk.queue_free()
+	target.queue_free()
 	await _step(1)
 
 

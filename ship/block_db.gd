@@ -75,22 +75,28 @@ enum Type {
 ##           2026-08-21 — "blimps should take less damage from soft collisions").
 ##           COMBAT is untouched: shots reach cells through damage_cell directly,
 ##           never the crush walk, so this never makes a gasbag bullet-proof.
+## flammable — how readily FIRE takes hold (combat/fire.gd), as a multiplier on
+##           the base spread chance. Absent or 0 means the material does not
+##           burn AT ALL and fire cannot cross it — which is what makes a
+##           deconstructed row of hull a real firebreak. Blubber and a gasbag's
+##           lifting gas catch fast; timber-ish structure catches slowly; shell,
+##           ballast and metal fittings do not catch.
 ## glyph   — single letter drawn on the block so types read at a glance.
 const BLOCKS := {
-	Type.HULL:       {"name": "Hull",       "mass": 10.0, "hp": 100.0, "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "glyph": "",  "color": Color(0.55, 0.45, 0.35)},
-	Type.GASBAG:     {"name": "Gasbag",     "mass": 4.0,  "hp": 35.0,  "lift": 44.0, "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "collision_resist": 10.0, "glyph": "",  "color": Color(0.85, 0.80, 0.62)},
+	Type.HULL:       {"name": "Hull",       "mass": 10.0, "hp": 100.0, "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "flammable": 0.35, "glyph": "",  "color": Color(0.55, 0.45, 0.35)},
+	Type.GASBAG:     {"name": "Gasbag",     "mass": 4.0,  "hp": 35.0,  "lift": 44.0, "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "collision_resist": 10.0, "flammable": 2.5, "glyph": "",  "color": Color(0.85, 0.80, 0.62)},
 	Type.ENGINE:     {"name": "Engine",     "mass": 12.0, "hp": 80.0,  "lift": 0.0,  "thrust": 0.0,     "power": 1500.0, "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "glyph": "E", "color": Color(0.70, 0.35, 0.20)},
 	Type.PROPELLER:  {"name": "Propeller",  "mass": 6.0,  "hp": 60.0,  "lift": 0.0,  "thrust": 30000.0, "power": 0.0,    "draw": 900.0,  "is_core": false, "solid": true,  "platform": false, "glyph": "P", "color": Color(0.60, 0.66, 0.72)},
 	Type.HELM:       {"name": "Helm",       "mass": 8.0,  "hp": 140.0, "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": true,  "solid": false, "shield": true, "platform": false, "glyph": "H", "color": Color(0.35, 0.62, 0.80)},
 	Type.BALLAST:    {"name": "Ballast",    "mass": 26.0, "hp": 120.0, "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "glyph": "",  "color": Color(0.30, 0.30, 0.34)},
 	Type.TURRET:     {"name": "Turret",     "mass": 14.0, "hp": 90.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 250.0,  "is_core": false, "solid": true,  "platform": false, "glyph": "T", "color": Color(0.55, 0.35, 0.35)},
-	Type.DOOR:       {"name": "Door (open)", "mass": 5.0, "hp": 60.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": false, "platform": false, "glyph": "D", "color": Color(0.72, 0.62, 0.42, 0.45)},
-	Type.DOOR_CLOSED: {"name": "Door (closed)", "mass": 5.0, "hp": 60.0, "lift": 0.0, "thrust": 0.0,    "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "glyph": "D", "color": Color(0.72, 0.62, 0.42, 0.92)},
-	Type.BLUBBER:    {"name": "Blubber",    "mass": 7.0,  "hp": 60.0,  "lift": 20.0, "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "glyph": "",  "color": Color(0.86, 0.72, 0.66)},
-	Type.MEAT:       {"name": "Meat",       "mass": 8.0,  "hp": 50.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "glyph": "",  "color": Color(0.58, 0.28, 0.26)},
+	Type.DOOR:       {"name": "Door (open)", "mass": 5.0, "hp": 60.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": false, "platform": false, "flammable": 0.5, "glyph": "D", "color": Color(0.72, 0.62, 0.42, 0.45)},
+	Type.DOOR_CLOSED: {"name": "Door (closed)", "mass": 5.0, "hp": 60.0, "lift": 0.0, "thrust": 0.0,    "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "flammable": 0.5, "glyph": "D", "color": Color(0.72, 0.62, 0.42, 0.92)},
+	Type.BLUBBER:    {"name": "Blubber",    "mass": 7.0,  "hp": 60.0,  "lift": 20.0, "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "flammable": 1.8, "glyph": "",  "color": Color(0.86, 0.72, 0.66)},
+	Type.MEAT:       {"name": "Meat",       "mass": 8.0,  "hp": 50.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "flammable": 0.6, "glyph": "",  "color": Color(0.58, 0.28, 0.26)},
 	Type.SHELL:      {"name": "Shell",      "mass": 2.0,  "hp": 250.0, "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "collision_resist": 20.0, "glyph": "",  "color": Color(0.74, 0.62, 0.46)},
-	Type.PLATFORM:   {"name": "Platform",   "mass": 3.0,  "hp": 40.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": false, "platform": true,  "glyph": "",  "color": Color(0.62, 0.52, 0.36)},
-	Type.STRUT:      {"name": "Strut",      "mass": 2.0,  "hp": 50.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": false, "platform": false, "glyph": "",  "color": Color(0.40, 0.42, 0.46)},
+	Type.PLATFORM:   {"name": "Platform",   "mass": 3.0,  "hp": 40.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": false, "platform": true, "flammable": 0.5,  "glyph": "",  "color": Color(0.62, 0.52, 0.36)},
+	Type.STRUT:      {"name": "Strut",      "mass": 2.0,  "hp": 50.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": false, "platform": false, "flammable": 0.5, "glyph": "",  "color": Color(0.40, 0.42, 0.46)},
 }
 
 ## Newtons of lift per unit of `lift` at full air density. Tuned so gravity
