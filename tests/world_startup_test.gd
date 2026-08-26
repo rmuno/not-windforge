@@ -1044,9 +1044,10 @@ func _check_taming(world: Node, fleet) -> void:
 	_ok(world.ride_mine_pulse() == 0 and p.inventory.total() == inv_after_dismount,
 		"a whale nobody rides mines nothing (wild-whale behaviour unchanged)")
 
-	# KRAKENS ARE UNTAMEABLE (owner build order): even Master Trader (the highest
-	# taming tier, set above) cannot tame a deep kraken — try_tame refuses it by
-	# creature_kind, and its allegiance never flips.
+	# KRAKENS TAME AT THE TOP TIER (owner reversal 2026-08-24). They were
+	# untameable when this block was written, and the header said so for two
+	# months after the code changed — the checks below have been asserting the
+	# opposite of their own comment. Master Trader (taming 3) answers a kraken.
 	var krakens: Array = fleet.ships().filter(func(s) -> bool: return s.creature_kind == "kraken")
 	if not krakens.is_empty():
 		var kraken = krakens[0]
