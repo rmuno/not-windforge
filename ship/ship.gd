@@ -2570,6 +2570,17 @@ func skin_repaints() -> int:
 	return n
 
 
+## How many drawn REGIONS this body's skin currently holds, across every tile.
+## Unlike `skin_repaints` this is a STANDING cost: a retained canvas item
+## re-submits its command list every visible frame, so a body parked in view
+## bills this whether or not anything repaints. See ShipSkinSector.regions.
+func skin_regions() -> int:
+	var n := 0
+	for coord in _skin_sectors:
+		n += (_skin_sectors[coord] as ShipSkinSector).regions
+	return n
+
+
 ## Whole-body invalidation: every sector + the glyphs.
 func _invalidate_skin() -> void:
 	for coord in _skin_sectors:
@@ -3592,10 +3603,13 @@ func _paint_sector(on: ShipSkinSector) -> void:
 	var plan := sector_paint_plan(on.cells)
 	var groups: Dictionary = plan["groups"]
 	var bag_edges: PackedVector2Array = plan["bag_edges"]
+	var regions := 0
 	for key in groups:
 		var g: Dictionary = groups[key]
 		for rect in _greedy_rects(g["cells"]):
 			_draw_region(on, rect, g["type"], g["color"])
+			regions += 1
+	on.regions = regions
 	if bag_edges.size() >= 4:
 		var line := attitude_cast(BlockDB.color_of(BlockDB.Type.GASBAG).darkened(0.35))
 		line *= body_tint

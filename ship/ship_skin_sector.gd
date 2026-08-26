@@ -40,6 +40,15 @@ var cells := {}
 var paints := 0
 var invalidations := 0
 
+## How many REGIONS the last paint emitted (one `draw_rect` group each). A
+## retained canvas item re-submits its whole command list every frame it is
+## visible, so this — not `paints` — is what the renderer is asked to do on a
+## quiet frame where nothing repaints at all. It is the render-side twin of the
+## collider's shape count, and it fragments for the same reason: the greedy
+## merge breaks its runs at every shade boundary, so a SHOT-UP body draws far
+## more rects than an intact one of the same size.
+var regions := 0
+
 
 func invalidate() -> void:
 	invalidations += 1
