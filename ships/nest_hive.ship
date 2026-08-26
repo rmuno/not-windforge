@@ -1,0 +1,21 @@
+# MEADOW HIVE — the structure at a mid-band critter spawn site. The small
+# tameable creatures come from somewhere, and this is it: a blubbery comb on a
+# strut frame, soft and quick to take apart compared with a kraken den.
+#
+# Deliberately the WEAKEST nest. A meadow is the early-game place: it should be
+# possible to clear one with a sidearm and a little patience, before the ship
+# has guns worth the name.
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/nest_hive.ship
+#
+#   W  blubber (the comb)   |  strut (the frame)   M  meat (the core)
+#
+# ONE connected piece — see the note in nest_roost.ship.
+
+origin 3 2
+
+.WWWW.
+WWMMWW
+WWMMWW
+.WWWW.
+..||..

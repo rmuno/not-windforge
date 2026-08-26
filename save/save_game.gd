@@ -158,6 +158,12 @@ static func capture(world: Object, name: String, playtime: float) -> Dictionary:
 		# Additive/optional — a save without it is a legacy coarse world (1).
 		"terrain_subdiv": (world.terrain.subdiv if world.terrain != null else 1),
 		"terrain_diffs": encode_terrain_diffs(world.terrain),
+		# Sites the player has CLEARED. Everything else about a spawn site is
+		# derived from the seed and needs no save, but "I broke this nest" is a
+		# thing the player did, and a world that forgot it would erase the only
+		# permanent mark they can leave on the population. Flat [x, y, ...].
+		"cleared_sites": (Array(world.cleared_sites())
+			if world.has_method("cleared_sites") else []),
 		"ships": ships,
 		"player": encode_player(world.player),
 	}
@@ -193,6 +199,14 @@ static func restore(world: Object, data: Dictionary) -> bool:
 		IslandGen.prime(world.terrain)
 		EasterEggs.plant_cairn(world.terrain)
 		apply_terrain_diffs(world.terrain, data.get("terrain_diffs", []))
+
+	# Cleared spawn sites — restored BEFORE the ships, so a nest that comes back
+	# out of the save lands in a world that already knows its place was broken.
+	if world.has_method("set_cleared_sites"):
+		var flat := PackedInt32Array()
+		for v in (data.get("cleared_sites", []) as Array):
+			flat.append(int(v))
+		world.set_cleared_sites(flat)
 
 	# Ships: throw away the current fleet, respawn each from its payload.
 	if world.fleet != null:
@@ -293,6 +307,7 @@ static func encode_ship(ship: Object) -> Dictionary:
 		"from_site": bool(p["from_site"]),
 		"site_x": int(p["site_x"]),
 		"site_y": int(p["site_y"]),
+		"is_nest": bool(p["is_nest"]),
 		"blueprint": _ints(p["blueprint"]),
 		"walls": _ints(p["walls"]),
 		"balloons": _ints(p["balloons"]),
@@ -333,6 +348,7 @@ static func spawn_ship_from_encoded(fleet: Object, sd: Dictionary) -> Object:
 		"from_site": bool(sd.get("from_site", false)),
 		"site_x": int(sd.get("site_x", 0)),
 		"site_y": int(sd.get("site_y", 0)),
+		"is_nest": bool(sd.get("is_nest", false)),
 		"blueprint": _dec_ints(sd.get("blueprint", [])),
 		# Absent in a pre-walls (legacy) save → empty → from_data derives walls
 		# from the footprint, exactly as it always did. A modern save carries the

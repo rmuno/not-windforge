@@ -1,0 +1,23 @@
+# KRAKEN DEN — the structure at a deep-band kraken spawn site. Clean-room:
+# a shell cluster grown onto a rock ledge, meat pockets inside it, the way a
+# deep thing would build if it built at all.
+#
+# Shell is the armored material (high hp, high collision_resist), so a den is
+# genuinely tough to take apart with a sidearm: this is a job for the ship's
+# guns, which is the point of putting it in the deep band behind a life-support
+# gate.
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/nest_den.ship
+#
+#   K  shell (the casing)   M  meat (the soft interior)   #  hull (the ledge)
+#
+# ONE connected piece — see the note in nest_roost.ship.
+
+origin 4 3
+
+..KKKK..
+.KKMMKK.
+KKMMMMKK
+.KKMMKK.
+..KKKK..
+.###..##

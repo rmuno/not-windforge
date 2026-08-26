@@ -1278,6 +1278,62 @@ func _check_spawn_sites(world: Node, fleet) -> void:
 		_ok(instance_from_id(id) == null or not is_instance_valid(instance_from_id(id)),
 			"a wild resident carried far from everyone is reclaimed, not kept forever")
 
+	# THE NEST, end to end (charter §4's second half). Fly to a place that HAS a
+	# structure, watch it stand, break it, and the place is finished: no more
+	# residents, ever, and the map remembers.
+	var nest_site := {}
+	for candidate in SpawnSites.near([home], 600000.0, world.get("world_seed"),
+			rect, float(world.get("world_scale"))):
+		if SpawnSites.nest_for(candidate["kind"]) != "":
+			nest_site = candidate
+			break
+	if not nest_site.is_empty():
+		pl.global_position = (nest_site["pos"] as Vector2) + Vector2(0.0, -1500.0)
+		for i in 150:
+			await world.get_tree().physics_frame
+		var nest: Ship = null
+		for ship in (fleet.call("ships") as Array):
+			if is_instance_valid(ship) and (ship as Ship).is_nest:
+				nest = ship
+		_ok(nest != null, "a %s stands at its place"
+			% SpawnSites.kind_name(nest_site["kind"]))
+		if nest != null:
+			_ok(nest.freeze, "...frozen where it was built, not flying or falling")
+			# Break it the way a player does: SHOOT it. net_damage_cell is the
+			# shot path, and it deliberately does not touch the blueprint —
+			# remove_block would, and a nest that edits its own blueprint as it
+			# dies can never read as "less than half of what it was".
+			var doomed: Array = nest.blocks.keys()
+			for i in range(0, int(doomed.size() * 0.7)):
+				nest.net_damage_cell(doomed[i], 1.0e6)
+			for i in 150:
+				await world.get_tree().physics_frame
+			var flat: PackedInt32Array = world.cleared_sites()
+			var found := false
+			for i in range(0, flat.size(), 2):
+				if Vector2i(flat[i], flat[i + 1]) == nest_site["coord"]:
+					found = true
+			_ok(found, "breaking the nest clears the place for good")
+			var after := 0
+			for ship in (fleet.call("ships") as Array):
+				if is_instance_valid(ship) and (ship as Ship).from_spawn_site 						and (ship as Ship).spawn_site == nest_site["coord"] 						and not (ship as Ship).is_nest:
+					after += 1
+			var before_count := after
+			for i in 150:
+				await world.get_tree().physics_frame
+			var now_count := 0
+			for ship in (fleet.call("ships") as Array):
+				if is_instance_valid(ship) and (ship as Ship).from_spawn_site 						and (ship as Ship).spawn_site == nest_site["coord"] 						and not (ship as Ship).is_nest:
+					now_count += 1
+			_ok(now_count <= before_count,
+				"...and a cleared place never sends anything again (%d -> %d)"
+					% [before_count, now_count])
+			var marked := false
+			for charted in world.discovered_sites():
+				if charted["coord"] == nest_site["coord"] 						and bool(charted.get("cleared", false)):
+					marked = true
+			_ok(marked, "...and the map records it as one you broke")
+
 	# Leave the world exactly as it was found — the later checks count the
 	# authored pod and a stray resident would fail them. Sites OFF first, then
 	# sweep every resident (the passes above kept releasing while we waited).
@@ -1286,7 +1342,8 @@ func _check_spawn_sites(world: Node, fleet) -> void:
 	Tunables.reset("site_release_seconds")
 	Tunables.reset("site_regen_seconds")
 	for ship in (fleet.call("ships") as Array):
-		if is_instance_valid(ship) and (ship as Ship).from_spawn_site:
+		if is_instance_valid(ship) and ((ship as Ship).from_spawn_site
+				or (ship as Ship).is_nest):
 			(ship as Ship).queue_free()
 	for i in 5:
 		await world.get_tree().physics_frame

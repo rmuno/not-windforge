@@ -7345,6 +7345,24 @@ func _test_spawn_sites_are_places() -> void:
 	_check(SpawnSites.site_at(coord, 4242, Rect2(), 8.0).is_empty(),
 		"with no framed world there are no sites at all")
 
+	# THE NEST. Charter §4 ends "Destroying the nest structure clears it for
+	# good" — so some places have a structure and some do not, and the ones that
+	# do are the ones a player can permanently stop.
+	_check(SpawnSites.nest_for(SpawnSites.Kind.WHALE_GROUND) == "",
+		"a whale ground has no nest — open sky on a migration route")
+	for k in [SpawnSites.Kind.BANDIT_ROOST, SpawnSites.Kind.KRAKEN_DEN,
+			SpawnSites.Kind.CRITTER_MEADOW]:
+		var path := SpawnSites.nest_for(k)
+		# FileAccess, not ResourceLoader: a .ship is plain text the game parses
+		# itself, never an imported Godot resource.
+		_check(path != "" and FileAccess.file_exists(path),
+			"a %s stands on a real blueprint (%s)" % [SpawnSites.kind_name(k), path])
+		var cells := ShipLayout.load_cells(path)
+		_check(cells.size() > 8, "...with a body to shoot apart (%d cells)" % cells.size())
+	_check(SpawnSites.nest_faction(SpawnSites.Kind.BANDIT_ROOST) == 1
+			and SpawnSites.nest_faction(SpawnSites.Kind.KRAKEN_DEN) == 2,
+		"a roost is people who shoot at you; a den is wildlife")
+
 	# RESIDENCY RIDES THE PAYLOAD. It has to: hosting REHOMES every offline ship
 	# through from_data, and a post-spawn field exists on the server only
 	# (AGENTS.md → "everything a peer needs must be in the spawn payload"). This
@@ -7357,6 +7375,12 @@ func _test_spawn_sites_are_places() -> void:
 	var clone := Ship.from_data(payload)
 	_check(clone.from_spawn_site and clone.spawn_site == Vector2i(-3, 7),
 		"site residency survives the spawn payload (the hosting rehome)")
+	res.is_nest = true
+	var nest_clone := Ship.from_data(res.to_payload())
+	_check(nest_clone.is_nest and nest_clone.freeze,
+		"...and a NEST comes back a nest, still frozen in place")
+	nest_clone.queue_free()
+	res.is_nest = false
 	var encoded := SaveGame.encode_ship(res)
 	_check(bool(encoded.get("from_site", false))
 			and int(encoded.get("site_x", 0)) == -3

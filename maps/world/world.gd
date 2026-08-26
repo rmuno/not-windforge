@@ -1990,13 +1990,52 @@ func _tick_site(site: Dictionary, points: Array, radius: float,
 			live.append(id)
 	st["residents"] = live
 
-	var released := false
 	var d := Dormancy.distance_to_nearest(site["pos"] as Vector2, points)
-	if may_release and d >= 0.0 and d <= radius and live.size() < pool 			and int(st["stock"]) > 0 and _site_clock >= float(st["next_release"]):
+
+	# THE NEST (charter §4's second half: "destroying the nest structure clears
+	# it for good"). Some places have a structure — a roost, a den, a hive — and
+	# breaking half of it ends the place permanently. A whale ground has none:
+	# it is open sky on a migration route, and there is nothing there to break.
+	var nest := instance_from_id(int(st.get("nest", 0))) as Ship
+	if nest != null and not is_instance_valid(nest):
+		nest = null
+	# Broken = less than half the body it was RAISED with. Measured against the
+	# count stored when it was built, not against its blueprint: `remove_block`
+	# (the deconstruct key) edits the blueprint as it goes, so a nest taken
+	# apart by hand would shrink both sides of that comparison and never read as
+	# broken. Shot apart or dismantled, half is half.
+	var raised: int = int(st.get("nest_cells", 0))
+	if raised <= 0 and nest != null:
+		raised = nest.blueprint_map().size()
+	if nest != null and nest.blocks.size() * 2 < raised:
+		st["cleared"] = true
+		st["stock"] = 0
+		_notify("%s broken — nothing more will come from here"
+			% SpawnSites.kind_name(site["kind"]).capitalize())
+		nest.is_nest = false      # a wreck now: reclaimable like anything else
+		nest.from_spawn_site = true
+		st["nest"] = 0
+		nest = null
+	var cleared: bool = bool(st.get("cleared", false))
+	if nest == null and not cleared and d >= 0.0 and d <= radius:
+		var path := SpawnSites.nest_for(site["kind"])
+		if path != "":
+			var built := _build_nest(site, path)
+			if built != null:
+				st["nest"] = built.get_instance_id()
+				st["nest_cells"] = built.blocks.size()
+
+	var released := false
+	if cleared:
+		_site_state[coord] = st
+		return false   # a cleared place gives nothing, ever again
+	if may_release and d >= 0.0 and d <= radius and live.size() < pool \
+			and int(st["stock"]) > 0 and _site_clock >= float(st["next_release"]):
 		var body := _release_resident(site, live.size())
 		if body != null:
 			st["stock"] = int(st["stock"]) - 1
-			st["next_release"] = _site_clock 				+ maxf(0.0, Tunables.get_num("site_release_seconds"))
+			st["next_release"] = _site_clock \
+				+ maxf(0.0, Tunables.get_num("site_release_seconds"))
 			live.append(body.get_instance_id())
 			released = true
 	_site_state[coord] = st
@@ -2027,6 +2066,26 @@ func _release_resident(site: Dictionary, index: int) -> Ship:
 	return body
 
 
+## Raise a site's structure. FROZEN: a nest hangs where it was built rather
+## than flying or falling, so its gasbags read as what holds it up instead of
+## lift the physics has to balance. It is a real Ship otherwise — shot apart
+## block by block, severable, and it shows on the map like anything else.
+func _build_nest(site: Dictionary, path: String) -> Ship:
+	var cells := ShipLayout.upscale_cells(ShipLayout.load_cells(path), world_scale)
+	if cells.is_empty():
+		return null
+	var pos := WhaleSpawn.clear_spawn_pos(terrain, site["pos"] as Vector2,
+		WhaleSpawn.footprint_of(cells), float(world_scale))
+	var nest := fleet.spawn_ship_from_cells(cells, pos, 0, 0.0, float(world_scale),
+		SpawnSites.nest_faction(site["kind"]))
+	if nest == null:
+		return null
+	nest.is_nest = true
+	nest.spawn_site = site["coord"]
+	nest.freeze = true
+	return nest
+
+
 ## Free wild residents that have ended up far from everyone, returning their
 ## stock to the site that made them. Never touches something the player has a
 ## relationship with: a tamed creature, a carcass (that is loot the player
@@ -2036,6 +2095,8 @@ func _reclaim_far_residents(points: Array) -> void:
 	for ship in fleet.ships():
 		if not is_instance_valid(ship) or not ship.from_spawn_site:
 			continue
+		if ship.is_nest:
+			continue  # a nest IS the place — it is never carried off
 		if not ship.dormant:
 			continue
 		if ship.faction == 0 or ship.is_carcass():
@@ -2064,8 +2125,38 @@ func discovered_sites() -> Array:
 		var site := SpawnSites.site_at(coord, world_seed, _world_rect,
 			float(world_scale))
 		if not site.is_empty():
+			site["cleared"] = bool((_site_state[coord] as Dictionary).get(
+				"cleared", false))
 			out.append(site)
 	return out
+
+
+## The sites the player has BROKEN, as flat [x, y, ...] ints — the one piece of
+## site state worth carrying in a save. Everything else about a site is derived
+## from the seed, but "I cleared this nest" is a thing the player DID, and a
+## world that forgot it would erase the only permanent mark they can leave on
+## the population.
+func cleared_sites() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for coord in _site_state:
+		if bool((_site_state[coord] as Dictionary).get("cleared", false)):
+			out.append((coord as Vector2i).x)
+			out.append((coord as Vector2i).y)
+	return out
+
+
+## Restore them on load.
+func set_cleared_sites(flat: PackedInt32Array) -> void:
+	var i := 0
+	while i + 1 < flat.size():
+		var coord := Vector2i(flat[i], flat[i + 1])
+		var st: Dictionary = _site_state.get(coord, {
+			"stock": 0, "pool": 0, "residents": [], "next_release": 0.0,
+			"seen_at": _site_clock})
+		st["cleared"] = true
+		st["stock"] = 0
+		_site_state[coord] = st
+		i += 2
 
 
 ## The player as BITEABLE prey: their body when they are standing in the open,

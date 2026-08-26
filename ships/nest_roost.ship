@@ -1,0 +1,27 @@
+# BANDIT ROOST — the structure at a mid-band bandit spawn site (charter §4:
+# "the player can point at where enemies come from, and stop them").
+#
+# A hanging dock: a hull deck slung under two gasbags, a turret on the beam,
+# a strut mast, and a door into the crew hole. It never flies — the world
+# freezes it in place — so the gasbags are read as what holds it up rather
+# than as lift the physics needs.
+#
+# Preview it without booting the game:
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/nest_roost.ship
+#
+#   G  gasbag (the canopy)      #  hull      T  turret
+#   |  strut (the mast)         D  door      -  platform (the landing deck)
+#
+# Keep it ONE connected piece: a nest is destroyed by taking half of it apart,
+# and a detached wing would fall away as its own wreck instead.
+
+origin 5 3
+
+..GGGGGG..
+.GGGGGGGG.
+..GGGGGG..
+....||....
+..######..
+.##D##T##.
+.--------.
