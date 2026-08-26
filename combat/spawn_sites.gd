@@ -182,6 +182,28 @@ static func resident_pos(site: Dictionary, index: int, world_seed: int,
 		rng.randf_range(-spread, spread), rng.randf_range(-spread, spread))
 
 
+## The STRUCTURE that stands at a site of this kind, or "" for a place that has
+## none. Charter §4's second half: "Destroying the nest structure clears it for
+## good" — a population you can point at AND stop. A whale ground has no nest
+## on purpose: it is open sky on a migration route, and there is nothing there
+## to break. Some places can be cleared; some can only be survived.
+static func nest_for(kind: Kind) -> String:
+	match kind:
+		Kind.BANDIT_ROOST:
+			return "res://ships/nest_roost.ship"
+		Kind.KRAKEN_DEN:
+			return "res://ships/nest_den.ship"
+		Kind.CRITTER_MEADOW:
+			return "res://ships/nest_hive.ship"
+	return ""
+
+
+## Which side a site's structure belongs to: a roost is people who shoot at
+## you, a den and a hive are wildlife.
+static func nest_faction(kind: Kind) -> int:
+	return 1 if kind == Kind.BANDIT_ROOST else 2
+
+
 ## Human-readable name — the map legend and the debug window read this.
 static func kind_name(kind: Kind) -> String:
 	match kind:

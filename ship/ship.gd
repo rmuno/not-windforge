@@ -1102,6 +1102,11 @@ var dormant_velocity := Vector2.ZERO
 var from_spawn_site := false
 var spawn_site := Vector2i.ZERO
 
+## This body is a site's STRUCTURE — the nest, not one of its residents. It is
+## frozen in place, it is never reclaimed (it IS the place), and breaking half
+## of it clears the site for good.
+var is_nest := false
+
 ## Where this body was standing when it went under. A dormant creature MIGRATES
 ## in a slow loop around it (Dormancy.migrate_velocity), so the anchor has to be
 ## stable — deriving the loop from the moving position instead would turn a
@@ -2859,6 +2864,9 @@ static func from_data(data: Dictionary) -> Ship:
 	# population and leave it un-reclaimable forever.
 	s.from_spawn_site = bool(data.get("from_site", false))
 	s.spawn_site = Vector2i(int(data.get("site_x", 0)), int(data.get("site_y", 0)))
+	s.is_nest = bool(data.get("is_nest", false))
+	if s.is_nest:
+		s.freeze = true  # a structure hangs where it was built
 	s.scale_unit = float(data.get("unit", 1.0))
 	if s.scale_unit != 1.0:
 		# Gravity scales with the world so fall timing matches the bigger
@@ -2908,6 +2916,7 @@ func to_payload() -> Dictionary:
 		"from_site": from_spawn_site,
 		"site_x": spawn_site.x,
 		"site_y": spawn_site.y,
+		"is_nest": is_nest,
 		"blueprint": blueprint,
 		"walls": _encode_walls(),
 		"balloons": _encode_balloons(),

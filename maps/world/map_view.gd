@@ -288,6 +288,12 @@ func _draw_markers(mr: Array, font: Font) -> void:
 			var d := PackedVector2Array([
 				sp + Vector2(0, -5), sp + Vector2(5, 0),
 				sp + Vector2(0, 5), sp + Vector2(-5, 0), sp + Vector2(0, -5)])
+			if bool(site.get("cleared", false)):
+				# A place you have BROKEN: greyed and struck through, so the map
+				# records what you did to the sky as well as what is in it.
+				col = Color(col.r, col.g, col.b, 0.35)
+				draw_line(sp + Vector2(-4, -4), sp + Vector2(4, 4), col, 1.5)
+				draw_line(sp + Vector2(-4, 4), sp + Vector2(4, -4), col, 1.5)
 			draw_polyline(d, col, 1.5)
 	var fleet: Variant = world.get("fleet")
 	if fleet != null:
@@ -308,6 +314,6 @@ func _draw_markers(mr: Array, font: Font) -> void:
 func _draw_title(font: Font, morigin: Vector2, msize: Vector2) -> void:
 	draw_string(font, Vector2(morigin.x, morigin.y - 14.0),
 		"WORLD MAP", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.85, 0.90, 1.0))
-	var hint := "Tab to close   ·   ? = undiscovered   ·   ◇ = a place you have found"
+	var hint := "Tab to close   ·   ? = undiscovered   ·   ◇ = a place you found   ·   ⨯ = one you broke"
 	draw_string(font, Vector2(morigin.x, morigin.y + msize.y + 22.0),
 		hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.60, 0.66, 0.75))
