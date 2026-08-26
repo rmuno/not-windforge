@@ -235,8 +235,17 @@ func _run_client() -> void:
 	# The nest crossed the wire AS A NEST. Identity that only exists on the
 	# server is identity the client renders wrong — a structure that should
 	# hang in place would fall.
+	# WAIT for it rather than assume it has landed: this check sits right after
+	# the join burst, and under the full suite's load (four Godots at once) the
+	# spawn can arrive a beat later. An immediate assertion made it flaky —
+	# which is worse than no test, because a flaky red teaches you to ignore it.
 	var nest := _find_ship(PILOT_NEST)
-	_ok(nest != null, "a NEST replicated to the client")
+	var waited := 0.0
+	while nest == null and waited < 5.0:
+		await _sleep(0.25)
+		waited += 0.25
+		nest = _find_ship(PILOT_NEST)
+	_ok(nest != null, "a NEST replicated to the client (after %.2fs)" % waited)
 	if nest != null:
 		_ok(nest.is_nest, "...as a nest — the flag rode the spawn payload")
 		_ok(nest.spawn_site == NEST_SITE,

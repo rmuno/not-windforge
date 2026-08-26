@@ -143,6 +143,8 @@ const POD_GRID := 6000.0
 static func migrates(ship: Ship) -> bool:
 	if ship == null or not is_instance_valid(ship):
 		return false
+	if ship.is_nest:
+		return false  # a NEST is the place itself; a place that wanders is not one
 	return ship.shared_health_max > 0.0 and ship.shared_health > 0.0
 
 

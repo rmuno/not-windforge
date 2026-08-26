@@ -2063,7 +2063,10 @@ func _tick_site(site: Dictionary, points: Array, radius: float,
 	var raised: int = int(st.get("nest_cells", 0))
 	if raised <= 0 and nest != null:
 		raised = nest.blueprint_map().size()
-	if nest != null and nest.blocks.size() * 2 < raised:
+	# BROKEN is the pool running out — or, for a nest with no pool (a legacy
+	# one, or a kind that never had one), half the body it was raised with.
+	var spent := nest != null and nest.shared_health_max > 0.0 		and nest.shared_health <= 0.0
+	if nest != null and (spent or nest.blocks.size() * 2 < raised):
 		st["cleared"] = true
 		st["stock"] = 0
 		_notify("%s broken — nothing more will come from here"
@@ -2166,12 +2169,19 @@ func _build_nest(site: Dictionary, path: String) -> Ship:
 	# server only — so a client saw the structure of a site tumbling out of the
 	# sky (net_smoke caught it, 2026-08-26).
 	var coord: Vector2i = site["coord"]
+	# ONE UNIT UNTIL IT BREAKS. The pool rides the payload alongside nest-hood
+	# (both are `shared`/`shared_max`, which the wire and the save already
+	# carry), so a client and a reloaded world agree on how much fight is left
+	# in a place.
+	var pool := SpawnSites.nest_pool(site["kind"])
 	var nest := fleet.spawn_ship_from_cells(cells, pos, 0, 0.0, float(world_scale),
 		SpawnSites.nest_faction(site["kind"]),
-		{"is_nest": true, "site_x": coord.x, "site_y": coord.y})
+		{"is_nest": true, "site_x": coord.x, "site_y": coord.y,
+			"shared": pool, "shared_max": pool})
 	if nest == null:
 		return null
 	nest.freeze = true
+	nest.rebuild()   # pool-then-rebuild, the same ordering every creature needs
 	return nest
 
 
