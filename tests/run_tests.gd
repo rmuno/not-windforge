@@ -147,6 +147,7 @@ func _initialize() -> void:
 	await _test_greedy_rects_order_and_partition()
 	await _test_attitude_reads_the_same_in_world_and_map()
 	await _test_physics_census_reports_the_step()
+	await _test_dormancy_leaves_and_rejoins_the_simulation()
 	await _test_chunk_bytes_feed_the_rebuild()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
@@ -7105,6 +7106,60 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	s8.queue_free()
 	beast.queue_free()
 	yard.queue_free()
+	await _step(1)
+
+
+## DISTANCE DORMANCY (v0.58.0, owner request). A body far from every focus
+## leaves the PHYSICS SIMULATION -- not merely ticks less often, because the
+## 3-FPS capture measured script at ~2 ms and physics at 30-87 ms. What the
+## suite has to guarantee is that a feature which removes things from the
+## world never LOSES one: the body keeps its grid and its damage, it comes
+## back with its motion, and it never comes back inside the ground.
+func _test_dormancy_leaves_and_rejoins_the_simulation() -> void:
+	_t("dormancy: a far body leaves the simulation, coasts, and wakes intact")
+
+	var cells := {}
+	for x in 10:
+		for y in 3:
+			cells[Vector2i(x, y)] = BlockDB.Type.HULL
+	var ship := _make_ship(cells)
+	ship.position = Vector2(-90000, 0)
+	await _step(2)
+
+	# Damage it first: what goes under must come back the same object, not a
+	# pristine respawn (the carcass-loot dupe of v0.48.1 was exactly this shape
+	# of bug -- state that did not survive a round trip).
+	ship.damage_cell(Vector2i(4, 1), 25.0)
+	var hp_before: float = ship.blocks[Vector2i(4, 1)]["hp"]
+	var blocks_before: int = ship.blocks.size()
+	ship.linear_velocity = Vector2(200.0, 0.0)
+
+	_check(not ship.dormant and ship.process_mode == Node.PROCESS_MODE_INHERIT,
+		"a ship starts awake and in the simulation")
+
+	ship.set_dormant(true)
+	_check(ship.dormant and ship.process_mode == Node.PROCESS_MODE_DISABLED,
+		"going dormant disables the whole subtree \u2014 body, shield and strips, "
+			+ "which is what takes it out of the broadphase")
+	_check(ship.dormant_velocity.is_equal_approx(Vector2(200.0, 0.0)),
+		"...and its motion is remembered, not dropped")
+	_check(ship.blocks.size() == blocks_before
+			and is_equal_approx(ship.blocks[Vector2i(4, 1)]["hp"], hp_before),
+		"a dormant body still EXISTS: same grid, same damage")
+
+	# Idempotent both ways -- the scan runs four times a second and must not
+	# re-enter the physics space on every pass.
+	var pm := ship.process_mode
+	ship.set_dormant(true)
+	_check(ship.process_mode == pm, "asking twice changes nothing")
+
+	ship.set_dormant(false)
+	_check(not ship.dormant and ship.process_mode == Node.PROCESS_MODE_INHERIT,
+		"waking rejoins the simulation")
+	_check(ship.linear_velocity.is_equal_approx(Vector2(200.0, 0.0)),
+		"...carrying the motion it went under with, not dead in the air")
+
+	ship.queue_free()
 	await _step(1)
 
 

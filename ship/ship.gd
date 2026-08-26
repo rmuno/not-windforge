@@ -1081,6 +1081,48 @@ func damage_balloon(i: int, amount: float) -> bool:
 
 # --- Derivation from the grid --------------------------------------------
 
+## --- DORMANCY (owner 2026-08-25) ------------------------------------------
+## True while this body is OUT OF THE PHYSICS SIMULATION because nothing is
+## near enough to care (maps/world/dormancy.gd owns the decision). It is a
+## derived, live state -- never saved, never sent -- so a load or a join
+## simply re-derives it on the next pass.
+var dormant := false
+
+## The velocity the body had when it went under, so waking resumes the motion
+## instead of dropping it dead in the air. A dormant body coasts on this
+## through the slow tick.
+var dormant_velocity := Vector2.ZERO
+
+
+## Leave (or rejoin) the physics simulation.
+##
+## `process_mode = PROCESS_MODE_DISABLED` is the whole mechanism, and it is
+## chosen for reach: it takes the entire SUBTREE out at once -- this body, its
+## Shield child and every one-way platform strip, which are separate
+## CollisionObject2Ds that would otherwise sit in the broadphase after the
+## hull left it. Measured on the ladder that produced this design: merely
+## FREEZING the bodies left 16 broadphase pairs where disabling them left 1.
+##
+## Waking restores the velocity and re-seats the transform on the physics
+## server: a dormant body is moved by writing `global_position` from outside
+## the physics step (it is not in the space to be moved properly), and without
+## the re-seat the server would resume from the pose it remembered when the
+## body left -- teleporting the creature back to where you last saw it.
+func set_dormant(on: bool) -> void:
+	if on == dormant:
+		return
+	dormant = on
+	if on:
+		dormant_velocity = linear_velocity
+		process_mode = Node.PROCESS_MODE_DISABLED
+	else:
+		process_mode = Node.PROCESS_MODE_INHERIT
+		PhysicsServer2D.body_set_state(get_rid(),
+			PhysicsServer2D.BODY_STATE_TRANSFORM, global_transform)
+		linear_velocity = dormant_velocity
+		angular_velocity = 0.0
+
+
 ## Diagnostic twin of TerrainChunk.rebuild_count — the stamp-batching tests
 ## pin "one stamp, one rebuild" on it.
 var rebuild_count := 0

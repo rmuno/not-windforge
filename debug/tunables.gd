@@ -104,6 +104,14 @@ const _REGISTRY := [
 	{"id": "terrain_subdiv", "label": "Terrain resolution (x finer; R regenerates)", "group": "World",
 		"kind": KIND_INT, "default": 4, "min": 1, "max": 8, "step": 1,
 		"note": "on world reset"},  # Terrain.subdiv — 4 (32px tiles, ~1/4 the cells of full-8x) per owner 2026-08-24: "WAY too many blocks... 1/4 or 1/8 the count, blocks bigger each". 8 = the too-fine full-8x; 1 = legacy coarse. Read at world BUILD only.
+	# --- Dormancy (owner 2026-08-25: let more things exist while far away) ---
+	{"id": "dormancy_enabled", "label": "Distance dormancy (far bodies leave physics)",
+		"group": "World", "kind": KIND_BOOL, "default": true},   # world._update_dormancy
+	{"id": "dormant_range_px", "label": "Dormancy range (px; wakes at 80%)",
+		"group": "World", "kind": KIND_FLOAT, "default": 12000.0,
+		"min": 2000.0, "max": 60000.0, "step": 500.0},           # world._update_dormancy
+	{"id": "dormant_tick_seconds", "label": "Dormant tick (s)", "group": "World",
+		"kind": KIND_FLOAT, "default": 3.0, "min": 0.5, "max": 30.0, "step": 0.5},
 	{"id": "mine_power", "label": "Mining power (hp/s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 240.0, "min": 10.0, "max": 2000.0, "step": 10.0},  # world.MINE_POWER
 	{"id": "mine_reach_cells", "label": "Mining reach (cells)", "group": "World",

@@ -1215,6 +1215,48 @@ func _check_debug_window(world: Node, fleet) -> void:
 	if pl.is_piloting():
 		pl.disembark()
 
+	# DISTANCE DORMANCY against a REAL world (v0.58.0). The unit test covers
+	# the switch; what only the live world can check is the DECISION -- who
+	# sleeps, who is exempt, and that waking never lands inside the ground.
+	Tunables.set_value("dormancy_enabled", true)
+	Tunables.set_value("dormant_range_px", 12000.0)
+	var far_at: Vector2 = pl.global_position + Vector2(90000.0, 0.0)
+	var sleeper = world.debug_spawn("whale", far_at)
+	await world.get_tree().process_frame
+	if sleeper != null:
+		# Run the pass long enough to cross the scan cadence.
+		for i in 40:
+			await world.get_tree().physics_frame
+		_ok(sleeper.dormant,
+			"a creature %.0f px away leaves the simulation"
+				% pl.global_position.distance_to(sleeper.global_position))
+		_ok(world.dormant_count >= 1,
+			"...and the world counts it (%d) for the F2 census" % world.dormant_count)
+
+		# NEVER the ship you are standing on, however far it is from anyone.
+		var mine = world.get("local_ship")
+		_ok(mine == null or not mine.dormant,
+			"your own ship never blinks out behind you")
+
+		# Waking must not land it inside terrain: drop it to the floor while it
+		# is dormant (no collision to stop it), then bring it back.
+		sleeper.global_position = Vector2(far_at.x, 3000.0)
+		world._wake(sleeper)
+		_ok(not sleeper.dormant, "a woken creature is back in the simulation")
+		_ok(not world.terrain.is_solid(
+				world.terrain.world_to_cell(sleeper.global_position)),
+			"...and never inside solid ground \u2014 it is lifted clear first")
+
+		# Turning the lever off must release everything, not strand it.
+		Tunables.set_value("dormancy_enabled", false)
+		for i in 10:
+			await world.get_tree().physics_frame
+		_ok(not sleeper.dormant and world.dormant_count == 0,
+			"switching dormancy off wakes everything it put under")
+		Tunables.set_value("dormancy_enabled", true)
+		sleeper.queue_free()
+		await world.get_tree().process_frame
+
 	# THE PHYSICS CENSUS against a REAL world (v0.57.0) -- the numbers the
 	# owner's 3-FPS capture was missing.
 	var cen := PhysicsCensus.of_world(world)

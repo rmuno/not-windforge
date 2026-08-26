@@ -39,10 +39,14 @@ static func of_world(world: Node) -> Dictionary:
 		"coarse": 0,       ## living creatures on the single-box collider
 		"chunks": 0,       ## promoted terrain chunks (each a StaticBody2D)
 		"chunk_shapes": 0,
+		"dormant": 0,      ## bodies currently OUT of the simulation
 	}
 	if world == null or not is_instance_valid(world):
 		return out
 
+	var d: Variant = world.get("dormant_count")
+	if d != null:
+		out["dormant"] = int(d)
 	var fleet: Variant = world.get("fleet")
 	if fleet != null and is_instance_valid(fleet):
 		for s in (fleet.call("ships") as Array):
@@ -74,6 +78,7 @@ static func of_world(world: Node) -> Dictionary:
 static func line(world: Node) -> String:
 	var c := of_world(world)
 	return ("pairs=%d active=%d islands=%d shapes=%d worst=%d(%d cells) "
-		+ "coarse=%d chunks=%d chunkshapes=%d") % [
+		+ "coarse=%d dormant=%d chunks=%d chunkshapes=%d") % [
 		c["pairs"], c["active"], c["islands"], c["shapes"],
-		c["worst"], c["worst_cells"], c["coarse"], c["chunks"], c["chunk_shapes"]]
+		c["worst"], c["worst_cells"], c["coarse"], c["dormant"],
+		c["chunks"], c["chunk_shapes"]]

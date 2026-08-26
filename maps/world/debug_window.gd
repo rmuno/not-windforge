@@ -346,10 +346,11 @@ func _perf_text(window := 0.0) -> String:
 	var physics := ("\n\nphysics  \u2014 over ~16 ms/frame and the engine starts"
 		+ " catching up (8x)\n  broadphase pairs %-6d  active bodies %d, %d islands"
 		+ "\n  ship shapes     %-6d  worst body %d shapes (%d cells), %d coarse"
-		+ "\n  terrain bodies  %-6d  %d shapes") % [
+		+ "\n  terrain bodies  %-6d  %d shapes"
+		+ "\n  DORMANT bodies  %-6d  (out of the simulation, coasting)") % [
 		cen["pairs"], cen["active"], cen["islands"],
 		cen["shapes"], cen["worst"], cen["worst_cells"], cen["coarse"],
-		cen["chunks"], cen["chunk_shapes"]]
+		cen["chunks"], cen["chunk_shapes"], cen["dormant"]]
 
 	# Retained rect COMMANDS: every merged region draws a fill and a border,
 	# and the renderer replays both every frame forever. Terrain's regions are

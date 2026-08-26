@@ -1731,6 +1731,114 @@ func _creature_swim(delta: float) -> void:
 		ai.tick(delta, target)
 
 
+## --- Dormancy -------------------------------------------------------------
+## Seconds since the last sleep/wake DECISION scan, and since the last slow
+## tick of the bodies that are already under. Two cadences on purpose: the
+## decision has to be responsive (you should not out-fly the wake), while the
+## slow tick is the whole point of the feature and wants to be rare.
+var _dormancy_scan_t := 0.0
+var _dormancy_tick_t := 0.0
+const DORMANCY_SCAN_SECONDS := 0.25
+
+## How many bodies are currently out of the simulation — surfaced in the F2
+## physics census, because a feature that silently removes things from the
+## world must be countable while you play.
+var dormant_count := 0
+
+
+## Put distant bodies out of the physics simulation, and advance the ones that
+## are already out (owner 2026-08-25: let more things "exist, persevere, and
+## act" while far away). See maps/world/dormancy.gd for why this leaves the
+## SIMULATION rather than merely ticking less often — the measurement said
+## script was ~2 ms and physics was 30–87 ms.
+##
+## Authority only. A client never decides what exists; it receives poses.
+func _update_dormancy(delta: float) -> void:
+	if not Net.is_server() or fleet == null:
+		return
+	if not Tunables.get_bool("dormancy_enabled"):
+		if dormant_count > 0:
+			for ship in fleet.ships():
+				if is_instance_valid(ship) and ship.dormant:
+					ship.set_dormant(false)
+			dormant_count = 0
+		return
+
+	_dormancy_scan_t += delta
+	_dormancy_tick_t += delta
+	var do_scan := _dormancy_scan_t >= DORMANCY_SCAN_SECONDS
+	var tick_every := maxf(0.1, Tunables.get_num("dormant_tick_seconds"))
+	var do_tick := _dormancy_tick_t >= tick_every
+	if not do_scan and not do_tick:
+		return
+
+	var points := Dormancy.foci(self)
+	var sleep_at := Tunables.get_num("dormant_range_px")
+	# HYSTERESIS: wake closer in than you sleep out, or a body hovering on the
+	# boundary flips every scan — and each flip is a physics-space entry, the
+	# one thing this feature exists to avoid.
+	var wake_at := sleep_at * 0.8
+	var elapsed := _dormancy_tick_t
+	var count := 0
+
+	for ship in fleet.ships():
+		if not is_instance_valid(ship):
+			continue
+		if Dormancy.is_exempt(ship, self):
+			if ship.dormant:
+				ship.set_dormant(false)
+			continue
+		var d := Dormancy.distance_to_nearest(ship.global_position, points)
+		if d < 0.0:
+			# No focus at all: nothing to be far from, so nothing sleeps.
+			if ship.dormant:
+				_wake(ship)
+			continue
+		if do_scan:
+			if ship.dormant and d <= wake_at:
+				_wake(ship)
+			elif not ship.dormant and d > sleep_at:
+				ship.set_dormant(true)
+		if ship.dormant and do_tick:
+			_tick_dormant(ship, elapsed)
+		if ship.dormant:
+			count += 1
+
+	if do_scan:
+		_dormancy_scan_t = 0.0
+	if do_tick:
+		_dormancy_tick_t = 0.0
+	dormant_count = count
+
+
+## One slow step for a body that is out of the simulation: it COASTS. Nothing
+## here may touch the physics server — the body is not in the space — so the
+## motion is a plain transform write, and drag stands in for the solver so a
+## creature does not sail forever in a straight line while unobserved.
+func _tick_dormant(ship: Ship, elapsed: float) -> void:
+	ship.dormant_velocity = ship.dormant_velocity.lerp(
+		Vector2.ZERO, clampf(elapsed * 0.35, 0.0, 1.0))
+	if ship.dormant_velocity.length_squared() < 1.0:
+		return
+	ship.global_position += ship.dormant_velocity * elapsed
+
+
+## Rejoin the simulation, but never INSIDE the ground. A dormant body coasts
+## without collision, so it can drift into an island that was not there (or
+## not solid) when it went under; waking it in place would hand the solver a
+## deep penetration, which is precisely the cliff v0.41.1 was fixed for. So:
+## lift it clear first, using the terrain DATA (cheap, and correct even where
+## no chunk is promoted).
+func _wake(ship: Ship) -> void:
+	if terrain != null and is_instance_valid(terrain):
+		var lift := 0
+		while lift < 64 and terrain.is_solid(
+				terrain.world_to_cell(ship.global_position)):
+			ship.global_position.y -= terrain.cell_px()
+			lift += 1
+	ship.set_dormant(false)
+
+
 ## The player as BITEABLE prey: their body when they are standing in the open,
 ## null when there is nobody or they are PILOTING. A pilot rides inside the hull,
 ## and that hull is already what the mouth is chewing — billing the same grab to
@@ -2239,6 +2347,7 @@ func _physics_process(delta: float) -> void:
 	_enemy_fire(delta)
 	_enemy_pilot(delta)
 	_creature_swim(delta)
+	_update_dormancy(delta)
 	_handle_taming(delta)
 	_handle_riding(delta)
 	_handle_ridden_mining(delta)
