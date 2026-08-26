@@ -1,0 +1,23 @@
+# BASILISK EYRIE — the structure at a high-band basilisk site. Clean-room: a
+# scorched crag of shell plates ringing a nest of blubber and meat, the way a
+# thing that spits fire would build somewhere its own fire cannot take hold.
+#
+# Deliberately shell-heavy at the rim and soft in the middle: the fight is to
+# get past the plating to the nest, which is the same shape as the kraken den's
+# lesson (bring the ship's guns) at a lighter weight, because the top band is
+# reachable earlier than the deep.
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/nest_eyrie.ship
+#
+#   K  shell (the crag)   M  meat (the nest)   W  blubber   |  strut
+#
+# ONE connected piece — a nest is broken by taking half of it apart, and a
+# detached wing would fall away as its own wreck instead.
+
+origin 4 2
+
+.KK..KK.
+KKKWWKKK
+KKWMMWKK
+.KWMMWK.
+..K||K..

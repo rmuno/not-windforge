@@ -1,0 +1,27 @@
+# BASILISK — the sky serpent that spits fire (owner survey 2026-08-18: "flying
+# snake-looking things that spam fireballs... the fire is the main problem").
+# Clean-room: a long ribbon body, a shell-plated skull at the head, meat down
+# the spine, blubber along the flanks so it hangs in the air the way every
+# other creature here does.
+#
+# It is the reason fire exists as a system (v0.63.0): a whale rams, a kraken
+# grabs, and a basilisk sets your gasbags alight from a distance you have to
+# close. Its own head is armoured — you fight it from the side or the tail.
+#
+# Preview it without booting the game:
+#
+#   godot --headless --path . --script tools/ship_preview.gd -- ships/basilisk.ship
+#
+#   K  shell (the plated skull)   M  meat (spine)   W  blubber (flanks)
+#
+# Head to the RIGHT (Ship.visual_facing mirrors the drawing when it turns).
+# Keep it ONE connected ribbon — a severed tail should fall away as its own
+# piece, which the wall model already does for free.
+
+origin 12 2
+
+.....WWWWW..KKK
+WWWWWWMMMWWKKKK
+WWMMMMMMMMMKKKK
+.WWWWWMMMWWKKK.
+......WWWWW....
