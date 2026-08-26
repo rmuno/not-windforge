@@ -399,12 +399,19 @@ func _drop() -> void:
 	Input.action_release("move_down")
 
 
-# --- KNOWN-FAIL: the 8× exact-fit doorway ----------------------------------
+# --- DORMANT KNOWN-FAIL: the 8× exact-fit doorway ---------------------------
 #
-# KNOWN-FAIL, see the port report (2026-08-21). The native-8× starter's
-# doorways are 8 cells tall and the 8× player is 8 cells tall, so the
-# clearance is EXACTLY ZERO — "original-faithful exact fit", as
-# ships/starter.ship says in its own header. Measured on the shipped ship:
+# HISTORY, not a live warning (verified dormant 2026-08-25): the shipped
+# doorways now measure 144 px against a 128 px body, so `_snagged_on_exact_fit`
+# no longer fires and the 8× walkthrough passes clean. The machinery stays
+# because the exemption is keyed to the MEASURED condition, not to a scale —
+# re-author a door back down to an exact fit and it reappears by itself,
+# loudly, instead of the walk silently getting stuck.
+#
+# What it was, from the port report (2026-08-21). The native-8× starter's
+# doorways were 8 cells tall and the 8× player is 8 cells tall, so the
+# clearance was EXACTLY ZERO — "original-faithful exact fit", as
+# ships/starter.ship says in its own header. Measured then, on that ship:
 #
 #   doorway opening   local y -136.000 .. -8.000   = 128.000 px
 #   player body       SIZE.y                       = 128.000 px
@@ -418,8 +425,8 @@ func _drop() -> void:
 # more clearance — before the walk clears. `_try_step_up` cannot rescue it:
 # it wants STEP_HEIGHT (42.7 px) of headroom and the doorway has none.
 #
-# This is a REAL ship-walkability finding, not a test artefact, so the
-# assertion below is NOT weakened. It is reported as a KNOWN-FAIL (loud, but
+# It was a REAL ship-walkability finding, not a test artefact, so the
+# assertion below was NOT weakened. It is reported as a KNOWN-FAIL (loud, but
 # it does not redden the suite) and the walkthrough is nudged past the
 # doorway so the rest of the ship — deck seams, mast door, hatch drops,
 # belly exit — still gets walked instead of being lost as collateral.

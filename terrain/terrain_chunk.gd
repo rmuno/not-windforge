@@ -56,7 +56,16 @@ var rebuild_count := 0
 
 func rebuild() -> void:
 	rebuild_count += 1
-	var solid := {}
+	# ONE partition serves BOTH derivations (2026-08-25). The collider used to
+	# merge across TYPES — adjacent stone and dirt collapsing into a single
+	# rect — which meant a second dictionary holding every solid cell AND a
+	# second greedy pass over it: together about half the rebuild. Physics does
+	# not care what a rect is made of, only where it is, so the per-TYPE rects
+	# the renderer already needs make colliders just as well. The price on the
+	# live world is 27 → 51 static shapes, which the solver will never feel
+	# (they are static and never overlap); the COVERAGE is identical, because
+	# each solid cell lands in exactly one type's rect — the invariant the
+	# suite pins as collider_cell_count() == the chunk's solid cells.
 	var groups := {}  # type -> {local Vector2i: true}, spent by the merge below
 	# Read the chunk's bytes ONCE and index them directly, rather than calling
 	# terrain.cell_type() per cell — that path re-derives the chunk coord with
@@ -77,22 +86,27 @@ func rebuild() -> void:
 				var t: int = bytes[row + lx]
 				if not TerrainDB.is_solid(t):
 					continue
-				var lc := Vector2i(lx, ly)
-				solid[lc] = true
 				if not groups.has(t):
 					groups[t] = {}
-				(groups[t] as Dictionary)[lc] = true
+				(groups[t] as Dictionary)[Vector2i(lx, ly)] = true
 
-	# Drop the previous shapes immediately (not queue_free), so the merged
-	# coverage below is the only coverage the space sees this frame.
+	# The one merge, through the shared greedy helper the ship hull uses (never
+	# a second copy of the algorithm). It consumes each dict, so `groups` is
+	# spent here — nothing outside this call needs the cell sets again.
+	_draw_regions.clear()
+	var rects: Array[Rect2i] = []
+	for type in groups:
+		for r in Ship._greedy_rects(groups[type] as Dictionary):
+			_draw_regions.append([r, type])
+			rects.append(r)
+	_collider_rects = rects
+
+	# Drop the previous shapes immediately (not queue_free), so the coverage
+	# built below is the only coverage the space sees this frame.
 	for cs in _shapes:
 		remove_child(cs)
 		cs.free()
 	_shapes.clear()
-
-	# REUSE the ship hull's greedy merge (shared static helper) rather than
-	# duplicating the algorithm. It consumes the dict, so `solid` is spent here.
-	_collider_rects = Ship._greedy_rects(solid)
 	for r in _collider_rects:
 		var shape := RectangleShape2D.new()
 		shape.size = Vector2(r.size) * cell_px
@@ -101,13 +115,6 @@ func rebuild() -> void:
 		cs.position = (Vector2(r.position) + Vector2(r.size) * 0.5) * cell_px
 		add_child(cs)
 		_shapes.append(cs)
-
-	# Merge the draw regions here, consuming the groups: nothing outside this
-	# call ever needs the cell sets again.
-	_draw_regions.clear()
-	for type in groups:
-		for r in Ship._greedy_rects(groups[type] as Dictionary):
-			_draw_regions.append([r, type])
 
 	queue_redraw()
 

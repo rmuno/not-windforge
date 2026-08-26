@@ -7327,6 +7327,29 @@ func _test_chunk_bytes_feed_the_rebuild() -> void:
 			and painted.size() == chunk.collider_cell_count(),
 		"the cached draw regions partition the solid cells, each in its own type")
 
+	# ONE PARTITION SERVES BOTH (v0.56.1). The collider used to merge across
+	# types, which cost a second dictionary of every solid cell and a second
+	# greedy pass — about half the rebuild. Physics only cares WHERE a rect
+	# is, so the per-type rects do both jobs. What must stay true: identical
+	# coverage. The chunk here is deliberately two ADJACENT materials, which
+	# is exactly the case the cross-type merge used to collapse and this one
+	# must not lose.
+	_check(chunk._collider_rects.size() == chunk._draw_regions.size(),
+		"colliders and drawn regions are the SAME partition (%d vs %d)"
+			% [chunk._collider_rects.size(), chunk._draw_regions.size()])
+	var covered := {}
+	var overlap := false
+	for r in chunk._collider_rects:
+		for y in r.size.y:
+			for x in r.size.x:
+				var cc := r.position + Vector2i(x, y)
+				if covered.has(cc):
+					overlap = true
+				covered[cc] = true
+	_check(not overlap and covered.size() == 9 * 5 + 9 * 2,
+		"the collider still covers every solid cell exactly once across the "
+			+ "stone/dirt seam (%d cells, overlap %s)" % [covered.size(), overlap])
+
 	# Dig the whole lot out. The array survives (dug cells are AIR bytes), so
 	# this is the "was solid, now empty" path, not the never-written one.
 	for y in range(3, 10):
