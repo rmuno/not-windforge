@@ -141,6 +141,7 @@ func _initialize() -> void:
 	await _test_balloons_are_crafted_items()
 	await _test_machine_bundles_geometry()
 	await _test_redraws_and_rebuilds_are_batched()
+	await _test_harvest_rebuilds_coalesce_per_frame()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
 	await _test_map_view_toggles_visibility()
@@ -6807,6 +6808,53 @@ func _test_redraws_and_rebuilds_are_batched() -> void:
 	beast.queue_free()
 	hull.queue_free()
 	s8.queue_free()
+	await _step(1)
+
+
+## HARVEST joins the coalesced flush (owner lag audit 2026-08-25 — the last
+## rebuild storm): carving a corpse paid a full O(cells) rebuild + an island
+## scan per harvested cell. Yields, breach flags and the grid itself stay
+## immediate; the derived body and the severance resolve wait for the frame's
+## single flush — and a harvest that DISCONNECTS flesh still severs there.
+func _test_harvest_rebuilds_coalesce_per_frame() -> void:
+	_t("harvesting N cells is one deferred rebuild; disconnection still severs")
+
+	# A 1x7 flesh strand, dead — harvestable end to end.
+	var cells := {}
+	for x in 7:
+		cells[Vector2i(x, 0)] = BlockDB.Type.MEAT
+	var corpse := _make_ship(cells)
+	corpse.position = Vector2(-60000, 0)
+	corpse.shared_health_max = 100.0
+	corpse.shared_health = 0.0
+	corpse.rebuild()
+	await process_frame  # settle the initial state through one flush
+
+	var rb0: int = corpse.rebuild_count
+	_check(corpse.harvest_cell(Vector2i(0, 0)) == ItemDB.Product.MEAT,
+		"the first cell yields immediately")
+	_check(corpse.harvest_cell(Vector2i(1, 0)) == ItemDB.Product.MEAT,
+		"and the second, same frame")
+	_check(not corpse.has_block(Vector2i(0, 0)) and not corpse.has_block(Vector2i(1, 0)),
+		"both cells leave the grid at once (yields/reach read the truth)")
+	_check(corpse.rebuild_count == rb0,
+		"but ZERO rebuilds have run yet (was: one full rebuild PER cell)")
+	await process_frame
+	_check(corpse.rebuild_count == rb0 + 1,
+		"the frame's flush pays exactly ONE (%d)" % (corpse.rebuild_count - rb0))
+
+	# Disconnection: harvest the strand's middle — the far side must sever
+	# off this body at the SAME flush, exactly as the per-cell path did.
+	var before: int = corpse.blocks.size()
+	_check(corpse.harvest_cell(Vector2i(4, 0)) == ItemDB.Product.MEAT,
+		"the bridge cell harvests")
+	_check(corpse.blocks.size() == before - 1, "and leaves the grid at once")
+	await process_frame
+	_check(corpse.blocks.size() == 2,
+		"the flush severed the disconnected tail off this body (%d cells stay)"
+			% corpse.blocks.size())
+
+	corpse.queue_free()
 	await _step(1)
 
 

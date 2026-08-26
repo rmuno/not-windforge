@@ -479,6 +479,10 @@ var _pending_impacts: Array[Dictionary] = []
 ## to 1 (the whale-carcass FPS cliff). Structural changes that CAN sever
 ## (remove_block, deconstruct, mining, severing) still rebuild immediately.
 var _rebuild_dirty := false
+## Deferred SEVERING to resolve with the coalesced rebuild — set by paths
+## that remove WALLS (harvest); combat deaths never sever (walls hold), so
+## the plain _rebuild_dirty flush stays severance-free.
+var _sever_dirty := false
 
 ## The hull collision shapes and their grid-space rects, kept parallel and in
 ## step by _rebuild_collider / _add_hull_shape. Combat damage on plain bulk
@@ -720,7 +724,16 @@ func harvest_cell(cell: Vector2i) -> int:
 	# because the cavity map has to be read off a body that still encloses it.
 	if not _cavity_breached and _breaches_cavity(cell):
 		_cavity_breached = true
-	remove_block(cell)
+	# DEFERRED into the coalesced _process flush (owner lag audit 2026-08-25,
+	# the last rebuild storm): harvesting paid a full O(cells) rebuild + an
+	# island scan PER CELL — ~90-190 ms per swing on a big corpse. The block
+	# and wall are gone IMMEDIATELY (yields/breach/reach all read the grid);
+	# only the derived body (collider/mass/glyphs) and the severance resolve
+	# wait for the frame's single flush — the same one-frame contract as
+	# terrain edits (v0.52.0).
+	remove_block(cell, false)
+	_rebuild_dirty = true
+	_sever_dirty = true
 	return product
 
 
@@ -1811,6 +1824,9 @@ func _process(_delta: float) -> void:
 		if _rebuild_dirty:
 			_rebuild_dirty = false
 			rebuild()
+			if _sever_dirty:  # a harvest removed walls — resolve once
+				_sever_dirty = false
+				_resolve_severing()
 		return
 	var impacts := _pending_impacts.duplicate()
 	_pending_impacts.clear()
@@ -1949,6 +1965,9 @@ func _process(_delta: float) -> void:
 	if _rebuild_dirty:
 		_rebuild_dirty = false
 		rebuild()
+		if _sever_dirty:  # harvested walls this frame — one severance pass
+			_sever_dirty = false
+			_resolve_severing()
 
 
 ## Is this contact the creature's own charge landing? The normal of a hit
