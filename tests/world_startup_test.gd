@@ -905,6 +905,26 @@ func _check_save_load(world: Node) -> void:
 	terr.place(g, TerrainDB.Type.STONE)
 	_ok(terr.is_solid(g), "placed cell G is solid before saving")
 
+	# THE NEW BODIES MUST SURVIVE THE ROUND TRIP AS THEMSELVES. A save rebuilds
+	# every ship from its payload, so anything set AFTER the spawn is lost
+	# unless it rides that payload — the trap that left an untagged sky of
+	# ex-residents in v0.61.0. A nest and a basilisk each carry state the world
+	# reads back: `is_nest` (which re-freezes it), `spawn_site`, and
+	# `creature_kind` (which decides WHICH BRAIN it gets on the other side).
+	var probe_site := Vector2i(-44, 9)
+	var nest_before: Ship = world._build_nest(
+		{"coord": probe_site, "pos": pl.global_position + Vector2(3000.0, -900.0),
+			"kind": SpawnSites.Kind.BANDIT_ROOST}, "res://ships/nest_roost.ship")
+	var beast_before = world.debug_spawn("basilisk",
+		pl.global_position + Vector2(-3000.0, -900.0))
+	if beast_before != null:
+		beast_before.from_spawn_site = true
+		beast_before.spawn_site = probe_site
+	_ok(nest_before != null and nest_before.freeze,
+		"a nest stands frozen before the save")
+
+	# Counted AFTER the probe bodies exist: they are in the save too, so the
+	# "fleet restored" check below has to expect them back.
 	var ships_before: int = fleet.ships().size()
 
 	# A CLEARED SPAWN SITE is the one piece of site state worth persisting —
@@ -930,6 +950,33 @@ func _check_save_load(world: Node) -> void:
 	# leave alone.
 	world.set("_site_state", {})
 	_ok(world.load_game(slot), "the world loaded from disk")
+	# The nest and the basilisk come back as what they were.
+	var nest_after: Ship = null
+	var beast_after: Ship = null
+	for ship in fleet.ships():
+		if not is_instance_valid(ship):
+			continue
+		if (ship as Ship).is_nest:
+			nest_after = ship
+		if (ship as Ship).creature_kind == "basilisk":
+			beast_after = ship
+	_ok(nest_after != null and nest_after.freeze,
+		"a NEST reloads as a nest, still frozen where it was raised")
+	_ok(nest_after != null and nest_after.spawn_site == probe_site,
+		"...still belonging to its place")
+	_ok(beast_after != null and beast_after.from_spawn_site
+			and beast_after.spawn_site == probe_site,
+		"a site RESIDENT reloads still tagged to the site that made it")
+	_ok(beast_after != null and world._whale_ai_for(beast_after) is BasiliskAI,
+		"...and a basilisk reloads with the basilisk BRAIN, not the whale one")
+	# Freed WITHOUT awaiting a frame: the checks below still compare the
+	# player's restored position against the exact pixel it was saved at, and a
+	# single physics frame of gravity is enough to fail that.
+	if nest_after != null:
+		nest_after.queue_free()
+	if beast_after != null:
+		beast_after.queue_free()
+
 	var back: PackedInt32Array = world.cleared_sites()
 	var found_cleared := false
 	for i in range(0, back.size(), 2):
