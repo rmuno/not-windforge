@@ -288,6 +288,11 @@ static func encode_ship(ship: Object) -> Dictionary:
 		"tame_level": int(p["tame_level"]),
 		"ride_speed_mult": float(p["ride_speed_mult"]),
 		"creature_kind": String(p["creature_kind"]),
+		# Which world-anchored spawn site this body came from, so a loaded world
+		# can still reclaim its far population instead of accumulating it.
+		"from_site": bool(p["from_site"]),
+		"site_x": int(p["site_x"]),
+		"site_y": int(p["site_y"]),
 		"blueprint": _ints(p["blueprint"]),
 		"walls": _ints(p["walls"]),
 		"balloons": _ints(p["balloons"]),
@@ -323,6 +328,11 @@ static func spawn_ship_from_encoded(fleet: Object, sd: Dictionary) -> Object:
 		# Which creature brain (a kraken keeps its two-ended KrakenAI + untameable
 		# status). Absent in a legacy save → "" → a plain whale-brained creature.
 		"creature_kind": String(sd.get("creature_kind", "")),
+		# Site residency. Absent in a legacy save → not a resident, which is
+		# exactly how every pre-sites world behaved.
+		"from_site": bool(sd.get("from_site", false)),
+		"site_x": int(sd.get("site_x", 0)),
+		"site_y": int(sd.get("site_y", 0)),
 		"blueprint": _dec_ints(sd.get("blueprint", [])),
 		# Absent in a pre-walls (legacy) save → empty → from_data derives walls
 		# from the footprint, exactly as it always did. A modern save carries the

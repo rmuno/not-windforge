@@ -228,6 +228,13 @@ func _initialize() -> void:
 	var tr = world.get("_trainer")
 	_ok(tr != null and is_instance_valid(tr), "a trainer station was planted in the world")
 
+	# WORLD-ANCHORED POPULATION OFF for the rest of the suite. Sites are ON in
+	# the shipped game (charter §4) but every check below teleports a focus
+	# somewhere and then counts the ships it finds, and a site doing its job
+	# would put residents into those counts. _check_spawn_sites turns it on for
+	# exactly as long as it needs, and this is restored at the end.
+	Tunables.set_value("spawn_sites_enabled", false)
+
 	_check_kraken_prey(world, fleet)
 	_check_mining(world)
 	_check_placing(world)
@@ -238,6 +245,7 @@ func _initialize() -> void:
 	await _check_progression(world)
 	await _check_save_load(world)
 	await _check_taming(world, fleet)
+	await _check_spawn_sites(world, fleet)
 	await _check_debug_window(world, fleet)
 	await _check_lava_core(world, fleet)
 
@@ -1207,6 +1215,82 @@ func _check_hosting_after_offline_play(world: Node, fleet) -> void:
 ## Fleet, the whale's health comes from the live tunable, and mine_power changes
 ## dig-time. Runs BEFORE hosting (authority-only path) and frees what it spawns so
 ## the hosting-rehome count is unchanged.
+
+## WORLD-ANCHORED SPAWN SITES against the REAL world (charter §4, v0.61.0).
+## The unit test owns the site arithmetic — determinism, band rules, bounds.
+## What only the live world can show is the LOOP: fly to a place, its residents
+## come out (up to its pool and no further), and a resident carried far from
+## everyone is reclaimed instead of accumulating across the sky forever.
+func _check_spawn_sites(world: Node, fleet) -> void:
+	var pl = world.get("player")
+	if pl == null or pl.is_piloting():
+		return
+	var rect: Rect2 = world.get("_world_rect")
+	if rect.size.y <= 0.0:
+		return
+	var sites: Array = SpawnSites.near([pl.global_position], 400000.0,
+		world.get("world_seed"), rect, float(world.get("world_scale")))
+	if sites.is_empty():
+		_ok(false, "the world holds at least one spawn site within reach")
+		return
+	var site: Dictionary = sites[0]
+	var pool: int = site["pool"]
+
+	# Fast levers so the loop is testable in seconds rather than minutes.
+	Tunables.set_value("spawn_sites_enabled", true)
+	Tunables.set_value("site_release_seconds", 0.0)
+	Tunables.set_value("site_regen_seconds", 5.0)
+	var home: Vector2 = pl.global_position
+	pl.global_position = (site["pos"] as Vector2) + Vector2(0.0, -1500.0)
+	for i in 260:
+		await world.get_tree().physics_frame
+
+	# Count the residents of THIS site: more than one site can be in range at
+	# once, and each answers for its own pool.
+	var residents: Array = []
+	var mine: Array = []
+	for ship in (fleet.call("ships") as Array):
+		if is_instance_valid(ship) and (ship as Ship).from_spawn_site:
+			residents.append(ship)
+			if (ship as Ship).spawn_site == site["coord"]:
+				mine.append(ship)
+	_ok(mine.size() > 0,
+		"flying to a %s puts its residents out (%d here, %d across every site in range)"
+			% [SpawnSites.kind_name(site["kind"]), mine.size(), residents.size()])
+	_ok(mine.size() <= pool,
+		"...up to its pool and no further (%d <= %d)" % [mine.size(), pool])
+	var capped := residents.size() <= Tunables.get_int("site_max_residents")
+	_ok(capped, "...and the world-wide cap holds across every site (%d <= %d)"
+		% [residents.size(), Tunables.get_int("site_max_residents")])
+	_ok(not world.discovered_sites().is_empty(),
+		"...and the place is now on the map (%d discovered)"
+			% world.discovered_sites().size())
+
+	# RECLAIM. A resident that ends up far from everyone is freed and its stock
+	# returned — without it a long flight leaves a trail of dormant bodies.
+	if not mine.is_empty():
+		var victim := mine[0] as Ship
+		var id := victim.get_instance_id()
+		victim.global_position = (site["pos"] as Vector2) 			+ Vector2(Tunables.get_num("site_reclaim_px") * 3.0, 0.0)
+		victim.set_dormant(true)
+		for i in 130:
+			await world.get_tree().physics_frame
+		_ok(instance_from_id(id) == null or not is_instance_valid(instance_from_id(id)),
+			"a wild resident carried far from everyone is reclaimed, not kept forever")
+
+	# Leave the world exactly as it was found — the later checks count the
+	# authored pod and a stray resident would fail them. Sites OFF first, then
+	# sweep every resident (the passes above kept releasing while we waited).
+	Tunables.set_value("spawn_sites_enabled", false)
+	pl.global_position = home
+	Tunables.reset("site_release_seconds")
+	Tunables.reset("site_regen_seconds")
+	for ship in (fleet.call("ships") as Array):
+		if is_instance_valid(ship) and (ship as Ship).from_spawn_site:
+			(ship as Ship).queue_free()
+	for i in 5:
+		await world.get_tree().physics_frame
+
 func _check_debug_window(world: Node, fleet) -> void:
 	var pl = world.get("player")
 	var terr = world.get("terrain")
@@ -1384,6 +1468,11 @@ func _check_debug_window(world: Node, fleet) -> void:
 	# Clean up: reset the levers and free the debug spawns (their crew frees with
 	# them), so the hosting-rehome test sees the original fleet.
 	Tunables.reset_all()
+	# ...but leave the world-anchored population OFF: the checks after this one
+	# teleport foci across the sky and count the ships they find, and a site
+	# doing its job would put residents into those counts. _check_spawn_sites
+	# turns it on for exactly as long as it needs it.
+	Tunables.set_value("spawn_sites_enabled", false)
 	if hulk != null:
 		hulk.queue_free()
 	if whale != null:

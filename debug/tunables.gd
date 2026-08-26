@@ -112,6 +112,24 @@ const _REGISTRY := [
 		"min": 2000.0, "max": 60000.0, "step": 500.0},           # world._update_dormancy
 	{"id": "dormant_tick_seconds", "label": "Dormant tick (s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 3.0, "min": 0.5, "max": 30.0, "step": 0.5},
+	# --- Spawn sites (charter §4: population lives in the world) -------------
+	{"id": "spawn_sites_enabled", "label": "World spawn sites (danger has a place)",
+		"group": "World", "kind": KIND_BOOL, "default": true},   # world._update_spawn_sites
+	{"id": "site_activate_px", "label": "Site activation range (px)",
+		"group": "World", "kind": KIND_FLOAT, "default": 9000.0, "min": 1000.0,
+		"max": 40000.0, "step": 500.0},   # inside dormancy's wake range on purpose
+	{"id": "site_max_residents", "label": "Site residents alive at once (cap)",
+		"group": "World", "kind": KIND_INT, "default": 12, "min": 0, "max": 60,
+		"step": 1},   # world._resident_count — the safety net under the pools
+	{"id": "site_release_seconds", "label": "Site releases one resident every (s)",
+		"group": "World", "kind": KIND_FLOAT, "default": 12.0, "min": 0.0,
+		"max": 120.0, "step": 1.0},   # world._tick_site — a site fills up, never dumps
+	{"id": "site_regen_seconds", "label": "Site regrows one resident (s)",
+		"group": "World", "kind": KIND_FLOAT, "default": 240.0, "min": 5.0,
+		"max": 1800.0, "step": 5.0},
+	{"id": "site_reclaim_px", "label": "Reclaim a far resident (px)",
+		"group": "World", "kind": KIND_FLOAT, "default": 45000.0, "min": 15000.0,
+		"max": 200000.0, "step": 5000.0},
 	{"id": "dormant_drift_mult", "label": "Far migration speed (0 = hold still)",
 		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 5.0,
 		"step": 0.1},   # world._migrate_dormant × Dormancy.MIGRATE_SPEED

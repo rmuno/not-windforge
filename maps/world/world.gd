@@ -1879,6 +1879,195 @@ func _wake(ship: Ship) -> void:
 	ship.set_dormant(false)
 
 
+# --- World-anchored spawn sites (charter §4) --------------------------------
+#
+# "Population lives in the world, never around the camera." Until this, every
+# living thing in the game spawned ONCE, at world build, beside the player's
+# ship: fly an hour in any direction and the sky was empty, so danger was not a
+# property of place but a property of the starting room.
+#
+# A site is a pure function of the world seed and a lattice cell
+# (combat/spawn_sites.gd) — never a node, never saved. What lives here is the
+# small amount of state a VISITED site accumulates: how many residents it has
+# out, how much stock it has left to give, and when it may give the next one.
+# Sites the player has never approached have no entry and cost nothing.
+#
+# The two interlocks that keep it honest:
+#   * ACTIVATION is inside dormancy's wake range, so a new resident is awake and
+#     simulated, and far outside the camera, so nothing is ever seen appearing.
+#   * RECLAIM frees a wild resident that ends up far from every focus and gives
+#     its stock back. Without it a long flight leaves a trail of dormant bodies
+#     and the node count only ever grows — the resident-world rule (far regions
+#     completely inert) applied to population instead of terrain.
+
+## Seconds between site passes. Sites change on the scale of minutes; a pass
+## walks a bounded box of lattice cells and must not run every frame.
+const SITE_SCAN_SECONDS := 1.0
+
+## Visited sites: lattice coord -> {stock, residents (instance ids), next_release,
+## seen_at}. Also the DISCOVERY record the map reads — a site is in here exactly
+## because the player has been near it. Session state today; carrying it into the
+## save file is a documented seam (like the tunable overrides).
+var _site_state := {}
+var _site_scan_t := 0.0
+## The site clock. Regen is computed from time ELAPSED between visits rather than
+## ticked per site, so a site the player has not seen for ten minutes recovers
+## correctly the moment they come back without anything having run meanwhile.
+var _site_clock := 0.0
+
+
+func _update_spawn_sites(delta: float) -> void:
+	if not Net.is_server() or fleet == null or not is_instance_valid(fleet):
+		return
+	if not Tunables.get_bool("spawn_sites_enabled"):
+		return
+	if _world_rect.size.y <= 0.0:
+		return  # no framed world yet — nothing to anchor to
+	_site_scan_t += delta
+	if _site_scan_t < SITE_SCAN_SECONDS:
+		return
+	var elapsed := _site_scan_t
+	_site_scan_t = 0.0
+	_site_clock += elapsed
+
+	var points := Dormancy.foci(self)
+	if points.is_empty():
+		return
+	# RAW px, deliberately NOT scaled by world_scale: this is a perception
+	# range, and it has to stay inside dormancy's wake range (which is raw px
+	# too) or a site would put its residents out already asleep and keep going.
+	var radius := Tunables.get_num("site_activate_px")
+	var budget := Tunables.get_int("site_max_residents") - _resident_count()
+	for site in SpawnSites.near(points, radius, world_seed, _world_rect,
+			float(world_scale)):
+		if _tick_site(site, points, radius, budget > 0):
+			budget -= 1
+	_reclaim_far_residents(points)
+
+
+## How many site residents are alive right now, anywhere. The GLOBAL cap this
+## feeds is the safety net under the per-site pools: the lattice spacing and the
+## activation range together decide how many sites can ever be live at once, and
+## a tuning slip in either (or a 1x world small enough that everything overlaps)
+## would otherwise let the population climb until the physics step felt it.
+func _resident_count() -> int:
+	var n := 0
+	for ship in fleet.ships():
+		if is_instance_valid(ship) and ship.from_spawn_site:
+			n += 1
+	return n
+
+
+## One site's pass: recover what it grew while unwatched, forget residents that
+## have died, and release one more if it is owed one.
+## Returns whether it released a resident this pass.
+func _tick_site(site: Dictionary, points: Array, radius: float,
+		may_release: bool) -> bool:
+	var coord: Vector2i = site["coord"]
+	var pool: int = site["pool"]
+	var st: Dictionary = _site_state.get(coord, {
+		"stock": pool, "pool": pool, "residents": [], "next_release": 0.0,
+		"seen_at": _site_clock})
+
+	# REGEN. Whole units only, with the remainder carried, so stock recovers at
+	# exactly one per regen interval however the visits are spaced.
+	var regen := maxf(1.0, Tunables.get_num("site_regen_seconds"))
+	var away: float = _site_clock - float(st["seen_at"])
+	var gained := int(away / regen)
+	if gained > 0:
+		st["stock"] = mini(pool, int(st["stock"]) + gained)
+		st["seen_at"] = float(st["seen_at"]) + gained * regen
+	if int(st["stock"]) >= pool:
+		st["seen_at"] = _site_clock  # full: nothing to carry
+
+	# Residents that no longer exist are no longer this site's problem. Stock is
+	# NOT returned here — a killed resident stays killed until the site regrows
+	# it, which is what makes clearing a nest mean something.
+	var live: Array = []
+	for id in st["residents"]:
+		var body := instance_from_id(int(id))
+		if body != null and is_instance_valid(body) and (body as Node).is_inside_tree():
+			live.append(id)
+	st["residents"] = live
+
+	var released := false
+	var d := Dormancy.distance_to_nearest(site["pos"] as Vector2, points)
+	if may_release and d >= 0.0 and d <= radius and live.size() < pool 			and int(st["stock"]) > 0 and _site_clock >= float(st["next_release"]):
+		var body := _release_resident(site, live.size())
+		if body != null:
+			st["stock"] = int(st["stock"]) - 1
+			st["next_release"] = _site_clock 				+ maxf(0.0, Tunables.get_num("site_release_seconds"))
+			live.append(body.get_instance_id())
+			released = true
+	_site_state[coord] = st
+	return released
+
+
+## Put one resident of the site's kind into the world. Reuses the same spawn
+## paths the arena and the debug window use, so a site resident is an ordinary,
+## correctly-collidered, correctly-crewed body from the instant it appears.
+func _release_resident(site: Dictionary, index: int) -> Ship:
+	var pos := SpawnSites.resident_pos(site, index, world_seed, float(world_scale))
+	var body: Ship = null
+	match site["kind"]:
+		SpawnSites.Kind.WHALE_GROUND:
+			var rng := RandomNumberGenerator.new()
+			rng.seed = hash([world_seed, site["coord"], index])
+			body = _spawn_one_whale(WhaleSpawn.pick_plan(rng), pos)
+		SpawnSites.Kind.CRITTER_MEADOW:
+			body = _spawn_one_critter(pos)
+		SpawnSites.Kind.BANDIT_ROOST:
+			body = _spawn_hulk_at(pos)
+		SpawnSites.Kind.KRAKEN_DEN:
+			body = _spawn_one_kraken(
+				KRAKEN_PLANS[index % KRAKEN_PLANS.size()], pos)
+	if body != null:
+		body.spawn_site = site["coord"]
+		body.from_spawn_site = true
+	return body
+
+
+## Free wild residents that have ended up far from everyone, returning their
+## stock to the site that made them. Never touches something the player has a
+## relationship with: a tamed creature, a carcass (that is loot the player
+## left), or anything still awake.
+func _reclaim_far_residents(points: Array) -> void:
+	var limit := Tunables.get_num("site_reclaim_px")  # raw px, as above
+	for ship in fleet.ships():
+		if not is_instance_valid(ship) or not ship.from_spawn_site:
+			continue
+		if not ship.dormant:
+			continue
+		if ship.faction == 0 or ship.is_carcass():
+			continue  # tamed, captured, or a corpse someone may come back for
+		if Dormancy.distance_to_nearest(ship.global_position, points) <= limit:
+			continue
+		# The stock goes back: this resident was never killed, only carried
+		# out of the world's reach, and a site the player merely flew past
+		# must not end up permanently thinned.
+		var st: Variant = _site_state.get(ship.spawn_site)
+		if st != null:
+			var d: Dictionary = st
+			d["stock"] = mini(int(d.get("pool", 1)), int(d["stock"]) + 1)
+			_site_state[ship.spawn_site] = d
+		ship.queue_free()
+
+
+## Every site the player has been near, for the map. The state dictionary IS the
+## discovery record — an entry exists exactly because a pass found the site
+## within activation range of a focus.
+func discovered_sites() -> Array:
+	var out: Array = []
+	if _world_rect.size.y <= 0.0:
+		return out
+	for coord in _site_state:
+		var site := SpawnSites.site_at(coord, world_seed, _world_rect,
+			float(world_scale))
+		if not site.is_empty():
+			out.append(site)
+	return out
+
+
 ## The player as BITEABLE prey: their body when they are standing in the open,
 ## null when there is nobody or they are PILOTING. A pilot rides inside the hull,
 ## and that hull is already what the mouth is chewing — billing the same grab to
@@ -2388,6 +2577,7 @@ func _physics_process(delta: float) -> void:
 	_enemy_pilot(delta)
 	_creature_swim(delta)
 	_update_dormancy(delta)
+	_update_spawn_sites(delta)
 	_handle_taming(delta)
 	_handle_riding(delta)
 	_handle_ridden_mining(delta)

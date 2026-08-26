@@ -150,6 +150,7 @@ func _initialize() -> void:
 	await _test_physics_census_reports_the_step()
 	await _test_dormancy_leaves_and_rejoins_the_simulation()
 	await _test_dormant_creatures_migrate_in_a_circuit()
+	await _test_spawn_sites_are_places()
 	await _test_chunk_bytes_feed_the_rebuild()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
@@ -206,6 +207,18 @@ func _check(condition: bool, detail: String) -> void:
 		print("    ok   %s" % detail)
 	else:
 		_failures += 1
+		print("    FAIL %s   [%s]" % [detail, _current])
+
+
+## A check that only speaks up in aggregate — for loops over hundreds of cases
+## where one line each would bury the log. Failures are counted; the caller
+## asserts the count.
+var _quiet_failures := 0
+
+
+func _check_quiet(condition: bool, detail: String) -> void:
+	if not condition:
+		_quiet_failures += 1
 		print("    FAIL %s   [%s]" % [detail, _current])
 
 
@@ -7239,6 +7252,126 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	beast.queue_free()
 	yard.queue_free()
 	await _step(1)
+
+
+## WORLD-ANCHORED SPAWN SITES (charter §4, v0.61.0). "Population lives in the
+## world, never around the camera" is the hardest architectural rule this
+## project has, and until this the game broke it in a quiet way: every living
+## thing spawned once, at world build, beside the player. What is pinned here
+## is that a site is a PLACE — the same seed puts the same population in the
+## same spot forever — and that what lives there is decided by the BAND, which
+## is what makes altitude mean something.
+func _test_spawn_sites_are_places() -> void:
+	_t("spawn sites: a place, not a ring — deterministic, band-decided, bounded")
+
+	var rect := Rect2(Vector2(-600000.0, -450000.0), Vector2(1200000.0, 900000.0))
+	var coord := Vector2i(7, 5)
+
+	# THE PLACE PROPERTY. Same seed, same site, forever — asked twice and asked
+	# from a different lattice cell's scan, it is the same population in the
+	# same spot. This is what lets a player learn a route.
+	var a := SpawnSites.site_at(coord, 4242, rect, 8.0)
+	var b := SpawnSites.site_at(coord, 4242, rect, 8.0)
+	_check(a == b, "a site is a pure function of (seed, cell) — asked twice, identical")
+	var differs := 0
+	for i in 40:
+		var x := SpawnSites.site_at(Vector2i(i, 3), 4242, rect, 8.0)
+		var y := SpawnSites.site_at(Vector2i(i, 3), 99, rect, 8.0)
+		if x != y:
+			differs += 1
+	_check(differs > 10, "a different world seed is a different sky (%d/40 cells differ)"
+		% differs)
+
+	# Not every cell holds one — an empty sky between places is what makes a
+	# place a place.
+	var occupied := 0
+	var kinds := {}
+	for cy in 22:
+		for cx in 30:
+			var site := SpawnSites.site_at(Vector2i(cx, cy), 4242, rect, 8.0)
+			if site.is_empty():
+				continue
+			occupied += 1
+			kinds[site["kind"]] = int(kinds.get(site["kind"], 0)) + 1
+			# BAND RULES. Nothing lives in the lava floor; krakens are a deep
+			# thing; whales are never below the green band (WORLD_SPEC).
+			var frac: float = clampf(
+				(rect.end.y - (site["pos"] as Vector2).y) / rect.size.y, 0.0, 1.0)
+			var band := Airspace.band_at_frac(frac)
+			_check_quiet(band != Airspace.Band.LAVA, "nothing lives in the lava floor")
+			if site["kind"] == SpawnSites.Kind.KRAKEN_DEN:
+				_check_quiet(band == Airspace.Band.DEEP or band == Airspace.Band.GAP_LOW,
+					"kraken dens are deep")
+			if site["kind"] == SpawnSites.Kind.WHALE_GROUND:
+				_check_quiet(band == Airspace.Band.TOP or band == Airspace.Band.GAP_HIGH
+					or band == Airspace.Band.MID, "whale grounds are never below the green band")
+	_check(_quiet_failures == 0,
+		"every site obeys its band (%d sites checked, %d violations)"
+			% [occupied, _quiet_failures])
+	_check(occupied > 100 and occupied < 660,
+		"the lattice is populated but not solid (%d of 660 cells)" % occupied)
+	_check(kinds.size() >= 3,
+		"the sky holds several kinds of place (%d)" % kinds.size())
+
+	# `near` is the only enumeration that ever runs, and it must answer with
+	# what is actually near — a ring of sites round the world would be the
+	# camera-ring failure wearing a different hat.
+	var focus := rect.get_center()
+	var near := SpawnSites.near([focus], 90000.0, 4242, rect, 8.0)
+	var all_close := true
+	for site in near:
+		if focus.distance_to(site["pos"] as Vector2) > 90000.0:
+			all_close = false
+	_check(all_close, "near() returns only what is genuinely near (%d sites)" % near.size())
+	_check(SpawnSites.near([focus], 0.0, 4242, rect, 8.0).is_empty(),
+		"...and nothing at zero range")
+
+	# A pool is spread out, deterministically: residents do not appear stacked
+	# in one spot, and the same site puts them in the same places.
+	if not near.is_empty():
+		var site: Dictionary = near[0]
+		var p0 := SpawnSites.resident_pos(site, 0, 4242, 8.0)
+		var p1 := SpawnSites.resident_pos(site, 1, 4242, 8.0)
+		_check(p0 != p1 and p0 == SpawnSites.resident_pos(site, 0, 4242, 8.0),
+			"residents are scattered around the site, and always the same way")
+		_check(p0.distance_to(site["pos"] as Vector2)
+				< SpawnSites.LATTICE * 8.0, "...and never further than the next site")
+		_check(SpawnSites.pool_for(site["kind"]) > 0,
+			"a real site holds somebody (%s, pool %d)"
+				% [SpawnSites.kind_name(site["kind"]), SpawnSites.pool_for(site["kind"])])
+	_check(SpawnSites.pool_for(SpawnSites.Kind.NONE) == 0, "an empty cell holds nobody")
+
+	# No world, no sites: every test scene without a framed sky is unaffected.
+	_check(SpawnSites.site_at(coord, 4242, Rect2(), 8.0).is_empty(),
+		"with no framed world there are no sites at all")
+
+	# RESIDENCY RIDES THE PAYLOAD. It has to: hosting REHOMES every offline ship
+	# through from_data, and a post-spawn field exists on the server only
+	# (AGENTS.md → "everything a peer needs must be in the spawn payload"). This
+	# was found the hard way — an untagged sky of ex-residents that nothing
+	# could ever reclaim.
+	var res := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	res.from_spawn_site = true
+	res.spawn_site = Vector2i(-3, 7)
+	var payload := res.to_payload()
+	var clone := Ship.from_data(payload)
+	_check(clone.from_spawn_site and clone.spawn_site == Vector2i(-3, 7),
+		"site residency survives the spawn payload (the hosting rehome)")
+	var encoded := SaveGame.encode_ship(res)
+	_check(bool(encoded.get("from_site", false))
+			and int(encoded.get("site_x", 0)) == -3
+			and int(encoded.get("site_y", 0)) == 7,
+		"...and the save file, so a loaded world can still reclaim its population")
+	var old_payload := payload.duplicate()
+	old_payload.erase("from_site")
+	old_payload.erase("site_x")
+	old_payload.erase("site_y")
+	var legacy := Ship.from_data(old_payload)
+	_check(not legacy.from_spawn_site,
+		"a legacy payload with no site is simply not a resident")
+	res.queue_free()
+	clone.queue_free()
+	legacy.queue_free()
 
 
 ## ACTING WHILE FAR AWAY (v0.60.0). v0.58.0 gave a dormant body "exist" and
