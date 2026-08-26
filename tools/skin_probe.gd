@@ -84,10 +84,15 @@ func _probe(ship) -> void:
 ## rect + one border per region; a strut region emits one pair per column,
 ## which _greedy_rects does not know, so this counts REGIONS: the ratio
 ## between designs is what matters and it is unaffected).
+## Base art PLUS the wound overlay — both are rects the canvas item retains.
+## Counting only `groups` would flatter the v0.69.1 split, which moved the
+## damage shading out of the base merge and into its own pass.
 func _rects_of(ship, plan: Dictionary) -> int:
 	var n := 0
 	for key in plan["groups"]:
 		n += ship._greedy_rects(plan["groups"][key]["cells"]).size()
+	for shade in plan["wounds"]:
+		n += ship._greedy_rects(plan["wounds"][shade]["cells"]).size()
 	return n
 
 

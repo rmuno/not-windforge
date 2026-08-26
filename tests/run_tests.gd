@@ -8031,6 +8031,9 @@ func _paint_regions(ship: Ship) -> int:
 		var plan: Dictionary = ship.sector_paint_plan(sec.cells)
 		for key in (plan["groups"] as Dictionary):
 			n += ship._greedy_rects((plan["groups"][key] as Dictionary)["cells"]).size()
+		# The wound overlay retains rects of its own (v0.69.1).
+		for shade in (plan["wounds"] as Dictionary):
+			n += ship._greedy_rects((plan["wounds"][shade] as Dictionary)["cells"]).size()
 	return n
 
 

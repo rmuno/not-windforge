@@ -1147,6 +1147,16 @@ func _check_taming(world: Node, fleet) -> void:
 		"re-grappling a tamed whale re-mounts it INSTANTLY (no re-bond) — the inert-whale fix")
 	_ok(p.grapple_latched(),
 		"and the grapple stays latched while riding — it is the leash, not consumed")
+	# THE HOOK IS THE REINS, and the HUD says so (owner 2026-08-26: "rideable
+	# creatures don't need a panel to be controlled from"). They never did —
+	# a creature has no helm and WASD routes straight into its AI — but the
+	# only status line the game had said AT THE HELM, so the mode was invisible.
+	world._update_hud(Vector2i.ZERO)
+	var ride_hud: String = world.hud.text
+	_ok(ride_hud.contains("RIDING") and ride_hud.contains("WASD"),
+		"the HUD names RIDING as its own control mode, steered by WASD")
+	_ok(not ride_hud.contains("AT THE HELM"),
+		"...and never claims a helm the beast does not have")
 	# Let go of the hook (RMB) → the ride ends on the next loop tick, no F.
 	p.release_grapple()
 	world._handle_taming(0.016)
