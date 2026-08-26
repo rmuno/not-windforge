@@ -149,6 +149,7 @@ func _initialize() -> void:
 	await _test_attitude_reads_the_same_in_world_and_map()
 	await _test_physics_census_reports_the_step()
 	await _test_dormancy_leaves_and_rejoins_the_simulation()
+	await _test_dormant_creatures_migrate_in_a_circuit()
 	await _test_chunk_bytes_feed_the_rebuild()
 	await _test_hud_cues_show_only_usable_actions()
 	await _test_fog_of_war_reveals_by_distance()
@@ -7237,6 +7238,84 @@ func _test_skin_sectors_partition_and_localise_redraws() -> void:
 	s8.queue_free()
 	beast.queue_free()
 	yard.queue_free()
+	await _step(1)
+
+
+## ACTING WHILE FAR AWAY (v0.60.0). v0.58.0 gave a dormant body "exist" and
+## "persevere"; this is "act". A dormant LIVING creature walks a slow circuit
+## around where it went under, so the sky you come back to has moved on. The
+## properties that make it safe are the ones pinned here: the circuit CLOSES
+## (nothing wanders out of the world over a long session), a POD shares one
+## (creatures that went under together are together when you return), and an
+## object — a carcass, a wreck — does NOT migrate, because a thing that walked
+## off while you were away is a lost thing, not a living world.
+func _test_dormant_creatures_migrate_in_a_circuit() -> void:
+	_t("dormancy: a far creature migrates in a closing circuit; objects hold still")
+
+	var anchor := Vector2(4000.0, -2000.0)
+	var v0 := Dormancy.migrate_velocity(anchor, 0.0, 1.0)
+	_check(v0.length() > 0.0 and v0.length() <= Dormancy.MIGRATE_SPEED + 0.001,
+		"a dormant creature cruises at up to MIGRATE_SPEED (%.1f px/s)" % v0.length())
+	_check(absf(v0.y) <= absf(v0.x) + 0.001 or absf(v0.y) <= Dormancy.MIGRATE_SPEED
+			* Dormancy.MIGRATE_FLATTEN + 0.001,
+		"...and mostly sideways — creatures roam, they do not porpoise")
+
+	# The circuit CLOSES: integrate a full period and it comes home. This is
+	# what keeps a long session from emptying the neighbourhood.
+	var pos := Vector2.ZERO
+	var steps := 420
+	var dt := Dormancy.MIGRATE_PERIOD / float(steps)
+	for i in steps:
+		pos += Dormancy.migrate_velocity(anchor, i * dt, 1.0) * dt
+	_check(pos.length() < Dormancy.MIGRATE_SPEED * Dormancy.MIGRATE_PERIOD * 0.02,
+		"a full circuit returns to where it started (drift %.1f px over %.0f s)"
+			% [pos.length(), Dormancy.MIGRATE_PERIOD])
+
+	# A POD shares a circuit; a creature a long way off walks a different one.
+	var podmate := anchor + Vector2(400.0, 120.0)
+	var far := anchor + Vector2(Dormancy.POD_GRID * 3.0, 0.0)
+	var mate_v := Dormancy.migrate_velocity(podmate, 17.0, 1.0)
+	_check(mate_v.is_equal_approx(Dormancy.migrate_velocity(anchor, 17.0, 1.0)),
+		"a pod migrates together — same anchor cell, same circuit")
+	var apart := 0
+	for i in 8:
+		var a := Dormancy.migrate_velocity(far, i * 30.0, 1.0)
+		var b := Dormancy.migrate_velocity(anchor, i * 30.0, 1.0)
+		if not a.is_equal_approx(b):
+			apart += 1
+	_check(apart > 0, "a pod three grid cells away walks its own circuit")
+
+	# Who migrates. A living creature does; a carcass and a vessel do not.
+	var cells := {}
+	for x in 6:
+		cells[Vector2i(x, 0)] = BlockDB.Type.HULL
+	var beast := _make_ship(cells)
+	beast.position = Vector2(-120000, 0)
+	beast.shared_health_max = 100.0
+	beast.shared_health = 40.0
+	_check(Dormancy.migrates(beast), "a living creature migrates")
+	beast.shared_health = 0.0
+	_check(not Dormancy.migrates(beast), "a carcass does not — an object stays put")
+	beast.shared_health_max = 0.0
+	_check(not Dormancy.migrates(beast), "and neither does a vessel")
+
+	# The sky it is kept inside. With no sky at all (the Sprint-1 arena) the
+	# clamp is identity, so nothing that never had bands gets moved by it.
+	var saved: Rect2 = Airspace.bounds
+	Airspace.bounds = Rect2()
+	_check(Dormancy.keep_in_world(Vector2(1.0e9, -1.0e9)) == Vector2(1.0e9, -1.0e9),
+		"with no sky, the migration clamp is identity")
+	Airspace.bounds = Rect2(Vector2(-10000.0, -10000.0), Vector2(20000.0, 20000.0))
+	var high := Dormancy.keep_in_world(Vector2(0.0, -999999.0))
+	var low := Dormancy.keep_in_world(Vector2(0.0, 999999.0))
+	_check(Airspace.altitude_frac(high.y) <= Dormancy.MIGRATE_CEIL_FRAC + 0.001
+			and Airspace.altitude_frac(low.y) >= Dormancy.MIGRATE_FLOOR_FRAC - 0.001,
+		"a migration never carries a creature into the lava floor or the ceiling")
+	_check(Dormancy.keep_in_world(Vector2(1.0e9, 0.0)).x < Airspace.bounds.end.x,
+		"...nor out through the world's side")
+	Airspace.bounds = saved
+
+	beast.queue_free()
 	await _step(1)
 
 
