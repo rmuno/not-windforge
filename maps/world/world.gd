@@ -144,6 +144,13 @@ const QUICKSAVE_NAME := "quicksave"
 ## player has highlighted for load (Up/Down move it, Enter loads it).
 var _save_panel: PanelContainer
 var _save_panel_label: Label
+## Hold-B build picker (maps/world/build_picker.gd) + the press clock that
+## tells a HOLD from a TAP. A tap cycles on RELEASE now (not on press), so the
+## same key can disambiguate — an imperceptible change for a tap, and the only
+## way one key serves both.
+var _build_picker: BuildPicker
+var _b_press_msec := -1.0
+const B_HOLD_SECONDS := 0.16
 var _save_selected := 0
 
 ## The world is a BOUNDED box so flying can't drift off into endless empty sky —
@@ -313,6 +320,11 @@ func _ready() -> void:
 	_save_panel = _build_save_panel()
 	layer.add_child(_save_panel)
 
+	# The build PICKER (hold B): the palette as a grid, hidden until held.
+	_build_picker = BuildPicker.new()
+	_build_picker.world = self
+	layer.add_child(_build_picker)
+
 	# Build readout, floated at the cursor. Hidden until the ghost is up.
 	_ghost_label = Label.new()
 	_ghost_label.add_theme_font_size_override("font_size", 13)
@@ -434,7 +446,7 @@ func _build_help_panel() -> PanelContainer:
 		"LMB shoot    RMB grapple (W/S reel, jump to sling; hold a whale to TAME it, release to let go)",
 		"RIDING: the HOOK is the reins — no helm, no panel. Hold a tamed beast",
 		"  with RMB and WASD steers it; let go of the hook and you step off.",
-		"Q place    B next thing to place — blocks, terrain, balloons (Shift+B back)    C remove",
+		"Q place    B pick what to place (TAP cycles · HOLD for the grid · Shift+B back)    C remove",
 		"Z mine / harvest (hold)    X repair AND smother fire (hold, sweep)",
 		"M craft    N next recipe    Shift+M craft all — the deep's air needs an Aether Lung",
 		"K character sheet (at a trainer: 1-4 train, 0 sell salvage)    Tab map",
@@ -1469,6 +1481,8 @@ func _spawn_crewman(ship: Ship, station_key: String, role: String) -> void:
 ## on its own — every mouse-driven world verb checks this first. The always-on HUD
 ## Controls use MOUSE_FILTER_IGNORE, so they never register as hovered here.
 func _ui_wants_mouse() -> bool:
+	if _build_picker != null and _build_picker.is_open():
+		return true  # the grid owns the cursor: no shooting/placing THROUGH it
 	var vp := get_viewport()
 	return vp != null and vp.gui_get_hovered_control() != null
 
@@ -3255,11 +3269,10 @@ func _process(_delta: float) -> void:
 		_pickups.update(_delta)
 	_handle_mining(_delta)
 	_handle_placing(_delta)
-	# B -- THE cycle key (owner 2026-08-25 consolidation): one selection for
-	# everything Q places. Shift+B steps backwards. Before the no-ship return,
-	# so the palette works on foot in an empty sky too.
-	if Input.is_action_just_pressed("build_cycle"):
-		_cycle_build(-1 if Input.is_key_pressed(KEY_SHIFT) else 1)
+	# B -- TAP cycles, HOLD opens the picker (owner 2026-08-26). Both place what
+	# Q places; the weapon is never in here (LMB shoots unconditionally). Before
+	# the no-ship return, so the palette works on foot in an empty sky too.
+	_update_build_picker()
 	_handle_crafting()
 	# Handled before anything else, so they still work when the rest is broken.
 	if Input.is_action_just_pressed("quit_game"):
@@ -4256,6 +4269,99 @@ func _palette_index(palette: Array) -> int:
 					or bool(palette[i].get("rot", false)) == build_rot):
 			return i
 	return -1
+
+
+## Drive the hold-B picker: a press starts the clock, crossing B_HOLD_SECONDS
+## opens the grid, and RELEASE either commits the hovered cell (if the grid is
+## up) or — for a quick tap — cycles one step. Shift+tap cycles backward.
+func _update_build_picker() -> void:
+	if _build_picker == null:
+		return
+	if Input.is_action_just_pressed("build_cycle"):
+		_b_press_msec = Time.get_ticks_msec()
+	# Held long enough, and no other modal owns the screen → open.
+	if _b_press_msec >= 0.0 and not _build_picker.is_open() and _modal_open() == false:
+		var held := Input.is_action_pressed("build_cycle")
+		var elapsed := Time.get_ticks_msec() - _b_press_msec
+		if held and elapsed >= B_HOLD_SECONDS * 1000.0:
+			_build_picker.open()
+	if Input.is_action_just_released("build_cycle"):
+		if _build_picker.is_open():
+			var pick := _build_picker.hovered_entry()
+			if not pick.is_empty():
+				select_build(pick["kind"], int(pick["id"]),
+					bool(pick.get("rot", false)))
+				_notify(build_selection_label())
+			_build_picker.close()
+		elif _b_press_msec >= 0.0:
+			# A tap (released before the grid opened): cycle, as B always did.
+			_cycle_build(-1 if Input.is_key_pressed(KEY_SHIFT) else 1)
+		_b_press_msec = -1.0
+
+
+## Is a full-screen panel already up? The picker yields to them rather than
+## drawing over the help/saves/character overlays.
+func _modal_open() -> bool:
+	if _help_panel != null and _help_panel.visible:
+		return true
+	if _save_panel != null and _save_panel.visible:
+		return true
+	return _character_sheet != null and _character_sheet.visible
+
+
+## The palette as GROUPED, labelled, swatched entries for the hold-B picker —
+## the same `_build_palette` the cycle walks, sorted into the grid's rows and
+## annotated with what the cell has to show (name, colour, stock, and whether
+## it is the current pick). Presentation data only; committing goes through
+## select_build, exactly like the cycle.
+func build_picker_model() -> Array:
+	var groups := {
+		"block": {"title": "BLOCKS", "entries": []},
+		"terrain": {"title": "MATERIALS", "entries": []},
+		"balloon": {"title": "BALLOONS", "entries": []},
+	}
+	for e in _build_palette():
+		var kind: String = e["kind"]
+		if groups.has(kind):
+			(groups[kind]["entries"] as Array).append(_picker_entry(e))
+	var out: Array = []
+	for kind in ["block", "terrain", "balloon"]:
+		if not (groups[kind]["entries"] as Array).is_empty():
+			out.append(groups[kind])
+	return out
+
+
+## One palette entry, dressed for the grid: label (with a bundle's dims and a
+## rotated tag), swatch colour, a stock count where one applies (-1 = none),
+## and whether it is what Q places right now.
+func _picker_entry(e: Dictionary) -> Dictionary:
+	var kind: String = e["kind"]
+	var id := int(e["id"])
+	var rot := bool(e.get("rot", false))
+	var label := "?"
+	var color := Color.WHITE
+	var count := -1
+	match kind:
+		"block":
+			label = str(BlockDB.get_def(id)["name"])
+			var dims := BlockDB.bundle_dims(id, float(world_scale), rot)
+			if dims != Vector2i.ONE:
+				label += "  %dx%d" % [dims.x, dims.y]
+			color = BlockDB.color_of(id)
+		"terrain":
+			label = ItemDB.name_of(id)
+			color = ItemDB.color_of(id)
+			count = 0
+			if player != null and is_instance_valid(player) and player.inventory != null:
+				count = player.inventory.count(id)
+		"balloon":
+			label = _balloon_size_name(id).capitalize()
+			color = Color(0.70, 0.80, 0.92)
+			count = _balloon_stock(id)
+	var same_rot: bool = kind != "block" or rot == build_rot
+	var current: bool = kind == _sel_kind and id == _sel_id() and same_rot
+	return {"kind": kind, "id": id, "rot": rot, "label": label,
+		"color": color, "count": count, "current": current}
 
 
 ## B: step the selection through the palette (dir = +-1), with a one-line cue so

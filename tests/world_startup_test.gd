@@ -907,6 +907,59 @@ func _check_unified_controls(world: Node) -> void:
 	_ok(world.build_selection_label().begins_with("place: Stone"),
 		"and the terrain (%s)" % world.build_selection_label())
 	world.select_build("block", BlockDB.Type.HULL)
+
+	# --- HOLD-B PICKER: the grid is the cycle, grouped (owner 2026-08-26) -----
+	# The picker paints `build_picker_model`, which is the SAME `_build_palette`
+	# sorted into rows — so anything the cycle can reach, the grid can, and a
+	# choice commits through the same select_build. Rebuild the pack first (the
+	# spent-stack block above emptied it) so all three groups are present.
+	pl.inventory.add(TerrainDB.Type.STONE, 5)
+	pl.inventory.add(ItemDB.balloon_item_for(Ship.BalloonSize.SMALL), 1)
+	var model: Array = world.build_picker_model()
+	var titles: Array = []
+	var model_count := 0
+	for g in model:
+		titles.append(str(g["title"]))
+		model_count += (g["entries"] as Array).size()
+	_ok(titles == ["BLOCKS", "MATERIALS", "BALLOONS"],
+		"the picker groups the palette into blocks, materials and balloons")
+	_ok(model_count == world._build_palette().size(),
+		"and every palette entry is in exactly one group (%d == %d)"
+			% [model_count, world._build_palette().size()])
+	# Every entry carries what a cell has to draw, and the CURRENT pick is marked.
+	world.select_build("block", BlockDB.Type.HULL)
+	var hull_marked := false
+	var any_labelled := true
+	for g in world.build_picker_model():
+		for e in g["entries"]:
+			if str(e["label"]) == "":
+				any_labelled = false
+			if e["kind"] == "block" and int(e["id"]) == BlockDB.Type.HULL:
+				hull_marked = bool(e["current"])
+	_ok(any_labelled, "every picker cell has a label to draw")
+	_ok(hull_marked, "the current selection is flagged so the grid can outline it")
+	# A material shows its stock; a spent one dims to x0 but stays in the grid.
+	var stone_count := -1
+	for g in world.build_picker_model():
+		for e in g["entries"]:
+			if e["kind"] == "terrain" and int(e["id"]) == TerrainDB.Type.STONE:
+				stone_count = int(e["count"])
+	_ok(stone_count == pl.inventory.count(TerrainDB.Type.STONE),
+		"a material cell shows the carried count (%d)" % stone_count)
+
+	# Choosing a cell is choosing that entry — hovered_entry() would return one
+	# of these dicts, and the world commits it exactly like the cycle.
+	var target: Dictionary = {}
+	for g in world.build_picker_model():
+		for e in g["entries"]:
+			if e["kind"] == "balloon":
+				target = e
+	if not target.is_empty():
+		world.select_build(target["kind"], int(target["id"]),
+			bool(target.get("rot", false)))
+		_ok(world._sel_kind == "balloon",
+			"committing a picked cell selects it (the release-to-choose path)")
+	world.select_build("block", BlockDB.Type.HULL)
 	pl.inventory.clear()
 
 
