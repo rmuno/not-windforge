@@ -1753,6 +1753,12 @@ var dormant_count := 0
 ## script was ~2 ms and physics was 30–87 ms.
 ##
 ## Authority only. A client never decides what exists; it receives poses.
+## The world clock a dormant migration is a function of. Advanced only by the
+## dormant tick, so the circuit is deterministic in (anchor, clock) — no RNG
+## state to save and no divergence between peers.
+var _dormant_clock := 0.0
+
+
 func _update_dormancy(delta: float) -> void:
 	if not Net.is_server() or fleet == null:
 		return
@@ -1779,6 +1785,8 @@ func _update_dormancy(delta: float) -> void:
 	# one thing this feature exists to avoid.
 	var wake_at := sleep_at * 0.8
 	var elapsed := _dormancy_tick_t
+	if do_tick:
+		_dormant_clock += elapsed
 	var count := 0
 
 	for ship in fleet.ships():
@@ -1811,16 +1819,48 @@ func _update_dormancy(delta: float) -> void:
 	dormant_count = count
 
 
-## One slow step for a body that is out of the simulation: it COASTS. Nothing
-## here may touch the physics server — the body is not in the space — so the
-## motion is a plain transform write, and drag stands in for the solver so a
-## creature does not sail forever in a straight line while unobserved.
+## One slow step for a body that is out of the simulation. Nothing here may
+## touch the physics server — the body is not in the space — so the motion is a
+## plain transform write.
+##
+## A LIVING creature MIGRATES: it walks a slow circuit around where it went
+## under (Dormancy — the "act while far away" half of the owner's request), and
+## mends while nobody is watching. Everything else COASTS to a stop, with drag
+## standing in for the solver so a wreck does not sail forever in a straight
+## line unobserved.
 func _tick_dormant(ship: Ship, elapsed: float) -> void:
+	if Dormancy.migrates(ship):
+		_migrate_dormant(ship, elapsed)
+		return
 	ship.dormant_velocity = ship.dormant_velocity.lerp(
 		Vector2.ZERO, clampf(elapsed * 0.35, 0.0, 1.0))
 	if ship.dormant_velocity.length_squared() < 1.0:
 		return
 	ship.global_position += ship.dormant_velocity * elapsed
+
+
+## A dormant creature's slow step: move along its circuit, keep to its sky, and
+## mend. The creature's brain gets its new position as `home` so waking does not
+## make it swim all the way back to where you last saw it — the roam resumes
+## where the migration arrived.
+func _migrate_dormant(ship: Ship, elapsed: float) -> void:
+	var drift := Tunables.get_num("dormant_drift_mult")
+	if drift > 0.0:
+		var v := Dormancy.migrate_velocity(
+			ship.dormant_anchor, _dormant_clock, ship.scale_unit) * drift
+		ship.global_position = Dormancy.keep_in_world(
+			ship.global_position + v * elapsed)
+		# It arrives moving, not stopped: waking restores dormant_velocity.
+		ship.dormant_velocity = v
+		if ship.faction == 2:
+			_whale_ai_for(ship).home = ship.global_position
+	# PERSEVERE: a wounded creature mends out of sight. Only the shared pool —
+	# a carcass never comes back (migrates() already excluded one), and
+	# per-cell damage stays where the fight left it.
+	var heal := Tunables.get_num("dormant_heal_per_min") / 60.0 * elapsed
+	if heal > 0.0 and ship.shared_health < ship.shared_health_max:
+		ship.shared_health = minf(ship.shared_health_max,
+			ship.shared_health + heal * ship.shared_health_max)
 
 
 ## Rejoin the simulation, but never INSIDE the ground. A dormant body coasts

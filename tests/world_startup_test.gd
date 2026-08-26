@@ -1233,6 +1233,30 @@ func _check_debug_window(world: Node, fleet) -> void:
 		_ok(world.dormant_count >= 1,
 			"...and the world counts it (%d) for the F2 census" % world.dormant_count)
 
+		# ACTING WHILE FAR AWAY (v0.60.0). The unit test owns the circuit's
+		# arithmetic; what only the live world can show is that the dormant
+		# TICK actually drives it -- the creature moves, its brain's `home`
+		# follows it there (so waking does not send it swimming back to where
+		# you last saw it), and it mends while nobody is watching.
+		Tunables.set_value("dormant_tick_seconds", 0.5)
+		Tunables.set_value("dormant_heal_per_min", 60.0)
+		sleeper.shared_health = sleeper.shared_health_max * 0.25
+		var was_at: Vector2 = sleeper.global_position
+		var was_hp: float = sleeper.shared_health
+		for i in 90:
+			await world.get_tree().physics_frame
+		_ok(sleeper.global_position.distance_to(was_at) > 1.0,
+			"a dormant creature MIGRATES while you are away (%.0f px)"
+				% sleeper.global_position.distance_to(was_at))
+		_ok(world._whale_ai_for(sleeper).home.distance_to(
+				sleeper.global_position) < 1.0,
+			"...and its roam resumes where it arrived, not where you left it")
+		_ok(sleeper.shared_health > was_hp,
+			"...and a wound mends out of sight (%.0f -> %.0f)"
+				% [was_hp, sleeper.shared_health])
+		Tunables.reset("dormant_heal_per_min")
+		Tunables.reset("dormant_tick_seconds")
+
 		# NEVER the ship you are standing on, however far it is from anyone.
 		var mine = world.get("local_ship")
 		_ok(mine == null or not mine.dormant,

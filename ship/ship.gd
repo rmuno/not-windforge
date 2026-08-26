@@ -1093,6 +1093,12 @@ var dormant := false
 ## through the slow tick.
 var dormant_velocity := Vector2.ZERO
 
+## Where this body was standing when it went under. A dormant creature MIGRATES
+## in a slow loop around it (Dormancy.migrate_velocity), so the anchor has to be
+## stable — deriving the loop from the moving position instead would turn a
+## circuit into a random walk, and a pod would scatter over a long session.
+var dormant_anchor := Vector2.ZERO
+
 
 ## Leave (or rejoin) the physics simulation.
 ##
@@ -1114,6 +1120,7 @@ func set_dormant(on: bool) -> void:
 	dormant = on
 	if on:
 		dormant_velocity = linear_velocity
+		dormant_anchor = global_position
 		process_mode = Node.PROCESS_MODE_DISABLED
 	else:
 		process_mode = Node.PROCESS_MODE_INHERIT

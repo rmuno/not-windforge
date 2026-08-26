@@ -112,6 +112,12 @@ const _REGISTRY := [
 		"min": 2000.0, "max": 60000.0, "step": 500.0},           # world._update_dormancy
 	{"id": "dormant_tick_seconds", "label": "Dormant tick (s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 3.0, "min": 0.5, "max": 30.0, "step": 0.5},
+	{"id": "dormant_drift_mult", "label": "Far migration speed (0 = hold still)",
+		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 5.0,
+		"step": 0.1},   # world._migrate_dormant × Dormancy.MIGRATE_SPEED
+	{"id": "dormant_heal_per_min", "label": "Far creature mending (pool frac/min)",
+		"group": "World", "kind": KIND_FLOAT, "default": 0.05, "min": 0.0, "max": 1.0,
+		"step": 0.01},  # world._migrate_dormant — a wounded creature mends out of sight
 	{"id": "mine_power", "label": "Mining power (hp/s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 240.0, "min": 10.0, "max": 2000.0, "step": 10.0},  # world.MINE_POWER
 	{"id": "mine_reach_cells", "label": "Mining reach (cells)", "group": "World",

@@ -91,3 +91,84 @@ static func distance_to_nearest(pos: Vector2, points: Array) -> float:
 	for p in points:
 		best = minf(best, pos.distance_to(p as Vector2))
 	return best
+
+
+# --- Acting while far away (v0.60.0) ----------------------------------------
+#
+# The owner asked for things that "exist, persevere, and act while far away".
+# v0.58.0 delivered exist and persevere: a dormant body keeps its grid, its
+# damage and its allegiance, and coasts to a stop on the slow tick. That is
+# where "act" was missing — everything you flew away from was holding its
+# breath until you came back, which is the same still life the feature was
+# meant to end.
+#
+# So a dormant LIVING creature MIGRATES. Three properties it has to have, and
+# each one is why the shape below is what it is:
+#
+#   * It must not depopulate the sky. A straight heading empties the
+#     neighbourhood over a long session and never refills it, so the heading
+#     TURNS at a constant rate: the creature walks a slow circuit and stays in
+#     its region of the world. Radius is speed x period / TAU -- about 14k px
+#     at the shipped 8x, roughly the dormancy range itself.
+#   * A POD has to stay a pod. The phase comes from the ANCHOR quantised to a
+#     coarse grid, so creatures that went under together share a circuit and
+#     are still together when you return. (The anchor is the position at sleep,
+#     kept on the Ship, precisely so the circuit does not degrade into a random
+#     walk as the body moves.)
+#   * It must not migrate somewhere it could never swim. The vertical component
+#     is flattened -- whales roam sideways, they do not porpoise across bands --
+#     and the altitude is clamped clear of the lava floor and the ceiling.
+#
+# Deterministic in (anchor, t): no RNG state to save, no divergence between
+# peers, and a test can assert the exact position after an hour of absence.
+
+## Cruise speed, unscaled px/s (x scale_unit) -- a drifting mountain.
+const MIGRATE_SPEED := 26.0
+## Seconds for one full circuit of the heading.
+const MIGRATE_PERIOD := 420.0
+## Vertical component of the circuit, as a fraction of the horizontal.
+const MIGRATE_FLATTEN := 0.25
+## Altitude fractions a migration will not carry a creature past (0 = floor).
+## Below the first is the lava band; above the second is the hard ceiling.
+const MIGRATE_FLOOR_FRAC := 0.10
+const MIGRATE_CEIL_FRAC := 0.95
+## How coarse "the same pod" is, in px. Anything that went under within one
+## cell of this grid shares a circuit.
+const POD_GRID := 6000.0
+
+
+## Does this body migrate while dormant? A LIVING creature does. A carcass, a
+## wreck and an abandoned vessel do not -- they are objects, and an object that
+## wandered off while you were away is a lost object, not a living world.
+static func migrates(ship: Ship) -> bool:
+	if ship == null or not is_instance_valid(ship):
+		return false
+	return ship.shared_health_max > 0.0 and ship.shared_health > 0.0
+
+
+## The phase of the circuit a body anchored here walks. Quantised so a pod
+## shares one.
+static func pod_phase(anchor: Vector2) -> float:
+	var q := Vector2i(floori(anchor.x / POD_GRID), floori(anchor.y / POD_GRID))
+	return float(absi(hash(q)) % 3600) / 3600.0 * TAU
+
+
+## The velocity of a dormant creature anchored at `anchor`, `t` seconds into
+## the world's dormant clock.
+static func migrate_velocity(anchor: Vector2, t: float, scale_unit: float) -> Vector2:
+	var a := pod_phase(anchor) + TAU * t / MIGRATE_PERIOD
+	return Vector2(cos(a), sin(a) * MIGRATE_FLATTEN) * MIGRATE_SPEED * maxf(scale_unit, 1.0)
+
+
+## Keep a migrating body inside the sky it belongs to. Without a sky (the
+## Sprint-1 arena, and every test that does not build one) this is identity.
+static func keep_in_world(pos: Vector2) -> Vector2:
+	if not Airspace.active():
+		return pos
+	var b: Rect2 = Airspace.bounds
+	var margin: float = minf(b.size.x, b.size.y) * 0.01
+	return Vector2(
+		clampf(pos.x, b.position.x + margin, b.end.x - margin),
+		clampf(pos.y,
+			b.end.y - MIGRATE_CEIL_FRAC * b.size.y,
+			b.end.y - MIGRATE_FLOOR_FRAC * b.size.y))
