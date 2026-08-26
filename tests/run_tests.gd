@@ -7672,6 +7672,27 @@ func _test_spawn_sites_are_places() -> void:
 			and SpawnSites.nest_faction(SpawnSites.Kind.KRAKEN_DEN) == 2,
 		"a roost is people who shoot at you; a den is wildlife")
 
+	# A BROKEN NEST PAYS OUT (v0.65.2). Charter §4 wants clearing a place to
+	# mean something, and safety alone is a thin reward for a fight. Every cache
+	# is a bundle of goods that ALREADY EXIST — the item budget is an open owner
+	# question ("49 distinct items after only 30 minutes. Plainly excessive"),
+	# so a new site kind must never mint a new item id.
+	for k in [SpawnSites.Kind.BANDIT_ROOST, SpawnSites.Kind.KRAKEN_DEN,
+			SpawnSites.Kind.CRITTER_MEADOW, SpawnSites.Kind.BASILISK_EYRIE]:
+		var cache: Array = SpawnSites.nest_cache(k)
+		_check(cache.size() >= 2 and cache.size() % 2 == 0,
+			"a %s cache is a flat [item, count] bundle (%d entries)"
+				% [SpawnSites.kind_name(k), cache.size() / 2])
+		var named := true
+		var i := 0
+		while i + 1 < cache.size():
+			if ItemDB.name_of(int(cache[i])) == "" or int(cache[i + 1]) <= 0:
+				named = false
+			i += 2
+		_check(named, "...of goods that already exist, in real quantities")
+	_check(SpawnSites.nest_cache(SpawnSites.Kind.WHALE_GROUND).is_empty(),
+		"a place with no nest has nothing to spill")
+
 	# RESIDENCY RIDES THE PAYLOAD. It has to: hosting REHOMES every offline ship
 	# through from_data, and a post-spawn field exists on the server only
 	# (AGENTS.md → "everything a peer needs must be in the spawn payload"). This

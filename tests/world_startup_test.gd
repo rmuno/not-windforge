@@ -1404,6 +1404,7 @@ func _check_spawn_sites(world: Node, fleet) -> void:
 			# shot path, and it deliberately does not touch the blueprint —
 			# remove_block would, and a nest that edits its own blueprint as it
 			# dies can never read as "less than half of what it was".
+			var carried: int = pl.inventory.total() if pl.inventory != null else 0
 			var doomed: Array = nest.blocks.keys()
 			for i in range(0, int(doomed.size() * 0.7)):
 				nest.net_damage_cell(doomed[i], 1.0e6)
@@ -1415,6 +1416,9 @@ func _check_spawn_sites(world: Node, fleet) -> void:
 				if Vector2i(flat[i], flat[i + 1]) == nest_site["coord"]:
 					found = true
 			_ok(found, "breaking the nest clears the place for good")
+			_ok(pl.inventory == null or pl.inventory.total() > carried,
+				"...and its cache spills into your pack (%d -> %d items)"
+					% [carried, pl.inventory.total() if pl.inventory != null else 0])
 			var after := 0
 			for ship in (fleet.call("ships") as Array):
 				if is_instance_valid(ship) and (ship as Ship).from_spawn_site 						and (ship as Ship).spawn_site == nest_site["coord"] 						and not (ship as Ship).is_nest:
