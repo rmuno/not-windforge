@@ -2248,6 +2248,21 @@ func _apply_creature_tint() -> void:
 		(_skin_sectors[coord] as ShipSkinSector).self_modulate = tint
 
 
+## How many skin tiles this body currently paints from, and how many repaints
+## they have been ASKED for since it was built. Both are already counted for
+## the tests; these expose them to the F2 Perf readout, which is where the
+## owner sees a hitch while it is happening (standing order 2026-08-24).
+func skin_tile_count() -> int:
+	return _skin_sectors.size()
+
+
+func skin_repaints() -> int:
+	var n := 0
+	for coord in _skin_sectors:
+		n += (_skin_sectors[coord] as ShipSkinSector).invalidations
+	return n
+
+
 ## Whole-body invalidation: every sector + the glyphs.
 func _invalidate_skin() -> void:
 	for coord in _skin_sectors:

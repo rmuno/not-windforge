@@ -122,6 +122,13 @@ func collider_cell_count() -> int:
 	return n
 
 
+## How many rects this chunk's repaint emits (each costs a fill AND a border
+## command, both RETAINED and replayed every frame). Surfaced in the F2 Perf
+## readout beside the ship totals.
+func draw_region_count() -> int:
+	return _draw_regions.size()
+
+
 func _draw() -> void:
 	# Batched placeholder art, same idiom as the ship skin: one filled rect per
 	# contiguous same-type region, plus a darker border. The regions were

@@ -8464,6 +8464,32 @@ func _test_debug_window_toggles_and_switches_tabs() -> void:
 	win.set_tab(0)
 	_check(win.active_tab() == 0, "and back to the first")
 
+	# THE PERF READOUT (v0.55.3). It is the only place the cost picture is
+	# visible while PLAYING, which is the only place a hitch can be reported
+	# from — so it must survive the cold path (no world attached at all) and
+	# must not re-walk the whole world every frame.
+	var cold := win._perf_text()
+	for heading in ["FPS:", "Draws:", "Ships:", "Terrain:", "per second"]:
+		_check(cold.contains(heading),
+			"the readout names '%s' even with no world attached" % heading)
+	_check(cold.contains("chunk rebuilds") and cold.contains("ship rebuilds")
+			and cold.contains("repaints"),
+		"...and lists the three churn rates a stutter is actually made of")
+
+	# The sampling gate: walking every ship and chunk is not a per-frame job
+	# (the project has paid for an observer effect once already).
+	win.visible = true
+	win._perf_label.text = "STALE"
+	win._process(DebugWindow.PERF_SAMPLE * 0.4)
+	_check(win._perf_label.text == "STALE",
+		"a frame inside the sample window costs nothing (no re-walk)")
+	win._process(DebugWindow.PERF_SAMPLE)
+	_check(win._perf_label.text != "STALE", "and the readout refreshes past it")
+	win.visible = false
+	win._perf_label.text = "HIDDEN"
+	win._process(DebugWindow.PERF_SAMPLE * 10.0)
+	_check(win._perf_label.text == "HIDDEN", "a CLOSED window samples nothing at all")
+
 	win.queue_free()
 	await process_frame
 

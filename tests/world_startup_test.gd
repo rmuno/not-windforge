@@ -1206,6 +1206,39 @@ func _check_debug_window(world: Node, fleet) -> void:
 	if pl.is_piloting():
 		pl.disembark()
 
+	# THE PERF READOUT against a REAL world (v0.55.3). Headless has no
+	# renderer, but every number here is a script-side count, so the live
+	# world is exactly where it can be checked.
+	var win := DebugWindow.new()
+	win.world = world
+	world.add_child(win)
+	await world.get_tree().process_frame
+	var before_text: String = win._perf_text(0.25)
+	_ok(before_text.contains("Ships:    %-6d" % fleet.ships().size()),
+		"the Perf readout reports the live ship count")
+	var promoted := 0
+	for c in terr.get_children():
+		if c is TerrainChunk:
+			promoted += 1
+	_ok(promoted > 0 and before_text.contains("Terrain:  %-6d  chunks" % promoted),
+		"...and the promoted chunk count (%d)" % promoted)
+
+	# A rebuild storm must SHOW as a rate: that is the whole point of the
+	# block. Force some chunk rebuilds between two samples.
+	var storm := 0
+	for c in terr.get_children():
+		if c is TerrainChunk:
+			(c as TerrainChunk).rebuild()
+			storm += 1
+	var after_text: String = win._perf_text(0.5)
+	var rate_seen := false
+	for line in after_text.split("\n"):
+		if line.contains("chunk rebuilds"):
+			rate_seen = float(line.split(" ", false)[-1]) >= (storm / 0.5) - 0.5
+	_ok(rate_seen,
+		"a %d-chunk rebuild storm shows up in the per-second rate" % storm)
+	win.queue_free()
+
 	# debug_spawn('hulk'): a crewed enemy through the real Fleet path.
 	var before: int = fleet.ships().size()
 	var hulk = world.debug_spawn("hulk", pl.global_position + Vector2(500, -100))

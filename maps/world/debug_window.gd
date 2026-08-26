@@ -56,9 +56,28 @@ func set_tab(i: int) -> void:
 		_tabs.current_tab = clampi(i, 0, maxi(0, _tabs.get_tab_count() - 1))
 
 
-func _process(_delta: float) -> void:
-	if visible and _perf_label != null:
-		_perf_label.text = _perf_text()
+## How often the live readout re-samples. NOT every frame: this walks every
+## ship and every promoted chunk, and the project has already paid once for a
+## diagnostic that changed the thing it measured (the F3 whale diag,
+## 2026-08-22). Four times a second is faster than anyone reads, and cheap
+## enough to leave the window open while playing.
+const PERF_SAMPLE := 0.25
+
+var _perf_age := 0.0
+## Counter values at the previous sample, for the per-second RATES — which are
+## the numbers that actually explain a hitch (what rebuilt, what repainted),
+## as opposed to the totals, which only say how long the session has run.
+var _perf_prev := {}
+
+
+func _process(delta: float) -> void:
+	if not visible or _perf_label == null:
+		return
+	_perf_age += delta
+	if _perf_age < PERF_SAMPLE:
+		return
+	_perf_label.text = _perf_text(_perf_age)
+	_perf_age = 0.0
 
 
 # --- Build -----------------------------------------------------------------
@@ -268,15 +287,72 @@ func _fmt(id: String) -> String:
 	return "%.3f" % v
 
 
-func _perf_text() -> String:
+## The live cost picture, in the owner's own session. Everything here is
+## already counted somewhere for the tests; this is the one place it is
+## visible while PLAYING, which is the only place a hitch can be reported
+## from. The RATES block is the diagnostic half: a rebuild or a repaint storm
+## is what a stutter is made of, and the totals cannot show a storm.
+##
+## `window` is the seconds since the last sample (0 on the first build, which
+## simply prints the rates as 0).
+func _perf_text(window := 0.0) -> String:
 	var ships := 0
+	var ship_cells := 0
+	var tiles := 0
 	var shots := 0
+	var chunks := 0
+	var chunk_cells := 0
+	var t_regions := 0
+	var now := {"ship_rebuilds": 0, "chunk_rebuilds": 0, "repaints": 0}
+
 	if world != null:
 		var fleet: Variant = world.get("fleet")
 		if fleet != null and is_instance_valid(fleet):
-			ships = (fleet.call("ships") as Array).size()
+			for s in (fleet.call("ships") as Array):
+				var ship := s as Ship
+				ships += 1
+				ship_cells += ship.blocks.size()
+				tiles += ship.skin_tile_count()
+				now["ship_rebuilds"] = int(now["ship_rebuilds"]) + ship.rebuild_count
+				now["repaints"] = int(now["repaints"]) + ship.skin_repaints()
+		var terrain: Variant = world.get("terrain")
+		if terrain != null and is_instance_valid(terrain):
+			for c in (terrain as Node).get_children():
+				if c is TerrainChunk:
+					var ch := c as TerrainChunk
+					chunks += 1
+					chunk_cells += ch.collider_cell_count()
+					t_regions += ch.draw_region_count()
+					now["chunk_rebuilds"] = int(now["chunk_rebuilds"]) + ch.rebuild_count
 		var tree := world.get_tree()
 		if tree != null:
 			shots = tree.get_nodes_in_group("shots").size()
-	return "FPS:    %d\nShips:  %d\nShots:  %d" % [
-		Engine.get_frames_per_second(), ships, shots]
+
+	var rates := ""
+	for key in ["chunk_rebuilds", "ship_rebuilds", "repaints"]:
+		var per_sec := 0.0
+		if window > 0.0 and _perf_prev.has(key):
+			per_sec = maxf(0.0, float(int(now[key]) - int(_perf_prev[key]))) / window
+		rates += "\n  %-16s %6.1f" % [key.replace("_", " "), per_sec]
+	_perf_prev = now
+
+	# Retained rect COMMANDS: every merged region draws a fill and a border,
+	# and the renderer replays both every frame forever. Terrain's regions are
+	# cached (merged at rebuild) so this is a read; the ships' are not, so the
+	# engine's own draw-call monitor stands in for them.
+	# Fixed-width first column so the numbers stay in line as they change --
+	# this is read at a glance, mid-flight, while something is going wrong.
+	return ("FPS:      %-6d  process %.2f ms   physics %.2f ms"
+		+ "\nDraws:    %-6d  nodes %d"
+		+ "\nShips:    %-6d  %d cells in %d skin tiles"
+		+ "\nTerrain:  %-6d  chunks, %d cells, %d regions (%d cmds)"
+		+ "\nShots:    %-6d"
+		+ "\n\nper second \u2014 what a hitch is made of%s") % [
+		Engine.get_frames_per_second(),
+		Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+		Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0,
+		int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
+		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)),
+		ships, ship_cells, tiles,
+		chunks, chunk_cells, t_regions, t_regions * 2,
+		shots, rates]
