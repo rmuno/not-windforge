@@ -33,10 +33,18 @@ extends WhaleAI
 ## `spit_request` and `world._creature_swim` takes it. An AI that could add
 ## nodes to the scene would be a second spawn path, and this project has one.
 
-## How far it likes to sit from its target, in unscaled px (× scale_unit).
+## How far it likes to sit from its target, in UNSCALED px (× scale_unit), so
+## compare it against WhaleAI.ROAM_RADIUS (220), not against a screen distance.
 ## Inside RANGE_SLACK of this it holds; outside, it closes or backs away.
-const PREFERRED_RANGE := 1500.0
-const RANGE_SLACK := 320.0
+##
+## 250 is ~2,000 px at the shipped 8×, which is inside the camera's view. The
+## first draft said 1,500 — 12,000 px — and `tools/threat_probe.gd` showed what
+## that means in practice: the beast sat OFF-SCREEN plinking at a ship it could
+## barely reach, at exactly the distance where dormancy puts a body to sleep
+## (`dormant_range_px` is 12,000 raw px). A ranged attacker you cannot see has
+## no telegraph, whatever its wind-up does.
+const PREFERRED_RANGE := 250.0
+const RANGE_SLACK := 60.0
 
 ## How hard it swims to hold that range — gentler than a whale's charge; a
 ## basilisk repositions, it does not lunge.
@@ -47,9 +55,19 @@ const STANDOFF_ACCEL := 220.0
 const SPIT_INTERVAL := 3.4
 const WINDUP_SECONDS := 0.9
 
+## Vertical damping (per second) while it holds station. A basilisk's body is
+## BUOYANT — lift/weight ~1.5 — so without this it rises out of its own fight:
+## `tools/threat_probe.gd` watched one drift from 12,800 px to 22,200 px away
+## while its slugs fell short behind it, and every unit test missed it because
+## a unit test holds the world still. A whale is authored near-neutral and a
+## kraken cancels its own weight by muscle; this is the same idea for a body
+## that floats.
+const HOVER_DAMP := 2.2
+
 ## Beyond this it does not bother — it goes back to roaming rather than
-## chasing a ship across the sky.
-const GIVE_UP_RANGE := 5200.0
+## chasing a ship across the sky. Comfortably inside the dormancy range, so a
+## basilisk that gives up is still a body that is being simulated.
+const GIVE_UP_RANGE := 900.0
 
 ## Raised when a spit is due. The world reads it, spawns the slug, and clears
 ## it — see world._creature_swim.
@@ -103,6 +121,8 @@ func tick(delta: float, target: Node2D) -> void:
 		elif dist < want - slack:
 			accel = -to.normalized() * STANDOFF_ACCEL * u
 	accel.y += _gravity_cancel_accel()
+	# Hold the altitude it is fighting at, buoyant body or not.
+	accel.y -= whale.linear_velocity.y * HOVER_DAMP
 	if accel != Vector2.ZERO:
 		whale.apply_central_force(accel * whale.mass)
 	whale.set_pose_tilt(0.0)

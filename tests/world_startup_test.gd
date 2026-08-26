@@ -1307,6 +1307,37 @@ func _check_basilisk(world: Node, fleet) -> void:
 				break
 		_ok(seen > 0,
 			"...and it actually spits: the world spawned its fireball (%d live)" % seen)
+		# THE MUZZLE MUST CLEAR ITS OWN BODY. Fired from the "facing" side, a
+		# slug aimed at something above or below crossed straight back through
+		# the shooter — and a living creature absorbs that into its shared pool
+		# without losing a cell, so it read as "the shots just miss".
+		var clear := true
+		for fb in world.get_tree().get_nodes_in_group("hazard_fireballs"):
+			var d: float = (fb as Node2D).global_position.distance_to(
+				beast.global_position)
+			if d < beast.solid_bounds.size.length() * 0.5:
+				clear = false
+		_ok(clear, "...from a muzzle outside its own body, whatever way it aims")
+
+		# A DORMANT creature stands down. It is out of the simulation, so its
+		# forces are ignored anyway — but its brain kept firing projectiles at
+		# a ship it was drifting away from until this was closed.
+		beast.set_dormant(true)
+		for fb in world.get_tree().get_nodes_in_group("hazard_fireballs"):
+			(fb as Node).queue_free()
+		await world.get_tree().process_frame
+		for i in 200:
+			await world.get_tree().physics_frame
+		# Count only slugs NEAR the beast: meteors and lava bombs share the
+		# group, and the sky keeps throwing those whatever the basilisk does.
+		var near_beast := 0
+		for fb in world.get_tree().get_nodes_in_group("hazard_fireballs"):
+			if (fb as Node2D).global_position.distance_to(beast.global_position) 					< 6000.0 * world.world_scale:
+				near_beast += 1
+		_ok(near_beast == 0,
+			"a DORMANT creature stops acting — no shots from a body nothing can shoot back at (%d near it)"
+				% near_beast)
+		beast.set_dormant(false)
 		for fb in world.get_tree().get_nodes_in_group("hazard_fireballs"):
 			(fb as Node).queue_free()
 		beast.queue_free()
