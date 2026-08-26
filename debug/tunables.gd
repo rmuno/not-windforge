@@ -112,6 +112,13 @@ const _REGISTRY := [
 		"min": 2000.0, "max": 60000.0, "step": 500.0},           # world._update_dormancy
 	{"id": "dormant_tick_seconds", "label": "Dormant tick (s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 3.0, "min": 0.5, "max": 30.0, "step": 0.5},
+	# --- Propeller wash on bodies (owner survey: props push and chop) --------
+	{"id": "wash_push_mult", "label": "Prop wash push on bodies (0 = off)",
+		"group": "Combat", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,
+		"max": 4.0, "step": 0.1},   # world._apply_prop_wash
+	{"id": "wash_chop_dps", "label": "Prop wash CHOP damage (near jet only)",
+		"group": "Combat", "kind": KIND_FLOAT, "default": 45.0, "min": 0.0,
+		"max": 400.0, "step": 5.0},
 	# --- Basilisk (the top-band fire-spitter) --------------------------------
 	{"id": "basilisk_health", "label": "Basilisk health pool", "group": "Whale",
 		"kind": KIND_FLOAT, "default": 2600.0, "min": 100.0, "max": 30000.0,

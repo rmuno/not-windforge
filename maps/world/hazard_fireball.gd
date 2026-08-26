@@ -44,6 +44,14 @@ func _enter_tree() -> void:
 
 func _physics_process(delta: float) -> void:
 	velocity.y += gravity * delta       # the arc is real (lava rises then falls)
+	# PROP WASH bends a hazard slug exactly as it bends a shell (Shot does the
+	# same sweep). This is the owner's own emergent defence from the survey —
+	# "with an up-prop and a down-prop stacked, a slow projectile passing above
+	# the propeller can be REPELLED by sliding the ship" — and it matters far
+	# more now that a basilisk spits these at you: a pilot who reads the arc can
+	# blow it off course instead of eating it.
+	for ship in get_tree().get_nodes_in_group("ships"):
+		velocity += (ship as Ship).wash_accel_at(position) * delta
 	var to := position + velocity * delta
 	_travelled += velocity.length() * delta
 	var space := get_world_2d().direct_space_state
