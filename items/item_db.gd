@@ -74,6 +74,34 @@ const ITEMS := {
 	Crafted.BALLOON_LARGE:  {"name": "Large Balloon",  "color": Color(0.84, 0.72, 0.50)},
 }
 
+## THE ITEM-COUNT BUDGET (owner scar, ORIGINAL_PLAYTEST: "49 distinct items
+## after only 30 minutes. Plainly excessive"). A ceiling, not a target — the
+## whole roster today is 7 mined materials (TerrainDB) + these 10, i.e. ~17
+## obtainable ids, and it stays deliberately lean. This is the wall future
+## features (recruitment, the economy, the opening) may not silently push
+## through: `_test_item_roster_stays_within_budget` fails if the count crosses
+## it. Raising the wall is a deliberate owner decision logged in DECISIONS, not
+## a side effect of adding an id.
+##
+## The rule an id must pass to earn a slot (all three): it has a distinct USE (a
+## recipe input, a placeable, or a consumable) — not flavour; it cannot fold
+## into an existing id as a quantity or tier; and it earns a name, a colour and
+## a place in the economy. This is already the de-facto rule the code cites
+## ("no new item ids" — SpawnSites.nest_cache); the budget makes it enforceable.
+const ITEM_BUDGET := 24
+
+
+## How many DISTINCT ids can ever sit in a player's inventory: the mined terrain
+## materials (solid TerrainDB types) plus every product/crafted good. The number
+## the budget guards.
+static func obtainable_item_count() -> int:
+	var n := ITEMS.size()
+	for t in TerrainDB.Type.values():
+		if TerrainDB.is_solid(t):
+			n += 1
+	return n
+
+
 ## Balloon SIZE (Ship.BalloonSize) -> the crafted item you spend to tether one.
 ## The single place that mapping lives, so the recipe table, the attach verb, the
 ## HUD cue and the tests cannot drift apart.

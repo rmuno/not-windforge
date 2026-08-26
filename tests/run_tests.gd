@@ -135,6 +135,7 @@ func _initialize() -> void:
 	await _test_mining_seam_digs_and_credits()
 	await _test_pickup_floats_rise_and_expire()
 	await _test_item_id_scheme_keeps_kinds_distinct()
+	await _test_item_roster_stays_within_budget()
 	await _test_terrain_placement_writes_consumes_and_digs_back()
 	await _test_whale_carcass_harvest_yields_products()
 	await _test_crafting_consumes_inputs_and_yields_output()
@@ -6571,6 +6572,32 @@ func _test_item_id_scheme_keeps_kinds_distinct() -> void:
 	_check(ItemDB.name_of(TerrainDB.Type.STONE) == "Stone", "terrain name via TerrainDB")
 	_check(ItemDB.name_of(ItemDB.Product.BLUBBER) == "Blubber", "product name via ItemDB")
 	_check(ItemDB.name_of(ItemDB.Crafted.WHALE_OIL) == "Whale Oil", "crafted name via ItemDB")
+
+
+## THE ITEM-COUNT BUDGET (owner scar, ORIGINAL_PLAYTEST: "49 distinct items after
+## only 30 minutes. Plainly excessive"). The roster is deliberately lean, and
+## this is the wall that keeps a future feature from silently rebuilding the mess
+## — adding an id that crosses ITEM_BUDGET fails HERE, which forces the raise to
+## be a decision (DECISIONS) instead of a side effect. Same shape as the
+## 30-second kill ceiling: arithmetic the suite can hold, not a matter of taste.
+func _test_item_roster_stays_within_budget() -> void:
+	_t("the item roster stays within the owner's anti-clutter budget")
+	# The count IS the three kinds, no double-count, no id missed.
+	var materials := 0
+	for t in TerrainDB.Type.values():
+		if TerrainDB.is_solid(t):
+			materials += 1
+	var expected := materials + ItemDB.ITEMS.size()
+	_check(ItemDB.obtainable_item_count() == expected,
+		"the roster count is mined materials + products + crafted (%d)" % expected)
+	_check(ItemDB.obtainable_item_count() <= ItemDB.ITEM_BUDGET,
+		"the roster (%d) stays within the budget (%d) — raising it is a DECISION"
+			% [ItemDB.obtainable_item_count(), ItemDB.ITEM_BUDGET])
+	# And the budget is a CEILING with real headroom, not a count of today — a
+	# budget already at the wall is a budget that blocks the next feature.
+	_check(ItemDB.obtainable_item_count() < ItemDB.ITEM_BUDGET,
+		"...with headroom left for the features that will want a few (%d of %d)"
+			% [ItemDB.obtainable_item_count(), ItemDB.ITEM_BUDGET])
 
 
 ## Placement (Terrain.net_place, the inverse of net_dig): writes a solid material

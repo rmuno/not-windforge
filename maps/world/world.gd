@@ -4683,7 +4683,16 @@ func reset_world() -> void:
 	if Net.is_server():
 		for ship in fleet.ships():
 			ship.queue_free()
-		await get_tree().process_frame
+		# WAIT until they are actually gone, not just one frame (2026-08-26). A
+		# single process_frame after queue_free races: a ship freed from inside
+		# a physics tick is reaped at idle, and under a busy run_all the respawn
+		# below could land before the reap, leaving the fleet at 15 instead of
+		# 10 — a rare, real flake in the reset test. Poll the fleet empty (a
+		# bounded wait, so a stuck free can never hang the reset).
+		var guard := 0
+		while not fleet.ships().is_empty() and guard < 30:
+			await get_tree().process_frame
+			guard += 1
 
 		_give_ship_to(1)
 		if Net.is_online():
