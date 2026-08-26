@@ -641,11 +641,74 @@ func _check_corpse_airship(world: Node) -> void:
 		await physics_frame
 		_ok(not pl.is_piloting(),
 			"E still steps off the corpse helm — the use key survives the loss")
+		# SHOT DOWN, ON FOOT, NO SHIP AT ALL (owner 2026-08-26: "controls just
+		# seem to hang when the player's ship is destroyed or disappears... I
+		# wasn't able to continue building because my ship got destroyed").
+		# Everything below the old `local_ship == null` return died with the
+		# hull: LMB, RMB, Q, C and X. E had already been rescued one key at a
+		# time; this pins the general rule with the loudest of them.
+		if pl.is_piloting():
+			pl.disembark()
+		world.set("local_ship", null)
+		starter.pilot_peer = 0
+		# The corpse-airship above was ADOPTED and stamped with the claim, so
+		# it has to be released too or _refresh_local_ship simply re-binds it
+		# and this stops testing anything.
+		corpse.pilot_peer = 0
+		corpse.linear_velocity = Vector2.ZERO
+		var shots0: int = world.get_tree().get_nodes_in_group("shots").size()
+		Input.action_press("shoot")
+		for i in 20:
+			await physics_frame
+		Input.action_release("shoot")
+		_ok(world.get_tree().get_nodes_in_group("shots").size() > shots0,
+			"with NO ship at all, LMB still shoots (%d -> %d live shots)"
+				% [shots0, world.get_tree().get_nodes_in_group("shots").size()])
+		_ok(world._build_target(pl.global_position) == null
+				or world._build_target(pl.global_position) is Ship,
+			"...and the build target answers safely instead of crashing")
+		world._update_hud(Vector2i.ZERO)
+		_ok(world.hud.text.contains("No ship"),
+			"...and the HUD says what to do about it, not nothing")
+
 		# Restore the world for the checks that follow.
 		starter.pilot_peer = 1
 		world.set("local_ship", starter)
 		if pl.is_piloting():
 			pl.disembark()
+
+		# A LOOKOUT NEEDS SOMETHING TO LOOK AT (owner 2026-08-26: "enemies
+		# shouldn't randomly aggress to a ship unless it's moving + manned —
+		# why would they attack something that doesn't look like is even
+		# manned?"). Movement counts as evidence of a crew; an empty parked
+		# hull is scenery.
+		var keep: Vector2 = pl.global_position
+		starter.linear_velocity = Vector2.ZERO
+		pl.global_position = starter.global_position
+		_ok(world._looks_crewed(starter),
+			"a hull with a person standing on it reads as CREWED")
+		pl.global_position = starter.global_position + Vector2(60000.0, -40000.0)
+		_ok(not world._looks_crewed(starter),
+			"...an empty, parked hull does not — that is scenery")
+		starter.linear_velocity = Vector2(
+			world.UNDER_WAY_SPEED * world.world_scale * 3.0, 0.0)
+		_ok(world._looks_crewed(starter),
+			"...but a hull UNDER WAY must have a hand on it somewhere")
+		var bandit: Ship = null
+		for sh in world.fleet.ships():
+			if is_instance_valid(sh) and sh.faction == 1:
+				bandit = sh
+				break
+		if bandit != null:
+			_ok(world._nearest_ship_of_faction(bandit, 0, true) == starter,
+				"a bandit's lookout picks the hull that is under way")
+			starter.linear_velocity = Vector2.ZERO
+			_ok(world._nearest_ship_of_faction(bandit, 0, true) != starter,
+				"...and stops seeing it the moment it is parked and empty")
+			_ok(world._nearest_ship_of_faction(bandit, 0, false) != null,
+				"...though a PROVOKED crew drops the filter and finds a hull")
+		starter.linear_velocity = Vector2.ZERO
+		pl.global_position = keep
 
 	# Clean up so the later hosting check sees the untouched fleet.
 	corpse.queue_free()

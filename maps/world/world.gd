@@ -1688,13 +1688,14 @@ func _enemy_fire(delta: float) -> void:
 		var id := ship.get_instance_id()
 		var cd: float = _enemy_cooldowns.get(id, 0.0) - delta
 		_enemy_cooldowns[id] = cd
-		# Bandits hunt the PLAYER side, not the wildlife.
-		var target := _nearest_ship_of_faction(ship, 0)
+		# Bandits hunt the PLAYER side, not the wildlife — and only a hull that
+		# READS AS CREWED (owner 2026-08-26). A crew that has already been shot
+		# at drops the filter: it knows who did it. See _looks_crewed.
+		var provoked: bool = _is_provoked(id)
+		var target := _nearest_ship_of_faction(ship, 0, not provoked)
 		if target == null:
 			continue
 		var d := ship.global_position.distance_to(target.global_position)
-		var provoked: bool = Time.get_ticks_msec() \
-			< _enemy_provoked_at.get(id, -1.0e12) + PROVOKED_SECONDS * 1000.0
 		if _enemy_aggro.get(id, false):
 			if d > Tunables.get_num("enemy_deaggro_range") * world_scale and not provoked:
 				_enemy_aggro[id] = false
@@ -1759,7 +1760,9 @@ func _enemy_pilot(delta: float) -> void:
 			_ship_ais[id] = ai
 		var target: Ship = null
 		if _enemy_aggro.get(id, false):
-			target = _nearest_ship_of_faction(ship, 0)
+			# Same rule as the guns: a parked, empty hull is scenery to fly
+			# past, not a thing to run down — unless we have been shot at.
+			target = _nearest_ship_of_faction(ship, 0, not _is_provoked(id))
 		(_ship_ais[id] as ShipAI).tick(delta, target,
 			Tunables.get_num("enemy_aggro_range") * world_scale)
 
@@ -2974,11 +2977,61 @@ func _has_gunner(ship: Ship) -> bool:
 	return false
 
 
-func _nearest_ship_of_faction(from: Ship, faction: int) -> Ship:
+## Minimum speed at which a hull reads as UNDER WAY to a lookout — unscaled
+## px/s, x world_scale like every other world distance. A ship under power
+## crosses this in the first second; a derelict shoved by wind or a bump does
+## not hold it.
+const UNDER_WAY_SPEED := 40.0
+
+
+## DOES THIS HULL READ AS CREWED? (owner 2026-08-26: "enemies shouldn't randomly
+## aggress to a ship unless it's moving + manned — why would they attack
+## something that doesn't look like is even manned?")
+##
+## A bandit is a person with eyes, not a trigger on a proximity switch. What a
+## person can SEE from another deck is: somebody aboard, or a hull that is going
+## somewhere — and a ship that is going somewhere must have a hand on it, which
+## is why movement counts as EVIDENCE of a crew rather than a second condition
+## to satisfy. An empty hull parked in the sky is scenery, and scenery does not
+## get shot at.
+##
+## Not a pacifism switch: shooting a bandit still provokes it (PROVOKED_SECONDS,
+## `_on_hostile_ship_damaged`) and a provoked crew hunts whatever hurt it,
+## parked or not — see the provoked branch in _enemy_fire.
+func _looks_crewed(ship: Ship) -> bool:
+	if ship == null or not is_instance_valid(ship):
+		return false
+	if ship.linear_velocity.length() > UNDER_WAY_SPEED * world_scale:
+		return true          # under way — somebody has a hand on it
+	if player != null and is_instance_valid(player):
+		if player.piloting == ship or player.riding == ship:
+			return true      # at the helm, or on its back
+		if FrameCensus.body_rect(ship).has_point(player.global_position):
+			return true      # a person standing on the deck is visible
+	for npc in _npcs:
+		if is_instance_valid(npc) and npc.ship == ship:
+			return true      # crewed by somebody who is not you
+	return false
+
+
+## The nearest ship of `faction`. `crewed_only` applies the lookout's test
+## above — a hostile choosing a victim uses it; a PROVOKED one does not, since
+## it already knows who shot at it.
+## Has this hostile crew been shot at recently? The one place the provocation
+## clock is read, so the guns and the helm can never disagree about it.
+func _is_provoked(id: int) -> bool:
+	var since: float = _enemy_provoked_at.get(id, -1.0e12)
+	return Time.get_ticks_msec() < since + PROVOKED_SECONDS * 1000.0
+
+
+func _nearest_ship_of_faction(from: Ship, faction: int,
+		crewed_only := false) -> Ship:
 	var best: Ship = null
 	var best_d := INF
 	for ship in fleet.ships():
 		if not is_instance_valid(ship) or ship == from or ship.faction != faction:
+			continue
+		if crewed_only and not _looks_crewed(ship):
 			continue
 		var d := from.global_position.distance_to(ship.global_position)
 		if d < best_d:
@@ -3225,23 +3278,34 @@ func _process(_delta: float) -> void:
 	# one reliable use key stays alive in every state.
 	_handle_interact()
 
-	if local_ship == null:
-		hud.text = ("Connecting to host..." if Net.is_online()
-			else "No ship — walk to a helm and press E, or T to respawn")
-		_ghost_shown = false
-		_ghost_label.visible = false
-		return
-
+	# LOSING YOUR SHIP IS NOT LOSING YOUR HANDS (owner 2026-08-26: "controls
+	# just seem to hang when the player's ship is destroyed or disappears...
+	# I wasn't able to continue building because my ship got destroyed, so it
+	# looks like build mode was fully disabled").
+	#
+	# Everything below this point used to sit behind an early `return` on
+	# `local_ship == null`, which took LMB, RMB, Q, C and X with it — shot down
+	# and you could not shoot back, grapple away, salvage a wreck or repair the
+	# corpse you were standing on. E was rescued from the same trap on
+	# 2026-08-25 (the stranded corpse pilot) one key at a time; this is the
+	# general fix. The ONLY thing a missing ship may disable is the verbs that
+	# need a hull to act on, and even those fall back to a CARCASS under the
+	# cursor (`_build_target`) — which is how you rebuild after losing
+	# everything.
+	#
 	# CARCASS-AS-AIRSHIP, the thrust half (owner: "bolt on lift+THRUST to fly a
 	# corpse"): the build verbs target a CARCASS under the cursor (within arm's
 	# reach) when there is one — place engines/props/a helm on a dead whale,
 	# then board it and FLY it — and your own ship otherwise, exactly as before.
 	var build_ship := _build_target(get_global_mouse_position())
-	var cell := build_ship.cell_at_global(get_global_mouse_position())
+	var cell := Vector2i.ZERO
+	if build_ship != null:
+		cell = build_ship.cell_at_global(get_global_mouse_position())
 	# The ghost follows the SELECTION: the block preview only while a ship block
 	# is what Q would place -- terrain and balloons draw their own targets, and
-	# exactly one ghost is ever on screen (clean-UI rule).
-	if _sel_kind == "block":
+	# exactly one ghost is ever on screen (clean-UI rule). With no hull under
+	# the cursor and none of your own there is nothing to preview.
+	if _sel_kind == "block" and build_ship != null:
 		_update_build_ghost(build_ship, cell)
 	else:
 		_ghost_shown = false
@@ -3255,11 +3319,16 @@ func _process(_delta: float) -> void:
 	if Input.is_action_just_pressed("build_place") and not ui_mouse:
 		match _sel_kind:
 			"block":
-				try_build_block(build_ship, cell)
+				if build_ship != null:
+					try_build_block(build_ship, cell)
+				else:
+					_notify("nothing to build on — a hull or a carcass, "
+						+ "or T for a fresh ship")
 			"balloon":
 				_attach_balloon_at_cursor()
 	if Input.is_action_just_pressed("build_remove") and not ui_mouse:
-		try_remove_block(build_ship, cell)
+		if build_ship != null:
+			try_remove_block(build_ship, cell)
 
 	# RMB: the grapple, exactly as the original — fire toward the cursor; fire
 	# again to let go early. On foot only; the helm has your hands. While RIDING,
@@ -4649,8 +4718,7 @@ func _update_hud(_cell: Vector2i) -> void:
 	if player != null and is_instance_valid(player) and player.is_riding():
 		var mount: Ship = player.riding
 		if is_instance_valid(mount):
-			hud.text = "
-".join([
+			hud.text = "\n".join([
 				"RIDING — WASD steers   ·   release the hook (RMB) to let go",
 				"Beast:  %.0f / %.0f%s" % [mount.shared_health,
 					mount.shared_health_max,
@@ -4660,6 +4728,15 @@ func _update_hud(_cell: Vector2i) -> void:
 					-mount.global_position.y, mount.linear_velocity.length()],
 			])
 			return
+	# No hull of your own and not flying or riding anything: say so, and say what to do
+	# about it. (Lives here because _update_hud OWNS hud.text — written above
+	# this point it was overwritten the same frame.)
+	if local_ship == null and (player == null or not is_instance_valid(player)
+			or not player.is_piloting()):
+		hud.text = ("Connecting to host..." if Net.is_online()
+			else "No ship — build on a carcass, walk to a helm and press E, "
+				+ "or T to respawn")
+		return
 	var flown: Ship = player.piloting if (player != null
 		and is_instance_valid(player) and player.is_piloting()) else null
 	if flown == null or not is_instance_valid(flown):
