@@ -216,6 +216,30 @@ static func nest_faction(kind: Kind) -> int:
 	return 1 if kind == Kind.BANDIT_ROOST else 2
 
 
+## A nest's SHARED HEALTH POOL — it is one unit until it breaks, exactly like a
+## living creature, and for the same reason creatures got a pool: a body's cells
+## are multiplied by the world scale (64x at 8x), so "half its cells" is a
+## number no gun can reach. Measured with `tools/balance_probe.gd`, firing the
+## real turrets at the real bodies: on cells alone a hive needed ~30 MINUTES and
+## a roost broke in 0.6 SECONDS (one volley popped its gasbag canopy whole).
+## Neither is a fight.
+##
+## At the starter's measured ~40 dps these read: hive ~30 s (the early-game
+## place, clearable before your ship is worth the name), roost ~60 s, eyrie
+## ~75 s, den ~150 s (the deep, behind the life-support gate — bring the ship).
+static func nest_pool(kind: Kind) -> float:
+	match kind:
+		Kind.CRITTER_MEADOW:
+			return 1200.0
+		Kind.BANDIT_ROOST:
+			return 2400.0
+		Kind.BASILISK_EYRIE:
+			return 3000.0
+		Kind.KRAKEN_DEN:
+			return 6000.0
+	return 0.0
+
+
 ## What a broken nest spills, as [item id, count, ...]. Charter §4 says
 ## clearing a place should MEAN something; safety alone is a thin reward for a
 ## fight, so a cleared site pays out once.

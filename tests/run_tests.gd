@@ -7689,6 +7689,39 @@ func _test_spawn_sites_are_places() -> void:
 			and SpawnSites.nest_faction(SpawnSites.Kind.KRAKEN_DEN) == 2,
 		"a roost is people who shoot at you; a den is wildlife")
 
+	# A NEST IS ONE UNIT UNTIL IT BREAKS (v0.67.0), like a creature and for the
+	# same reason: cells are multiplied by the world scale, so "half its cells"
+	# is a number no gun can reach. Measured with tools/balance_probe.gd against
+	# the real turrets: on cells alone a hive took ~30 MINUTES and a roost broke
+	# in 0.6 SECONDS (one volley popped its gasbag canopy whole).
+	var pools := {}
+	for k in [SpawnSites.Kind.BANDIT_ROOST, SpawnSites.Kind.KRAKEN_DEN,
+			SpawnSites.Kind.CRITTER_MEADOW, SpawnSites.Kind.BASILISK_EYRIE]:
+		var pool := SpawnSites.nest_pool(k)
+		_check(pool > 0.0, "a %s is one unit with a pool (%.0f)"
+			% [SpawnSites.kind_name(k), pool])
+		pools[k] = pool
+	_check(pools[SpawnSites.Kind.CRITTER_MEADOW] < pools[SpawnSites.Kind.BANDIT_ROOST]
+			and pools[SpawnSites.Kind.BANDIT_ROOST] < pools[SpawnSites.Kind.KRAKEN_DEN],
+		"...and the deep costs more than the meadow (%.0f < %.0f < %.0f)"
+			% [pools[SpawnSites.Kind.CRITTER_MEADOW],
+				pools[SpawnSites.Kind.BANDIT_ROOST],
+				pools[SpawnSites.Kind.KRAKEN_DEN]])
+	_check(SpawnSites.nest_pool(SpawnSites.Kind.WHALE_GROUND) == 0.0,
+		"a place with no nest has no pool either")
+
+	# A pool makes a body read as a LIVING creature to everything that asks —
+	# including dormancy, which would otherwise walk the structure of a place
+	# around the sky on a migration circuit.
+	var post := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	post.shared_health_max = 2400.0
+	post.shared_health = 2400.0
+	_check(Dormancy.migrates(post), "a pooled body normally migrates")
+	post.is_nest = true
+	_check(not Dormancy.migrates(post),
+		"...but a NEST never does — a place that wanders is not a place")
+	post.queue_free()
+
 	# A BROKEN NEST PAYS OUT (v0.65.2). Charter §4 wants clearing a place to
 	# mean something, and safety alone is a thin reward for a fight. Every cache
 	# is a bundle of goods that ALREADY EXIST — the item budget is an open owner

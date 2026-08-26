@@ -1495,10 +1495,13 @@ func _check_spawn_sites(world: Node, fleet) -> void:
 			% SpawnSites.kind_name(nest_site["kind"]))
 		if nest != null:
 			_ok(nest.freeze, "...frozen where it was built, not flying or falling")
-			# Break it the way a player does: SHOOT it. net_damage_cell is the
-			# shot path, and it deliberately does not touch the blueprint —
-			# remove_block would, and a nest that edits its own blueprint as it
-			# dies can never read as "less than half of what it was".
+			_ok(nest.shared_health_max > 0.0,
+				"...as ONE UNIT with a pool (%.0f) — cells alone are unreachable at scale"
+					% nest.shared_health_max)
+			# Break it the way a player does: SHOOT it. A nest is one unit with
+			# a POOL now (v0.67.0), so the shots drain that rather than taking
+			# cells off — and the cells rule stays as the fallback for a nest
+			# that is dismantled by hand instead.
 			var carried: int = pl.inventory.total() if pl.inventory != null else 0
 			var doomed: Array = nest.blocks.keys()
 			for i in range(0, int(doomed.size() * 0.7)):
