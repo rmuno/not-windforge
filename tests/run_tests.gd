@@ -7392,6 +7392,23 @@ func _test_basilisk_stands_off_and_telegraphs() -> void:
 	_check(ai.take_spit().x == INF,
 		"...and the request is taken exactly once (no double-fire)")
 
+	# ITS RANGES MUST FIT THE WORLD IT FIGHTS IN. Both of these were wrong on
+	# the first cut, and no unit test could see it because a unit test compares
+	# distances to each other rather than to the world's own constants: the
+	# stand-off was 12,000 px at the shipped 8× — off-screen, and exactly the
+	# distance at which dormancy puts a body to sleep.
+	var shipped := 8.0
+	var sleep_at := Tunables.get_num("dormant_range_px")
+	_check(BasiliskAI.PREFERRED_RANGE * shipped < sleep_at * 0.8,
+		"its stand-off (%.0f px at 8x) is inside dormancy's WAKE range (%.0f)"
+			% [BasiliskAI.PREFERRED_RANGE * shipped, sleep_at * 0.8])
+	_check(BasiliskAI.GIVE_UP_RANGE * shipped < sleep_at,
+		"...and so is the distance it gives up at (%.0f < %.0f)"
+			% [BasiliskAI.GIVE_UP_RANGE * shipped, sleep_at])
+	_check(BasiliskAI.PREFERRED_RANGE < 400.0,
+		"...and it fights at a distance you can SEE it from (%.0f unscaled)"
+			% BasiliskAI.PREFERRED_RANGE)
+
 	# A tamed basilisk does not shoot at your fleet.
 	ai.tamed = true
 	var quiet := true

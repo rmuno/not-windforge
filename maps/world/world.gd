@@ -1650,8 +1650,11 @@ func _enemy_fire(delta: float) -> void:
 	if not Net.is_server():
 		return
 	for ship in fleet.ships():
-		if not is_instance_valid(ship) or ship.faction != 1:
-			continue  # only HOSTILES gun; wildlife has its own reactions
+		if not is_instance_valid(ship) or ship.faction != 1 or ship.dormant:
+			continue  # only HOSTILES gun; wildlife has its own reactions.
+			# Dormant: out of the simulation, so out of the fight too — a body
+			# nothing can shoot back at must not be shooting (the same rule
+			# _creature_swim follows).
 		# The crew feels its hull: any damage provokes (lazily wired so
 		# severed faction-1 wrecks joining the fleet get watched too).
 		if not _enemy_watched.has(ship.get_instance_id()):
@@ -1721,8 +1724,8 @@ func _enemy_pilot(delta: float) -> void:
 	if not Net.is_server():
 		return
 	for ship in fleet.ships():
-		if not is_instance_valid(ship) or ship.faction != 1:
-			continue
+		if not is_instance_valid(ship) or ship.faction != 1 or ship.dormant:
+			continue  # dormant hulls coast on the slow tick, not on their AI
 		if not _has_driver(ship):
 			continue
 		var id := ship.get_instance_id()
@@ -1765,6 +1768,15 @@ func _creature_swim(delta: float) -> void:
 		# body that dies, respawns or takes a helm is never a stale reference.
 		if ai is KrakenAI:
 			(ai as KrakenAI).prey_player = _on_foot_player()
+		if ship.dormant:
+			# OUT of the simulation: its forces would be ignored anyway, and a
+			# dormant body that still runs its brain can SHOOT — a basilisk
+			# beyond the dormancy range kept spitting at a ship it was drifting
+			# away from (tools/threat_probe.gd). Dormancy's slow tick is what a
+			# far creature gets instead. The prey reference above is still kept
+			# current: it is a pointer, not an action, and a stale one would
+			# dangle the moment the body woke.
+			continue
 		ai.tick(delta, target)
 		# A basilisk's spit is a PROJECTILE, and projectiles are spawned by the
 		# world — one spawn path, as with every gun. The brain raises a request
@@ -2296,23 +2308,29 @@ var _tame_refused_id := 0
 ## to set what it hits alight through the same rule. A creature that invented
 ## its own projectile would be a second physics model to keep honest.
 func _spit_fire(beast: Ship, at: Vector2) -> HazardFireball:
-	var muzzle := beast.global_position + Vector2(
-		beast.solid_bounds.size.x * 0.5 * (1.0 if beast.visual_facing >= 0 else -1.0),
-		0.0)
-	var dir := (at - muzzle).normalized()
-	if dir == Vector2.ZERO:
-		return null
-	var fb := HazardFireball.new()
-	fb.kind = HazardFireball.Kind.LAVA   # the arcing, glowing one
-	fb.position = muzzle
 	var speed := Tunables.get_num("basilisk_spit_speed") * world_scale
+	var g := 980.0 * world_scale * 0.25
+	var centre := beast.global_position
 	# Lofted, not flat: the slug arcs, so a basilisk's fire has to be READ and
 	# dodged rather than merely out-ranged. Same first-order compensation every
 	# gunner in this game uses.
-	fb.gravity = 980.0 * world_scale * 0.25
-	var t := muzzle.distance_to(at) / maxf(speed, 1.0)
-	var lead := at + Vector2.UP * 0.5 * fb.gravity * t * t
-	fb.velocity = (lead - muzzle).normalized() * speed
+	var t := centre.distance_to(at) / maxf(speed, 1.0)
+	var lead := at + Vector2.UP * 0.5 * g * t * t
+	var dir := (lead - centre).normalized()
+	if dir == Vector2.ZERO:
+		return null
+	# THE MUZZLE IS ALONG THE LINE OF FIRE, clear of the beast's own body.
+	# Placing it on the "facing" side instead let a slug fired at something
+	# above or below cross straight back through the shooter — and a living
+	# creature absorbs that into its shared pool without losing a cell, so the
+	# symptom was "the shots miss" plus a basilisk mysteriously setting ITSELF
+	# on fire. (tools/threat_probe.gd, twice.)
+	var radius := beast.solid_bounds.size.length() * 0.5 + Ship.CELL * world_scale
+	var fb := HazardFireball.new()
+	fb.kind = HazardFireball.Kind.LAVA   # the arcing, glowing one
+	fb.position = centre + dir * radius
+	fb.gravity = g
+	fb.velocity = dir * speed
 	fb.damage = Tunables.get_num("basilisk_spit_damage")
 	fb.terrain = terrain
 	fb.visual_scale = float(world_scale)
@@ -2650,7 +2668,19 @@ func hazard_ignite(ship: Ship, cell: Vector2i) -> bool:
 		return false
 	if randf() > Tunables.get_num("fire_ignite_chance"):
 		return false
-	return ignite_cell(ship, cell)
+	if ignite_cell(ship, cell):
+		return true
+	# THE STRUCK CELL IS USUALLY GONE. A hazard damages before it ignites, and
+	# a slug that punches through leaves nothing at the point of impact to set
+	# alight — so the roll succeeded and nothing burned. (Found by
+	# tools/threat_probe.gd walking the whole basilisk → strike → fire chain:
+	# eleven hits, ignite chance 1.0, zero fires.) A hole should light its own
+	# EDGE, which is both what a fireball does and what makes the hazard→fire
+	# link reliable instead of a coin flip.
+	for d in Fire.NEIGHBOURS:
+		if ignite_cell(ship, cell + d):
+			return true
+	return false
 
 
 ## Every burning cell near the camera, as world points — what the fire overlay

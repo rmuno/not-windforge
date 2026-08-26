@@ -18,10 +18,17 @@
 # Keep it ONE connected ribbon — a severed tail should fall away as its own
 # piece, which the wall model already does for free.
 
+# Near-NEUTRAL by composition: meat down the whole spine with blubber only
+# along the flanks. An earlier draft was 1.6 lift-to-weight and rose out of its
+# own fight (caught by tools/threat_probe.gd — it drifted from 12,800 px to
+# 22,200 px away while its slugs fell short behind it). Its brain damps vertical
+# drift too, but a body that does not want to fly away is the better half of
+# the fix.
+
 origin 12 2
 
 .....WWWWW..KKK
-WWWWWWMMMWWKKKK
-WWMMMMMMMMMKKKK
-.WWWWWMMMWWKKK.
-......WWWWW....
+WWMMMMMMMWWKKKK
+WMMMMMMMMMMKKKK
+.WMMMMMMMWWKKK.
+.....WWWWW.....
