@@ -37,14 +37,15 @@ func _initialize() -> void:
 	# critters (CRITTER_COUNT — the early taming target) + the deep kraken pod
 	# (KRAKEN_COUNT). The whale-variant spawner (Sprint 4) fills the sky with a
 	# few whales, not just one.
-	var expected_ships: int = 2 + world.WHALE_POD_SIZE + world.CRITTER_COUNT + world.KRAKEN_COUNT
+	# +1 for the city-whale BOSS, planted at its fixed deep lair in every world.
+	var expected_ships: int = 2 + world.WHALE_POD_SIZE + world.CRITTER_COUNT + world.KRAKEN_COUNT + 1
 	_ok(fleet.ships().size() == expected_ships,
-		"your ship, the hulk, %d whales, %d critters and %d krakens exist (got %d)"
+		"your ship, the hulk, %d whales, %d critters, %d krakens and the boss exist (got %d)"
 			% [world.WHALE_POD_SIZE, world.CRITTER_COUNT, world.KRAKEN_COUNT, fleet.ships().size()])
 	_ok(fleet.ships().any(func(s) -> bool: return s.faction == 1),
 		"one of them is the hostile target hulk")
 	# Whales are the tier-2 creatures; critters the tier-1 (faction 2 both).
-	_ok(fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken").size() == world.WHALE_POD_SIZE,
+	_ok(fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken" and s.creature_kind != "whale_city").size() == world.WHALE_POD_SIZE,
 		"the neutral whale pod is present (tier 2)")
 	_ok(fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level == 1).size() == world.CRITTER_COUNT,
 		"and a few small tameable critters (tier 1)")
@@ -57,7 +58,7 @@ func _initialize() -> void:
 	# for life. Assert the actual built collider is coarser than the precise
 	# merge — reading _use_coarse_collider() alone would miss the bug (it reads
 	# current health, true by now, even if the built collider is stale-precise).
-	var whale_ship = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken")[0]
+	var whale_ship = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken" and s.creature_kind != "whale_city")[0]
 	var whale_shapes := 0
 	for c in whale_ship.get_children():
 		if c is CollisionShape2D:
@@ -300,11 +301,36 @@ func _initialize() -> void:
 	await _check_spawn_sites(world, fleet)
 	await _check_debug_window(world, fleet)
 	await _check_repair_station(world, fleet)
+	_check_boss(world, fleet)
 	await _check_lava_core(world, fleet)
 
 	await _check_hosting_after_offline_play(world, fleet)
 
 	_finish()
+
+
+## The city-whale BOSS is planted at a fixed deep lair in every world (not gated
+## behind a rare seed). Prove it exists, reads as the boss (its own pool), is a
+## whale-tier creature, and lairs DEEP — the "find it in the overworld" contract.
+func _check_boss(world: Node, fleet) -> void:
+	var boss: Ship = null
+	for s in fleet.ships():
+		if is_instance_valid(s) and String(s.creature_kind) == "whale_city":
+			boss = s
+			break
+	_ok(boss != null, "the city-whale boss is planted in the world")
+	if boss == null:
+		return
+	var boss_hp: float = float(Tunables.def("boss_health")["default"])
+	_ok(is_equal_approx(boss.shared_health_max, boss_hp),
+		"it carries the BOSS pool, not a whale's (%.0f)" % boss.shared_health_max)
+	_ok(boss.faction == 2 and boss.tame_level >= 2,
+		"it is a whale-tier creature (faction 2, tame tier %d)" % boss.tame_level)
+	# Deep: below the world's vertical midpoint (positive y is down).
+	var rect: Rect2 = world.get("_world_rect")
+	_ok(boss.global_position.y > rect.get_center().y,
+		"it lairs DEEP, out in the overworld (y=%.0f, mid=%.0f)"
+			% [boss.global_position.y, rect.get_center().y])
 
 
 ## The repair STATION at 8×, end to end in the real scene: the F2 debug adder
@@ -1272,7 +1298,7 @@ func _check_save_load(world: Node) -> void:
 ## is the single-player / server path, like whale spawning).
 func _check_taming(world: Node, fleet) -> void:
 	var p = world.get("player")
-	var whales: Array = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken")
+	var whales: Array = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken" and s.creature_kind != "whale_city")
 	var critters: Array = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level == 1)
 	if p == null or whales.is_empty() or critters.is_empty() or p.stats == null:
 		_ok(false, "taming: a player with stats, a wild whale and a critter exist to test")
@@ -1509,7 +1535,7 @@ func _check_hosting_after_offline_play(world: Node, fleet) -> void:
 	_ok(world.get("local_ship") != null and is_instance_valid(world.local_ship),
 		"and is bound to a live one")
 
-	var whales: Array = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken")
+	var whales: Array = fleet.ships().filter(func(s) -> bool: return s.faction == 2 and s.tame_level >= 2 and s.creature_kind != "kraken" and s.creature_kind != "whale_city")
 	_ok(whales.size() == world.WHALE_POD_SIZE,
 		"the whole whale pod survived the switch (%d)" % whales.size())
 	if not whales.is_empty():

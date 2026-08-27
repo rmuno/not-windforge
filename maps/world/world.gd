@@ -387,6 +387,7 @@ func _ready() -> void:
 		_spawn_whale()
 		_spawn_critters()
 		_spawn_kraken()
+		_spawn_boss()
 		_spawn_trainer()
 
 	# You are a person, not a ship. Spawn standing on the deck, as the original
@@ -1238,6 +1239,42 @@ func _spawn_one_whale(path: String, pos: Vector2) -> Ship:
 	return whale
 
 
+## The city-whale BOSS (ships/whale_city.ship) lairs at a FIXED fraction of the
+## world — far to starboard and DEEP — so it stands in EVERY world like the
+## Cairns, never gated behind a rare seed. Dormant until you fly out to it, so
+## it is a genuine "what IS that" you stumble on in the overworld.
+const BOSS_PATH := "res://ships/whale_city.ship"
+const BOSS_SPAWN_FRAC := Vector2(0.72, 0.16)   # x across from port; y up from the floor
+
+
+## Plant the boss at its lair. Called once at world build, after the pod.
+func _spawn_boss() -> void:
+	if _world_rect.size.y <= 0.0:
+		return
+	_spawn_boss_at(Vector2(
+		_world_rect.position.x + BOSS_SPAWN_FRAC.x * _world_rect.size.x,
+		_world_rect.end.y - BOSS_SPAWN_FRAC.y * _world_rect.size.y))
+
+
+## Spawn the LEVIATHAN ARCOLOGY at `at`, cleared of terrain (its footprint is
+## city-sized). A whale-family creature — WhaleAI roam, whale-tier tameable — with
+## a BOSS pool (its own lever, defaulting to the 30-s ceiling max). Shared by the
+## lair plant and the F2 button. Returns it (null if the spawner is not up).
+func _spawn_boss_at(at: Vector2) -> Ship:
+	var cells := ShipLayout.upscale_cells(ShipLayout.load_cells(BOSS_PATH), world_scale)
+	var pos := WhaleSpawn.clear_spawn_pos(
+		terrain, at, WhaleSpawn.footprint_of(cells), float(world_scale))
+	var boss := _spawn_one_whale(BOSS_PATH, pos)
+	if boss == null:
+		return null
+	boss.creature_kind = "whale_city"   # id only; the AI still defaults to WhaleAI
+	var hp := Tunables.get_num("boss_health")
+	boss.shared_health = hp
+	boss.shared_health_max = hp
+	boss.rebuild()
+	return boss
+
+
 ## How many small critters roam near spawn — a few so the early taming target is
 ## easy to find. Shared by the shipped scene and reset (the startup suites assert
 ## the total ship count includes these).
@@ -1434,6 +1471,8 @@ func debug_spawn(kind: String, at: Vector2) -> Ship:
 			return _spawn_one_critter(at)
 		"basilisk":
 			return _spawn_one_basilisk(at)
+		"boss", "city":
+			return _spawn_boss_at(at)
 		"kraken":
 			# Alternate the two adopted bodies — the deep hunter on demand
 			# (owner 2026-08-24: "I can't find krakens").
@@ -4873,6 +4912,7 @@ func reset_world() -> void:
 			_spawn_whale()
 			_spawn_critters()
 			_spawn_kraken()
+			_spawn_boss()
 		await get_tree().process_frame
 
 	_refresh_local_ship()

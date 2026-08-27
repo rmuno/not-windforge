@@ -35,8 +35,9 @@ func _initialize() -> void:
 	# Your ship + the hulk + a POD of whales (WHALE_POD_SIZE) + a few small
 	# critters (CRITTER_COUNT) — the variant spawner and the small-creature
 	# taming target both fill the sky.
-	_ok(fleet.ships().size() == 2 + world.WHALE_POD_SIZE + world.CRITTER_COUNT + world.KRAKEN_COUNT,
-		"your ship, the hulk, a pod of %d whales and %d critters exist (got %d)"
+	# +1 for the city-whale BOSS, planted at its fixed deep lair in every world.
+	_ok(fleet.ships().size() == 2 + world.WHALE_POD_SIZE + world.CRITTER_COUNT + world.KRAKEN_COUNT + 1,
+		"your ship, the hulk, a pod of %d whales, %d critters and the boss exist (got %d)"
 			% [world.WHALE_POD_SIZE, world.CRITTER_COUNT, fleet.ships().size()])
 
 	var local = world.get("local_ship")

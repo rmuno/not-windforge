@@ -204,6 +204,8 @@ func _build_spawn_tab() -> void:
 	_action_button(box, "Spawn critter (small tameable)", func() -> void: _spawn("critter"))
 	_action_button(box, "Spawn KRAKEN (deep hunter!)", func() -> void: _spawn("kraken"))
 	_action_button(box, "Spawn BASILISK (spits fire)", func() -> void: _spawn("basilisk"))
+	_action_button(box, "Spawn the CITY-WHALE BOSS (the Leviathan Arcology)",
+		func() -> void: _spawn("boss"))
 	_action_button(box, "Spawn whale CARCASS (corpse-airship bench)", func() -> void: _spawn("carcass"))
 	# Fire is not a spawnable body, but it is a thing the owner has to be able
 	# to CAUSE on demand to playtest it at all (standing order: a feature F2

@@ -61,6 +61,9 @@ const _REGISTRY := [
 	{"id": "whale_pod_size", "label": "Pod count", "group": "Whale",
 		"kind": KIND_INT, "default": 3, "min": 1, "max": 8, "step": 1,
 		"note": "next spawn"},                                    # world.WHALE_POD_SIZE
+	{"id": "boss_health", "label": "City-whale BOSS health pool", "group": "Whale",
+		"kind": KIND_FLOAT, "default": 1200.0, "min": 50.0, "max": 60000.0, "step": 50.0,
+		"note": "next spawn"},   # world._spawn_boss — 1200 = the 30-s ceiling MAX (owner's rule); raise past it = a deliberate boss exception
 	{"id": "whale_push_accel", "label": "Ram strength (push accel)", "group": "Whale",
 		"kind": KIND_FLOAT, "default": 1100.0, "min": 0.0, "max": 4000.0, "step": 25.0},  # WhaleAI.PUSH_ACCEL
 	{"id": "whale_ride_accel", "label": "Ride throttle", "group": "Whale",
