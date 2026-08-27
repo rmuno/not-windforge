@@ -79,6 +79,7 @@ func _initialize() -> void:
 	await _test_props_are_inert_without_engines()
 	await _test_blueprint_and_repair()
 	await _test_repair_station()
+	await _test_creature_collider_traces_silhouette()
 	await _test_blueprint_survives_severing()
 	await _test_rope_wraps_and_respects_walls()
 	await _test_walking_on_a_moving_deck()
@@ -338,6 +339,50 @@ func _test_repair_station() -> void:
 	_check(round_trip.menders_running,
 		"menders_running survives the to_payload/from_data round trip")
 	round_trip.queue_free()
+	s.queue_free()
+
+
+## A living creature's coarse collider now TRACES its outline in a few boxes
+## (owner 2026-08-27: a single AABB "only works under them"), instead of one
+## rectangle — while still covering every solid cell (no gap to fall through)
+## and staying far cheaper than the exact per-cell merge.
+func _test_creature_collider_traces_silhouette() -> void:
+	_t("living creature collider: few boxes, traces the outline, no gaps")
+	Tunables.set_value("creature_coarse_cells", 3)  # fine enough to trace this test body
+	# A tapered blob (narrow at the ends, fat in the middle) — a single AABB
+	# would leave big empty corners; the outline should step with the taper.
+	var cells := {}
+	for x in range(0, 16):
+		var half: int = mini(x, 15 - x) + 2   # 2..9..2 half-height taper
+		for y in range(8 - half, 8 + half):
+			cells[Vector2i(x, y)] = BlockDB.Type.BLUBBER
+	var s := _make_ship(cells)
+	s.shared_health_max = 1000.0
+	s.shared_health = 1000.0
+	s.rebuild()
+	_check(s._use_coarse_collider(), "a big living creature takes the coarse path")
+	var shapes := _shape_count(s)
+	var precise: int = s._merge_rects().size()
+	_check(shapes > 1, "it is MORE than one box — it follows the silhouette (%d)" % shapes)
+	_check(shapes < precise, "and FEWER than the exact merge (%d < %d)" % [shapes, precise])
+	# Coverage: every solid cell sits inside some collider rect (over-approx,
+	# never a gap the body could fall through).
+	var covered := true
+	for cell in s.blocks:
+		var inside := false
+		for r in s._hull_rects:
+			if r.has_point(cell):
+				inside = true
+				break
+		if not inside:
+			covered = false
+			break
+	_check(covered, "every solid cell is covered — no gap")
+	# A huge super-cell size collapses back to the single AABB (the old path).
+	Tunables.set_value("creature_coarse_cells", 400)
+	s.rebuild()
+	_check(_shape_count(s) == 1, "a huge detail lever restores the single box (revertable)")
+	Tunables.reset("creature_coarse_cells")
 	s.queue_free()
 
 
@@ -8195,23 +8240,28 @@ func _test_physics_census_reports_the_step() -> void:
 	# creature carries the single coarse box. Telling those apart is the whole
 	# point of `worst` and `coarse` -- an exact collider on a big body is the
 	# shape of problem this census exists to surface.
-	# An L of 69 cells, deliberately: a solid RECTANGLE greedy-merges to one
-	# rect, so exact and coarse would be indistinguishable and the comparison
-	# below would prove nothing — while a body under
-	# Ship.COARSE_COLLIDER_MIN_CELLS (64) never goes coarse at all. An L is
-	# connected (no severing) and needs two rects.
+	# A COMB — a 40-wide bar with ten downward teeth (120 cells). The exact
+	# per-cell merge fragments it into the bar + one rect per tooth (~11 shapes),
+	# while a LIVING creature's coarse collider DOWNSAMPLES it (its silhouette now
+	# traces the outline, not a single box — owner 2026-08-27) into a few boxes.
+	# So exact ≫ coarse and the comparison below is meaningful; a solid rectangle
+	# would merge to one either way and prove nothing, and a body under
+	# Ship.COARSE_COLLIDER_MIN_CELLS (64) never goes coarse at all. It is one
+	# connected piece (the teeth hang off the bar), so nothing severs.
 	var cells := {}
 	for x in 40:
 		cells[Vector2i(x, 0)] = BlockDB.Type.HULL
-	for y in range(1, 30):
-		cells[Vector2i(0, y)] = BlockDB.Type.HULL
+	for tx in range(0, 40, 4):
+		for y in range(1, 9):
+			cells[Vector2i(tx, y)] = BlockDB.Type.HULL
 	var vessel := _make_ship(cells.duplicate())
 	vessel.position = Vector2(-80000, 0)
 	var beast_cells := {}
 	for x in 40:
 		beast_cells[Vector2i(x, 0)] = BlockDB.Type.MEAT
-	for y in range(1, 30):
-		beast_cells[Vector2i(0, y)] = BlockDB.Type.MEAT
+	for tx in range(0, 40, 4):
+		for y in range(1, 9):
+			beast_cells[Vector2i(tx, y)] = BlockDB.Type.MEAT
 	var beast := _make_ship(beast_cells)
 	beast.position = Vector2(-80000, -5000)
 	beast.shared_health_max = 900.0
