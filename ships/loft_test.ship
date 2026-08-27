@@ -1,0 +1,33 @@
+# Loft test ship — the owner's Blueprint Loft design, spawned near you via F2.
+# 22 x 27 cells at 1x granularity; the game upscales it 8x on spawn so the
+# 8-cell-tall player fits through the doors and can board the helm.
+# NOTE: no gasbags/blubber, so it has ZERO lift — it will fall. Grapple to it
+# (RMB) or add lift blocks in the Loft. Author freely; this is a scratch ship.
+origin 11 13
+PPPPPPPPPPPPPPPPPPPPPP
+T####################T
+P#E................E#P
+T#E................E#T
+P#E................E#P
+T#E................E#T
+P#E................E#P
+T#E................E#T
+P#E................E#P
+T#E................E#T
+P#E................E#P
+T#E................E#T
+P#E................E#P
+T#########--#########T
+.D..................D
+.D......H...........D
+T#########--#########T
+P#E................E#P
+T#E................E#T
+P#E................E#P
+T#E................E#T
+P#E................E#P
+T#E................E#T
+P#E................E#P
+T#E................E#T
+P####################P
+TPPPPPPPPPPPPPPPPPPPPT

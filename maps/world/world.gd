@@ -1247,6 +1247,18 @@ const BOSS_PATH := "res://ships/whale_city.ship"
 const BOSS_SPAWN_FRAC := Vector2(0.72, 0.16)   # x across from port; y up from the floor
 
 
+## The owner's Blueprint-Loft test ship (ships/loft_test.ship), spawned beside the
+## player via F2 so they can walk onto / grapple it. Upscaled 8x like a creature
+## body so the 1x-authored doors become player-height and the helm is boardable.
+## Faction 0 (your side), UNPILOTED until you take its helm. It has no lift blocks,
+## so it falls — grapple to it (RMB) or add gasbags in the Loft.
+const LOFT_PATH := "res://ships/loft_test.ship"
+func _spawn_loft_at(at: Vector2) -> Ship:
+	return fleet.spawn_ship_from_cells(
+		ShipLayout.upscale_cells(ShipLayout.load_cells(LOFT_PATH), world_scale),
+		at, 0, 0.0, float(world_scale), 0)
+
+
 ## Plant the boss at its lair. Called once at world build, after the pod.
 func _spawn_boss() -> void:
 	if _world_rect.size.y <= 0.0:
@@ -1473,6 +1485,8 @@ func debug_spawn(kind: String, at: Vector2) -> Ship:
 			return _spawn_one_basilisk(at)
 		"boss", "city":
 			return _spawn_boss_at(at)
+		"loft":
+			return _spawn_loft_at(at)
 		"kraken":
 			# Alternate the two adopted bodies — the deep hunter on demand
 			# (owner 2026-08-24: "I can't find krakens").
