@@ -1258,7 +1258,11 @@ const KRAKEN_COUNT := 3
 const KRAKEN_HEALTH := 1200.0
 ## The two owner-adopted kraken body plans (both shell-casing-surrounds-meat with a
 ## tiny exposed-meat mouth): kraken_b (giant squid) and kraken_c (ammonite conch).
-const KRAKEN_PLANS := ["res://ships/kraken_c.ship", "res://ships/kraken_b.ship"]
+const KRAKEN_PLANS := ["res://ships/kraken_c.ship", "res://ships/kraken_b.ship",
+	# Design jam #2 (2026-08-26): three new shell-cased silhouettes, each with a
+	# tiny exposed-meat weak spot (snipe the gap; the casing shrugs off shots).
+	"res://ships/kraken_urchin.ship", "res://ships/kraken_angler.ship",
+	"res://ships/kraken_nautilus.ship"]
 ## Altitude fraction the pod spawns at (0 = floor, 1 = ceiling). Well inside the
 ## DEEP band (Airspace.DEEP_TOP 0.34) but clear of the lava floor — where the
 ## thick fog lives and the oxygen gate bites (owner: krakens live deep).

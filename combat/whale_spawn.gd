@@ -32,6 +32,10 @@ const PLANS := [
 	{"path": "res://ships/whale_humpback.ship",  "weight": 8,  "tint": Color(0.78, 0.82, 0.80)},  # grey humpback — common
 	{"path": "res://ships/whale_sleek.ship",     "weight": 4,  "tint": Color(0.74, 0.80, 0.90)},  # steel sleek — semi-rare
 	{"path": "res://ships/whale_leviathan.ship", "weight": 1,  "tint": Color(0.86, 0.74, 0.78)},  # pale-red leviathan — very rare
+	# Design jam #2 (2026-08-26): three new silhouettes to widen the pod.
+	{"path": "res://ships/whale_bowhead.ship",   "weight": 5,  "tint": Color(0.55, 0.60, 0.66)},  # slate bowhead TANK — fat/deep, semi-common
+	{"path": "res://ships/whale_manta.ship",     "weight": 3,  "tint": Color(0.52, 0.62, 0.72)},  # manta WING-glider — tall diamond, semi-rare
+	{"path": "res://ships/whale_narwhal.ship",   "weight": 3,  "tint": Color(0.70, 0.76, 0.84)},  # tusked NARWHAL — pale steel, semi-rare
 ]
 
 

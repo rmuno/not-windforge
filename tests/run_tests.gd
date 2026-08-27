@@ -1076,7 +1076,12 @@ func _test_whale_is_a_whale() -> void:
 	# owner-adopted variants, each gated on the same surveyed body plan.
 	for path in ["res://ships/whale.ship", "res://ships/whale_bull.ship",
 			"res://ships/whale_sleek.ship", "res://ships/whale_humpback.ship",
-			"res://ships/whale_leviathan.ship"]:
+			"res://ships/whale_leviathan.ship",
+			# Design jam #2 (2026-08-26): three new pod silhouettes + the
+			# city-whale BOSS (authored + gated here; boss spawn logic is a
+			# separate feature — the blueprint is certified, not yet spawned).
+			"res://ships/whale_bowhead.ship", "res://ships/whale_manta.ship",
+			"res://ships/whale_narwhal.ship", "res://ships/whale_city.ship"]:
 		await _check_whale_body_plan(path)
 
 
@@ -2321,7 +2326,10 @@ func _test_ridden_whale_treads_water() -> void:
 ##     mining, exactly like whales);
 ##   * NO float requirement (krakens are held aloft by AI, not fat).
 func _test_kraken_is_a_kraken() -> void:
-	for path in ["res://ships/kraken_b.ship", "res://ships/kraken_c.ship"]:
+	for path in ["res://ships/kraken_b.ship", "res://ships/kraken_c.ship",
+			# Design jam #2 (2026-08-26): urchin, anglerfish, nautilus.
+			"res://ships/kraken_urchin.ship", "res://ships/kraken_angler.ship",
+			"res://ships/kraken_nautilus.ship"]:
 		await _check_kraken_body_plan(path)
 
 
@@ -6305,8 +6313,8 @@ func _test_island_gen_is_data_only_and_sparse() -> void:
 func _test_lazy_generation_matches_eager_and_clips() -> void:
 	_t("lazy region generation == eager, edits survive, islands clip to the world")
 	var world := IslandGen.world_cells(1)
-	_check(world.size == Vector2i(12288, 9216),
-		"the world is ×4 the old extent (%s)" % world.size)
+	_check(world.size == Vector2i(6144, 4608),
+		"the world extent (halved 2026-08-26: %s)" % world.size)
 
 	# Eager reference over a mid-band window away from spawn.
 	var probe := Vector2i(2000, 500)
