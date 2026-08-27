@@ -61,6 +61,9 @@ const _REGISTRY := [
 	{"id": "whale_pod_size", "label": "Pod count", "group": "Whale",
 		"kind": KIND_INT, "default": 3, "min": 1, "max": 8, "step": 1,
 		"note": "next spawn"},                                    # world.WHALE_POD_SIZE
+	{"id": "creature_coarse_cells", "label": "Creature collider detail (cells/box; big = 1 box)", "group": "Whale",
+		"kind": KIND_INT, "default": 12, "min": 2, "max": 400, "step": 1,
+		"note": "next rebuild"},   # Ship._coarse_creature_rects — super-cell size: small traces the silhouette, huge collapses to the old single AABB
 	{"id": "boss_health", "label": "City-whale BOSS health pool", "group": "Whale",
 		"kind": KIND_FLOAT, "default": 1200.0, "min": 50.0, "max": 60000.0, "step": 50.0,
 		"note": "next spawn"},   # world._spawn_boss — 1200 = the 30-s ceiling MAX (owner's rule); raise past it = a deliberate boss exception

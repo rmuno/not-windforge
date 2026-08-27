@@ -1482,7 +1482,20 @@ func _use_coarse_collider() -> bool:
 ## per-cell grid (see _use_coarse_collider), so mining and ship-vs-ship are untouched.
 ## The box is a clean over-approximation of the solid AABB — it covers every solid
 ## cell (never a gap to fall through) and never reaches past the footprint.
+##
+## UPGRADE (owner 2026-08-27): a single box collides off a RECTANGLE, so a tapered
+## whale rests on its box's flat bottom (above its real belly) and rams terrain at
+## invisible box edges — "it only really works under them." Instead the solid cells
+## are DOWNSAMPLED into `creature_coarse_cells`-sized super-cells (a super-cell is
+## solid if ANY of its cells is — an over-approx that never opens a gap), then
+## greedy-merged and scaled back up: a handful of boxes that TRACE the silhouette.
+## The downsample keeps the shape PAIRS low (the thing the sandwich cliff scales
+## with), so it stays cheap — proven by tools/collider_probe.gd. A super-cell size
+## at or above the body collapses back to the single AABB (the old behaviour), so
+## the one lever spans "cheap box" ←→ "faithful outline".
 func _coarse_creature_rects() -> Array[Rect2i]:
+	var d: int = maxi(1, Tunables.get_int("creature_coarse_cells"))
+	var supers := {}
 	var smin := Vector2i(1 << 30, 1 << 30)
 	var smax := Vector2i(-(1 << 30), -(1 << 30))
 	for cell in blocks:
@@ -1490,9 +1503,19 @@ func _coarse_creature_rects() -> Array[Rect2i]:
 			continue
 		smin = Vector2i(mini(smin.x, cell.x), mini(smin.y, cell.y))
 		smax = Vector2i(maxi(smax.x, cell.x), maxi(smax.y, cell.y))
-	if smax.x < smin.x:
+		supers[Vector2i(floori(float(cell.x) / d), floori(float(cell.y) / d))] = 0
+	if supers.is_empty():
 		return []
-	return [Rect2i(smin, smax - smin + Vector2i.ONE)]
+	# Clamp every scaled super-cell box to the solid AABB, so a rim super-cell
+	# holding one solid cell cannot reach D-1 cells PAST the body (no overreach,
+	# and a tighter fit than the raw downsample).
+	var bounds := Rect2i(smin, smax - smin + Vector2i.ONE)
+	var out: Array[Rect2i] = []
+	for sr in _greedy_rects(supers):
+		var r := Rect2i(sr.position * d, sr.size * d).intersection(bounds)
+		if r.size.x > 0 and r.size.y > 0:
+			out.append(r)
+	return out
 
 
 ## Shield cells (the control panel) block BULLETS but not bodies: their
