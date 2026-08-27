@@ -9622,11 +9622,33 @@ func _test_debug_window_toggles_and_switches_tabs() -> void:
 	win.toggle()
 	_check(not win.visible, "toggle hides it again")
 
-	# Spawn + one tab per Tunables group + Player + Perf.
-	var expected := 3 + Tunables.groups().size()
+	# Spawn + Player + Perf (3 hardcoded) + one tab per Tunables group, EXCEPT
+	# the "Player" group, whose levers fold into the Player cheats tab.
+	var lever_groups := Tunables.groups().size()
+	if Tunables.groups().has(DebugWindow.PLAYER_TAB):
+		lever_groups -= 1
+	var expected := 3 + lever_groups
 	_check(win._tabs.get_tab_count() == expected,
 		"built %d tabs (Spawn/Player/Perf + %d lever groups)"
-			% [expected, Tunables.groups().size()])
+			% [expected, lever_groups])
+
+	# THE OWNER'S F2 BUG (2026-08-27): a "Player" Tunables group and the hardcoded
+	# Player tab both claimed the name, so Godot renamed one child to an
+	# unreadable "@ScrollContainer@NN" — which TabContainer then showed as the tab
+	# title. Guard both halves: every title readable, and Player appears once.
+	var titles: Array = []
+	for i in win._tabs.get_tab_count():
+		titles.append(win._tabs.get_tab_title(i))
+	var all_readable := true
+	for t in titles:
+		if (t as String).begins_with("@"):
+			all_readable = false
+	_check(all_readable,
+		"every F2 tab title is readable — no name collision (%s)" % str(titles))
+	_check(titles.count(DebugWindow.PLAYER_TAB) == 1,
+		"exactly one Player tab (the feel levers fold into the cheats tab)")
+	_check(win._controls.has("coyote_time") and win._controls.has("jump_cut"),
+		"the movement-feel levers are reachable inside it")
 
 	win.set_tab(2)
 	_check(win.active_tab() == 2, "set_tab switches the active tab")
