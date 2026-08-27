@@ -97,9 +97,16 @@ func _initialize() -> void:
 	_ok(flight != null and int((flight as Dictionary)["mode"]) == 1
 			and (flight as Dictionary)["name"] == "FLIGHT",
 		"F cycles the overlay to FLIGHT mode")
-	_ok(flight != null and (flight as Dictionary).has("xform")
-			and not (flight as Dictionary).has("machines"),
-		"FLIGHT carries the ship transform and no power markers")
+	# The overlay now lists every ship in reach, each carrying its own transform.
+	var f_ships: Array = (flight as Dictionary)["ships"]
+	_ok(not f_ships.is_empty() and (f_ships[0] as Dictionary).has("xform")
+			and not (f_ships[0] as Dictionary).has("machines"),
+		"FLIGHT lists ships with a transform and no power markers")
+	var has_local := false
+	for sh in f_ships:
+		if bool((sh as Dictionary).get("is_local", false)):
+			has_local = true
+	_ok(has_local, "your own ship is in the readout (flagged local)")
 	world._cycle_eng_overlay()
 	var systems: Variant = world.engineering_overlay()
 	_ok(systems != null and int((systems as Dictionary)["mode"]) == 2
@@ -112,8 +119,9 @@ func _initialize() -> void:
 			feeders += 1
 		else:
 			drawers += 1
-	_ok(systems != null and (systems as Dictionary).has("machines"),
-		"SYSTEMS carries the power markers")
+	var s_ships: Array = (systems as Dictionary)["ships"]
+	_ok(not s_ships.is_empty() and (s_ships[0] as Dictionary).has("machines"),
+		"SYSTEMS lists ships with power markers")
 	_ok(feeders > 0 and drawers > 0,
 		"the starter's power grid reads both feeders (%d engines) and drawers (%d props/turrets)"
 			% [feeders, drawers])
@@ -328,6 +336,15 @@ func _check_loft_ship(world: Node, fleet) -> void:
 	# so wait a frame or the count carries this scratch ship into the lava test.
 	ship.queue_free()
 	await world.get_tree().physics_frame
+
+	# The PASTE path: a .ship string (the Loft's export) spawns the same way.
+	var pasted = world.call("debug_spawn_text",
+		"# t\norigin 1 1\n###\n#H#\n###", at + Vector2(700.0, 0.0))
+	_ok(pasted != null and pasted.faction == 0 and not pasted.helm_cells.is_empty(),
+		"a pasted .ship string spawns a boardable, faction-0 vessel")
+	if pasted != null:
+		pasted.queue_free()
+		await world.get_tree().physics_frame
 
 
 ## The city-whale BOSS is planted at a fixed deep lair in every world (not gated
