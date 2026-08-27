@@ -7733,6 +7733,7 @@ func _test_no_target_outlives_the_ceiling() -> void:
 		"critter": float(world_consts["CRITTER_HEALTH"]),
 		"kraken": float(world_consts["KRAKEN_HEALTH"]),
 		"basilisk": float(Tunables.def("basilisk_health")["default"]),
+		"city-whale boss": float(Tunables.def("boss_health")["default"]),
 	}
 	for k in [SpawnSites.Kind.BANDIT_ROOST, SpawnSites.Kind.KRAKEN_DEN,
 			SpawnSites.Kind.CRITTER_MEADOW, SpawnSites.Kind.BASILISK_EYRIE]:
