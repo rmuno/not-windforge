@@ -1888,6 +1888,7 @@ func _update_dormancy(delta: float) -> void:
 	if do_tick:
 		_dormant_clock += elapsed
 	var count := 0
+	var awake: Array = []  # [dist, ship] of simulated bodies, for the budget cap
 
 	for ship in fleet.ships():
 		if not is_instance_valid(ship):
@@ -1907,10 +1908,29 @@ func _update_dormancy(delta: float) -> void:
 				_wake(ship)
 			elif not ship.dormant and d > sleep_at:
 				ship.set_dormant(true)
+		# Awake, in range, and not something a person is on: a candidate to be
+		# capped below if the vicinity is crowded (owner: "it might be a lot").
+		if do_scan and not ship.dormant:
+			awake.append([d, ship])
 		if ship.dormant and do_tick:
 			_tick_dormant(ship, elapsed)
 		if ship.dormant:
 			count += 1
+
+	# THE AWAKE BUDGET (owner 2026-08-26: prioritise the vicinity — "it might be
+	# a lot though"). Distance dormancy alone bounds how FAR a body can be and
+	# stay simulated, not how MANY: a crowded neighbourhood (a nest's residents,
+	# a pod, a spawn site right on you) could still put dozens of bodies in the
+	# space at once. This caps the simulated set to the NEAREST `dormant_max_awake`
+	# and sleeps the rest — so the worst case is bounded no matter how populous
+	# the sky gets. 0 disables the cap. Exempt bodies (piloted/ridden) were never
+	# added to `awake`, so they never count against it or get slept.
+	if do_scan:
+		for far_v in Dormancy.beyond_budget(awake, Tunables.get_int("dormant_max_awake")):
+			var far := far_v as Ship
+			if is_instance_valid(far) and not far.dormant:
+				far.set_dormant(true)
+				count += 1
 
 	if do_scan:
 		_dormancy_scan_t = 0.0

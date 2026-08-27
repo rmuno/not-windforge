@@ -174,3 +174,21 @@ static func keep_in_world(pos: Vector2) -> Vector2:
 		clampf(pos.y,
 			b.end.y - MIGRATE_CEIL_FRAC * b.size.y,
 			b.end.y - MIGRATE_FLOOR_FRAC * b.size.y))
+
+
+## THE AWAKE BUDGET (owner 2026-08-26: prioritise the vicinity — "it might be a
+## lot though"). Distance dormancy bounds how FAR a simulated body can be, not
+## how MANY: a crowded neighbourhood could still put dozens in the physics space
+## at once. Given the awake candidates as [distance, item] pairs and a budget,
+## this returns the items to force dormant — everything beyond the NEAREST
+## `budget`. A budget <= 0 caps nothing (returns empty). Pure and total, so it
+## is unit-tested without a world; world._update_dormancy passes real ships.
+static func beyond_budget(awake: Array, budget: int) -> Array:
+	if budget <= 0 or awake.size() <= budget:
+		return []
+	var sorted := awake.duplicate()
+	sorted.sort_custom(func(a, b): return float(a[0]) < float(b[0]))
+	var out: Array = []
+	for i in range(budget, sorted.size()):
+		out.append(sorted[i][1])
+	return out

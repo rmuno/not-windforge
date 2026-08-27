@@ -151,6 +151,7 @@ func _initialize() -> void:
 	await _test_physics_census_reports_the_step()
 	await _test_frame_census_prices_the_drawn_skin()
 	await _test_dormancy_leaves_and_rejoins_the_simulation()
+	await _test_awake_budget_caps_the_simulated_set()
 	await _test_dormant_creatures_migrate_in_a_circuit()
 	await _test_spawn_sites_are_places()
 	await _test_no_target_outlives_the_ceiling()
@@ -8002,6 +8003,27 @@ func _test_dormancy_leaves_and_rejoins_the_simulation() -> void:
 
 	ship.queue_free()
 	await _step(1)
+
+
+## THE AWAKE BUDGET (v0.75.0, owner 2026-08-26: prioritise the vicinity — "it
+## might be a lot though"). Distance dormancy bounds how FAR a body can be and
+## stay simulated; this bounds how MANY. Pure decision (Dormancy.beyond_budget),
+## so it is checked here without a world: the nearest `budget` stay, the rest
+## are returned to be slept.
+func _test_awake_budget_caps_the_simulated_set() -> void:
+	_t("the awake budget sleeps the FARTHEST bodies beyond the nearest N")
+	# [distance, tag] pairs, deliberately out of order.
+	var awake := [[500.0, "e"], [100.0, "a"], [400.0, "d"], [200.0, "b"], [300.0, "c"]]
+	var sleep := Dormancy.beyond_budget(awake, 3)
+	_check(sleep.size() == 2, "over a budget of 3, two of five sleep (%d)" % sleep.size())
+	_check("d" in sleep and "e" in sleep and not ("a" in sleep or "b" in sleep or "c" in sleep),
+		"...and it is the FARTHEST two (d,e), the nearest three stay awake")
+	_check(Dormancy.beyond_budget(awake, 0).is_empty(),
+		"a budget of 0 caps nothing (the feature off)")
+	_check(Dormancy.beyond_budget(awake, 5).is_empty()
+			and Dormancy.beyond_budget(awake, 9).is_empty(),
+		"a budget at or above the count sleeps no one")
+	_check(Dormancy.beyond_budget([], 3).is_empty(), "an empty vicinity is safe")
 
 
 ## THE FRAME CENSUS (v0.69.0). The owner's SECOND 3-FPS capture ruled the
