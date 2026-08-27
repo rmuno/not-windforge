@@ -34,6 +34,10 @@ const _BORDER := Color(0.35, 0.42, 0.52, 0.95)
 const _FG := Color(0.85, 0.89, 0.96)
 const _MUTED := Color(0.60, 0.64, 0.70)
 const _ACCENT := Color(0.55, 0.82, 0.55)
+## The one Tunables group that shares a tab with the hardcoded player cheats
+## instead of getting its own auto-tab — see _build (a same-named second tab
+## collapsed to an unreadable "@ScrollContainer@NN" title).
+const PLAYER_TAB := "Player"
 
 
 func _ready() -> void:
@@ -112,8 +116,14 @@ func _build() -> void:
 
 	# Spawn first — the owner's headline ask ("spawn enemies on demand").
 	_build_spawn_tab()
-	# One tab per Tunables group (Whale, Combat, World), built from the registry.
+	# One tab per Tunables group (Whale, Combat, World, ...), built from the
+	# registry. "Player" is the exception: it is folded into the Player tab below
+	# so the movement-feel levers and the player cheats share ONE tab — and so a
+	# second TabContainer child named "Player" never collides into an unreadable
+	# "@ScrollContainer@NN" tab title (the owner's F2 bug, 2026-08-27).
 	for group in Tunables.groups():
+		if group == PLAYER_TAB:
+			continue
 		_build_lever_tab(group)
 	_build_player_tab()
 	_build_perf_tab()
@@ -203,7 +213,7 @@ func _build_spawn_tab() -> void:
 
 
 func _build_player_tab() -> void:
-	var box := _add_tab("Player")
+	var box := _add_tab(PLAYER_TAB)
 	_hint(box, "Cheats for the local player body.")
 	_action_button(box, "Grant $1000", func() -> void:
 		if world != null: world.call("debug_grant_money", 1000))
@@ -214,6 +224,12 @@ func _build_player_tab() -> void:
 			if world != null: world.call("debug_grant_balloons", 3))
 	_action_button(box, "Max all stats", func() -> void:
 		if world != null: world.call("debug_max_stats"))
+	# The movement-FEEL levers (coyote/buffer/jump-cut) live in the "Player"
+	# Tunables group; their rows join this same tab, so everything player-facing
+	# is in one place and no duplicate "Player" tab is built (see _build above).
+	if Tunables.groups().has(PLAYER_TAB):
+		for row in Tunables.in_group(PLAYER_TAB):
+			_build_lever_row(box, row as Dictionary)
 
 
 func _build_perf_tab() -> void:
