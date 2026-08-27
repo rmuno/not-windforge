@@ -21,6 +21,15 @@ extends RefCounted
 ## 3. THE OLD SALUTE — a Konami-style key sequence (up up down down left right
 ##    left right B A) that pops a harmless burst of celebratory floats over the
 ##    player. Purely fun; touches nothing about play, balance or the inventory.
+## 4. THE DEEP SOVEREIGN — a rare ghost KRAKEN, the deep's answer to the Pale
+##    Wanderer. A deterministic 1-in-N roll off the world seed; when it hits, the
+##    first kraken of the pod wears a regal violet cast. Pure cosmetic, no balance
+##    change. Find it: reroll world_seed and dive deep until a violet kraken looms.
+## 5. THE HIGH CAIRN — a SECOND hidden beacon that BOOKENDS the Cairn: where the
+##    Cairn is deep and far to PORT (aetherite), this one is high and far to
+##    STARBOARD, built of COPPER (the top-band metal). A wanderer who finds both
+##    learns the world is deliberately framed corner to corner. Planted after
+##    generation like the Cairn, so it is in every world regardless of seed.
 
 # --- 1. The Cairn ----------------------------------------------------------
 
@@ -63,6 +72,39 @@ static func cairn_cell_for(terrain: Terrain) -> Vector2i:
 	return CAIRN_CELL * maxi(terrain.subdiv, 1)
 
 
+# --- 5. The High Cairn (a bookend beacon, far starboard and high) ----------
+
+## The High Cairn's coarse-cell coordinate — the MIRROR of the Cairn: high (up
+## is negative y) and far to STARBOARD (+x), the opposite corner. Inside the
+## (halved 2026-08-26) world, clear of the spawn keep-out and every island-gen
+## test window, so it disturbs nothing. Built of COPPER, not aetherite, so the
+## two beacons read as a deliberate deep/high, port/starboard pair.
+const HIGH_CAIRN_CELL := Vector2i(1360, -980)
+
+
+## Carve the High Cairn: a copper plus/beacon, the same shape and size as the
+## Cairn so a finder recognises the kinship, at the mirrored corner. Idempotent;
+## called once after IslandGen.generate, right beside plant_cairn.
+static func plant_high_cairn(terrain: Terrain) -> void:
+	var sub := maxi(terrain.subdiv, 1)
+	var c := HIGH_CAIRN_CELL * sub
+	terrain.fill_rect(Rect2i(c - Vector2i(2, 2) * sub, Vector2i(5, 5) * sub),
+		TerrainDB.Type.COPPER)
+	terrain.fill_rect(Rect2i(c + Vector2i(3 * sub, 0), Vector2i(3 * sub, sub)),
+		TerrainDB.Type.COPPER)
+	terrain.fill_rect(Rect2i(c + Vector2i(-5 * sub, 0), Vector2i(3 * sub, sub)),
+		TerrainDB.Type.COPPER)
+	terrain.fill_rect(Rect2i(c + Vector2i(0, 3 * sub), Vector2i(sub, 3 * sub)),
+		TerrainDB.Type.COPPER)
+	terrain.fill_rect(Rect2i(c + Vector2i(0, -5 * sub), Vector2i(sub, 3 * sub)),
+		TerrainDB.Type.COPPER)
+
+
+## The High Cairn's anchor cell in THIS terrain's grid.
+static func high_cairn_cell_for(terrain: Terrain) -> Vector2i:
+	return HIGH_CAIRN_CELL * maxi(terrain.subdiv, 1)
+
+
 # --- 2. The Pale Wanderer (rare ghost whale) -------------------------------
 
 ## Odds the world's whale is the ghost: 1 in this many seeds. Deterministic per
@@ -80,6 +122,25 @@ const GHOST_WHALE_TINT := Color(0.70, 0.82, 0.98)
 ## seed — a seed always agrees with itself, and a test can pin a known ghost seed.
 static func is_ghost_whale(world_seed: int) -> bool:
 	return posmod(world_seed, GHOST_WHALE_ODDS) == GHOST_WHALE_RESIDUE
+
+
+# --- 4. The Deep Sovereign (rare ghost kraken) -----------------------------
+
+## Odds the pod's lead kraken is the Sovereign: 1 in this many seeds. A distinct
+## residue from the ghost whale so the two eggs are independent — a seed can
+## carry both, neither, or one. Deterministic per seed (a world agrees with
+## itself; a test pins a known seed).
+const SOVEREIGN_KRAKEN_ODDS := 11
+const SOVEREIGN_KRAKEN_RESIDUE := 6
+const SOVEREIGN_KRAKEN_NAME := "the Deep Sovereign"
+## A regal deep-violet cast multiplied over the kraken's natural colours.
+const SOVEREIGN_KRAKEN_TINT := Color(0.62, 0.52, 0.86)
+
+
+## Is this world's lead kraken the rare Sovereign? Pure and deterministic — the
+## deep's twin of is_ghost_whale.
+static func is_sovereign_kraken(world_seed: int) -> bool:
+	return posmod(world_seed, SOVEREIGN_KRAKEN_ODDS) == SOVEREIGN_KRAKEN_RESIDUE
 
 
 # --- 3. The Old Salute (Konami-style input) --------------------------------
