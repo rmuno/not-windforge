@@ -47,38 +47,43 @@ func _draw_engineering() -> void:
 	var d: Variant = world.call("engineering_overlay")
 	if d == null:
 		return
-	var data := d as Dictionary
-	var xform := data["xform"] as Transform2D
-	var bounds := data["bounds"] as Rect2
-	var com := data["com"] as Vector2
-	var s := maxf(float(data["scale"]), 1.0)
+	var top := d as Dictionary
+	var mode := int(top["mode"])
+	var s := maxf(float(top["scale"]), 1.0)
 	var cell: float = Ship.CELL * s
 	var font := ThemeDB.fallback_font
-
-	draw_set_transform_matrix(xform)
-	if int(data["mode"]) == 1:
-		_eng_flight(com, bounds, data, cell, font, s)
-	else:
-		_eng_systems(com, bounds, data, cell, font, s)
-
-	# The CoM marker is common to both modes — the one point every airship
-	# builder wants to see. A ringed dot with a crosshair, drawn last so it sits
-	# on top of the bars and machine tints.
-	var mk := cell * 0.55
-	draw_circle(com, mk, Color(0.15, 0.95, 1.0, 0.9))
-	draw_circle(com, mk, Color(0.02, 0.10, 0.14, 0.9), false, maxf(1.5, 1.5 * s))
-	draw_line(com - Vector2(mk * 2.0, 0.0), com + Vector2(mk * 2.0, 0.0),
-		Color(0.15, 0.95, 1.0, 0.7), maxf(1.0, 1.0 * s))
-	draw_line(com - Vector2(0.0, mk * 2.0), com + Vector2(0.0, mk * 2.0),
-		Color(0.15, 0.95, 1.0, 0.7), maxf(1.0, 1.0 * s))
-
-	# Mode label above the hull, in the ship frame (the player's own ship flies
-	# upright, so it reads level). Small and cornered — an instrument, not a sign.
 	var fs := int(clampf(11.0 * s, 11.0, 200.0))
-	draw_string(font, Vector2(bounds.position.x, bounds.position.y - cell * 0.6),
-		"ENGINEERING · %s" % data["name"], HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
-		Color(0.75, 0.95, 1.0, 0.95))
-	draw_set_transform_matrix(Transform2D.IDENTITY)
+
+	# One readout per nearby ship (owner 2026-08-27) — your own hull plus every
+	# vessel or creature in reach. The local ship is drawn brighter and labelled
+	# in full; the rest read dimmer so yours stays the anchor.
+	for entry in (top["ships"] as Array):
+		var ship := entry as Dictionary
+		var bounds := ship["bounds"] as Rect2
+		var com := ship["com"] as Vector2
+		var is_local := bool(ship.get("is_local", false))
+
+		draw_set_transform_matrix(ship["xform"] as Transform2D)
+		if mode == 1:
+			_eng_flight(com, bounds, ship, cell, font, s)
+		else:
+			_eng_systems(com, bounds, ship, cell, font, s)
+
+		# The CoM marker — the one point every airship builder wants to see.
+		var mk := cell * 0.55
+		var cc := Color(0.15, 0.95, 1.0, 0.9) if is_local else Color(0.55, 0.82, 0.95, 0.7)
+		draw_circle(com, mk, cc)
+		draw_circle(com, mk, Color(0.02, 0.10, 0.14, 0.9), false, maxf(1.5, 1.5 * s))
+		draw_line(com - Vector2(mk * 2.0, 0.0), com + Vector2(mk * 2.0, 0.0),
+			Color(cc, 0.7), maxf(1.0, 1.0 * s))
+		draw_line(com - Vector2(0.0, mk * 2.0), com + Vector2(0.0, mk * 2.0),
+			Color(cc, 0.7), maxf(1.0, 1.0 * s))
+
+		var label: String = ("ENGINEERING · %s" % top["name"]) if is_local else String(top["name"])
+		draw_string(font, Vector2(bounds.position.x, bounds.position.y - cell * 0.6),
+			label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
+			Color(0.75, 0.95, 1.0, 0.95 if is_local else 0.7))
+		draw_set_transform_matrix(Transform2D.IDENTITY)
 
 
 ## FLIGHT: lift-to-weight gauge at the CoM (green climbs, red sinks) and the

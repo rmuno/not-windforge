@@ -209,6 +209,17 @@ func _build_spawn_tab() -> void:
 	_action_button(box, "Spawn whale CARCASS (corpse-airship bench)", func() -> void: _spawn("carcass"))
 	_action_button(box, "Spawn MY LOFT SHIP beside you (board it / grapple it)",
 		func() -> void: _spawn("loft"))
+	# Paste a .ship from the Blueprint Loft and fly it straight away — no file
+	# round-trip (owner 2026-08-27). Upscaled 8x + spawned beside you, faction 0.
+	_hint(box, "…or paste a .ship from the Blueprint Loft and spawn it:")
+	var paste := TextEdit.new()
+	paste.placeholder_text = "paste .ship text here (origin line + glyph rows)…"
+	paste.custom_minimum_size = Vector2(0, 96)
+	paste.add_theme_font_size_override("font_size", 11)
+	box.add_child(paste)
+	_action_button(box, "Spawn PASTED .ship beside you", func() -> void:
+		if world != null and not paste.text.strip_edges().is_empty():
+			world.call("debug_spawn_text", paste.text, _spawn_pos()))
 	# Fire is not a spawnable body, but it is a thing the owner has to be able
 	# to CAUSE on demand to playtest it at all (standing order: a feature F2
 	# cannot reach is invisible).

@@ -538,17 +538,41 @@ func _cycle_eng_overlay() -> void:
 ## global transform rides along so the overlay can draw CoM, thrust and the
 ## machine markers in the SHIP's frame (a posed hull would slide a world-space
 ## marker off its own grid). SYSTEMS adds the power markers; FLIGHT omits them.
+## Ships within this UNSCALED range of the player get their readout painted — so
+## F reads your OWN ship plus any nearby vessel or creature you can see (owner
+## 2026-08-27), not just the one you fly.
+const ENG_OVERLAY_RANGE := 2200.0
+
+
 func engineering_overlay() -> Variant:
-	if _eng_overlay_mode == 0 or not is_instance_valid(local_ship):
+	if _eng_overlay_mode == 0:
 		return null
-	var data := local_ship.engineering_readout()
-	data["mode"] = _eng_overlay_mode
-	data["name"] = ENG_OVERLAY_NAMES[_eng_overlay_mode]
-	data["xform"] = local_ship.global_transform
-	data["scale"] = world_scale
-	if _eng_overlay_mode == 2:
-		data["machines"] = local_ship.power_markers()
-	return data
+	var focus: Vector2
+	if player != null and is_instance_valid(player):
+		focus = player.global_position
+	elif is_instance_valid(local_ship):
+		focus = local_ship.to_global(local_ship.solid_bounds.get_center())
+	else:
+		return null
+	var reach := ENG_OVERLAY_RANGE * maxf(float(world_scale), 1.0)
+	var range2 := reach * reach
+	var out := {"mode": _eng_overlay_mode, "name": ENG_OVERLAY_NAMES[_eng_overlay_mode],
+		"scale": world_scale, "ships": []}
+	for ship in fleet.ships():
+		if not is_instance_valid(ship) or ship.solid_bounds.size == Vector2.ZERO:
+			continue
+		var center := ship.to_global(ship.solid_bounds.get_center())
+		if focus.distance_squared_to(center) > range2:
+			continue
+		var d := ship.engineering_readout()
+		d["xform"] = ship.global_transform
+		d["is_local"] = ship == local_ship
+		if _eng_overlay_mode == 2:
+			d["machines"] = ship.power_markers()
+		(out["ships"] as Array).append(d)
+	if (out["ships"] as Array).is_empty():
+		return null
+	return out
 
 
 # --- Save / load (save/save_game.gd) ---------------------------------------
@@ -1256,6 +1280,21 @@ const LOFT_PATH := "res://ships/loft_test.ship"
 func _spawn_loft_at(at: Vector2) -> Ship:
 	return fleet.spawn_ship_from_cells(
 		ShipLayout.upscale_cells(ShipLayout.load_cells(LOFT_PATH), world_scale),
+		at, 0, 0.0, float(world_scale), 0)
+
+
+## Spawn a ship from PASTED .ship text (the Blueprint Loft's export) beside the
+## player — closes the design→fly loop with no file round-trip (owner 2026-08-27).
+## Parses the same format load_cells does, upscales 8x so it is boardable, faction
+## 0. Returns null on empty/garbled text. Authority only, like debug_spawn.
+func debug_spawn_text(text: String, at: Vector2) -> Ship:
+	if Net.is_online() and not Net.is_server():
+		return null
+	var cells := ShipLayout.parse(text)
+	if cells.is_empty():
+		return null
+	return fleet.spawn_ship_from_cells(
+		ShipLayout.upscale_cells(cells, world_scale),
 		at, 0, 0.0, float(world_scale), 0)
 
 
