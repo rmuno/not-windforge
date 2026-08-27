@@ -72,6 +72,15 @@ var _help_panel: PanelContainer
 ## height-capped to the viewport when opened (it must never run off screen).
 var _help_scroll: ScrollContainer
 var _help_label: Label
+## Engineering overlay (F): 0 off, 1 FLIGHT (CoM · lift-to-weight · thrust
+## vectors), 2 SYSTEMS (the power grid — engines feed, props/turrets draw,
+## brownout). One quick toggle CYCLES it (owner 2026-08-27: "toggleable... two
+## separate modes to focus on" instead of one flat all-at-once read). It draws
+## your LOCAL ship only, in the WorldOverlay (above every hull). Off is the
+## default; nothing is painted until you ask.
+var _eng_overlay_mode := 0
+const ENG_OVERLAY_MODES := 3   ## off, FLIGHT, SYSTEMS
+const ENG_OVERLAY_NAMES := ["", "FLIGHT", "SYSTEMS"]
 ## The calm HUD layer (maps/world/hud_layer.gd): reticle + inventory swatches +
 ## the contextual cue bar, drawn in screen space, all fed from this node.
 var _hud_layer: HudLayer
@@ -450,6 +459,7 @@ func _build_help_panel() -> PanelContainer:
 		"Z mine / harvest (hold)    X repair AND smother fire (hold, sweep)",
 		"M craft    N next recipe    Shift+M craft all — the deep's air needs an Aether Lung",
 		"K character sheet (at a trainer: 1-4 train, 0 sell salvage)    Tab map",
+		"F engineering overlay — cycles FLIGHT (mass · lift · thrust) / SYSTEMS (power)",
 		"T respawn    R reset world    Esc quit    wheel zoom",
 		"%s save    %s saves panel (Up/Down, Enter)    H host    J join" % [k_save, k_saves],
 		"F2 debug window    %s diagnostic" % k_diag,
@@ -510,6 +520,33 @@ func _toggle_map() -> void:
 func _toggle_character_sheet() -> void:
 	if _character_sheet != null:
 		_character_sheet.toggle()
+
+
+## F cycles the engineering overlay: off -> FLIGHT -> SYSTEMS -> off. A quick
+## toggle, deliberately two FOCUSED modes rather than one flat everything-at-once
+## read (owner 2026-08-27). The WorldOverlay reads engineering_overlay() and
+## paints it; the label it draws is the only feedback needed.
+func _cycle_eng_overlay() -> void:
+	_eng_overlay_mode = (_eng_overlay_mode + 1) % ENG_OVERLAY_MODES
+
+
+## What the engineering overlay should paint this frame, or null when it is off
+## or there is no local ship to read. Plain values only (the overlay must never
+## touch a Ship), on the pattern build_ghost/interact_prompt use. The ship's
+## global transform rides along so the overlay can draw CoM, thrust and the
+## machine markers in the SHIP's frame (a posed hull would slide a world-space
+## marker off its own grid). SYSTEMS adds the power markers; FLIGHT omits them.
+func engineering_overlay() -> Variant:
+	if _eng_overlay_mode == 0 or not is_instance_valid(local_ship):
+		return null
+	var data := local_ship.engineering_readout()
+	data["mode"] = _eng_overlay_mode
+	data["name"] = ENG_OVERLAY_NAMES[_eng_overlay_mode]
+	data["xform"] = local_ship.global_transform
+	data["scale"] = world_scale
+	if _eng_overlay_mode == 2:
+		data["machines"] = local_ship.power_markers()
+	return data
 
 
 # --- Save / load (save/save_game.gd) ---------------------------------------
@@ -3281,6 +3318,8 @@ func _input(event: InputEvent) -> void:
 			_toggle_map()
 		KEY_K:
 			_toggle_character_sheet()
+		KEY_F:
+			_cycle_eng_overlay()
 		KEY_F2:
 			_toggle_debug_window()
 		KEY_F3:

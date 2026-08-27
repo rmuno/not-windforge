@@ -3826,6 +3826,46 @@ func power_supply() -> float:
 	return _power_supply * _fp_norm(BlockDB.Type.ENGINE)
 
 
+## Everything the F-key ENGINEERING OVERLAY paints (maps/world/overlay.gd),
+## gathered from the numbers rebuild() already derived — so the overlay is a
+## PICTURE of the real values, never a second computation that can drift from
+## flight. All spatial quantities (com) are ship-LOCAL px, so the overlay draws
+## them in the ship's frame. Thrust totals carry the same footprint
+## normalisation flight uses (a component's rating at this scale), so the arrows
+## are proportional to the authority the ship actually has.
+func engineering_readout() -> Dictionary:
+	var draw := active_draw()
+	var supply := power_supply()
+	var prop_norm := _fp_norm(BlockDB.Type.PROPELLER)
+	return {
+		"com": center_of_mass,
+		"lift_ratio": lift_ratio(),
+		"vthrust": _total_vthrust * prop_norm,
+		"hthrust": _total_hthrust * prop_norm,
+		"power_supply": supply,
+		"power_draw": draw,
+		"power_ratio": 1.0 if draw <= 0.0 else clampf(supply / draw, 0.0, 1.0),
+		"bounds": solid_bounds,
+	}
+
+
+## Machine clusters that MOVE POWER, for the SYSTEMS overlay: engines PRODUCE
+## (role +1), propellers and turrets DRAW (role -1). Neutral machinery (helm,
+## door) and non-glyph bodies are omitted. Rects are ship-local px, straight off
+## the glyph clusters rebuild() already found — so a machine lights up exactly
+## where it is drawn.
+func power_markers() -> Array:
+	var out: Array = []
+	for c in _glyph_clusters:
+		var role := 0
+		match c["key"]:
+			"E": role = 1
+			"PH", "PV", "T": role = -1
+			_: continue
+		out.append({"rect": c["rect"], "role": role})
+	return out
+
+
 func ceiling_estimate() -> float:
 	## Altitude where lift exactly cancels weight, i.e. where the ship stops
 	## climbing. Weight carries gravity ×unit and lift carries ×unit, so the
