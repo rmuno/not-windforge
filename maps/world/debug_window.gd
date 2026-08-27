@@ -224,6 +224,9 @@ func _build_player_tab() -> void:
 			if world != null: world.call("debug_grant_balloons", 3))
 	_action_button(box, "Max all stats", func() -> void:
 		if world != null: world.call("debug_max_stats"))
+	_action_button(box, "Bolt a REPAIR STATION onto your ship (E runs it)",
+		func() -> void:
+			if world != null: world.call("debug_add_mender"))
 	# The movement-FEEL levers (coyote/buffer/jump-cut) live in the "Player"
 	# Tunables group; their rows join this same tab, so everything player-facing
 	# is in one place and no duplicate "Player" tab is built (see _build above).

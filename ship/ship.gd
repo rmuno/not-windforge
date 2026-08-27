@@ -491,6 +491,15 @@ var _has_core := false
 ## dictionary iterations per frame at 8×, ~6 ms (owner: 22 FPS).
 var helm_cells: Array[Vector2i] = []
 var door_cells: Array[Vector2i] = []
+## Repair-station cells, rebuilt with the grid (like helm/door): the E finder
+## and the radial heal read this hot-list instead of re-scanning every block.
+var repair_cells: Array[Vector2i] = []
+## Are this ship's repair stations RUNNING? Tapped on/off at a station with E
+## (world._handle_interact). While true, tick_menders heals the ship toward the
+## blueprint and the stations draw power. Rides the payload/save so it survives
+## a join, host-migration and load. Per-SHIP (not per-station) for v1; per-station
+## manning is the crew seam into recruitment.
+var menders_running := false
 ## Prop-cluster wash emitters (center/axis/half-width), rebuilt with the
 ## grid — see wash_accel_at().
 var _wash_props: Array[Dictionary] = []
@@ -510,6 +519,9 @@ var _power_supply := 0.0
 var _hprop_draw := 0.0
 var _vprop_draw := 0.0
 var _turret_draw := 0.0
+## Power a running repair station draws. Its own bucket (not _turret_draw)
+## because it is billed ONLY while the station runs — see active_draw().
+var _repair_draw := 0.0
 var _pending_impacts: Array[Dictionary] = []
 ## Coalesced structural-rebuild flag. Set whenever a topology-PRESERVING
 ## grid change needs the derived colliders / mass / CoM / draw re-derived,
@@ -1198,11 +1210,13 @@ func rebuild() -> void:
 	_hprop_draw = 0.0
 	_vprop_draw = 0.0
 	_turret_draw = 0.0
+	_repair_draw = 0.0
 
 	_vertical_props.clear()
 	_has_core = false
 	helm_cells.clear()
 	door_cells.clear()
+	repair_cells.clear()
 	_derive_prop_axes()
 	var smin := Vector2i(1 << 30, 1 << 30)
 	var smax := Vector2i(-(1 << 30), -(1 << 30))
@@ -1216,6 +1230,8 @@ func rebuild() -> void:
 			helm_cells.append(cell)
 		if type == BlockDB.Type.DOOR or type == BlockDB.Type.DOOR_CLOSED:
 			door_cells.append(cell)
+		if type == BlockDB.Type.REPAIR:
+			repair_cells.append(cell)
 		# Component mass is a rating like its output (the machine did not
 		# get lighter because its true footprint covers fewer cells than a
 		# uniform slab) — normalised so an 8× ship's total mass, trim and
@@ -1234,6 +1250,8 @@ func rebuild() -> void:
 			else:
 				_total_hthrust += def["thrust"]
 				_hprop_draw += def["draw"]
+		elif type == BlockDB.Type.REPAIR:
+			_repair_draw += def["draw"]  # billed only while running (active_draw)
 		else:
 			_turret_draw += def["draw"]
 
@@ -1796,6 +1814,11 @@ func active_draw() -> float:
 		draw += _hprop_draw * prop_norm
 	if not is_zero_approx(thrust_input.y) or _hover_engaged:
 		draw += _vprop_draw * prop_norm
+	# A running repair station is a live consumer — so it shows amber in the
+	# SYSTEMS overlay and, more importantly, competes for supply: run it in a
+	# shot-out grid and brownout slows the very repair you need (the stakes).
+	if menders_running:
+		draw += _repair_draw * _fp_norm(BlockDB.Type.REPAIR)
 	return draw
 
 
@@ -2946,6 +2969,9 @@ static func from_data(data: Dictionary) -> Ship:
 	s.from_spawn_site = bool(data.get("from_site", false))
 	s.spawn_site = Vector2i(int(data.get("site_x", 0)), int(data.get("site_y", 0)))
 	s.is_nest = bool(data.get("is_nest", false))
+	# Repair stations running? Rides the payload (post-spawn fields exist on the
+	# server only — AGENTS.md) so a join/host-migration/load keeps them on.
+	s.menders_running = bool(data.get("menders_on", false))
 	if s.is_nest:
 		s.freeze = true  # a structure hangs where it was built
 	s.scale_unit = float(data.get("unit", 1.0))
@@ -2998,6 +3024,7 @@ func to_payload() -> Dictionary:
 		"site_x": spawn_site.x,
 		"site_y": spawn_site.y,
 		"is_nest": is_nest,
+		"menders_on": menders_running,
 		"blueprint": blueprint,
 		"walls": _encode_walls(),
 		"balloons": _encode_balloons(),
@@ -3304,6 +3331,75 @@ func _request_repair(cell: Vector2i, amount: float) -> void:
 	if not multiplayer.is_server():
 		return
 	repair_near(cell, amount)
+
+
+# --- Repair station (owner 2026-08-27) -------------------------------------
+## How far a station reaches across the ship, and how many cells one pass mends.
+## Bounded so a running station on an intact ship is a cheap scan and a huge
+## wreck cannot pin a frame: the front just advances a few cells at a time.
+const MENDER_RADIUS := 48        ## cells (manhattan) a station reaches
+const MENDER_CELLS_PER_TICK := 6 ## cells one pass sips into, nearest a station first
+
+
+## Toggle this ship's repair stations on/off (the E use-key at a station). Flips
+## the local value for a responsive prompt/overlay, and on a client also asks the
+## authority to flip its own — the server owns the heal, and the grid it mends
+## replicates back. No-op with no station aboard.
+func net_toggle_mender() -> void:
+	if repair_cells.is_empty():
+		return
+	menders_running = not menders_running
+	if not is_authority():
+		_request_toggle_mender.rpc_id(1)
+
+
+@rpc("any_peer", "reliable")
+func _request_toggle_mender() -> void:
+	if not multiplayer.is_server():
+		return
+	menders_running = not menders_running
+
+
+## One repair pass, driven by the world on a slow clock. While the stations run
+## and the ship has damage, this heals the blueprint cells nearest a station
+## first — a slow front that grows RADIALLY outward — sipping `rate × power ×
+## dt` into each. FREE (no stock), authority only (repair_cell mutates the grid,
+## which then replicates), and scaled by the power ratio so a browned-out grid
+## mends slower. Returns whether anything was healed.
+func tick_menders(dt: float) -> bool:
+	if not menders_running or repair_cells.is_empty() or not is_authority():
+		return false
+	var amount := Tunables.get_num("repair_station_rate") * _power_ratio() * dt
+	if amount <= 0.0:
+		return false
+	# Gather blueprint cells that need work, tagged with the manhattan distance to
+	# the NEAREST station, capped at MENDER_RADIUS. Undamaged cells are skipped by
+	# the cheap has/hp test before the station-distance loop ever runs, so an
+	# intact running ship is just one blueprint scan.
+	var intended := blueprint_map()
+	var targets: Array = []
+	for cell in intended:
+		var type: int = intended[cell]
+		if blocks.has(cell):
+			if blocks[cell]["hp"] >= BlockDB.max_hp(type):
+				continue  # whole
+		elif not can_place_at(cell):
+			continue      # destroyed AND unreachable — never conjure it back
+		var best := 1 << 30
+		for st in repair_cells:
+			var d := absi(cell.x - st.x) + absi(cell.y - st.y)
+			if d < best:
+				best = d
+		if best <= MENDER_RADIUS:
+			targets.append([best, cell])
+	if targets.is_empty():
+		return false
+	targets.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
+	var did := false
+	for i in mini(MENDER_CELLS_PER_TICK, targets.size()):
+		if repair_cell(targets[i][1] as Vector2i, amount):
+			did = true
+	return did
 
 
 ## 0.0 – 1.0 against the blueprint, counting both missing and damaged blocks.
@@ -3860,7 +3956,7 @@ func power_markers() -> Array:
 		var role := 0
 		match c["key"]:
 			"E": role = 1
-			"PH", "PV", "T": role = -1
+			"PH", "PV", "T", "R": role = -1
 			_: continue
 		out.append({"rect": c["rect"], "role": role})
 	return out

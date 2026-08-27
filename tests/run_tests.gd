@@ -78,6 +78,7 @@ func _initialize() -> void:
 	await _test_power_grid()
 	await _test_props_are_inert_without_engines()
 	await _test_blueprint_and_repair()
+	await _test_repair_station()
 	await _test_blueprint_survives_severing()
 	await _test_rope_wraps_and_respects_walls()
 	await _test_walking_on_a_moving_deck()
@@ -261,6 +262,83 @@ func _make_ship(cells: Dictionary, floating := true) -> Ship:
 ## and the 8× startup suite.
 func _starter_ship() -> Dictionary:
 	return ShipLayout.load_cells("res://tests/fixtures/starter_1x.ship")
+
+
+## The repair STATION (owner 2026-08-27): a machine you tap to run, healing the
+## ship slowly + radially toward the blueprint, FREE, on ship power. Everything
+## behavioural here is 1× (one cell per machine), so the station is one cell.
+func _test_repair_station() -> void:
+	_t("repair station: draws power when on, heals nearest-first, brownout stalls it")
+	Tunables.set_value("repair_station_rate", 30.0)
+	var cells := {Vector2i(0, 0): BlockDB.Type.REPAIR, Vector2i(0, 1): BlockDB.Type.ENGINE}
+	for x in range(1, 9):  # a hull row 1..8 reaching out from the station
+		cells[Vector2i(x, 0)] = BlockDB.Type.HULL
+	var s := _make_ship(cells)
+	s.capture_blueprint()
+	_check(s.repair_cells.size() == 1, "the station registers in the repair hot-list")
+	# The shipped-8× station is a 4×4 bundle (like an engine) — placed all-or-
+	# nothing and outside the carried item budget. Pin the data here.
+	_check(BlockDB.bundle_dims(BlockDB.Type.REPAIR, 8.0) == Vector2i(4, 4)
+			and is_equal_approx(BlockDB.footprint_cells(BlockDB.Type.REPAIR, 8.0), 16.0),
+		"at 8× the station is a 4×4 bundle (16-cell footprint)")
+
+	# Off by default; running it bills power an idle ship does not.
+	var idle := s.active_draw()
+	s.menders_running = true
+	_check(s.active_draw() > idle,
+		"a running station draws ship power (%.0f > %.0f)" % [s.active_draw(), idle])
+
+	# Damage the whole row equally, then ONE pass: the nearest MENDER_CELLS_PER_TICK
+	# mend, the farther cells wait — the radial front.
+	for x in range(1, 9):
+		s.damage_cell(Vector2i(x, 0), 40.0)
+	s.menders_running = false
+	s.tick_menders(1.0)
+	_check(s.blocks[Vector2i(1, 0)]["hp"] < BlockDB.max_hp(BlockDB.Type.HULL),
+		"an OFF station heals nothing")
+	s.menders_running = true
+	s.tick_menders(0.2)
+	var near_healed: bool = float(s.blocks[Vector2i(1, 0)]["hp"]) > 60.0
+	var mid_healed: bool = float(s.blocks[Vector2i(6, 0)]["hp"]) > 60.0
+	var far_untouched := is_equal_approx(float(s.blocks[Vector2i(8, 0)]["hp"]), 60.0)
+	_check(near_healed and mid_healed,
+		"running, the nearest %d cells mend in one pass" % Ship.MENDER_CELLS_PER_TICK)
+	_check(far_untouched,
+		"and the farthest cell waits its turn (radial front, hp %.0f)"
+			% s.blocks[Vector2i(8, 0)]["hp"])
+
+	# Keep ticking: the front reaches the far end. (The far END, not a middle
+	# cell — destroying a middle cell of this 1-wide row would SEVER it.)
+	for i in 200:
+		s.tick_menders(0.2)
+	_check(s.blocks[Vector2i(8, 0)]["hp"] >= BlockDB.max_hp(BlockDB.Type.HULL) - 0.01,
+		"the front reaches the far end — the whole row is full")
+	# A DESTROYED blueprint cell (the endpoint, so no severing) is rebuilt toward
+	# the blueprint, never beyond it.
+	s.damage_cell(Vector2i(8, 0), 9999.0)
+	_check(not s.blocks.has(Vector2i(8, 0)), "the endpoint hull is destroyed outright")
+	for i in 200:
+		s.tick_menders(0.2)
+	_check(s.blocks.has(Vector2i(8, 0)), "the station rebuilds the destroyed cell")
+
+	# Brownout: cut the only engine, and a running station on a dead grid
+	# (power_ratio 0) mends nothing — stakes via the grid, not attrition.
+	s.damage_cell(Vector2i(0, 1), 9999.0)
+	_check(s.power_supply() <= 0.0, "the engine is gone — no supply")
+	s.damage_cell(Vector2i(2, 0), 40.0)
+	var before := float(s.blocks[Vector2i(2, 0)]["hp"])
+	s.tick_menders(1.0)
+	_check(is_equal_approx(float(s.blocks[Vector2i(2, 0)]["hp"]), before),
+		"a browned-out grid stalls the mender (hp held at %.0f)" % before)
+
+	# The running state rides the save/spawn payload (post-spawn-field trap).
+	var round_trip := Ship.from_data(s.to_payload())
+	root.add_child(round_trip)
+	round_trip.rebuild()
+	_check(round_trip.menders_running,
+		"menders_running survives the to_payload/from_data round trip")
+	round_trip.queue_free()
+	s.queue_free()
 
 
 func _shape_count(s: Ship) -> int:

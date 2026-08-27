@@ -40,6 +40,13 @@ enum Type {
 	# kraken/brown-whale RAM terrain to mine without dying, while a flesh nose
 	# takes the full bruise. Mined from kraken corpses eventually; buildable.
 	SHELL,
+	# REPAIR STATION (owner 2026-08-27, "Lovers in a Dangerous Spacetime" model):
+	# a machine you tap (E) to run indefinitely; while on it heals the ship
+	# slowly and RADIALLY from its cell toward the blueprint, FREE — but it DRAWS
+	# ship power, so a shot-out grid cannot keep up (stakes via fragility, not an
+	# inventory bill). Crew-mannable later (a hiree stands the station). Placed as
+	# a 4×4 bundle like an engine, so it is outside the carried item budget.
+	REPAIR,
 }
 
 ## mass    — arbitrary units; ship mass is the sum. Gravity is 980 px/s².
@@ -95,6 +102,7 @@ const BLOCKS := {
 	Type.BLUBBER:    {"name": "Blubber",    "mass": 7.0,  "hp": 60.0,  "lift": 20.0, "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "flammable": 1.8, "glyph": "",  "color": Color(0.86, 0.72, 0.66)},
 	Type.MEAT:       {"name": "Meat",       "mass": 8.0,  "hp": 50.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "flammable": 0.6, "glyph": "",  "color": Color(0.58, 0.28, 0.26)},
 	Type.SHELL:      {"name": "Shell",      "mass": 2.0,  "hp": 250.0, "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": true,  "platform": false, "collision_resist": 20.0, "glyph": "",  "color": Color(0.74, 0.62, 0.46)},
+	Type.REPAIR:     {"name": "Repair Station", "mass": 12.0, "hp": 90.0, "lift": 0.0, "thrust": 0.0,  "power": 0.0,    "draw": 500.0,  "is_core": false, "solid": true,  "platform": false, "glyph": "R", "color": Color(0.34, 0.66, 0.58)},
 	Type.PLATFORM:   {"name": "Platform",   "mass": 3.0,  "hp": 40.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": false, "platform": true, "flammable": 0.5,  "glyph": "",  "color": Color(0.62, 0.52, 0.36)},
 	Type.STRUT:      {"name": "Strut",      "mass": 2.0,  "hp": 50.0,  "lift": 0.0,  "thrust": 0.0,     "power": 0.0,    "draw": 0.0,    "is_core": false, "solid": false, "platform": false, "flammable": 0.5, "glyph": "",  "color": Color(0.40, 0.42, 0.46)},
 }
@@ -119,6 +127,7 @@ const FOOTPRINT_8X := {
 	Type.PROPELLER: 12.0,  # 6×2 / 2×6
 	Type.TURRET: 16.0,     # 2×8
 	Type.HELM: 28.0,       # 4×7 (no output — normalises mass only)
+	Type.REPAIR: 16.0,     # 4×4
 }
 
 ## Cells a component of `type` occupies at world scale `su`. Footprints
@@ -154,6 +163,7 @@ const BUNDLE_8X := {
 	Type.TURRET: Vector2i(2, 8),
 	Type.HELM: Vector2i(4, 7),
 	Type.DOOR_CLOSED: Vector2i(2, 8),
+	Type.REPAIR: Vector2i(4, 4),
 }
 
 
