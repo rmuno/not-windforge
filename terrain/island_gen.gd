@@ -42,7 +42,7 @@ extends RefCounted
 ##   ~1 MiB — trivial against the desktop budget (DECISIONS 2026-08-18 sizes the
 ##   full 29×18-square original at a few hundred MB worst case). Empty sky costs
 ##   nothing because an all-air chunk has no dictionary entry at all.
-const WORLD_CELLS := Rect2i(-6144, -4608, 12288, 9216)
+const WORLD_CELLS := Rect2i(-3072, -2304, 6144, 4608)  # halved 2026-08-26 (owner: "the world now feels way too large... cut the dimensions in half, map included"). Was (-6144,-4608,12288,9216).
 
 ## The default world seed — a fixed number gives a fixed world. Exposed through
 ## world.gd's `world_seed` export so the owner can reroll.
