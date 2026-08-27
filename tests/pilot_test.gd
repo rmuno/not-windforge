@@ -98,6 +98,7 @@ func _initialize() -> void:
 	await _test_navigation()
 	await _test_step_off_with_f()
 	await _test_drop_through_hatch()
+	await _test_jump_feel()
 
 	_finish()
 
@@ -397,6 +398,127 @@ func _drop() -> void:
 	await _frames(3)
 	Input.action_release("jump")
 	Input.action_release("move_down")
+
+
+# --- Jump feel: variable height, jump buffer, coyote time (theme 3) ---------
+## The three modern-platformer affordances added this round, each an F2 "Player"
+## lever. Runs LAST on a freshly reset (stationary) ship so it can jump freely
+## and walk off the stern without disturbing an earlier leg. Variable height and
+## the buffer are proven on the deck; coyote is proven by walking off the stern
+## and jumping within the grace — a level-1 body has NO air jump, so an airborne
+## upward kick can only be the coyote jump firing.
+func _test_jump_feel() -> void:
+	print("• jump feel — variable height, jump buffer, coyote time")
+	await world.reset_world()
+	await _frames(10)
+	ship = world.get("local_ship")
+	if not _derive_landmarks():
+		return
+	# A fresh spawn stands at the helm UNDER the cabin roof — jump there and you
+	# clip the ceiling at one cell. Walk out onto the open deck first (the same
+	# proven door-open-and-out the wake-up leg uses), so the jumps have sky.
+	await _test_walk_out_the_door()
+	if not await _until(func() -> bool: return player.is_on_floor(), 180):
+		_fail("jump-feel setup: never settled on the open deck")
+		return
+
+	# Variable jump height: a tap is cut short on release; a hold reaches the
+	# full arc. jump_cut default 0.45 makes the tapped peak markedly lower.
+	var hold_peak := await _jump_peak(true)
+	await _until(func() -> bool: return player.is_on_floor(), 240)
+	var tap_peak := await _jump_peak(false)
+	await _until(func() -> bool: return player.is_on_floor(), 240)
+	_ok(tap_peak < hold_peak * 0.8,
+		"a tapped jump clears less than a held one — variable height (tap %.0f < 0.8x hold %.0f)"
+		% [tap_peak, hold_peak])
+
+	# Jump buffer: a press just before landing still fires on touchdown. Proven
+	# with the default buffer, then a negative control with the buffer at zero.
+	_ok(await _buffered_rejump(), "a press just before landing fires on touchdown — jump buffer")
+	Tunables.set_value("jump_buffer_time", 0.0)
+	var eaten := await _buffered_rejump()
+	Tunables.set_value("jump_buffer_time", Tunables.def("jump_buffer_time")["default"])
+	_ok(not eaten, "with the buffer off, that same early press is forgotten")
+
+	# Coyote time: walk off the stern and jump within the grace window.
+	_ok(await _coyote_kick(), "jumping just after a ledge still leaves the ground — coyote time")
+
+	world.respawn_player()
+	await _frames(10)
+
+
+## Peak rise (ship-relative px) of one jump. hold => keep jump down the whole
+## arc (full height); tap => release after a frame, so the variable-height cut
+## fires and the arc is shorter.
+func _jump_peak(hold: bool) -> float:
+	var base := _aboard_pos().y
+	Input.action_press("jump")
+	if not hold:
+		await _frames(1)
+		Input.action_release("jump")
+	await _frames(2)  # leave the floor before sampling the peak
+	var peak := 0.0
+	for i in 200:
+		peak = maxf(peak, base - _aboard_pos().y)
+		if player.is_on_floor():
+			break
+		await physics_frame
+	if hold:
+		Input.action_release("jump")
+	return peak
+
+
+## Jump, fall, and press jump ONCE while descending within ~2 bodies of the
+## deck. Returns whether a fresh jump fired on/near touchdown (a sharp upward
+## kick). With the buffer on that is a buffered re-jump; with it off the press
+## is eaten (a level-1 body has no air jump to fall back on).
+func _buffered_rejump() -> bool:
+	if not await _until(func() -> bool: return player.is_on_floor(), 240):
+		return false
+	var deck := _aboard_pos().y
+	Input.action_press("jump")
+	await _frames(6)
+	Input.action_release("jump")
+	# Arm the press genuinely JUST before landing — within ~0.7 of a body of the
+	# deck while descending — so touchdown falls inside the 0.10 s buffer window.
+	# (A larger margin fired near the apex, too early for the buffer to survive.)
+	var near := await _until(func() -> bool:
+		return not player.is_on_floor() and player.velocity.y > 0.0 \
+			and (deck - _aboard_pos().y) < _body.y * 0.7, 240)
+	if not near:
+		return false
+	Input.action_press("jump")
+	await process_frame
+	Input.action_release("jump")
+	var kicked := await _until(func() -> bool: return player.velocity.y < -100.0 * S, 30)
+	await _until(func() -> bool: return player.is_on_floor(), 240)
+	return kicked
+
+
+## Walk off the port stern (opening the mast door first) and jump within the
+## coyote window. Returns whether the jump fired while airborne (velocity kicked
+## sharply up) — which, on a body with no air jump, can only be the coyote jump.
+func _coyote_kick() -> bool:
+	if not await _until(func() -> bool: return player.is_on_floor(), 240):
+		return false
+	var stopped_at := _mast_door.end.x + _body.x
+	Input.action_press("move_left")
+	await _until(func() -> bool:
+		return _aboard_pos().x < stopped_at and absf(player.velocity.x) < 1.0, 200)
+	await _tap("interact")  # open the mast door — no helm near enough to steal the E
+	var airborne := await _until(func() -> bool: return not player.is_on_floor(), 240)
+	if not airborne and _snagged_on_exact_fit(_mast_door, "coyote walk off the stern"):
+		await _squeeze_through(_mast_door, -1.0, "mast door")
+		Input.action_press("move_left")
+		airborne = await _until(func() -> bool: return not player.is_on_floor(), 240)
+	Input.action_release("move_left")
+	if not airborne:
+		return false
+	# Jump immediately — inside the 0.10 s coyote grace after leaving the floor.
+	Input.action_press("jump")
+	await process_frame
+	Input.action_release("jump")
+	return await _until(func() -> bool: return player.velocity.y < -100.0 * S, 12)
 
 
 # --- DORMANT KNOWN-FAIL: the 8× exact-fit doorway ---------------------------

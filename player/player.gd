@@ -136,6 +136,26 @@ var health := StatDB.BASE_HEALTH
 var _air_jumps := 0
 const MAX_AIR_JUMPS := 1
 
+## --- Jump FEEL (theme 3: crisp modern-platformer response) ----------------
+## Three affordances the fixed-impulse jump lacked, each an F2 lever (group
+## "Player") so the owner tunes them live; all three are TIMES/RATIOS, hence
+## scale-invariant (scale_body leaves them alone — the feel is identical at 1x
+## and 8x). Zeroing coyote+buffer and setting jump_cut=1.0 restores the exact
+## old behaviour, which is what their parity comments in tunables.gd promise.
+##
+## Coyote time: seconds after walking off a ledge during which a GROUND jump is
+## still allowed — forgives the frame-perfect edge jump every platformer needs.
+var _coyote := 0.0
+## Jump buffer: seconds a jump press is remembered, so pressing a hair before
+## you land still jumps on the landing frame instead of being eaten.
+var _jump_buffer := 0.0
+## Variable height: a ground/coyote/air jump that is still RISING when jump is
+## released has its upward velocity multiplied by `jump_cut` — tap for a hop,
+## hold for the full arc. True only while such a jump is cuttable; the grapple
+## sling deliberately never sets it (its awkward full arc is "preserved on
+## purpose"), and it clears at the apex so a later fall+release cuts nothing.
+var _jumping := false
+
 var _collider: CollisionShape2D
 ## Platform bodies currently excepted by a drop-through, with time remaining.
 var _drop_exceptions: Array[Dictionary] = []
@@ -329,6 +349,22 @@ func can_air_jump() -> bool:
 	return stats != null and stats.double_jump_enabled() and _air_jumps < MAX_AIR_JUMPS
 
 
+## Jump-feel levers, read live from the F2 "Player" group each frame so the owner
+## tunes them without a reboot. Times (coyote/buffer) and a ratio (cut), so none
+## scale with world size — the feel is identical at 1x and 8x. Tunables is a
+## static store that works headless (godot-quirks), so these are safe in tests too.
+func _coyote_time() -> float:
+	return Tunables.get_num("coyote_time")
+
+
+func _jump_buffer_time() -> float:
+	return Tunables.get_num("jump_buffer_time")
+
+
+func _jump_cut() -> float:
+	return Tunables.get_num("jump_cut")
+
+
 ## Take `amount` of damage into the GRIT pool. Drains it, fires `hurt` (a hit cue
 ## / the damage-number feed can listen), and at 0 HP fires `died` — the world
 ## respawns the body with a full pool and the pack kept (on-death loot drop is a
@@ -421,9 +457,14 @@ func _physics_process(delta: float) -> void:
 
 	velocity.y = minf(velocity.y + GRAVITY * delta, MAX_FALL)
 
-	# Landing refills the air-jump budget (the double-jump perk, GRACE).
+	# Landing refills the air-jump budget (the double-jump perk, GRACE) and the
+	# coyote grace; leaving the floor by any means starts the coyote countdown,
+	# so a jump pressed within coyote_time of a ledge still leaves the ground.
 	if is_on_floor():
 		_air_jumps = 0
+		_coyote = _coyote_time()
+	else:
+		_coyote = maxf(0.0, _coyote - delta)
 
 	_tick_drop_exceptions(delta)
 
@@ -452,27 +493,56 @@ func _physics_process(delta: float) -> void:
 	# horizontal, so the brake ate exactly what gravity supplied — owner
 	# report), and it had been quietly bleeding grapple slings all along.
 
+	# Jump buffer: a press is remembered for jump_buffer_time so pressing a hair
+	# before you land still jumps on the landing frame instead of being eaten.
+	# The grapple sling (below) is the one jump kept strictly on-the-frame.
 	if Input.is_action_just_pressed("jump"):
-		if grapple_latched():
-			# The grapple jump, original-style awkwardness preserved (owner's
-			# call): jumping while hooked leaps UP plus your held direction —
-			# never toward the anchor. Works airborne, and chains: latch,
-			# jump, latch, jump — the original's endless-jump tech, kept.
-			velocity = Vector2(velocity.x * 0.5 + dir * SPEED, JUMP_VELOCITY)
-			release_grapple()
-		elif is_on_floor():
-			if Input.is_action_pressed("move_down"):
+		_jump_buffer = _jump_buffer_time()
+	else:
+		_jump_buffer = maxf(0.0, _jump_buffer - delta)
+
+	if Input.is_action_just_pressed("jump") and grapple_latched():
+		# The grapple jump, original-style awkwardness preserved (owner's
+		# call): jumping while hooked leaps UP plus your held direction —
+		# never toward the anchor. Immediate on the press (never buffered),
+		# and its full arc is deliberately NOT cuttable (does not arm
+		# _jumping). Chains: latch, jump, latch, jump — the original's
+		# endless-jump tech, kept.
+		velocity = Vector2(velocity.x * 0.5 + dir * SPEED, JUMP_VELOCITY)
+		release_grapple()
+		_jump_buffer = 0.0
+	elif _jump_buffer > 0.0 and not grapple_latched():
+		if is_on_floor() or _coyote > 0.0:
+			if is_on_floor() and Input.is_action_pressed("move_down"):
+				# Drop through the platform underfoot rather than jump (a no-op
+				# on solid hull, exactly as before). Not a jump: no cut arms.
 				_start_drop_through()
 			else:
+				# A ground jump, or a coyote jump within the grace of a ledge.
 				# No carrier term: leaving the floor makes the engine add the
 				# platform's velocity to ours (PLATFORM_ON_LEAVE default).
 				velocity.y = JUMP_VELOCITY
+				_jumping = true
+			_coyote = 0.0
+			_jump_buffer = 0.0
 		elif can_air_jump():
 			# The double-jump perk (GRACE): one more leap in mid-air. Held-direction
 			# steering already lives in the walk block above, so this is a clean
 			# vertical impulse plus spending the air-jump budget.
 			velocity.y = JUMP_VELOCITY
 			_air_jumps += 1
+			_jumping = true
+			_jump_buffer = 0.0
+
+	# Variable jump height: releasing jump while a jump is still RISING multiplies
+	# its climb by jump_cut — a tap is a hop, a hold is the full arc. Cleared at
+	# the apex so a later fall + release cuts nothing (and jump_cut = 1.0 makes
+	# release a no-op, restoring the old fixed-impulse jump).
+	if _jumping and velocity.y >= 0.0:
+		_jumping = false
+	elif _jumping and Input.is_action_just_released("jump") and velocity.y < 0.0:
+		velocity.y *= _jump_cut()
+		_jumping = false
 
 	if grapple_latched():
 		if Input.is_action_pressed("reel_in"):

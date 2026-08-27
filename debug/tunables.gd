@@ -39,6 +39,21 @@ const KIND_BOOL := "bool"
 ## optional `note` ("next spawn") for levers a rebuild/respawn applies (per-cell
 ## hp, pod count). `min`/`max`/`step` are ignored for bools.
 const _REGISTRY := [
+	# --- Player feel (theme 3: crisp, Terraria/Celeste-responsive movement) --
+	# NEW this round — these levers add affordances the controller did not have,
+	# so their defaults are the NEW shipped feel, not a mirrored origin const.
+	# All three are TIMES or RATIOS, so they are scale-invariant: scale_body
+	# leaves them alone, and the feel is pixel-identical at 1x and 8x.
+	{"id": "coyote_time", "label": "Coyote time (s after a ledge you can still jump)",
+		"group": "Player", "kind": KIND_FLOAT, "default": 0.10, "min": 0.0,
+		"max": 0.3, "step": 0.01},   # Player._coyote — 0 restores the old "off the ledge, no jump"
+	{"id": "jump_buffer_time", "label": "Jump buffer (s before landing a press still counts)",
+		"group": "Player", "kind": KIND_FLOAT, "default": 0.10, "min": 0.0,
+		"max": 0.3, "step": 0.01},   # Player._jump_buffer — 0 restores press-must-be-on-the-frame
+	{"id": "jump_cut", "label": "Jump-cut on early release (1=fixed height, 0=hard stop)",
+		"group": "Player", "kind": KIND_FLOAT, "default": 0.45, "min": 0.0,
+		"max": 1.0, "step": 0.05},   # Player: release-while-rising * this; 1.0 = the old fixed-impulse jump
+
 	# --- Whale (owner-named first: health, pod count, ram, impact) -----------
 	{"id": "whale_health", "label": "Whale health", "group": "Whale",
 		"kind": KIND_FLOAT, "default": 1000.0, "min": 50.0, "max": 60000.0, "step": 50.0,
