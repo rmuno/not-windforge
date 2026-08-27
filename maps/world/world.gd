@@ -466,6 +466,7 @@ func _build_help_panel() -> PanelContainer:
 		"",
 		"SHIP BLOCKS",
 		"H helm (F pilots)    E engine (power)    P/V propeller    T turret",
+		"R repair station — E runs it; heals the ship slowly + radially, on ship power",
 		"D door (F opens/closes; closed stops bullets AND bodies)    | strut",
 		"thin plank = platform — S+jump drops through",
 		"pale = gasbag (lift)    pink = blubber    dark = ballast",
@@ -1496,6 +1497,38 @@ func debug_max_stats() -> void:
 		player.stats.set_level(stat, StatDB.MAX_LEVEL)
 	player.max_health = player.stats.max_health()
 	player.health = player.max_health
+
+
+## Bolt a repair station onto the local ship (debug Player tab) so the mender can
+## be tried without mining the parts. Stamps a REPAIR bundle at the first legal
+## spot found near existing structure — best-effort, sampling seed cells across
+## the hull so a busy deck still finds room. Returns whether one was placed.
+func debug_add_mender() -> bool:
+	if not is_instance_valid(local_ship):
+		return false
+	var t := BlockDB.Type.REPAIR
+	# Seed cells to try. A BUNDLE (8×) snaps to the nearest legal spot around an
+	# OCCUPIED seed; a PRIMITIVE (1×, the test scale) needs an EMPTY cell touching
+	# structure — so offer both: occupied cells and their empty neighbours.
+	var seeds: Array = []
+	seeds.append_array(local_ship.helm_cells)
+	var keys: Array = local_ship.blocks.keys()
+	var stride := maxi(1, int(keys.size() / 40))
+	for i in range(0, keys.size(), stride):
+		seeds.append(keys[i])
+	for i in range(0, keys.size(), stride):
+		for off in [Vector2i.UP, Vector2i.DOWN, Vector2i.LEFT, Vector2i.RIGHT]:
+			var n: Vector2i = (keys[i] as Vector2i) + off
+			if not local_ship.blocks.has(n):
+				seeds.append(n)
+	for seed in seeds:
+		var order := BuildPreview.stamp_order(local_ship,
+			BuildPreview.snapped_stamp(local_ship, seed as Vector2i, t, false))
+		if not order.is_empty():
+			local_ship.net_set_blocks(order, t)
+			return true
+	push_warning("debug_add_mender: no legal spot for a 4x4 repair station")
+	return false
 
 
 func _spawn_crewman(ship: Ship, station_key: String, role: String) -> void:
@@ -2765,6 +2798,26 @@ var _fire_t := 0.0
 var _fire_clock := 0.0
 var _fire_rng := RandomNumberGenerator.new()
 
+## Repair stations mend on a SLOW clock (8 Hz), not per frame — repair is
+## deliberately unhurried, and a per-frame blueprint scan on every running ship
+## is waste. Authority only (Net.is_server, like fire); each ship's tick_menders
+## self-gates on menders_running/repair_cells, so an idle sky costs one loop.
+const MENDER_TICK := 0.125
+var _mender_clock := 0.0
+
+
+func _update_menders(delta: float) -> void:
+	if not Net.is_server() or fleet == null or not is_instance_valid(fleet):
+		return
+	_mender_clock += delta
+	if _mender_clock < MENDER_TICK:
+		return
+	var dt := _mender_clock
+	_mender_clock = 0.0
+	for ship in fleet.ships():
+		if is_instance_valid(ship) and ship.menders_running:
+			ship.tick_menders(dt)
+
 
 func _update_fires(delta: float) -> void:
 	if not Net.is_server() or fleet == null or not is_instance_valid(fleet):
@@ -3196,6 +3249,7 @@ func _build_systems() -> void:
 		["ridemine", func(d: float) -> void: _handle_ridden_mining(d)],
 		["wash", func(d: float) -> void: _apply_prop_wash(d)],
 		["fire", func(d: float) -> void: _update_fires(d)],
+		["menders", func(d: float) -> void: _update_menders(d)],
 		["hazards", func(d: float) -> void: _update_hazards(d)],
 		["suffocation", func(d: float) -> void: _update_suffocation(d)],
 		["lava", func(d: float) -> void: _update_lava_core(d)],
@@ -4571,6 +4625,7 @@ func _craft_feedback(recipe: Dictionary, batches: int) -> void:
 ## couple of cells from the helm toggles the door instead of boarding.
 var _nearby_helm: Array = []
 var _nearby_door: Array = []
+var _nearby_mender: Array = []
 
 
 func _handle_interact() -> void:
@@ -4590,16 +4645,22 @@ func _handle_interact() -> void:
 		return
 	_nearby_helm = Player.find_helm(fleet.ships(), player.global_position, player.HELM_REACH)
 	_nearby_door = Player.find_door(fleet.ships(), player.global_position, _door_reach())
+	_nearby_mender = Player.find_mender(fleet.ships(), player.global_position, _mender_reach())
 
 	if not Input.is_action_just_pressed("interact"):
 		return
 	if player.is_piloting():
 		player.disembark()
 		return
-	if _door_wins():
-		(_nearby_door[0] as Ship).net_toggle_door(_nearby_door[1])
-	elif not _nearby_helm.is_empty():
-		player.board(_nearby_helm[0], _nearby_helm[1])
+	# One use-key, three interactables: act on whichever is NEAREST (the same
+	# nearest-wins that disambiguates a helm from a doorway in a cramped cabin).
+	match _nearest_interactable():
+		"door":
+			(_nearby_door[0] as Ship).net_toggle_door(_nearby_door[1])
+		"mender":
+			(_nearby_mender[0] as Ship).net_toggle_mender()
+		"helm":
+			player.board(_nearby_helm[0], _nearby_helm[1])
 
 
 ## Doors answer the interact key only at arm's length — you work a door
@@ -4611,8 +4672,27 @@ func _door_reach() -> float:
 	return Ship.CELL * 1.5 * world_scale
 
 
-func _door_wins() -> bool:
-	return _station_dist(_nearby_door) < _station_dist(_nearby_helm)
+## You operate a repair station you are STANDING at, like a door — short reach
+## plus nearest-wins is what keeps E unambiguous when a station sits near a helm.
+func _mender_reach() -> float:
+	return Ship.CELL * 2.5 * world_scale
+
+
+## Which of the three interactables (door / helm / repair station) is nearest —
+## "" when none is in reach. One place decides it, so the prompt and the action
+## can never disagree about what E will do.
+func _nearest_interactable() -> String:
+	var dd := _station_dist(_nearby_door)
+	var dh := _station_dist(_nearby_helm)
+	var dm := _station_dist(_nearby_mender)
+	var best := minf(dd, minf(dh, dm))
+	if best == INF:
+		return ""
+	if best == dm:
+		return "mender"
+	if best == dd:
+		return "door"
+	return "helm"
 
 
 ## Distance from the player to a [ship, cell] station, INF when invalid —
@@ -4638,15 +4718,21 @@ func helm_in_reach() -> bool:
 func interact_prompt() -> Variant:
 	if player == null or not is_instance_valid(player) or player.is_piloting():
 		return null
-	if _door_wins():
-		var ship: Ship = _nearby_door[0]
-		var closed: bool = ship.blocks[_nearby_door[1]]["type"] == BlockDB.Type.DOOR_CLOSED
-		return [ship.to_global(ship.local_pos_of(_nearby_door[1])),
-			"[E] open the door" if closed else "[E] close the door"]
-	if _nearby_helm.is_empty() or not is_instance_valid(_nearby_helm[0]):
-		return null
-	var helm: Ship = _nearby_helm[0]
-	return [helm.to_global(helm.local_pos_of(_nearby_helm[1])), "[E] take the helm"]
+	match _nearest_interactable():
+		"door":
+			var dship: Ship = _nearby_door[0]
+			var closed: bool = dship.blocks[_nearby_door[1]]["type"] == BlockDB.Type.DOOR_CLOSED
+			return [dship.to_global(dship.local_pos_of(_nearby_door[1])),
+				"[E] open the door" if closed else "[E] close the door"]
+		"mender":
+			var mship: Ship = _nearby_mender[0]
+			return [mship.to_global(mship.local_pos_of(_nearby_mender[1])),
+				"[E] stop the repair station" if mship.menders_running
+					else "[E] run the repair station"]
+		"helm":
+			var hship: Ship = _nearby_helm[0]
+			return [hship.to_global(hship.local_pos_of(_nearby_helm[1])), "[E] take the helm"]
+	return null
 
 
 func _unhandled_key_input(event: InputEvent) -> void:

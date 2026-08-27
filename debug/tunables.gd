@@ -194,6 +194,8 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 4.5, "min": 1.0, "max": 20.0, "step": 0.5},        # world.MINE_REACH_CELLS
 	{"id": "repair_rate", "label": "Repair rate (hp/s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 45.0, "min": 1.0, "max": 500.0, "step": 5.0},      # world.REPAIR_RATE
+	{"id": "repair_station_rate", "label": "Repair STATION heal rate (hp/s, x power)", "group": "World",
+		"kind": KIND_FLOAT, "default": 30.0, "min": 1.0, "max": 500.0, "step": 5.0},      # Ship.tick_menders — slow + radial, scaled by the power ratio
 	{"id": "meteor_interval", "label": "Meteor interval (s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 3.5, "min": 0.2, "max": 30.0, "step": 0.1},        # Hazards.METEOR_INTERVAL
 	{"id": "meteor_damage", "label": "Meteor damage", "group": "World",

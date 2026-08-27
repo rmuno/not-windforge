@@ -850,15 +850,22 @@ func _process(_delta: float) -> void:
 ## time hot-lists (helm_cells / door_cells), never the full grid — the
 ## every-block scan was ~6 ms per frame at 8× (owner: 22 FPS).
 static func find_door(ships: Array, from: Vector2, reach := 46.0) -> Array:
-	return _find_station(ships, from, reach, true)
+	return _find_station(ships, from, reach, "door")
 
 
 static func find_helm(ships: Array, from: Vector2, reach := 46.0) -> Array:
-	return _find_station(ships, from, reach, false)
+	return _find_station(ships, from, reach, "helm")
+
+
+## Nearest repair-station cell within reach — same [ship, cell] contract as the
+## helm/door finders, so the world's interact key can pick the nearest of the
+## three. Walks each ship's rebuild-time repair_cells hot-list, never the grid.
+static func find_mender(ships: Array, from: Vector2, reach := 46.0) -> Array:
+	return _find_station(ships, from, reach, "mender")
 
 
 static func _find_station(ships: Array, from: Vector2, reach: float,
-		doors: bool) -> Array:
+		kind: String) -> Array:
 	var best: Array = []
 	var best_dist := reach
 	for ship in ships:
@@ -870,7 +877,11 @@ static func _find_station(ships: Array, from: Vector2, reach: float,
 				ship.to_global(ship.solid_bounds.get_center())) \
 				> reach + ship.solid_bounds.size.length() * 0.5:
 			continue
-		var cells: Array[Vector2i] = ship.door_cells if doors else ship.helm_cells
+		var cells: Array[Vector2i] = ship.helm_cells
+		if kind == "door":
+			cells = ship.door_cells
+		elif kind == "mender":
+			cells = ship.repair_cells
 		for cell in cells:
 			var d := from.distance_to(ship.to_global(ship.local_pos_of(cell)))
 			if d < best_dist:

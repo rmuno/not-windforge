@@ -299,11 +299,76 @@ func _initialize() -> void:
 	await _check_basilisk(world, fleet)
 	await _check_spawn_sites(world, fleet)
 	await _check_debug_window(world, fleet)
+	await _check_repair_station(world, fleet)
 	await _check_lava_core(world, fleet)
 
 	await _check_hosting_after_offline_play(world, fleet)
 
 	_finish()
+
+
+## The repair STATION at 8×, end to end in the real scene: the F2 debug adder
+## stamps a 4×4 bundle, E toggles it, and the WORLD's mender clock heals a wound
+## over real frames — the wiring (world._update_menders → Ship.tick_menders) the
+## unit suite drives by hand.
+func _check_repair_station(world: Node, fleet) -> void:
+	var ship = world.get("local_ship")
+	if ship == null or not is_instance_valid(ship):
+		_ok(false, "repair station: no local ship to test on")
+		return
+	var placed: bool = world.call("debug_add_mender")
+	_ok(placed, "debug_add_mender bolts a repair station onto the ship")
+	if not placed:
+		return
+	# Scale-agnostic: the station is a 4×4 bundle at 8× but one cell at the 1×
+	# test scale (BUNDLE_8X is a shipped-8× table; bundle_dims is (4,4) there,
+	# pinned in the unit suite). Either way it must register in the hot-list.
+	_ok(ship.repair_cells.size() >= 1,
+		"the station registers in the repair hot-list (%d cells)" % ship.repair_cells.size())
+
+	_ok(not ship.menders_running, "the station starts OFF")
+	var idle_draw: float = ship.active_draw()
+	ship.net_toggle_mender()
+	_ok(ship.menders_running, "E (net_toggle_mender) turns it ON")
+	_ok(ship.active_draw() > idle_draw,
+		"and a running station now draws ship power (%.0f > %.0f)"
+			% [ship.active_draw(), idle_draw])
+
+	# Wound a hull cell nearest the station and let the world's 8 Hz clock mend it.
+	var st: Vector2i = ship.repair_cells[0]
+	var target := Vector2i.ZERO
+	var found := false
+	var best := 1 << 30
+	for cell in ship.blocks:
+		# A HULL cell specifically (hp 100): a 40 wound scuffs it without
+		# destroying it (so the follow-up hp read is always valid).
+		if int(ship.blocks[cell]["type"]) != BlockDB.Type.HULL:
+			continue
+		var d := absi(cell.x - st.x) + absi(cell.y - st.y)
+		if d > 0 and d < best:
+			best = d
+			target = cell
+			found = true
+	_ok(found, "found a hull cell near the station to wound")
+	if not found:
+		return
+	ship.damage_cell(target, 40.0)
+	var wounded: float = float(ship.blocks[target]["hp"])
+	for i in 90:
+		await world.get_tree().physics_frame
+	_ok(float(ship.blocks[target]["hp"]) > wounded,
+		"the running station healed the wound over time (%.0f -> %.0f)"
+			% [wounded, float(ship.blocks[target]["hp"])])
+
+	# Off: the wound holds.
+	ship.net_toggle_mender()
+	_ok(not ship.menders_running, "E toggles it OFF again")
+	ship.damage_cell(target, 20.0)
+	var held: float = float(ship.blocks[target]["hp"])
+	for i in 30:
+		await world.get_tree().physics_frame
+	_ok(is_equal_approx(float(ship.blocks[target]["hp"]), held),
+		"an OFF station heals nothing (hp held at %.0f)" % held)
 
 
 ## The kraken's mouth chews PEOPLE, and that only works if the WORLD hands the
