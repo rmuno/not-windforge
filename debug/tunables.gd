@@ -115,6 +115,9 @@ const _REGISTRY := [
 		"min": 2000.0, "max": 60000.0, "step": 500.0},           # world._update_dormancy
 	{"id": "dormant_tick_seconds", "label": "Dormant tick (s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 3.0, "min": 0.5, "max": 30.0, "step": 0.5},
+	{"id": "dormant_max_awake", "label": "Max bodies simulated at once (0 = no cap)",
+		"group": "World", "kind": KIND_INT, "default": 24, "min": 0, "max": 200,
+		"step": 1},  # world._update_dormancy — the nearest N stay in the sim; the rest sleep (owner 2026-08-26: prioritise the vicinity)
 	# --- Propeller wash on bodies (owner survey: props push and chop) --------
 	{"id": "wash_push_mult", "label": "Prop wash push on bodies (0 = off)",
 		"group": "Combat", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,
