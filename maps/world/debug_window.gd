@@ -207,6 +207,8 @@ func _build_spawn_tab() -> void:
 	_action_button(box, "Spawn the CITY-WHALE BOSS (the Leviathan Arcology)",
 		func() -> void: _spawn("boss"))
 	_action_button(box, "Spawn whale CARCASS (corpse-airship bench)", func() -> void: _spawn("carcass"))
+	_action_button(box, "Spawn MY LOFT SHIP beside you (board it / grapple it)",
+		func() -> void: _spawn("loft"))
 	# Fire is not a spawnable body, but it is a thing the owner has to be able
 	# to CAUSE on demand to playtest it at all (standing order: a feature F2
 	# cannot reach is invisible).

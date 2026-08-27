@@ -302,11 +302,32 @@ func _initialize() -> void:
 	await _check_debug_window(world, fleet)
 	await _check_repair_station(world, fleet)
 	_check_boss(world, fleet)
+	await _check_loft_ship(world, fleet)
 	await _check_lava_core(world, fleet)
 
 	await _check_hosting_after_offline_play(world, fleet)
 
 	_finish()
+
+
+## The owner's Blueprint-Loft test ship spawns on demand (F2), upscaled so it is
+## boardable: a faction-0 VESSEL with a helm you can take. Proves the .ship parses,
+## upscales, and reaches the fleet as a player-side, pilotable hull.
+func _check_loft_ship(world: Node, fleet) -> void:
+	var pl = world.get("player")
+	var at: Vector2 = (pl.global_position if pl != null else Vector2.ZERO) + Vector2(400.0, 0.0)
+	var ship = world.call("debug_spawn", "loft", at)
+	_ok(ship != null, "the Loft test ship spawns on demand")
+	if ship == null:
+		return
+	_ok(ship.faction == 0, "it spawns on your side (faction 0)")
+	_ok(ship.shared_health_max <= 0.0, "it is a VESSEL you can board, not a creature")
+	_ok(not ship.helm_cells.is_empty(),
+		"it carries a boardable helm (%d cells, upscaled 8x)" % ship.helm_cells.size())
+	# Remove it before the next check samples the fleet — queue_free is deferred,
+	# so wait a frame or the count carries this scratch ship into the lava test.
+	ship.queue_free()
+	await world.get_tree().physics_frame
 
 
 ## The city-whale BOSS is planted at a fixed deep lair in every world (not gated
