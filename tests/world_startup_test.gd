@@ -79,6 +79,47 @@ func _initialize() -> void:
 		"the starter is trimmed near neutral (%.2f) — the altitude hold flies it"
 			% local.lift_ratio())
 
+	# --- Engineering overlay (F): off by default, two focused modes ----------
+	# End-to-end on the REAL ship: the overlay is a picture of the ship's own
+	# derived numbers, so the readout must carry them and the F cycle must walk
+	# off -> FLIGHT -> SYSTEMS -> off.
+	_ok(int(world.get("_eng_overlay_mode")) == 0, "the engineering overlay starts OFF")
+	_ok(world.engineering_overlay() == null, "...and paints nothing while off")
+	var er: Dictionary = local.engineering_readout()
+	var er_ok := true
+	for key in ["com", "lift_ratio", "vthrust", "hthrust", "power_supply",
+			"power_draw", "power_ratio", "bounds"]:
+		er_ok = er_ok and er.has(key)
+	_ok(er_ok, "the ship's engineering readout carries every field the overlay paints")
+	world._cycle_eng_overlay()
+	var flight: Variant = world.engineering_overlay()
+	_ok(flight != null and int((flight as Dictionary)["mode"]) == 1
+			and (flight as Dictionary)["name"] == "FLIGHT",
+		"F cycles the overlay to FLIGHT mode")
+	_ok(flight != null and (flight as Dictionary).has("xform")
+			and not (flight as Dictionary).has("machines"),
+		"FLIGHT carries the ship transform and no power markers")
+	world._cycle_eng_overlay()
+	var systems: Variant = world.engineering_overlay()
+	_ok(systems != null and int((systems as Dictionary)["mode"]) == 2
+			and (systems as Dictionary)["name"] == "SYSTEMS",
+		"a second F cycles to SYSTEMS mode")
+	var feeders := 0
+	var drawers := 0
+	for m in local.power_markers():
+		if int(m["role"]) > 0:
+			feeders += 1
+		else:
+			drawers += 1
+	_ok(systems != null and (systems as Dictionary).has("machines"),
+		"SYSTEMS carries the power markers")
+	_ok(feeders > 0 and drawers > 0,
+		"the starter's power grid reads both feeders (%d engines) and drawers (%d props/turrets)"
+			% [feeders, drawers])
+	world._cycle_eng_overlay()
+	_ok(int(world.get("_eng_overlay_mode")) == 0 and world.engineering_overlay() == null,
+		"a third F cycles the overlay back OFF")
+
 	# You are a person, not a ship. The player must exist and be on foot, and
 	# the ship must only respond once you actually use the helm.
 	var p = world.get("player")
@@ -155,6 +196,13 @@ func _initialize() -> void:
 	_ok(p.health > 0.0 and p.health >= full_pool - 0.01,
 		"and the GRIT pool is restored to full (%.0f/%.0f)" % [p.health, p.max_health])
 
+	# Spawn sites OFF before this count (and, below, for the rest of the suite):
+	# the player was just teleported to (9000,9000), so a world-anchored site can
+	# activate near that focus and fold residents into the reset fleet — a
+	# pre-existing flake that returned 10 or 14 depending on the scheduler. The
+	# reset is a ship-COUNTING check like the others below, so it belongs under
+	# the same disable (which the block further down explains and restores).
+	Tunables.set_value("spawn_sites_enabled", false)
 	await world.reset_world()
 	await process_frame
 	_ok(fleet.ships().size() == expected_ships,

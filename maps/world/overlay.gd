@@ -32,6 +32,145 @@ func _draw() -> void:
 	_draw_damage_numbers()
 	_draw_pickups()
 	_draw_fires()
+	_draw_engineering()
+
+
+## The ENGINEERING OVERLAY (F). Two focused modes, never both at once (owner
+## 2026-08-27): FLIGHT paints the handling picture — centre of mass, the
+## lift-to-weight gauge, and the thrust authority on each axis; SYSTEMS paints
+## the power grid — engines that FEED it green, props/turrets that DRAW it amber,
+## with a supply-vs-demand bar that reddens into brownout. Every value comes from
+## world.engineering_overlay() (the ship's own derived numbers); this only paints.
+## The spatial markers are drawn in the SHIP's frame so a posed hull cannot slide
+## them off its own grid.
+func _draw_engineering() -> void:
+	var d: Variant = world.call("engineering_overlay")
+	if d == null:
+		return
+	var data := d as Dictionary
+	var xform := data["xform"] as Transform2D
+	var bounds := data["bounds"] as Rect2
+	var com := data["com"] as Vector2
+	var s := maxf(float(data["scale"]), 1.0)
+	var cell: float = Ship.CELL * s
+	var font := ThemeDB.fallback_font
+
+	draw_set_transform_matrix(xform)
+	if int(data["mode"]) == 1:
+		_eng_flight(com, bounds, data, cell, font, s)
+	else:
+		_eng_systems(com, bounds, data, cell, font, s)
+
+	# The CoM marker is common to both modes — the one point every airship
+	# builder wants to see. A ringed dot with a crosshair, drawn last so it sits
+	# on top of the bars and machine tints.
+	var mk := cell * 0.55
+	draw_circle(com, mk, Color(0.15, 0.95, 1.0, 0.9))
+	draw_circle(com, mk, Color(0.02, 0.10, 0.14, 0.9), false, maxf(1.5, 1.5 * s))
+	draw_line(com - Vector2(mk * 2.0, 0.0), com + Vector2(mk * 2.0, 0.0),
+		Color(0.15, 0.95, 1.0, 0.7), maxf(1.0, 1.0 * s))
+	draw_line(com - Vector2(0.0, mk * 2.0), com + Vector2(0.0, mk * 2.0),
+		Color(0.15, 0.95, 1.0, 0.7), maxf(1.0, 1.0 * s))
+
+	# Mode label above the hull, in the ship frame (the player's own ship flies
+	# upright, so it reads level). Small and cornered — an instrument, not a sign.
+	var fs := int(clampf(11.0 * s, 11.0, 200.0))
+	draw_string(font, Vector2(bounds.position.x, bounds.position.y - cell * 0.6),
+		"ENGINEERING · %s" % data["name"], HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
+		Color(0.75, 0.95, 1.0, 0.95))
+	draw_set_transform_matrix(Transform2D.IDENTITY)
+
+
+## FLIGHT: lift-to-weight gauge at the CoM (green climbs, red sinks) and the
+## thrust authority as a double-headed arrow on each axis (how hard the ship can
+## push itself left/right and up/down — the maneuver picture).
+func _eng_flight(com: Vector2, bounds: Rect2, data: Dictionary, cell: float,
+		font: Font, s: float) -> void:
+	# Thrust authority: the stronger axis fills a reference length, the other is
+	# proportional — so the arrows READ as "which way can I push harder", which
+	# is the buildable question. Symmetric (props push both ways on their axis).
+	var ht := float(data["hthrust"])
+	var vt := float(data["vthrust"])
+	var maxt := maxf(ht, maxf(vt, 1.0))
+	var ref := maxf(bounds.size.x, bounds.size.y) * 0.45
+	var col := Color(1.0, 0.85, 0.30, 0.9)
+	if ht > 0.0:
+		var hlen := ht / maxt * ref
+		_eng_arrow(com, com + Vector2(hlen, 0.0), col, s)
+		_eng_arrow(com, com - Vector2(hlen, 0.0), col, s)
+	if vt > 0.0:
+		var vlen := vt / maxt * ref
+		_eng_arrow(com, com + Vector2(0.0, vlen), col, s)
+		_eng_arrow(com, com - Vector2(0.0, vlen), col, s)
+
+	# Lift-to-weight gauge: a vertical bar rising green when the ship is buoyant
+	# (ratio >= 1, it climbs) or falling red when it is heavy (it sinks). Height
+	# is the deviation from balance, capped, so "just barely floats" reads small.
+	var r := float(data["lift_ratio"])
+	var dev := clampf(absf(r - 1.0), 0.0, 1.0)
+	var h := (cell * 0.5 + dev * cell * 3.0)
+	var w := cell * 0.7
+	var x := com.x + bounds.size.x * 0.5 + cell * 1.2
+	var up := r >= 1.0
+	var bar := Color(0.30, 0.95, 0.45, 0.85) if up else Color(1.0, 0.42, 0.38, 0.85)
+	var top := com.y - h if up else com.y
+	draw_rect(Rect2(x - w * 0.5, top, w, h), bar)
+	draw_line(Vector2(x - w, com.y), Vector2(x + w, com.y),
+		Color(0.9, 0.9, 0.95, 0.8), maxf(1.0, 1.0 * s))  # the balance line
+	var fs := int(clampf(11.0 * s, 11.0, 200.0))
+	draw_string(font, Vector2(x + w, com.y + fs * 0.35),
+		"L/W %.2f" % r, HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
+		Color(bar, 1.0))
+
+
+## SYSTEMS: the power grid. Each machine lights up by role — engines green
+## (they FEED), props/turrets amber (they DRAW) — over a supply-vs-demand bar
+## that reddens into brownout, so an under-engined build reads at a glance.
+func _eng_systems(com: Vector2, bounds: Rect2, data: Dictionary, cell: float,
+		font: Font, s: float) -> void:
+	for m in (data["machines"] as Array):
+		var rect := m["rect"] as Rect2
+		var feed := int(m["role"]) > 0
+		var tint := Color(0.30, 0.95, 0.45, 0.35) if feed else Color(1.0, 0.72, 0.25, 0.35)
+		var edge := Color(0.30, 0.95, 0.45, 0.95) if feed else Color(1.0, 0.72, 0.25, 0.95)
+		draw_rect(rect, tint)
+		draw_rect(rect, edge, false, maxf(1.5, 1.5 * s))
+
+	# Supply-vs-demand bar above the ship. ratio 1.0 = fully fed (green); below
+	# that is brownout (amber into red) — the wiki's "underpowered flies slow".
+	var ratio := float(data["power_ratio"])
+	var supply := float(data["power_supply"])
+	var draw_w := float(data["power_draw"])
+	var bw := maxf(bounds.size.x, cell * 6.0)
+	var bh := cell * 0.9
+	var bx := com.x - bw * 0.5
+	var by := bounds.position.y - cell * 2.4
+	draw_rect(Rect2(bx, by, bw, bh), Color(0.08, 0.10, 0.13, 0.85))
+	var fill := Color(0.30, 0.95, 0.45, 0.9)
+	if ratio < 0.999:
+		fill = Color(1.0, 0.72, 0.25, 0.9) if ratio > 0.5 else Color(1.0, 0.40, 0.35, 0.9)
+	draw_rect(Rect2(bx, by, bw * ratio, bh), fill)
+	draw_rect(Rect2(bx, by, bw, bh), Color(0.6, 0.7, 0.8, 0.8), false, maxf(1.0, 1.0 * s))
+	var fs := int(clampf(11.0 * s, 11.0, 200.0))
+	var txt := "PWR %d / %d" % [roundi(supply), roundi(draw_w)]
+	if ratio < 0.999:
+		txt += "   BROWNOUT %d%%" % roundi(ratio * 100.0)
+	draw_string(font, Vector2(bx, by - fs * 0.3), txt,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(fill, 1.0))
+
+
+## A double-headed-friendly single arrow (line + filled head) for the thrust
+## vectors, sized so the head stays proportional at any world scale.
+func _eng_arrow(from: Vector2, to: Vector2, col: Color, s: float) -> void:
+	draw_line(from, to, col, maxf(1.5, 1.8 * s))
+	var dir := (to - from)
+	if dir.length() < 0.001:
+		return
+	dir = dir.normalized()
+	var head := maxf(6.0, 6.0 * s)
+	var perp := Vector2(-dir.y, dir.x) * head * 0.6
+	draw_colored_polygon(PackedVector2Array([
+		to, to - dir * head + perp, to - dir * head - perp]), col)
 
 
 ## FIRE. A burning cell is a grid block-state, not a node and not a particle,
