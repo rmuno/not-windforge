@@ -1045,6 +1045,7 @@ func _build_generated_terrain() -> void:
 	# it always exists (maps/world/easter_eggs.gd → the Cairn). Not surfaced in
 	# the HUD; documented dev-facing in docs/DECISIONS.md.
 	EasterEggs.plant_cairn(terrain)
+	EasterEggs.plant_high_cairn(terrain)  # egg 5: the bookend beacon
 
 
 ## Stream the resident terrain: promote chunks near any focus (the player and
@@ -1283,11 +1284,17 @@ func _spawn_kraken() -> void:
 	var cx := _world_rect.get_center().x
 	for i in KRAKEN_COUNT:
 		var path: String = KRAKEN_PLANS[i % KRAKEN_PLANS.size()]
+		var sovereign := i == 0 and EasterEggs.is_sovereign_kraken(world_seed)
 		# Spread across the deep, staggered a little in altitude so they do not
 		# spawn stacked; wide enough apart that two do not overlap on spawn.
 		var pos := Vector2(cx + (float(i) - 0.5 * (KRAKEN_COUNT - 1)) * 3200.0 * world_scale,
 			y + (i % 2) * 260.0 * world_scale)
-		_spawn_one_kraken(path, pos)
+		var k := _spawn_one_kraken(path, pos)
+		# Egg 4: a rare seed dresses the lead kraken as the Deep Sovereign. Set
+		# AFTER the spawn's own tint, and the tint is cosmetic (rides body_tint,
+		# never mass/collision/damage — the same rule the ghost whale follows).
+		if k != null and sovereign:
+			k.body_tint = EasterEggs.SOVEREIGN_KRAKEN_TINT
 
 
 ## Spawn ONE kraken of body plan `path` at `pos` (null if the spawner is not ready).

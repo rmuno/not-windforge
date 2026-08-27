@@ -8677,7 +8677,7 @@ func _test_wind_map_helper_reads_the_circulation() -> void:
 ## without being surfaced in play. Pinned so they can't silently vanish; WHAT they
 ## are and HOW to find them is dev-facing in docs/DECISIONS.md, never in the HUD.
 func _test_easter_eggs_are_present_but_hidden() -> void:
-	_t("the hidden easter eggs are present and pinned (Cairn, ghost whale, salute)")
+	_t("the hidden easter eggs are present and pinned (Cairn, ghost whale, salute, Sovereign, High Cairn)")
 
 	# 1. THE CAIRN — planted into the generated world, always solid aetherite at
 	#    its fixed coordinate (mirrors world._build_generated_terrain).
@@ -8716,6 +8716,33 @@ func _test_easter_eggs_are_present_but_hidden() -> void:
 	padded.append_array(EasterEggs.KONAMI)
 	_check(EasterEggs.konami_matches(padded),
 		"the salute matches at the tail of a longer key history")
+
+	# 4. THE DEEP SOVEREIGN — the deep's twin of the ghost whale: a known seed
+	#    rolls the rare violet kraken, the default does not, and it is
+	#    INDEPENDENT of the ghost roll (distinct odds/residue).
+	var sov_seed := EasterEggs.SOVEREIGN_KRAKEN_RESIDUE
+	_check(EasterEggs.is_sovereign_kraken(sov_seed), "a known seed rolls the Deep Sovereign")
+	_check(not EasterEggs.is_sovereign_kraken(IslandGen.DEFAULT_SEED),
+		"the default world carries an ordinary kraken pod (the Sovereign is rare)")
+	_check(EasterEggs.is_sovereign_kraken(sov_seed) == EasterEggs.is_sovereign_kraken(sov_seed),
+		"the Sovereign roll is deterministic per seed")
+	_check(EasterEggs.SOVEREIGN_KRAKEN_ODDS != EasterEggs.GHOST_WHALE_ODDS
+			or EasterEggs.SOVEREIGN_KRAKEN_RESIDUE != EasterEggs.GHOST_WHALE_RESIDUE,
+		"the two ghost eggs are independent (a seed can carry both, neither or one)")
+
+	# 5. THE HIGH CAIRN — the bookend beacon: a solid COPPER plus at the mirrored
+	#    high-starboard corner, distinct material from the deep-port Cairn.
+	var t2 := _make_generated_terrain(IslandGen.DEFAULT_SEED)
+	EasterEggs.plant_high_cairn(t2)
+	_check(t2.is_solid(EasterEggs.HIGH_CAIRN_CELL)
+			and t2.cell_type(EasterEggs.HIGH_CAIRN_CELL) == TerrainDB.Type.COPPER,
+		"the High Cairn is a solid COPPER beacon at its mirrored coordinate")
+	_check(t2.is_solid(EasterEggs.HIGH_CAIRN_CELL + Vector2i(5, 0))
+			and t2.is_solid(EasterEggs.HIGH_CAIRN_CELL + Vector2i(0, -5)),
+		"the High Cairn's arms are present (a deliberate bookend, not a stray cell)")
+	_check(EasterEggs.HIGH_CAIRN_CELL != EasterEggs.CAIRN_CELL,
+		"the two beacons sit at opposite corners of the world")
+	t2.queue_free()
 	await process_frame
 
 

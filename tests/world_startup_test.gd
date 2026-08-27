@@ -200,6 +200,8 @@ func _initialize() -> void:
 	var terr0 = world.get("terrain")
 	_ok(terr0 != null and terr0.is_solid(EasterEggs.cairn_cell_for(terr0)),
 		"the secret Cairn is present in the real generated world")
+	_ok(terr0 != null and terr0.is_solid(EasterEggs.high_cairn_cell_for(terr0)),
+		"the bookend High Cairn is present in the real generated world too")
 
 	# TERRAIN RESOLUTION: the default world generates at the Tunables default
 	# (subdiv 4 since 2026-08-24 — the owner walked full-8× back to "1/4 the
