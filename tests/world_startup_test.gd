@@ -307,6 +307,7 @@ func _initialize() -> void:
 	await _check_fire(world, fleet)
 	await _check_basilisk(world, fleet)
 	await _check_spawn_sites(world, fleet)
+	await _check_ecology(world, fleet)
 	await _check_debug_window(world, fleet)
 	await _check_repair_station(world, fleet)
 	_check_boss(world, fleet)
@@ -1245,6 +1246,10 @@ func _check_save_load(world: Node) -> void:
 	var cleared_coord := Vector2i(-31, 17)
 	world.set_cleared_sites(PackedInt32Array([cleared_coord.x, cleared_coord.y]))
 
+	# The ecology meter (Q-C) is the other thing-you-did-to-the-world worth
+	# persisting: how far the deep has risen from overhunting whales.
+	world.set("kraken_ascendancy", 0.42)
+
 	_ok(world.save_game(slot), "the world saved to disk")
 
 	# Now mutate EVERYTHING the load must undo: money, inventory, position, and the
@@ -1257,6 +1262,7 @@ func _check_save_load(world: Node) -> void:
 	while terr.is_solid(f):
 		f += Vector2i(0, -1)
 	terr.place(f, TerrainDB.Type.STONE)  # post-save placement, not in the save
+	world.set("kraken_ascendancy", 0.0)  # post-save: the load must bring the deep back up
 
 	# Forget it, so the load has something to restore rather than something to
 	# leave alone.
@@ -1297,6 +1303,9 @@ func _check_save_load(world: Node) -> void:
 	_ok(found_cleared,
 		"a nest you broke stays broken across a save/load (%d cleared sites)"
 			% (back.size() / 2))
+	_ok(is_equal_approx(float(world.get("kraken_ascendancy")), 0.42),
+		"the ecology meter survives a save/load (deep at 0.42 ascendant)")
+	world.set("kraken_ascendancy", 0.0)  # leave the deep quiet for the checks that follow
 
 	# Player progress restored.
 	_ok(pl.wallet.balance == 777, "money restored (777, got %d)" % pl.wallet.balance)
@@ -2059,6 +2068,111 @@ func _check_debug_window(world: Node, fleet) -> void:
 		hulk.queue_free()
 	if whale != null:
 		whale.queue_free()
+	await process_frame
+
+
+## Ecology (Q-C): overhunting whales lets the deep rise. Whales keep krakens in
+## check (sperm whale eats giant squid), so killing whales SURGES kraken dens
+## worldwide; the meter DECAYS over time (the safe-harvest rate as a flow). This
+## covers the surge math, the whale-only rise, the clamps, the decay, the enable
+## toggle, and the death SIGNAL end to end. Persistence lives in _check_save_load.
+func _check_ecology(world: Node, fleet) -> void:
+	Tunables.reset_all()
+	# Keep the world-anchored population OFF for the whole check: reset_all put it
+	# back to its default (ON), and this test AWAITS frames (the end-to-end whale
+	# spawn), during which a live bandit site would release a hulk that lingers
+	# into the hosting count. Ecology decays regardless of this toggle by design.
+	Tunables.set_value("spawn_sites_enabled", false)
+	world.set("kraken_ascendancy", 0.0)
+	world.call("resync_eco_level")
+	var base := 2
+
+	# THE SURGE is kraken-only and scales with the meter. A QUIET deep changes
+	# nothing (parity): the game is byte-identical until a whale actually dies.
+	_ok(int(world.call("_kraken_surge_pool", SpawnSites.Kind.KRAKEN_DEN, base)) == base,
+		"a quiet deep leaves a kraken den at its base pool (parity)")
+	_ok(int(world.call("_kraken_surge_pool", SpawnSites.Kind.WHALE_GROUND, 3)) == 3,
+		"the surge never touches a non-kraken site (whale ground stays 3)")
+	world.set("kraken_ascendancy", 1.0)
+	var surged := int(world.call("_kraken_surge_pool", SpawnSites.Kind.KRAKEN_DEN, base))
+	_ok(surged == base + int(round(base * Tunables.get_num("eco_kraken_gain"))),
+		"an ascendant deep surges every kraken den (%d -> %d at full)" % [base, surged])
+	_ok(surged > base, "...and that is strictly MORE krakens worldwide (%d > %d)" % [surged, base])
+
+	# A WHALE death raises the meter; a critter / kraken / basilisk death does not.
+	world.set("kraken_ascendancy", 0.0)
+	Tunables.set_value("eco_kill_rise", 0.1)
+	world.call("_on_creature_perished", "whale")
+	_ok(is_equal_approx(float(world.get("kraken_ascendancy")), 0.1),
+		"killing a whale stirs the deep (0 -> %.2f)" % float(world.get("kraken_ascendancy")))
+	world.call("_on_creature_perished", "whale_city")
+	_ok(float(world.get("kraken_ascendancy")) > 0.1,
+		"the city-whale boss counts as whale-family too")
+	var held := float(world.get("kraken_ascendancy"))
+	world.call("_on_creature_perished", "critter")
+	world.call("_on_creature_perished", "kraken")
+	world.call("_on_creature_perished", "basilisk")
+	_ok(is_equal_approx(float(world.get("kraken_ascendancy")), held),
+		"a critter / kraken / basilisk death does NOT stir the deep (whales only)")
+
+	# Rise CLAMPS at 1, decay CLAMPS at 0.
+	Tunables.set_value("eco_kill_rise", 1.0)
+	for i in 5:
+		world.call("_on_creature_perished", "whale")
+	_ok(float(world.get("kraken_ascendancy")) <= 1.0,
+		"the meter never exceeds 1 however many whales die")
+	Tunables.set_value("eco_recover_per_min", 6.0)   # 0.1/s — brisk, for the test
+	world.set("kraken_ascendancy", 0.5)
+	world.call("_tick_ecology", 1.0)
+	_ok(float(world.get("kraken_ascendancy")) < 0.5,
+		"the deep recovers when you stop hunting — the safe-harvest rate (%.3f < 0.5)"
+			% float(world.get("kraken_ascendancy")))
+	world.set("kraken_ascendancy", 0.02)
+	world.call("_tick_ecology", 100.0)
+	_ok(float(world.get("kraken_ascendancy")) == 0.0, "and recovery clamps at a quiet deep (0)")
+
+	# The enable toggle FREEZES the whole system (rise and surge).
+	Tunables.set_value("eco_enabled", false)
+	world.set("kraken_ascendancy", 0.3)
+	world.call("_on_creature_perished", "whale")
+	_ok(is_equal_approx(float(world.get("kraken_ascendancy")), 0.3),
+		"ecology OFF: a whale death no longer stirs the deep")
+	_ok(int(world.call("_kraken_surge_pool", SpawnSites.Kind.KRAKEN_DEN, base)) == base,
+		"ecology OFF: no kraken surge even at 0.3 ascendancy")
+	Tunables.set_value("eco_enabled", true)
+
+	# END TO END: the death SIGNAL, from a real whale's pool emptying — the tag
+	# on the payload, the AI wiring, and the emit that feeds the meter.
+	world.set("kraken_ascendancy", 0.0)
+	world.call("resync_eco_level")
+	Tunables.set_value("eco_kill_rise", 0.2)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+	var pos: Vector2 = (world.get("player") as Node2D).global_position + Vector2(4200.0, -4200.0)
+	var whale: Ship = world.call("_spawn_one_whale", WhaleSpawn.pick_plan(rng), pos)
+	if whale != null:
+		await world.get_tree().physics_frame
+		_ok(whale.creature_kind == "whale",
+			"a spawned whale carries the 'whale' tag (rides the payload, survives the wire)")
+		world.call("_whale_ai_for", whale)   # build the brain → connect creature_perished
+		whale.shared_health = 5.0
+		whale.shared_health_max = 5.0
+		whale.damage_cell(whale.blocks.keys()[0], 1.0e6)   # empty the pool → the death edge
+		_ok(whale.is_carcass(), "the whale died (pool empty → carcass)")
+		_ok(float(world.get("kraken_ascendancy")) >= 0.2,
+			"and its death rose to the meter THROUGH the signal (%.2f)"
+				% float(world.get("kraken_ascendancy")))
+		whale.queue_free()
+		await process_frame
+	else:
+		_ok(true, "(whale spawner not ready — skipped the end-to-end signal check)")
+
+	# Leave the world as we found it: quiet deep, defaults, population off (the
+	# checks after this teleport foci and count ships — a live site would skew them).
+	world.set("kraken_ascendancy", 0.0)
+	world.call("resync_eco_level")
+	Tunables.reset_all()
+	Tunables.set_value("spawn_sites_enabled", false)
 	await process_frame
 
 

@@ -164,6 +164,11 @@ static func capture(world: Object, name: String, playtime: float) -> Dictionary:
 		# permanent mark they can leave on the population. Flat [x, y, ...].
 		"cleared_sites": (Array(world.cleared_sites())
 			if world.has_method("cleared_sites") else []),
+		# How far the deep has risen from overhunting whales (ecology, Q-C). A
+		# thing the player did to the world, like a cleared nest — additive, so a
+		# legacy save loads a quiet deep (0.0).
+		"kraken_ascendancy": float(world.get("kraken_ascendancy")
+			if world.get("kraken_ascendancy") != null else 0.0),
 		"ships": ships,
 		"player": encode_player(world.player),
 	}
@@ -207,6 +212,15 @@ static func restore(world: Object, data: Dictionary) -> bool:
 		for v in (data.get("cleared_sites", []) as Array):
 			flat.append(int(v))
 		world.set_cleared_sites(flat)
+
+	# Ecology meter (Q-C): how far the deep has risen. Additive/optional — a
+	# legacy save restores a quiet deep. `_eco_level` is derived, so a load
+	# re-syncs the narration band without announcing on restore.
+	if world.get("kraken_ascendancy") != null:
+		world.kraken_ascendancy = clampf(
+			float(data.get("kraken_ascendancy", 0.0)), 0.0, 1.0)
+		if world.has_method("resync_eco_level"):
+			world.resync_eco_level()
 
 	# Ships: throw away the current fleet, respawn each from its payload.
 	if world.fleet != null:

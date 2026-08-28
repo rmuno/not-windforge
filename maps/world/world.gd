@@ -1245,9 +1245,13 @@ func _spawn_whale() -> void:
 ## the pool must ride the spawn payload instead — post-spawn fields are server-only
 ## (godot-quirks).
 func _spawn_one_whale(path: String, pos: Vector2) -> Ship:
+	# TAGGED "whale" (the boss overrides to "whale_city" post-spawn): whale-family
+	# deaths feed the ecology meter, and the tag has to ride the payload so it
+	# survives the wire and a save (from_data reads it), not a server-only field.
+	# Every whale-family kind still routes to WhaleAI (the _whale_ai_for default).
 	var whale := fleet.spawn_ship_from_cells(
 		ShipLayout.upscale_cells(ShipLayout.load_cells(path), world_scale),
-		pos, 0, 0.0, float(world_scale), 2)
+		pos, 0, 0.0, float(world_scale), 2, {"creature_kind": "whale"})
 	if whale == null:
 		return null
 	var hp := Tunables.get_num("whale_health")
@@ -1355,9 +1359,12 @@ func _spawn_critters() -> void:
 ## Mirrors _spawn_one_whale's pool-then-rebuild ordering; small pool, tame_level 1
 ## (the low taming bar), and a nimbler ride than a whale (ride_speed_mult > 1).
 func _spawn_one_critter(pos: Vector2) -> Ship:
+	# Tagged "critter" so a meadow death is never miscounted as a whale by the
+	# ecology meter (both were "" before and both use WhaleAI). Rides the payload
+	# for the same wire/save reasons as the whale tag.
 	var critter := fleet.spawn_ship_from_cells(
 		ShipLayout.upscale_cells(ShipLayout.load_cells("res://ships/critter.ship"), world_scale),
-		pos, 0, 0.0, float(world_scale), 2)
+		pos, 0, 0.0, float(world_scale), 2, {"creature_kind": "critter"})
 	if critter == null:
 		return null
 	critter.shared_health = CRITTER_HEALTH
@@ -2204,11 +2211,54 @@ var _site_scan_t := 0.0
 ## correctly the moment they come back without anything having run meanwhile.
 var _site_clock := 0.0
 
+# --- Ecology: the deep stirs (Q-C, owner 2026-08-27) ------------------------
+#
+# The reviews' "smartest criticism": whale oil should MATTER ecologically —
+# overhunt and the world visibly changes. Grounded in the real predator/prey it
+# already has: SPERM WHALES HUNT GIANT SQUID, so whales are what keeps the
+# krakens down. Kill the whales and nothing holds the deep in check — so the
+# consequence the owner pictured ("krakens start taking over if you just kill
+# whales") falls out one-sidedly and correctly: your greed empties the profitable
+# high sky AND unleashes the dangerous deep into it.
+#
+# GLOBAL CREEP (owner's call over regional): one world-wide scalar, not per-site.
+# `kraken_ascendancy` in [0,1] RISES a step per whale killed and DECAYS slowly
+# over time (whales breeding back → predators return → the deep is pushed down).
+# That decay is the SUSTAINABLE-HARVEST BUDGET expressed as a flow, not a quota:
+# hunt slower than it recovers and the meter never climbs (the deep stays quiet);
+# hunt faster and krakens rise. Slow decay because real whales are long-lived —
+# overhunting has lasting-but-not-permanent consequences.
+#
+# THE SURGE: while the meter is up, every kraken den in the world fields MORE
+# krakens, FASTER (`_kraken_surge_pool`). The global resident cap still bounds
+# the total, so an ascendant deep crowds the awake budget with krakens — which is
+# exactly "the deep taking over". No fuel anywhere: engines stay power-only
+# (owner ruling 2026-08-20), so this is pure ecology.
+#
+# SEAM (towns): the owner's "kraken zone envelops a TOWN → they besiege it" beat
+# is logged, not built — towns do not exist yet (Phase 5/6). When a settlement /
+# safe-zone system lands, a high ascendancy is the trigger it reads.
+var kraken_ascendancy := 0.0
+## Coarse level last announced, so a crossing narrates once (not every scan).
+## 0 quiet · 1 stirring · 2 rising · 3 ascendant — thresholds in `_eco_level`.
+var _eco_level := 0
+
+
+## The four ecology bands the meter narrates as it crosses them. A whole level of
+## hysteresis is unnecessary — the meter moves in slow steps — but announcing only
+## on a CHANGE keeps the notices rare.
+func _eco_level_of(v: float) -> int:
+	if v >= 0.75:
+		return 3
+	if v >= 0.5:
+		return 2
+	if v >= 0.25:
+		return 1
+	return 0
+
 
 func _update_spawn_sites(delta: float) -> void:
 	if not Net.is_server() or fleet == null or not is_instance_valid(fleet):
-		return
-	if not Tunables.get_bool("spawn_sites_enabled"):
 		return
 	if _world_rect.size.y <= 0.0:
 		return  # no framed world yet — nothing to anchor to
@@ -2218,7 +2268,13 @@ func _update_spawn_sites(delta: float) -> void:
 	var elapsed := _site_scan_t
 	_site_scan_t = 0.0
 	_site_clock += elapsed
+	# Ecology decays on the same slow scan cadence but is NOT gated by the
+	# spawn-sites toggle: overhunting has a consequence whether or not the debug
+	# lever that fills the sky with sites is on (it has its own eco_enabled).
+	_tick_ecology(elapsed)
 
+	if not Tunables.get_bool("spawn_sites_enabled"):
+		return
 	var points := Dormancy.foci(self)
 	if points.is_empty():
 		return
@@ -2247,13 +2303,95 @@ func _resident_count() -> int:
 	return n
 
 
+## Whale-family kinds — the ones whose death lets the deep off its leash. The
+## city-whale boss counts too (it IS a whale); critters/krakens/basilisks do not.
+const WHALE_KINDS := ["whale", "whale_city"]
+
+
+## One ecology step: DECAY the meter toward quiet, and narrate a band crossing.
+## Called from the site scan (server, ~1 Hz) with the elapsed seconds since the
+## last pass, so recovery is correct however the scan is spaced. Rising is an
+## EVENT (`_on_creature_perished`); only the slow recovery is time-driven.
+func _tick_ecology(elapsed: float) -> void:
+	if not Tunables.get_bool("eco_enabled"):
+		return
+	var recover := Tunables.get_num("eco_recover_per_min") / 60.0 * elapsed
+	if recover > 0.0 and kraken_ascendancy > 0.0:
+		kraken_ascendancy = maxf(0.0, kraken_ascendancy - recover)
+	_announce_eco()
+
+
+## Announce a band crossing once, up or down. The message names the CONSEQUENCE
+## (krakens), not the meter, because the meter is an engineering detail and the
+## krakens are the thing the player feels.
+func _announce_eco() -> void:
+	var lvl := _eco_level_of(kraken_ascendancy)
+	if lvl == _eco_level:
+		return
+	var rising := lvl > _eco_level
+	_eco_level = lvl
+	if rising:
+		match lvl:
+			1: _notify("The deep stirs — krakens grow bolder.")
+			2: _notify("The krakens are rising — the deep is spilling upward.")
+			3: _notify("The krakens are ASCENDANT — you have hunted the whales too hard.")
+	else:
+		match lvl:
+			2: _notify("The deep settles a little — the whales are recovering.")
+			1: _notify("The krakens recede as the whale grounds refill.")
+			0: _notify("The deep is quiet again. The whales have come back.")
+
+
+## A whale-family body just died: let the deep off its leash a notch. Wired once
+## per creature in `_whale_ai_for` (the one place every brain is set up), server-
+## side like all spawning. A non-whale death is ignored.
+func _on_creature_perished(kind: String) -> void:
+	if not Tunables.get_bool("eco_enabled") or not WHALE_KINDS.has(kind):
+		return
+	kraken_ascendancy = clampf(
+		kraken_ascendancy + Tunables.get_num("eco_kill_rise"), 0.0, 1.0)
+	_announce_eco()
+
+
+## A kraken den's EFFECTIVE pool under the current ascendancy: its base pool grows
+## by up to `eco_kraken_gain`× as the meter climbs, so an ascendant deep fields
+## whole extra krakens per den, everywhere at once (the global creep). The global
+## resident cap (`site_max_residents`) still bounds the world total — an ascendant
+## deep therefore CROWDS the awake budget with krakens rather than growing it
+## without limit. Non-kraken sites are unchanged.
+func _kraken_surge_pool(kind: int, base_pool: int) -> int:
+	if kind != SpawnSites.Kind.KRAKEN_DEN or not Tunables.get_bool("eco_enabled"):
+		return base_pool
+	var gain := Tunables.get_num("eco_kraken_gain")
+	return base_pool + int(round(base_pool * gain * kraken_ascendancy))
+
+
+## Re-sync the narration band to the current meter WITHOUT announcing — a load
+## restores `kraken_ascendancy` directly, and the player should not be told the
+## deep "stirred" the instant they open a save.
+func resync_eco_level() -> void:
+	_eco_level = _eco_level_of(kraken_ascendancy)
+
+
+## Debug: shove the meter up (F2 → Spawn), so the surge is playtestable without
+## hunting a pod first. Authority-only, clamped like every other write.
+func debug_stir_deep(amount: float) -> void:
+	if Net.is_online() and not Net.is_server():
+		return
+	kraken_ascendancy = clampf(kraken_ascendancy + amount, 0.0, 1.0)
+	_announce_eco()
+
+
 ## One site's pass: recover what it grew while unwatched, forget residents that
 ## have died, and release one more if it is owed one.
 ## Returns whether it released a resident this pass.
 func _tick_site(site: Dictionary, points: Array, radius: float,
 		may_release: bool) -> bool:
 	var coord: Vector2i = site["coord"]
-	var pool: int = site["pool"]
+	# THE SURGE (ecology): a kraken den fields more, faster, as the deep grows
+	# ascendant — everywhere at once, so overhunting whales anywhere makes every
+	# den in the world tougher. Non-kraken sites pass through unchanged.
+	var pool: int = _kraken_surge_pool(site["kind"], int(site["pool"]))
 	var st: Dictionary = _site_state.get(coord, {
 		"stock": pool, "pool": pool, "residents": [], "next_release": 0.0,
 		"seen_at": _site_clock})
@@ -2529,6 +2667,10 @@ func _whale_ai_for(creature: Ship) -> WhaleAI:
 				# player included). Null for unattributed damage — the AI then
 				# falls back to nearest-ship, the old doctrine.
 				ai.provoke(instance_from_id(creature.last_attacker_id) as Node2D))
+		# The ecology hook: a whale-family death lets the deep off its leash. Wired
+		# here because this is the one place every creature's brain is set up — and
+		# a creature being simulated enough to be KILLED already has one.
+		creature.creature_perished.connect(_on_creature_perished)
 	return _whale_ais[id]
 
 
