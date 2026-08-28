@@ -462,6 +462,19 @@ func is_tamed_ally() -> bool:
 ## mass, collision, damage or the wire format; it is pure skin.
 var body_tint := Color.WHITE
 
+## HIT FLASH (owner 2026-08-28, charter §5 — feedback with zero audio/VFX): a
+## living creature pulses red for a moment when a hit lands, then fades back to
+## its wound shade. `_hit_flash` is 1 at the instant of the hit and decays to 0
+## over HIT_FLASH_SECONDS; it rides the SAME per-tile self_modulate the wound
+## already uses (folded into `_creature_tint`), so a flash costs a property write,
+## never a repaint. Creatures only — a vessel's per-cell wound is baked, not
+## modulated. Single-player/host visual (damage is authority-side); a networked
+## client flash is the same seam the wound shade is.
+const HIT_FLASH_SECONDS := 0.18
+const HIT_FLASH_STRENGTH := 0.7           ## how far toward red the pulse pulls
+const HIT_FLASH_COLOR := Color(1.0, 0.25, 0.2)
+var _hit_flash := 0.0
+
 ## World-scale experiment: the ship's linear feel multiplier, riding every
 ## spawn payload. 1 is the shipped game and changes nothing. At S, every
 ## distance in the world is S× bigger, so preserving *feel* (times, not
@@ -2219,7 +2232,14 @@ func _integrate_forces(state: PhysicsDirectBodyState2D) -> void:
 ## advances into the gap and meets the next block. The crash you feel is the
 ## frame loop: crunch, slow, crunch, slow, until the momentum is spent or
 ## nothing is left in the way. A hit that only dents absorbs fully: no refund.
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	# HIT FLASH decay — a pure visual, so it runs BEFORE the authority gate (a
+	# hit that lands on the server should still pulse a body a client is watching
+	# once the flash is wired over the wire). Cheap: a self_modulate write per tile
+	# for the ~0.18 s it is fading, nothing while it is 0.
+	if _hit_flash > 0.0:
+		_hit_flash = maxf(0.0, _hit_flash - delta / HIT_FLASH_SECONDS)
+		_apply_creature_tint()
 	# Contacts are collected during the physics step; grid mutation happens
 	# outside it, because rebuilding a collider mid-solve is not safe.
 	if not is_authority():
@@ -2595,7 +2615,21 @@ func _creature_tint() -> Color:
 		return Color.WHITE
 	var shade := roundi(clampf(shared_health / shared_health_max, 0.0, 1.0) * 5.0)
 	var k := 1.0 - (1.0 - shade / 5.0) * 0.6
-	return Color(k, k, k, 1.0)
+	var wound := Color(k, k, k, 1.0)
+	# Fold the transient hit-flash on top of the wound shade: at full flash the
+	# body reads red, fading back to the wound as it decays.
+	if _hit_flash > 0.0:
+		return wound.lerp(HIT_FLASH_COLOR, _hit_flash * HIT_FLASH_STRENGTH)
+	return wound
+
+
+## Kick the hit-flash to full and show it immediately (the same-frame pulse). No-op
+## on a body with no living pool — a vessel/carcass does not flash.
+func flash_hit() -> void:
+	if shared_health_max <= 0.0 or shared_health <= 0.0:
+		return
+	_hit_flash = 1.0
+	_apply_creature_tint()
 
 
 ## Push the current wound shade onto every tile. No queue_redraw anywhere:
@@ -2697,6 +2731,7 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 		var pool_bucket := shade_bucket(shared_health, shared_health_max)
 		shared_health = maxf(0.0, shared_health - amount)
 		damaged.emit(cell, amount)
+		flash_hit()   # a quick red pulse so a landed hit READS (charter §5)
 		# Whole-body wound shading has 6 visible steps. The step is a uniform
 		# darkening, so it lands as a per-tile self_modulate — no repaint at
 		# all — but it stays GATED on the bucket so the tint write happens
