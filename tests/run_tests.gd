@@ -50,6 +50,7 @@ func _initialize() -> void:
 	await _test_whale_is_one_unit_until_dead()
 	await _test_shots_snap_to_the_nearest_block_on_a_creature()
 	await _test_living_creature_gets_a_coarse_collider()
+	_test_creature_hit_flash()
 	await _test_sealed_pockets_cut_a_holed_body()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
 	await _test_creature_skin_faces_its_motion()
@@ -1464,6 +1465,54 @@ func _test_sealed_pockets_cut_a_holed_body() -> void:
 
 ## untouched). mass / CoM / lift derive from the grid, never the collider, so
 ## coarse is contact-only.
+## HIT FLASH (owner 2026-08-28, charter §5): a landed hit pulses a living creature
+## red, folded into the wound self_modulate so it costs a property write not a
+## repaint. Pins: a hit sets the flash; the tint reads red at the pulse and fades
+## back to the wound shade; a vessel never flashes.
+func _test_creature_hit_flash() -> void:
+	_t("a hit flashes a living creature red, then fades to its wound shade")
+	var cells := {
+		Vector2i(0, 0): BlockDB.Type.BLUBBER, Vector2i(1, 0): BlockDB.Type.BLUBBER,
+		Vector2i(0, 1): BlockDB.Type.BLUBBER, Vector2i(1, 1): BlockDB.Type.BLUBBER,
+	}
+	var beast := _make_ship(cells)
+	beast.shared_health_max = 100.0
+	beast.shared_health = 100.0
+	beast.rebuild()
+
+	# Full health, no hit: the wound shade is identity (no darkening, no red).
+	var calm := beast._creature_tint()
+	_check(calm.is_equal_approx(Color.WHITE), "an unhurt, unhit creature is untinted")
+
+	# A landed hit sets the flash and reads RED (r well above g/b).
+	beast.damage_cell(beast.blocks.keys()[0], 10.0)
+	_check(beast._hit_flash == 1.0, "a hit kicks the flash to full")
+	var hot := beast._creature_tint()
+	_check(hot.r > hot.g + 0.2 and hot.r > hot.b + 0.2,
+		"the flashed body reads red (r=%.2f g=%.2f b=%.2f)" % [hot.r, hot.g, hot.b])
+
+	# Halfway through the fade it is redder than the wound but cooler than the peak.
+	beast._hit_flash = 0.5
+	var mid := beast._creature_tint()
+	_check(mid.r > mid.g and mid.g > hot.g, "the pulse cools as it fades")
+
+	# Fully faded: back to exactly the wound shade (here, a wounded grey, no red).
+	beast.shared_health = 40.0            # a real wound, so the base is not white
+	beast._hit_flash = 0.0
+	var wound := beast._creature_tint()
+	_check(is_equal_approx(wound.r, wound.g) and is_equal_approx(wound.g, wound.b),
+		"faded out, the tint is the neutral wound shade again (r=g=b)")
+	_check(wound.r < 1.0, "and the wound shade is a real darkening at 40%% health")
+
+	# A VESSEL (no shared pool) never flashes — the flesh flash is creatures-only.
+	var vessel := _make_ship(cells)
+	vessel.rebuild()
+	vessel.flash_hit()
+	_check(vessel._hit_flash == 0.0, "a vessel does not flash (no living pool)")
+	_check(vessel._creature_tint().is_equal_approx(Color.WHITE),
+		"and a vessel's creature-tint stays identity white")
+
+
 func _test_living_creature_gets_a_coarse_collider() -> void:
 	_t("a living creature gets a COARSE collider; carcasses and vessels stay exact")
 	var cells := ShipLayout.upscale_cells(
