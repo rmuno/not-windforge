@@ -313,6 +313,7 @@ func _initialize() -> void:
 	_check_boss(world, fleet)
 	await _check_loft_ship(world, fleet)
 	await _check_lava_core(world, fleet)
+	await _check_sandbox(world, fleet)
 
 	await _check_hosting_after_offline_play(world, fleet)
 
@@ -2173,6 +2174,90 @@ func _check_ecology(world: Node, fleet) -> void:
 	world.call("resync_eco_level")
 	Tunables.reset_all()
 	Tunables.set_value("spawn_sites_enabled", false)
+	await process_frame
+
+
+## Sandbox (owner 2026-08-28): the "cut the fluff, play one thing" toggle. The
+## loadout opens every gate and fills the pack; sandbox_mode switches off the
+## deep-air suffocation gate. Both are additive dev tools — the default (OFF) must
+## leave the full game exactly as it was, which the parity halves pin.
+func _check_sandbox(world: Node, fleet) -> void:
+	var pl = world.get("player")
+	if pl == null or not is_instance_valid(pl):
+		_ok(false, "there is a player to kit out")
+		return
+	if pl.is_piloting():
+		pl.disembark()
+	Tunables.reset_all()
+
+	# --- The SUFFOCATION gate: default bites deep; sandbox switches it off -----
+	# Put the player in deep, unbreathable air (frac < DEEP_TOP) with NO life
+	# support, so the gate WOULD fire — then prove the toggle is what silences it.
+	var rect: Rect2 = world.get("_world_rect")
+	var home: Vector2 = pl.global_position
+	var did_suffo := false
+	if rect.size.y > 0.0 and pl.inventory != null:
+		pl.inventory.clear()
+		pl.global_position = Vector2(0.0, rect.end.y - 0.15 * rect.size.y)  # frac ~0.15, deep
+		var frac: float = world.call("_player_altitude_frac")
+		if LifeSupport.air_unbreathable(frac) and not LifeSupport.protected(pl.inventory):
+			did_suffo = true
+			pl.health = pl.max_health
+			world.set("_suffocate_cd", 0.05)
+			for i in 6:
+				world.call("_update_suffocation", 1.0)   # sandbox OFF (reset_all) → it bites
+			_ok(pl.health < pl.max_health,
+				"default: deep unbreathable air suffocates an unprotected person (%.0f/%.0f)"
+					% [pl.health, pl.max_health])
+			Tunables.set_value("sandbox_mode", true)
+			pl.health = pl.max_health
+			world.set("_suffocate_cd", 0.05)
+			for i in 6:
+				world.call("_update_suffocation", 1.0)   # sandbox ON → the gate is off
+			_ok(pl.health == pl.max_health,
+				"sandbox: the deep-air gate no longer bites (health held full)")
+			Tunables.set_value("sandbox_mode", false)
+	if not did_suffo:
+		_ok(true, "(no deep unbreathable band reachable here — suffocation half skipped)")
+
+	# --- The LOADOUT: one press opens every gate and fills the pack ------------
+	pl.global_position = home
+	if pl.inventory != null:
+		pl.inventory.clear()
+	if pl.wallet != null:
+		pl.wallet.balance = 0
+	for stat in StatDB.names():
+		pl.stats.set_level(stat, 0)
+	world.call("debug_sandbox_loadout")
+	_ok(Tunables.get_bool("sandbox_mode"), "the loadout turns sandbox mode ON")
+	var all_max := true
+	for stat in StatDB.names():
+		if pl.stats.level_of(stat) != StatDB.MAX_LEVEL:
+			all_max = false
+	_ok(all_max, "...maxes every stat (opens taming / mining / trade gates)")
+	_ok(pl.wallet == null or pl.wallet.balance >= 5000,
+		"...fills the wallet (%d)" % (pl.wallet.balance if pl.wallet != null else 0))
+	_ok(pl.inventory == null or pl.inventory.count(ItemDB.Crafted.LIFE_SUPPORT) > 0,
+		"...grants gear incl. the Aether Lung (deep-safe without crafting)")
+	var some_material := false
+	for t in TerrainDB.Type.values():
+		if TerrainDB.is_solid(t) and pl.inventory != null and pl.inventory.count(t) > 0:
+			some_material = true
+			break
+	_ok(some_material, "...grants a stack of building material (crafting is now optional)")
+	_ok(pl.health == pl.max_health, "...and heals to full")
+
+	# Leave the world as we found it: OFF, defaults, an empty pack, a live position.
+	Tunables.reset_all()
+	if pl.inventory != null:
+		pl.inventory.clear()
+	if pl.wallet != null:
+		pl.wallet.balance = 0
+	for stat in StatDB.names():
+		pl.stats.set_level(stat, 0)
+	pl.max_health = pl.stats.max_health()
+	pl.health = pl.max_health
+	pl.global_position = home
 	await process_frame
 
 
