@@ -236,6 +236,14 @@ func _build_spawn_tab() -> void:
 func _build_player_tab() -> void:
 	var box := _add_tab(PLAYER_TAB)
 	_hint(box, "Cheats for the local player body.")
+	# SANDBOX (owner 2026-08-28): the one-press "cut the fluff, play the meat"
+	# button — every gate open, nothing scarce, deep-air suffocation off. The full
+	# crafting game is one toggle away (World → Sandbox). Top of the tab: it is the
+	# fastest way to get into a focused session.
+	_action_button(box, "SANDBOX: kit me out — open every gate, nothing scarce",
+		func() -> void:
+			if world != null and world.has_method("debug_sandbox_loadout"):
+				world.call("debug_sandbox_loadout"))
 	_action_button(box, "Grant $1000", func() -> void:
 		if world != null: world.call("debug_grant_money", 1000))
 	_action_button(box, "Heal to full", func() -> void:

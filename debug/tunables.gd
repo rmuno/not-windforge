@@ -194,6 +194,13 @@ const _REGISTRY := [
 	{"id": "dormant_heal_per_min", "label": "Far creature mending (pool frac/min)",
 		"group": "World", "kind": KIND_FLOAT, "default": 0.05, "min": 0.0, "max": 1.0,
 		"step": 0.01},  # world._migrate_dormant — a wounded creature mends out of sight
+	# --- Sandbox: cut the fluff, play one thing (owner 2026-08-28) -----------
+	# A play/dev toggle, not new game scope: it removes the GATES (attrition,
+	# grind) so you can reach what is already built and feel whether a single
+	# system carries. The F2 "SANDBOX: kit me out" button flips this on and grants
+	# the loadout; the full crafting game is untouched when it is off.
+	{"id": "sandbox_mode", "label": "Sandbox (no deep-air suffocation; the kit-me-out button)",
+		"group": "World", "kind": KIND_BOOL, "default": false},   # world._update_suffocation / debug_sandbox_loadout
 	# --- Ecology: the deep stirs (Q-C — whales keep the krakens down) --------
 	# Overhunt whales and nothing holds the deep in check; the meter rises per
 	# whale kill and DECAYS slowly (whales breeding back). The decay IS the

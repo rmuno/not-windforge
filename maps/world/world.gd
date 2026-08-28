@@ -1598,6 +1598,39 @@ func debug_max_stats() -> void:
 	player.health = player.max_health
 
 
+## SANDBOX LOADOUT (owner 2026-08-28): the "avenue to cut the fluff and focus on
+## one thing". One button drops you into the meat — every gate open, nothing
+## scarce — so combat / flight / taming can be FELT on their own without the
+## craft-and-grind setup the Source buries its game behind. It EXPANDS NO SCOPE:
+## it only unlocks what is already built, and the full crafting game is one toggle
+## away (sandbox_mode off). Idempotent — press it as often as you like.
+##
+## What it does: turns sandbox_mode ON (deep-air gate off), maxes every stat (so
+## taming / mining / double-jump / trade gates open), fills the wallet, heals, and
+## grants a deep stack of every obtainable item (materials to build with, products
+## to craft with, balloons to fly with). Authority / single-player, like every
+## other debug hook.
+const SANDBOX_STACK := 99
+func debug_sandbox_loadout() -> void:
+	if Net.is_online() and not Net.is_server():
+		return
+	Tunables.set_value("sandbox_mode", true)
+	debug_max_stats()
+	debug_heal_player()
+	if player != null and is_instance_valid(player):
+		if player.wallet != null:
+			player.wallet.add(5000)
+		if player.inventory != null:
+			# Every mined MATERIAL (to build/paint) and every product/crafted good
+			# (to satisfy any recipe), so crafting is optional rather than a wall.
+			for t in TerrainDB.Type.values():
+				if TerrainDB.is_solid(t):
+					player.inventory.add(t, SANDBOX_STACK)
+			for id in ItemDB.ITEMS:
+				player.inventory.add(id, SANDBOX_STACK)
+	_notify("SANDBOX: kitted out — every gate open, nothing scarce. Spawn what you want (F2) and play.")
+
+
 ## Bolt a repair station onto the local ship (debug Player tab) so the mender can
 ## be tried without mining the parts. Stamps a REPAIR bundle at the first legal
 ## spot found near existing structure — best-effort, sampling seed cells across
@@ -3233,6 +3266,12 @@ func _consume_in_lava(ship: Ship) -> void:
 ## seam); LifeSupport.tick carries the whole off-cost gate + the possession check.
 func _update_suffocation(delta: float) -> void:
 	if player == null or not is_instance_valid(player) or not player.is_locally_controlled():
+		return
+	# SANDBOX: the deep-air gate is one of the "fluff" gates the sandbox toggle
+	# removes, so you can go anywhere and play the thing without hunting copper for
+	# an Aether Lung first (owner 2026-08-28). The full game keeps the gate.
+	if Tunables.get_bool("sandbox_mode"):
+		_suffocate_cd = 0.0
 		return
 	_suffocate_cd = LifeSupport.tick(player, _player_altitude_frac(), delta, _suffocate_cd)
 
