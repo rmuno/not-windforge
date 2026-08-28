@@ -194,6 +194,22 @@ const _REGISTRY := [
 	{"id": "dormant_heal_per_min", "label": "Far creature mending (pool frac/min)",
 		"group": "World", "kind": KIND_FLOAT, "default": 0.05, "min": 0.0, "max": 1.0,
 		"step": 0.01},  # world._migrate_dormant — a wounded creature mends out of sight
+	# --- Ecology: the deep stirs (Q-C — whales keep the krakens down) --------
+	# Overhunt whales and nothing holds the deep in check; the meter rises per
+	# whale kill and DECAYS slowly (whales breeding back). The decay IS the
+	# sustainable-harvest rate: hunt slower than it recovers and the deep stays
+	# quiet. All new affordances — no origin const to mirror.
+	{"id": "eco_enabled", "label": "Ecology (killing whales lets the krakens rise)",
+		"group": "World", "kind": KIND_BOOL, "default": true},   # world._tick_ecology / _kraken_surge_pool
+	{"id": "eco_kill_rise", "label": "Kraken ascendancy per whale killed (0..1)",
+		"group": "World", "kind": KIND_FLOAT, "default": 0.05, "min": 0.0, "max": 1.0,
+		"step": 0.01},   # world._on_creature_perished — a step up the meter per whale-family death
+	{"id": "eco_recover_per_min", "label": "Deep recovers (ascendancy/min) — the safe harvest rate",
+		"group": "World", "kind": KIND_FLOAT, "default": 0.03, "min": 0.0, "max": 1.0,
+		"step": 0.01},   # world._tick_ecology — slow: whales are long-lived. 0 = overhunting never heals
+	{"id": "eco_kraken_gain", "label": "Kraken den surge at full ascendancy (x pool)",
+		"group": "World", "kind": KIND_FLOAT, "default": 2.0, "min": 0.0, "max": 6.0,
+		"step": 0.25},   # world._kraken_surge_pool — base pool 2 → up to 6 at full
 	{"id": "mine_power", "label": "Mining power (hp/s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 240.0, "min": 10.0, "max": 2000.0, "step": 10.0},  # world.MINE_POWER
 	{"id": "mine_reach_cells", "label": "Mining reach (cells)", "group": "World",

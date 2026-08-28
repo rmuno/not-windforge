@@ -225,6 +225,12 @@ func _build_spawn_tab() -> void:
 	# cannot reach is invisible).
 	_action_button(box, "SET FIRE to the nearest ship (X douses it)",
 		func() -> void: _ignite())
+	# Ecology (Q-C): shove the deep's ascendancy up so the kraken surge is
+	# playtestable without hunting a whole pod first. +0.25 = one band per press.
+	_action_button(box, "STIR THE DEEP (+ecology: krakens surge worldwide)",
+		func() -> void:
+			if world != null and world.has_method("debug_stir_deep"):
+				world.call("debug_stir_deep", 0.25))
 
 
 func _build_player_tab() -> void:
@@ -411,6 +417,16 @@ func _perf_text(window := 0.0) -> String:
 Sites:    %-6d  charted, %d/%d residents out" % [
 			(world.call("discovered_sites") as Array).size(),
 			residents, Tunables.get_int("site_max_residents")]
+		# ECOLOGY (Q-C): how far the deep has risen from overhunting whales, and
+		# what a kraken den fields right now because of it. The band label is the
+		# same one the notices use, so the number and the story agree.
+		var asc := float(world.get("kraken_ascendancy"))
+		var bands := ["quiet", "stirring", "rising", "ASCENDANT"]
+		var lvl: int = world.call("_eco_level_of", asc) if world.has_method("_eco_level_of") else 0
+		var den: int = world.call("_kraken_surge_pool", SpawnSites.Kind.KRAKEN_DEN, 2) \
+			if world.has_method("_kraken_surge_pool") else 2
+		sites += "\nDeep:     %-6s  %d%% ascendant, kraken den fields %d" % [
+			bands[clampi(lvl, 0, 3)], roundi(asc * 100.0), den]
 
 	# Retained rect COMMANDS: every merged region draws a fill and a border,
 	# and the renderer replays both every frame forever. Terrain's regions are

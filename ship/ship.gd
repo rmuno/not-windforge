@@ -39,6 +39,11 @@ signal collision_damage(world_pos: Vector2, amount: float)
 signal combat_damage(world_pos: Vector2, amount: float)
 signal severed(new_ship: Ship)
 signal destroyed
+## A LIVING creature's shared pool has just emptied — the living→carcass edge,
+## fired exactly ONCE (the killing hit). Carries `creature_kind` so a listener
+## can react to WHAT died without inspecting the corpse. The world's ecology
+## meter listens for whale deaths here (combat/ecology → "the deep stirs").
+signal creature_perished(kind: String)
 
 const CELL := 16.0
 
@@ -2707,6 +2712,9 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 		# the one coalesced rebuild in _process there. Only fires on the single
 		# hit that kills the pool — a still-living hit returned above.
 		if shared_health <= 0.0:
+			# The living→carcass edge, once: whoever cares what died (the ecology
+			# meter counts whale kills) hears it here, before the collider swap.
+			creature_perished.emit(creature_kind)
 			if rebuild_now:
 				rebuild()
 			else:
