@@ -207,6 +207,8 @@ const _REGISTRY := [
 	# or pulled back at the helm — see world.edge_marker_range_px.
 	{"id": "edge_markers_enabled", "label": "Edge POI markers (pointing triangles at the screen edge)",
 		"group": "World", "kind": KIND_BOOL, "default": true},    # world.edge_marker_targets
+	{"id": "backdrop_enabled", "label": "Layered background (parallax silhouettes)",
+		"group": "World", "kind": KIND_BOOL, "default": true},    # Backdrop._draw — off = the plain clear colour
 	{"id": "edge_marker_screens", "label": "Edge marker range (screens away)",
 		"group": "World", "kind": KIND_FLOAT, "default": 2.0, "min": 0.0,
 		"max": 8.0, "step": 0.25},   # world.edge_marker_range_px — 0 silences them, like the toggle
