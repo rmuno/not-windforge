@@ -84,6 +84,11 @@ const ENG_OVERLAY_NAMES := ["", "FLIGHT", "SYSTEMS"]
 ## The calm HUD layer (maps/world/hud_layer.gd): reticle + inventory swatches +
 ## the contextual cue bar, drawn in screen space, all fed from this node.
 var _hud_layer: HudLayer
+## The layered parallax background (maps/world/backdrop.gd), on its own
+## CanvasLayer BEHIND the world. Fed by backdrop_status(); pure scenery.
+var _backdrop: Backdrop
+## The sandbox-or-expedition chooser shown once at boot (maps/world/start_chooser.gd).
+var _start_chooser: StartChooser
 ## The edge POI markers (maps/world/edge_markers.gd): a pointing triangle with an
 ## icon in it for every near thing that is currently off-screen. Fed by
 ## edge_marker_targets(); paints nothing when that is empty.
@@ -267,6 +272,15 @@ func _ready() -> void:
 	overlay.world = self
 	add_child(overlay)
 
+	# The layered background, BEHIND the world: its own CanvasLayer at -1 so
+	# every real thing (terrain, ships, the lot) draws over it.
+	var back_layer := CanvasLayer.new()
+	back_layer.layer = -1
+	_backdrop = Backdrop.new()
+	_backdrop.world = self
+	back_layer.add_child(_backdrop)
+	add_child(back_layer)
+
 	camera = Camera2D.new()
 	camera.zoom = Vector2(camera_zoom, camera_zoom)
 	add_child(camera)
@@ -350,6 +364,12 @@ func _ready() -> void:
 	_ghost_label.add_theme_font_size_override("font_size", 13)
 	_ghost_label.visible = false
 	layer.add_child(_ghost_label)
+
+	# The start chooser: expedition or sandbox, shown once at boot (owner
+	# 2026-08-29). Hidden in headless runs and online sessions; see the class.
+	_start_chooser = StartChooser.new()
+	_start_chooser.world = self
+	layer.add_child(_start_chooser)
 
 	# Small, gray corner status, bottom-right: build + FPS, and the one always-on
 	# trace of what moved to a toggle ("F1 help   Tab map").
@@ -757,6 +777,23 @@ func edge_marker_targets() -> Array:
 		(m as Dictionary)["near"] = clampf(
 			1.0 - float((m as Dictionary)["dist"]) / reach, 0.0, 1.0)
 	return out
+
+
+## What the Backdrop needs this frame, or null before the world is framed:
+## the camera position (the parallax input), the CAMERA's altitude fraction
+## (the palette input — the backdrop should read as where the VIEW is, which is
+## the player's altitude in practice), the world seed (the motif input) and the
+## map-grid cell size (the owner's "changes based on CELL in the map's grid").
+func backdrop_status() -> Variant:
+	if _world_rect.size.y <= 0.0 or camera == null or not is_instance_valid(camera):
+		return null
+	var alt := clampf((_world_rect.end.y - camera.global_position.y)
+		/ _world_rect.size.y, 0.0, 1.0)
+	var map_px := 512.0 * maxf(float(world_scale), 1.0)
+	if _discovery != null:
+		map_px = _discovery.cell_px
+	return {"cam": camera.global_position, "alt": alt, "seed": world_seed,
+		"map_cell_px": map_px}
 
 
 # --- Save / load (save/save_game.gd) ---------------------------------------
@@ -3135,7 +3172,8 @@ func ride_mine_pulse() -> int:
 		creature.to_global(creature.solid_bounds.get_center()),
 		creature.solid_bounds.size * 0.5, dir, terrain.cell_px(),
 		Tunables.get_int("whale_mine_reach") * terrain.subdiv,
-		Tunables.get_int("whale_mine_breadth") * terrain.subdiv)
+		Tunables.get_int("whale_mine_breadth") * terrain.subdiv,
+		creature.rotation)
 	var dug := 0
 	for cell in cells:
 		if terrain.is_solid(cell):

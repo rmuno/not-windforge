@@ -52,6 +52,7 @@ func _initialize() -> void:
 	await _test_living_creature_gets_a_coarse_collider()
 	_test_creature_hit_flash()
 	_test_edge_marker_placement()
+	_test_backdrop_generation()
 	await _test_sealed_pockets_cut_a_holed_body()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
 	await _test_creature_skin_faces_its_motion()
@@ -1567,6 +1568,84 @@ func _test_edge_marker_placement() -> void:
 	for k in ["whale", "kraken", "basilisk", "critter", "enemy", "ship", "dock",
 			"site", "boss"]:
 		_check(EdgeMarkers.KINDS.has(k), "the '%s' marker kind is declared" % k)
+
+
+## THE LAYERED BACKDROP — the generative half (owner 2026-08-29). All static
+## pure functions, so what a renderer would show is pinned here: the same seed
+## always wears the same sky, the map grid really changes the scenery, the sky
+## breathes (open cells exist), and the palette speaks the band language.
+func _test_backdrop_generation() -> void:
+	_t("the backdrop is deterministic, regional, sparse, and band-coloured")
+	var seed_v := 20260829
+
+	# Determinism: the same (seed, cell) is the same motif and features, always.
+	var mc := Vector2i(3, -2)
+	_check(Backdrop.cell_motif(seed_v, mc) == Backdrop.cell_motif(seed_v, mc),
+		"a map cell's motif is stable")
+	var f1 := Backdrop.cell_features(seed_v, 1, Vector2i(7, 4), 460.0, 0.28, 4096.0)
+	var f2 := Backdrop.cell_features(seed_v, 1, Vector2i(7, 4), 460.0, 0.28, 4096.0)
+	_check(str(f1) == str(f2), "a lattice cell's features are stable")
+
+	# Regional variety: across a spread of map cells, more than one motif shows
+	# up AND the open sky appears (a backdrop with something everywhere is
+	# wallpaper, not distance).
+	var motifs := {}
+	for y in range(-6, 7):
+		for x in range(-6, 7):
+			motifs[Backdrop.cell_motif(seed_v, Vector2i(x, y))] = true
+	_check(motifs.size() >= 3, "the map grid rolls real variety (%d motifs)" % motifs.size())
+	_check(motifs.has("open"), "...including open sky")
+	for m in motifs:
+		_check(Backdrop.MOTIFS.has(m), "'%s' is a declared motif" % m)
+
+	# An open map cell yields NO features, and features only carry drawable
+	# kinds with sane geometry.
+	var found_open := false
+	var found_feature := false
+	for y in range(-6, 7):
+		for x in range(-6, 7):
+			var cell := Vector2i(x, y)
+			var feats := Backdrop.cell_features(seed_v, 0, cell, 340.0, 0.12, 4096.0)
+			# Which map cell does this lattice cell project into?
+			var vworld := (Vector2(cell) + Vector2(0.5, 0.5)) * 340.0 / 0.12
+			var proj := Vector2i(floori(vworld.x / 4096.0), floori(vworld.y / 4096.0))
+			if Backdrop.cell_motif(seed_v, proj) == "open":
+				found_open = true
+				_check(feats.is_empty(), "an open region draws nothing")
+			for f in feats:
+				found_feature = true
+				var fd := f as Dictionary
+				_check(String(fd["kind"]) in ["crags", "clouds", "spires"],
+					"feature kind '%s' is drawable" % fd["kind"])
+				var off := fd["off"] as Vector2
+				_check(off.x >= 0.0 and off.x <= 1.0 and off.y >= 0.0 and off.y <= 1.0,
+					"a feature sits inside its own cell")
+	_check(found_open and found_feature,
+		"the sampled sky holds both scenery and open air")
+
+	# The palette: three bands, three distinct skies, blended across the gaps.
+	var deep := Backdrop.band_palette(0.2)
+	var mid := Backdrop.band_palette(0.5)
+	var top := Backdrop.band_palette(0.9)
+	_check(deep[0] != mid[0] and mid[0] != top[0] and deep[0] != top[0],
+		"each band wears its own sky")
+	# The gap between deep and mid blends: its sky sits between the two anchors.
+	var gap := Backdrop.band_palette(
+		(Airspace.DEEP_TOP + Airspace.GAP_LOW_TOP) * 0.5)
+	var d0 := deep[0] as Color
+	var m0 := mid[0] as Color
+	var g0 := gap[0] as Color
+	var between := (g0.r - d0.r) * (g0.r - m0.r) <= 0.0001 \
+		and (g0.g - d0.g) * (g0.g - m0.g) <= 0.0001 \
+		and (g0.b - d0.b) * (g0.b - m0.b) <= 0.0001
+	_check(between, "a gap's sky is a blend of its neighbours, not a fourth colour")
+	# Continuity at the seam: entering the gap does not snap the sky.
+	var seam_lo := Backdrop.band_palette(Airspace.DEEP_TOP - 0.001)
+	var seam_hi := Backdrop.band_palette(Airspace.DEEP_TOP + 0.001)
+	var d_col := (seam_lo[0] as Color)
+	var h_col := (seam_hi[0] as Color)
+	_check(absf(d_col.r - h_col.r) + absf(d_col.g - h_col.g) + absf(d_col.b - h_col.b) < 0.02,
+		"the sky is continuous across a band seam")
 
 
 func _test_living_creature_gets_a_coarse_collider() -> void:
@@ -3186,6 +3265,44 @@ func _test_ride_mine_front_cells_lead_the_travel() -> void:
 	# No travel, no mining front.
 	_check(RideMining.front_cells(center, half, Vector2.ZERO, cpx, 2, 1).is_empty(),
 		"a still creature has no mining front")
+
+	# --- THE ROTATED FRONT (owner 2026-08-29: "nowhere near the actual whale").
+	# The pose tilt is a real node rotation; the front must project the ROTATED
+	# body, not the axis-aligned one the first cut assumed.
+	var rot := 0.5   # ~29°, just under Ship.POSE_MAX
+	# rot=0 is byte-identical to the old arithmetic (parity — the default arg).
+	var plain := RideMining.front_cells(center, half, Vector2(1.0, 0.0), cpx, 1, 0)
+	var zeroed := RideMining.front_cells(center, half, Vector2(1.0, 0.0), cpx, 1, 0, 0.0)
+	_check(plain == zeroed, "rot 0 reproduces the unrotated front exactly")
+
+	# Pitched and driving +x: both extents move to the ROTATED support function —
+	# the leading corner swings out along the travel axis (cos·hx + sin·hy) and
+	# the perpendicular profile grows (the tilted silhouette is taller). Check
+	# both against the support function directly.
+	var tilted := RideMining.front_cells(center, half, Vector2(1.0, 0.0), cpx, 1, 0, rot)
+	var want_along := absf(cos(rot)) * half.x + absf(sin(rot)) * half.y
+	var want_perp := absf(sin(rot)) * half.x + absf(cos(rot)) * half.y
+	var min_x := 1 << 30
+	var t_ys := {}
+	for c in tilted:
+		min_x = mini(min_x, c.x)
+		t_ys[c.y] = true
+	_check(min_x == floori((center.x + want_along + cpx * 0.5) / cpx),
+		"the tilted front sits at the ROTATED leading edge (col %d)" % min_x)
+	var want_rows := 2 * int(ceil(want_perp / cpx)) + 1
+	_check(t_ys.size() == want_rows,
+		"the tilted swath spans the ROTATED profile (%d rows, want %d)"
+			% [t_ys.size(), want_rows])
+	# The rotated profile of this long body is TALLER than the flat one — the
+	# regression the owner felt: the old swath missed the tilted nose entirely.
+	_check(t_ys.size() > ys.size(),
+		"a pitched long body digs a taller tunnel than a level one (%d > %d)"
+			% [t_ys.size(), ys.size()])
+	# The tilt's vertical throw is symmetric: a nose pitched DOWN by the same
+	# angle mirrors the same swath (support extents are even in rot).
+	var tilted_down := RideMining.front_cells(center, half, Vector2(1.0, 0.0), cpx, 1, 0, -rot)
+	_check(tilted_down.size() == tilted.size(),
+		"pitch up and pitch down carve the same-size front")
 
 
 ## The taming Wisdom bar SCALES with the creature tier (small→whale progression,

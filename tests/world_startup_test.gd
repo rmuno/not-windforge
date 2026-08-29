@@ -315,6 +315,7 @@ func _initialize() -> void:
 	await _check_lava_core(world, fleet)
 	await _check_sandbox(world, fleet)
 	await _check_edge_markers(world, fleet)
+	await _check_backdrop_and_chooser(world, fleet)
 
 	await _check_hosting_after_offline_play(world, fleet)
 
@@ -2368,6 +2369,80 @@ func _check_edge_markers(world: Node, fleet) -> void:
 	_ok(one > 0.0 and is_finite(one), "the marker range is a real distance (%.0f px)" % one)
 	_ok(absf(two - one * 2.0) < 1.0,
 		"and it scales with the screens lever (%.0f -> %.0f)" % [one, two])
+	await process_frame
+
+
+## THE LAYERED BACKDROP + THE START CHOOSER against the live world (owner
+## 2026-08-29). The generative half is pinned pure in the unit suite; here:
+## the world actually FEEDS the backdrop, and the boot chooser drives the real
+## sandbox toggle through real key events.
+func _check_backdrop_and_chooser(world: Node, fleet) -> void:
+	# --- Backdrop: the world's side of the contract --------------------------
+	var st: Variant = world.call("backdrop_status")
+	_ok(st != null, "the world feeds the backdrop")
+	if st != null:
+		var d := st as Dictionary
+		var shaped := true
+		for key in ["cam", "alt", "seed", "map_cell_px"]:
+			shaped = shaped and d.has(key)
+		_ok(shaped, "backdrop_status carries cam / alt / seed / map_cell_px")
+		var alt := float(d.get("alt", -1.0))
+		_ok(alt >= 0.0 and alt <= 1.0, "the altitude fraction is normalised (%.2f)" % alt)
+		_ok(float(d.get("map_cell_px", 0.0)) > 0.0,
+			"the map-cell size is a real distance (%.0f px)" % float(d["map_cell_px"]))
+	var back = world.get("_backdrop")
+	_ok(back != null and is_instance_valid(back) and back.is_inside_tree(),
+		"the backdrop layer is in the tree")
+	if back != null and is_instance_valid(back):
+		var cl = back.get_parent()
+		_ok(cl is CanvasLayer and (cl as CanvasLayer).layer < 0,
+			"...on a CanvasLayer BEHIND the world (layer %d)"
+				% ((cl as CanvasLayer).layer if cl is CanvasLayer else 0))
+
+	# --- The start chooser ---------------------------------------------------
+	var chooser = world.get("_start_chooser")
+	_ok(chooser != null and is_instance_valid(chooser), "the start chooser exists")
+	if chooser == null or not is_instance_valid(chooser):
+		return
+	_ok(not chooser.visible,
+		"it does not show in a headless boot (the suite would eat its keys)")
+	Tunables.reset_all()
+	var pl = world.get("player")
+
+	# EXPEDITION: open, press 1 — the panel closes and NOTHING changed.
+	chooser.open()
+	_ok(chooser.visible, "open() shows the panel")
+	var key1 := InputEventKey.new()
+	key1.keycode = KEY_1
+	key1.pressed = true
+	chooser._input(key1)
+	_ok(not chooser.visible, "[1] dismisses it")
+	_ok(not Tunables.get_bool("sandbox_mode"),
+		"...and expedition leaves the full game untouched")
+
+	# SANDBOX: open, press 2 — the panel closes and the v0.85.0 loadout landed.
+	chooser.open()
+	var key2 := InputEventKey.new()
+	key2.keycode = KEY_2
+	key2.pressed = true
+	chooser._input(key2)
+	_ok(not chooser.visible, "[2] dismisses it too")
+	_ok(Tunables.get_bool("sandbox_mode"),
+		"...and turns sandbox mode ON (the same toggle F2 drives)")
+	_ok(pl == null or pl.wallet == null or pl.wallet.balance >= 5000,
+		"...with the kit-me-out loadout applied")
+
+	# Leave the world as we found it (the sandbox check's own idiom).
+	Tunables.reset_all()
+	if pl != null and is_instance_valid(pl):
+		if pl.inventory != null:
+			pl.inventory.clear()
+		if pl.wallet != null:
+			pl.wallet.balance = 0
+		for stat in StatDB.names():
+			pl.stats.set_level(stat, 0)
+		pl.max_health = pl.stats.max_health()
+		pl.health = pl.max_health
 	await process_frame
 
 
