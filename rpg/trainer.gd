@@ -32,13 +32,35 @@ func teaches(stat: int) -> bool:
 	return trains.is_empty() or trains.has(stat)
 
 
+## The player's body, for the NPC to match. Player.SIZE is a `var` (scale_body
+## multiplies it), so it cannot be read as a constant here — this is the same
+## 10×18 the player's collider is built from, and the two are meant to agree.
+const BODY := Vector2(10.0, 18.0)
+
+
 func _draw() -> void:
-	# Placeholder art (like every _draw here until the art pass): a small post
-	# with a banner, so the station reads as a place, not a stray block. Scale is
-	# baked into `reach` upstream; draw relative to it so the mark tracks size.
+	# Placeholder art (like every _draw here until the art pass). It used to be a
+	# POST WITH A BANNER, which read as signage rather than as somebody standing
+	# there — the owner's 2026-08-29 note. It is now a PERSON in the player's own
+	# idiom: the same little rectangle body, at the same size, plus a head, so an
+	# NPC reads as the same kind of thing you are. A different palette (slate coat
+	# against the player's khaki) keeps the two apart at a glance, and the small
+	# ledger under the arm is what says this particular person TRADES.
+	#
+	# Scale is baked into `reach` upstream; draw relative to it so the figure
+	# tracks the world scale like every other reach in the game.
 	var s := reach / 48.0
-	var post := Rect2(-3.0 * s, -22.0 * s, 6.0 * s, 30.0 * s)
-	draw_rect(post, Color(0.42, 0.34, 0.24))
-	var banner := Rect2(3.0 * s, -22.0 * s, 20.0 * s, 12.0 * s)
-	draw_rect(banner, Color(0.30, 0.55, 0.72))
-	draw_rect(banner, Color(0.12, 0.20, 0.28), false, 1.0)
+	var coat := Color(0.38, 0.52, 0.66)
+	var body := Rect2(-BODY.x * 0.5 * s, -BODY.y * 0.5 * s, BODY.x * s, BODY.y * s)
+	draw_rect(body, coat)
+	draw_rect(body, coat.darkened(0.45), false, maxf(1.0, s))
+	# Head: a plain circle above the shoulders — one shape, and the figure stops
+	# being a crate.
+	var head := Vector2(0.0, -(BODY.y * 0.5 + 3.6) * s)
+	draw_circle(head, 3.6 * s, Color(0.86, 0.74, 0.60))
+	draw_arc(head, 3.6 * s, 0.0, TAU, 14, Color(0.42, 0.32, 0.24), maxf(1.0, s))
+	# The ledger: the trade sign, kept from the old banner's blue so the station
+	# is still findable as a shop rather than as scenery with a face.
+	var ledger := Rect2((BODY.x * 0.5 - 1.0) * s, -3.0 * s, 7.0 * s, 9.0 * s)
+	draw_rect(ledger, Color(0.30, 0.55, 0.72))
+	draw_rect(ledger, Color(0.12, 0.20, 0.28), false, maxf(1.0, s))

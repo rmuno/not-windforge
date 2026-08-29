@@ -201,6 +201,15 @@ const _REGISTRY := [
 	# the loadout; the full crafting game is untouched when it is off.
 	{"id": "sandbox_mode", "label": "Sandbox (no deep-air suffocation; the kit-me-out button)",
 		"group": "World", "kind": KIND_BOOL, "default": false},   # world._update_suffocation / debug_sandbox_loadout
+	# --- Edge POI markers (owner 2026-08-29) --------------------------------
+	# The pointing triangles at the screen edge. `screens` is measured against
+	# the LIVE camera, so "two screens" stays two screens whether you are on foot
+	# or pulled back at the helm — see world.edge_marker_range_px.
+	{"id": "edge_markers_enabled", "label": "Edge POI markers (pointing triangles at the screen edge)",
+		"group": "World", "kind": KIND_BOOL, "default": true},    # world.edge_marker_targets
+	{"id": "edge_marker_screens", "label": "Edge marker range (screens away)",
+		"group": "World", "kind": KIND_FLOAT, "default": 2.0, "min": 0.0,
+		"max": 8.0, "step": 0.25},   # world.edge_marker_range_px — 0 silences them, like the toggle
 	# --- Ecology: the deep stirs (Q-C — whales keep the krakens down) --------
 	# Overhunt whales and nothing holds the deep in check; the meter rises per
 	# whale kill and DECAYS slowly (whales breeding back). The decay IS the

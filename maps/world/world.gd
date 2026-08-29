@@ -84,6 +84,10 @@ const ENG_OVERLAY_NAMES := ["", "FLIGHT", "SYSTEMS"]
 ## The calm HUD layer (maps/world/hud_layer.gd): reticle + inventory swatches +
 ## the contextual cue bar, drawn in screen space, all fed from this node.
 var _hud_layer: HudLayer
+## The edge POI markers (maps/world/edge_markers.gd): a pointing triangle with an
+## icon in it for every near thing that is currently off-screen. Fed by
+## edge_marker_targets(); paints nothing when that is empty.
+var _edge_markers: EdgeMarkers
 ## The deep-band ember haze (maps/world/deep_fog.gd): a screen-space wash that
 ## thickens as you descend. Under the HUD, over the world; driven by fog_density().
 var _deep_fog: DeepFog
@@ -307,6 +311,13 @@ func _ready() -> void:
 	_hud_layer.world = self
 	layer.add_child(_hud_layer)
 
+	# Edge POI markers: a pointing triangle + an icon for each near thing that is
+	# off-screen. Above the calm HUD (it is the same glass) and below the map,
+	# which is a mode that covers everything.
+	_edge_markers = EdgeMarkers.new()
+	_edge_markers.world = self
+	layer.add_child(_edge_markers)
+
 	# The toggled world map, hidden until Tab.
 	_map_view = MapView.new()
 	_map_view.world = self
@@ -460,6 +471,9 @@ func _build_help_panel() -> PanelContainer:
 		"Z mine / harvest (hold)    X repair AND smother fire (hold, sweep)",
 		"M craft    N next recipe    Shift+M craft all — the deep's air needs an Aether Lung",
 		"K character sheet (at a trainer: 1-4 train, 0 sell salvage)    Tab map",
+		"EDGE MARKERS: a triangle at the screen edge points at each near thing that is",
+		"  off-screen — whale, squid, flame (basilisk), fish (critter), ! (enemy),",
+		"  blimp (your ship, green), anchor (the dock master), diamond (a place), crown (the boss).",
 		"F engineering overlay — cycles FLIGHT (mass · lift · thrust) / SYSTEMS (power)",
 		"T respawn    R reset world    Esc quit    wheel zoom",
 		"%s save    %s saves panel (Up/Down, Enter)    H host    J join" % [k_save, k_saves],
@@ -572,6 +586,176 @@ func engineering_overlay() -> Variant:
 		(out["ships"] as Array).append(d)
 	if (out["ships"] as Array).is_empty():
 		return null
+	return out
+
+
+# --- Edge POI markers (maps/world/edge_markers.gd) --------------------------
+#
+# "Something is over there": a triangle at the screen edge, pointing at a thing
+# that is a screen or two away, with an icon saying WHAT it is (owner
+# 2026-08-29). The world DECIDES — which things are near enough, what kind each
+# is, what colour it wears — and EdgeMarkers only paints, the same split
+# HudLayer and WorldOverlay use.
+#
+# Why it is not the map: Tab answers "where is everything in the world", which
+# is a slower question asked in a mode that costs you the controls. This answers
+# "what is just off my screen right now", continuously, for free.
+
+## Most markers on screen at once. Past a handful the edge becomes a fence and
+## stops being information (the clean-UI standing order). Nearest win.
+const EDGE_MARKER_MAX := 10
+
+## Fallback marker range (px at world_scale 1) for a viewport too degenerate to
+## measure — headless, or the first frame before the camera has a size.
+const EDGE_MARKER_FALLBACK := 840.0
+
+
+## How far a thing may be and still earn a marker, in world px. Derived from the
+## LIVE camera rather than a constant, because the owner asked for "about a
+## screen or two away" and a screen is a zoom-dependent quantity: pulling back at
+## the helm should widen what you are told about, exactly as it widens what you
+## can see. `edge_marker_screens` (F2) is that multiplier.
+func edge_marker_range_px() -> float:
+	var screens: float = Tunables.get_num("edge_marker_screens")
+	var span := EDGE_MARKER_FALLBACK * maxf(float(world_scale), 1.0)
+	if camera != null and is_instance_valid(camera):
+		var vp := get_viewport()
+		if vp != null:
+			var vs := vp.get_visible_rect().size
+			if vs.length() > 1.0:
+				span = vs.length() / maxf(camera.zoom.x, 0.0001)
+	return span * maxf(screens, 0.0)
+
+
+## The body the player is ON — piloted, ridden, or the hull they are claiming.
+## It is never a marker: an arrow pointing at the deck under your feet is the
+## purest possible clutter.
+func _edge_marker_carrier() -> Ship:
+	if player == null or not is_instance_valid(player):
+		return null
+	if player.is_piloting():
+		return player.piloting
+	if player.is_riding():
+		return player.riding
+	return null
+
+
+## What kind of marker a body earns, or "" for a body that earns none.
+## Creature FIRST, so a tamed whale is still read as a whale (it just wears the
+## ally teal) rather than getting filed as one of your vessels.
+func _edge_marker_kind(ship: Ship) -> String:
+	if ship.is_nest:
+		return ""        # its SITE already marks the place; two marks, one thing
+	if ship.is_carcass():
+		return ""        # a kill is a place you have already been (a seam, below)
+	match ship.creature_kind:
+		"whale_city":
+			return "boss"
+		"whale":
+			return "whale"
+		"kraken":
+			return "kraken"
+		"basilisk":
+			return "basilisk"
+		"critter":
+			return "critter"
+	if ship.faction == 1:
+		return "enemy"
+	if ship.faction == 2:
+		return "critter"  # untagged wildlife — a body, not a threat
+	return "ship"         # a hull on your side
+
+
+## The marker's colour, in the SAME friend/foe language the map blips and the
+## body casts speak (MapView.blip_color / Ship.attitude_cast). A tamed creature
+## takes the ally teal it already wears everywhere else.
+static func edge_marker_color(ship: Ship, kind: String) -> Color:
+	if ship != null and ship.is_tamed_ally():
+		return Ship.CAST_ALLY
+	match kind:
+		"ship":
+			return Color(0.40, 0.95, 0.55)   # YOUR ship — green, as the Source had it
+		"enemy":
+			return Color(0.95, 0.40, 0.35)
+		"boss":
+			return Color(0.98, 0.80, 0.35)
+		"basilisk":
+			return Color(0.95, 0.62, 0.30)
+		"kraken":
+			return Color(0.70, 0.50, 0.85)
+		"whale":
+			return Color(0.60, 0.78, 0.95)
+		"critter":
+			return Color(0.60, 0.85, 0.55)
+	return Color(0.85, 0.88, 0.95)
+
+
+## Everything worth an edge marker right now, nearest first, capped. Each entry:
+## {pos (world px), kind (one of EdgeMarkers.KINDS), color, dist, near}.
+## `near` is 1 right beside you and 0 at the range limit — the layer fades on it,
+## so distance is read without a number on the glass.
+func edge_marker_targets() -> Array:
+	var out: Array = []
+	if Tunables.get_num("edge_markers_enabled") == 0.0:
+		return out
+	var focus: Vector2
+	if player != null and is_instance_valid(player):
+		focus = player.global_position
+	elif is_instance_valid(local_ship):
+		focus = local_ship.global_position
+	else:
+		return out
+
+	var reach := edge_marker_range_px()
+	if reach <= 0.0:
+		return out
+	var range2 := reach * reach
+	var carrier := _edge_marker_carrier()
+
+	if fleet != null:
+		for ship in fleet.ships():
+			if not is_instance_valid(ship) or ship == carrier:
+				continue
+			if ship.solid_bounds.size == Vector2.ZERO:
+				continue
+			var at := ship.to_global(ship.solid_bounds.get_center())
+			var d2 := focus.distance_squared_to(at)
+			if d2 > range2:
+				continue
+			var kind := _edge_marker_kind(ship)
+			if kind == "":
+				continue
+			out.append({"pos": at, "kind": kind, "dist": sqrt(d2),
+				"color": edge_marker_color(ship, kind)})
+
+	# The DOCK MASTER. The source pointed an anchor at the port NPC; the nearest
+	# thing this world has to a port is the trainer station, so that is what the
+	# anchor points at until towns exist (Phase 6) and it can point at a real one.
+	if _trainer != null and is_instance_valid(_trainer):
+		var td2 := focus.distance_squared_to(_trainer.global_position)
+		if td2 <= range2:
+			out.append({"pos": _trainer.global_position, "kind": "dock",
+				"dist": sqrt(td2), "color": Color(0.95, 0.86, 0.45)})
+
+	# PLACES you have found. A place you BROKE gets no arrow — the map keeps that
+	# record; the edge is for things that still want your attention.
+	for site in discovered_sites():
+		if bool(site.get("cleared", false)):
+			continue
+		var sp := site["pos"] as Vector2
+		var sd2 := focus.distance_squared_to(sp)
+		if sd2 > range2:
+			continue
+		out.append({"pos": sp, "kind": "site", "dist": sqrt(sd2),
+			"color": SpawnSites.kind_color(site["kind"])})
+
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a["dist"]) < float(b["dist"]))
+	if out.size() > EDGE_MARKER_MAX:
+		out.resize(EDGE_MARKER_MAX)
+	for m in out:
+		(m as Dictionary)["near"] = clampf(
+			1.0 - float((m as Dictionary)["dist"]) / reach, 0.0, 1.0)
 	return out
 
 

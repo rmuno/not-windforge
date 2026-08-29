@@ -314,6 +314,7 @@ func _initialize() -> void:
 	await _check_loft_ship(world, fleet)
 	await _check_lava_core(world, fleet)
 	await _check_sandbox(world, fleet)
+	await _check_edge_markers(world, fleet)
 
 	await _check_hosting_after_offline_play(world, fleet)
 
@@ -2258,6 +2259,115 @@ func _check_sandbox(world: Node, fleet) -> void:
 	pl.max_health = pl.stats.max_health()
 	pl.health = pl.max_health
 	pl.global_position = home
+	await process_frame
+
+
+## EDGE POI MARKERS against the LIVE world (owner 2026-08-29). The geometry is
+## pinned as a pure function in the unit suite; what only the real world can say
+## is whether the SELECTION is right — that the things near you are named, named
+## with a kind the layer can actually draw, that the deck under your feet is not
+## one of them, and that the range and the toggle really govern it.
+func _check_edge_markers(world: Node, fleet) -> void:
+	var pl = world.get("player")
+	if pl == null or not is_instance_valid(pl):
+		_ok(false, "there is a player to centre the markers on")
+		return
+	if pl.is_piloting():
+		pl.disembark()
+	Tunables.reset_all()
+	await process_frame
+
+	var targets: Array = world.call("edge_marker_targets")
+	_ok(not targets.is_empty(),
+		"the spawn neighbourhood puts things on the edge (%d markers)" % targets.size())
+
+	# Every kind produced must have an icon. This is the contract that stops a
+	# new POI shipping as a blank triangle.
+	var unknown := ""
+	var shaped := true
+	for m in targets:
+		var d := m as Dictionary
+		if not EdgeMarkers.KINDS.has(String(d.get("kind", ""))):
+			unknown = String(d.get("kind", ""))
+		for key in ["pos", "kind", "color", "dist", "near"]:
+			if not d.has(key):
+				shaped = false
+	_ok(unknown == "", "every marker kind is one the layer can draw (bad: '%s')" % unknown)
+	_ok(shaped, "every marker carries pos / kind / colour / distance / nearness")
+
+	# Nearest first, capped — the edge is information, not a fence.
+	var ordered := true
+	for i in range(1, targets.size()):
+		if float((targets[i] as Dictionary)["dist"]) < float((targets[i - 1] as Dictionary)["dist"]):
+			ordered = false
+	_ok(ordered, "markers come back nearest-first")
+	_ok(targets.size() <= world.EDGE_MARKER_MAX,
+		"and never more than %d at once" % world.EDGE_MARKER_MAX)
+
+	# `near` is the distance cue the layer fades on: 1 beside you, 0 at the limit.
+	var near_ok := true
+	for m in targets:
+		var n := float((m as Dictionary)["near"])
+		if n < 0.0 or n > 1.0:
+			near_ok = false
+	_ok(near_ok, "nearness is normalised into [0, 1]")
+
+	# YOUR OWN SHIP earns a green blimp — the marker the owner asked for by name,
+	# and the one that gets you home after you jump off.
+	var local = world.get("local_ship")
+	var found_ship := false
+	for m in targets:
+		if String((m as Dictionary)["kind"]) == "ship":
+			found_ship = true
+	_ok(local == null or found_ship, "your own ship is one of the markers")
+
+	# ...and the moment you are AT THE HELM it stops being one: an arrow pointing
+	# at the deck under your feet is the purest clutter there is.
+	var helm: Array = pl.find_helm(fleet.ships(), pl.global_position)
+	if not helm.is_empty() and pl.board(helm[0], helm[1]):
+		var piloting: Array = world.call("edge_marker_targets")
+		var self_marked := false
+		for m in piloting:
+			if (m as Dictionary)["pos"] == local.to_global(local.solid_bounds.get_center()):
+				self_marked = true
+		_ok(not self_marked, "the ship you are FLYING gets no marker of its own")
+		pl.disembark()
+		await process_frame
+	else:
+		_ok(true, "(no helm in reach — the carrier half skipped)")
+
+	# The DOCK MASTER: the trainer beside spawn wears the anchor.
+	var trainer = world.get("_trainer")
+	if trainer != null and is_instance_valid(trainer):
+		var anchored := false
+		for m in world.call("edge_marker_targets"):
+			if String((m as Dictionary)["kind"]) == "dock":
+				anchored = true
+		_ok(anchored, "the dock master (the trainer station) wears the anchor")
+
+	# RANGE really governs: squeeze it to nothing and the sky goes quiet; the
+	# toggle does the same thing by a different door.
+	Tunables.set_value("edge_marker_screens", 0.0)
+	_ok((world.call("edge_marker_targets") as Array).is_empty(),
+		"zero screens of range silences every marker")
+	Tunables.set_value("edge_marker_screens", 2.0)
+	_ok(not (world.call("edge_marker_targets") as Array).is_empty(),
+		"...and restoring the range brings them back")
+	Tunables.set_value("edge_markers_enabled", false)
+	_ok((world.call("edge_marker_targets") as Array).is_empty(),
+		"the F2 toggle turns the whole layer off")
+	Tunables.reset_all()
+
+	# The range is measured against the LIVE camera, so it is a real "screens"
+	# quantity rather than a constant — it must be a positive, finite number of
+	# world px, and doubling the screens must double it.
+	var one: float = world.call("edge_marker_range_px")
+	Tunables.set_value("edge_marker_screens", 4.0)
+	var two: float = world.call("edge_marker_range_px")
+	Tunables.reset_all()
+	_ok(one > 0.0 and is_finite(one), "the marker range is a real distance (%.0f px)" % one)
+	_ok(absf(two - one * 2.0) < 1.0,
+		"and it scales with the screens lever (%.0f -> %.0f)" % [one, two])
 	await process_frame
 
 
