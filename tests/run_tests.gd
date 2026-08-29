@@ -51,6 +51,7 @@ func _initialize() -> void:
 	await _test_shots_snap_to_the_nearest_block_on_a_creature()
 	await _test_living_creature_gets_a_coarse_collider()
 	_test_creature_hit_flash()
+	_test_edge_marker_placement()
 	await _test_sealed_pockets_cut_a_holed_body()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
 	await _test_creature_skin_faces_its_motion()
@@ -1511,6 +1512,61 @@ func _test_creature_hit_flash() -> void:
 	_check(vessel._hit_flash == 0.0, "a vessel does not flash (no living pool)")
 	_check(vessel._creature_tint().is_equal_approx(Color.WHITE),
 		"and a vessel's creature-tint stays identity white")
+
+
+## EDGE POI MARKERS — the screen geometry (owner 2026-08-29). The clamp is a
+## static pure function precisely so it can be asserted here rather than eyeballed
+## through a draw call. Pins: something you can already see gets NO marker; every
+## direction lands on the inset edge, never in the corner; the bearing survives
+## the clamp; and a degenerate viewport cannot divide by zero.
+func _test_edge_marker_placement() -> void:
+	_t("edge markers clamp to the screen edge in the true bearing")
+	var view := Vector2(1000.0, 600.0)
+	var margin := 30.0
+	var centre := view * 0.5
+
+	# On screen == no marker. An arrow pointing at something you are looking at
+	# is the purest clutter there is.
+	var mid := EdgeMarkers.place(centre + Vector2(80.0, 40.0), view, margin)
+	_check(bool(mid["on_screen"]), "a target in the middle of the frame needs no marker")
+	_check(bool(EdgeMarkers.place(centre, view, margin)["on_screen"]),
+		"and neither does one dead centre (no zero-length bearing crash)")
+
+	# Off screen in four directions: each lands ON the inset rectangle, and the
+	# marker never wanders outside the frame.
+	var half := Vector2(view.x * 0.5 - margin, view.y * 0.5 - margin)
+	for dir in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1),
+			Vector2(3, 1).normalized(), Vector2(-1, -4).normalized()]:
+		var far: Vector2 = centre + (dir as Vector2) * 9000.0
+		var spot := EdgeMarkers.place(far, view, margin)
+		_check(not bool(spot["on_screen"]),
+			"a target 9000 px %s is off-screen" % str(dir))
+		var p := spot["pos"] as Vector2
+		var off := p - centre
+		# On the boundary: one axis is saturated, neither is exceeded.
+		_check(absf(off.x) <= half.x + 0.01 and absf(off.y) <= half.y + 0.01,
+			"the marker stays inside the inset frame (%.1f, %.1f)" % [off.x, off.y])
+		_check(absf(absf(off.x) - half.x) < 0.01 or absf(absf(off.y) - half.y) < 0.01,
+			"...and sits ON the edge, not floating inside it")
+		# The bearing survives the clamp — the triangle must point at the thing.
+		_check((spot["dir"] as Vector2).distance_to(dir as Vector2) < 0.001,
+			"the marker's direction is the true bearing to the target")
+		_check(off.normalized().distance_to(dir as Vector2) < 0.001,
+			"and the anchor lies on the ray from the screen centre to it")
+
+	# A viewport smaller than its own margin must not produce a negative or
+	# NaN half-extent (the first frame, and headless, both hit this).
+	var tiny := EdgeMarkers.place(Vector2(500.0, 500.0), Vector2(10.0, 10.0), 30.0)
+	var tp := tiny["pos"] as Vector2
+	_check(is_finite(tp.x) and is_finite(tp.y),
+		"a viewport smaller than the margin still yields a finite anchor")
+
+	# Every icon the world can ask for exists. KINDS is the contract; the live
+	# world's kinds are checked against it in the startup suite.
+	_check(EdgeMarkers.KINDS.size() == 9, "nine marker kinds are defined")
+	for k in ["whale", "kraken", "basilisk", "critter", "enemy", "ship", "dock",
+			"site", "boss"]:
+		_check(EdgeMarkers.KINDS.has(k), "the '%s' marker kind is declared" % k)
 
 
 func _test_living_creature_gets_a_coarse_collider() -> void:
