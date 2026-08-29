@@ -32,9 +32,19 @@ extends Control
 var world: Node2D
 
 ## Parallax factor per depth layer, far to near. A factor is how much of the
-## camera's motion the layer rides: small = far away. Never 1.0 — at 1.0 it
-## would be world geometry and belongs in the world.
-const LAYERS := [0.12, 0.28, 0.5]
+## WORLD'S APPARENT motion the layer rides — see `layer_scroll`: the camera's
+## motion is multiplied by the live zoom before the factor is applied, so a
+## factor is an honest "fraction of the speed the terrain appears to move",
+## and a layer does not creep closer when the helm pulls the camera back.
+##
+## CALM-DOWN PASS (owner 2026-08-29: "too bright and moves TOO fast, makes me
+## dizzy — should not feel so 'close'"). The first cut applied the factor to
+## RAW world pixels, so at the on-foot zoom of 0.9 the near layer really rode
+## 56% of the terrain's apparent speed — and 72% at the helm. That is not a
+## backdrop, that is a second foreground. These factors are what is left after
+## reading them as apparent speed and then cutting them hard; `backdrop_parallax`
+## (F2) is the dial if the owner wants some of it back.
+const LAYERS := [0.02, 0.05, 0.10]
 
 ## Lattice spacing of backdrop features per layer, in SCREEN px — far layers
 ## pack tighter (smaller, denser shapes read as distance).
@@ -46,6 +56,17 @@ const MOTIFS := ["crags", "clouds", "spires", "shoal", "open"]
 ## How much of the sky is OPEN (no features) — the world must breathe; a
 ## backdrop with something in every cell is wallpaper, not distance.
 const OPEN_WEIGHT := 2   # "open" is rolled this many extra times
+
+## The motif grid must NOT dilate with the parallax factor. A feature's motif
+## is looked up at its VIRTUAL world anchor (lattice position ÷ factor), so a
+## very slow layer would project one screenful across dozens of map cells and
+## every silhouette would roll its own motif — "spire country" would dissolve
+## into confetti. The lookup factor is floored here (the original far-layer
+## value), which keeps a motif region roughly one map cell wide at every depth
+## while the DRAWN speed goes as slow as we like. Purely a lookup clamp: a
+## feature's anchor is still fixed forever, so nothing ever changes motif
+## on-screen.
+const MOTIF_FLOOR := 0.12
 
 
 func _ready() -> void:
@@ -78,8 +99,9 @@ static func cell_motif(seed_v: int, cell: Vector2i) -> String:
 static func cell_features(seed_v: int, layer: int, cell: Vector2i,
 		lattice_px: float, factor: float, map_cell_px: float) -> Array:
 	var out: Array = []
-	# The virtual world position this lattice cell projects to.
-	var vworld := (Vector2(cell) + Vector2(0.5, 0.5)) * lattice_px / maxf(factor, 0.01)
+	# The virtual world position this lattice cell projects to (motif lookup
+	# only — floored so the region grid stays map-cell sized at any depth).
+	var vworld := (Vector2(cell) + Vector2(0.5, 0.5)) * lattice_px / maxf(factor, MOTIF_FLOOR)
 	var mc := Vector2i(floori(vworld.x / map_cell_px), floori(vworld.y / map_cell_px))
 	var motif := cell_motif(seed_v, mc)
 	if motif == "open":
@@ -134,6 +156,29 @@ static func band_palette(a: float) -> Array:
 	return out
 
 
+## How far one depth layer has scrolled, in screen px, for a camera at `cam`
+## under a live `zoom`, dialled by `strength` (F2 `backdrop_parallax`).
+##
+## The zoom is the whole point of this function existing. The world's own
+## apparent motion on screen is `cam * zoom`; riding a FRACTION of that makes
+## `factor` mean the same thing at every zoom, so pulling back at the helm no
+## longer drags the backdrop forward. Pure, so the suite can pin the ratio.
+static func layer_scroll(cam: Vector2, factor: float, zoom: float,
+		strength: float) -> Vector2:
+	return cam * (factor * maxf(zoom, 0.01) * maxf(strength, 0.0))
+
+
+## The alpha of one silhouette: `depth_t` is 0 at the farthest layer and 1 at
+## the nearest, `tone` is the feature's own roll, `opacity` the F2 dial.
+##
+## CALM-DOWN (owner 2026-08-29: "too bright"). The first cut ran 0.35..0.85 —
+## near-solid ink on a dark sky, which is a painting, not a distance. These
+## numbers are a haze: present when you look for it, gone when you are flying.
+static func feature_alpha(depth_t: float, tone: float, opacity: float) -> float:
+	return clampf((0.10 + 0.10 * depth_t + 0.04 * tone) * maxf(opacity, 0.0),
+		0.0, 1.0)
+
+
 # --- The painting half ------------------------------------------------------
 
 func _draw() -> void:
@@ -149,6 +194,9 @@ func _draw() -> void:
 	var alt := float(d["alt"])
 	var seed_v := int(d["seed"])
 	var map_px := float(d["map_cell_px"])
+	var zoom := float(d.get("zoom", 1.0))
+	var strength := Tunables.get_num("backdrop_parallax")
+	var opacity := Tunables.get_num("backdrop_opacity")
 	var view := size
 	if view.x <= 0.0 or view.y <= 0.0 or map_px <= 0.0:
 		return
@@ -168,10 +216,12 @@ func _draw() -> void:
 		var lattice := float(LATTICE[li])
 		# Depth fades a silhouette toward the sky (atmosphere): far is faint.
 		var depth_t := float(li) / float(LAYERS.size() - 1)
-		var ink := (pal[1] as Color).lerp(pal[2] as Color, 0.35 + 0.65 * depth_t)
-		# The layer's scroll: the camera's motion, damped by the factor, wrapped
+		# Dimmer ink than the first cut, too: the silhouette now sits nearer the
+		# sky's own colour, so depth reads as haze rather than as cut paper.
+		var ink := (pal[1] as Color).lerp(pal[2] as Color, 0.15 + 0.45 * depth_t)
+		# The layer's scroll: a fraction of the world's APPARENT motion, wrapped
 		# on the lattice so only on-screen cells are ever generated.
-		var scroll := cam * factor
+		var scroll := layer_scroll(cam, factor, zoom, strength)
 		var first := Vector2i(floori(scroll.x / lattice) - 1, floori(scroll.y / lattice) - 1)
 		var last := Vector2i(floori((scroll.x + view.x) / lattice) + 1,
 			floori((scroll.y + view.y) / lattice) + 1)
@@ -183,7 +233,7 @@ func _draw() -> void:
 					var at := (Vector2(cell) + (fd["off"] as Vector2)) * lattice - scroll
 					var r := lattice * 0.32 * float(fd["size"]) * (0.55 + 0.45 * depth_t)
 					var tone := float(fd["tone"])
-					var col := Color(ink, 0.35 + 0.4 * depth_t + 0.1 * tone)
+					var col := Color(ink, feature_alpha(depth_t, tone, opacity))
 					match String(fd["kind"]):
 						"crags":
 							_draw_crag(at, r, col)

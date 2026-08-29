@@ -209,6 +209,16 @@ const _REGISTRY := [
 		"group": "World", "kind": KIND_BOOL, "default": true},    # world.edge_marker_targets
 	{"id": "backdrop_enabled", "label": "Layered background (parallax silhouettes)",
 		"group": "World", "kind": KIND_BOOL, "default": true},    # Backdrop._draw — off = the plain clear colour
+	# The calm-down dials (owner 2026-08-29: "too bright and moves TOO fast").
+	# Parallax 0 pins the backdrop still (pure scenery, no motion at all); 1 is
+	# the shipped calm; above 1 walks back toward the dizzy first cut. Opacity 0
+	# leaves the band sky and drops every silhouette.
+	{"id": "backdrop_parallax", "label": "Backdrop parallax strength (0 = still, 1 = calm)",
+		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 3.0,
+		"step": 0.05},   # Backdrop.layer_scroll
+	{"id": "backdrop_opacity", "label": "Backdrop silhouette opacity (0 = bare sky)",
+		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 3.0,
+		"step": 0.05},   # Backdrop.feature_alpha
 	{"id": "edge_marker_screens", "label": "Edge marker range (screens away)",
 		"group": "World", "kind": KIND_FLOAT, "default": 2.0, "min": 0.0,
 		"max": 8.0, "step": 0.25},   # world.edge_marker_range_px — 0 silences them, like the toggle
