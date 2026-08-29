@@ -222,6 +222,14 @@ const _REGISTRY := [
 	{"id": "edge_marker_screens", "label": "Edge marker range (screens away)",
 		"group": "World", "kind": KIND_FLOAT, "default": 2.0, "min": 0.0,
 		"max": 8.0, "step": 0.25},   # world.edge_marker_range_px — 0 silences them, like the toggle
+	# --- THE DIVE (Q-G, the roguelite mode) ---------------------------------
+	# The one number that sets the mode's pulse: how often a depth's den attacks
+	# once its arrival grace has run out. Everything else about the run shape is
+	# structural and lives in modes/dive_run.gd (the ladder, the coin table, the
+	# extraction premium) — those are design, not taste.
+	{"id": "dive_surge_period", "label": "Dive: seconds between a depth's attacks",
+		"group": "World", "kind": KIND_FLOAT, "default": 45.0, "min": 5.0,
+		"max": 180.0, "step": 5.0},   # world._tick_dive -> DiveRun.advance
 	# --- Ecology: the deep stirs (Q-C — whales keep the krakens down) --------
 	# Overhunt whales and nothing holds the deep in check; the meter rises per
 	# whale kill and DECAYS slowly (whales breeding back). The decay IS the

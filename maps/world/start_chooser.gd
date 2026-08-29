@@ -5,7 +5,9 @@ extends PanelContainer
 ## whether it'll be the sandbox mode or regular"). One small centred panel the
 ## moment a single-player world opens: [1] EXPEDITION (the full game, exactly
 ## as before) or [2] SANDBOX (kitted out, no deep-air suffocation — the
-## v0.85.0 loadout, one press instead of a trip through F2).
+## v0.85.0 loadout, one press instead of a trip through F2) or [3] THE DIVE (the
+## roguelite mode — modes/dive_run.gd: eight depths down, the Leviathan at the
+## floor, climb back out to bank what you carry).
 ##
 ## Deliberately NOT a main menu: the world is already alive behind it, nothing
 ## is paused, and any other key just dismisses it as EXPEDITION — so a player
@@ -33,6 +35,7 @@ func _ready() -> void:
 		"",
 		"  [1]  EXPEDITION — the full game  ",
 		"  [2]  SANDBOX — kitted out, no suffocation; jump straight to the meat  ",
+		"  [3]  THE DIVE — a run: eight depths down, bank what you carry  ",
 		"",
 		"  (any other key: expedition)  "])
 	add_child(_label)
@@ -57,6 +60,9 @@ func _input(event: InputEvent) -> void:
 		KEY_2, KEY_KP_2:
 			if world != null and world.has_method("debug_sandbox_loadout"):
 				world.call("debug_sandbox_loadout")
+		KEY_3, KEY_KP_3:
+			if world != null and world.has_method("begin_dive"):
+				world.call("begin_dive")
 		_:
 			pass  # 1, Esc, anything: expedition — the world is already the world
 	visible = false
