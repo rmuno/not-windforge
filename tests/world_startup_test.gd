@@ -316,6 +316,7 @@ func _initialize() -> void:
 	await _check_sandbox(world, fleet)
 	await _check_edge_markers(world, fleet)
 	await _check_backdrop_and_chooser(world, fleet)
+	await _check_dive(world, fleet)
 
 	await _check_hosting_after_offline_play(world, fleet)
 
@@ -2370,6 +2371,93 @@ func _check_edge_markers(world: Node, fleet) -> void:
 	_ok(absf(two - one * 2.0) < 1.0,
 		"and it scales with the screens lever (%.0f -> %.0f)" % [one, two])
 	await process_frame
+
+
+## THE DIVE against the live world (owner arc Q-G, 2026-08-30). The run MODEL is
+## pinned pure in the unit suite; what has to be true here is that the mode is
+## reachable, that it moves the real ship to the real top of the ladder, that the
+## real boot chooser's [3] starts one, and — the one that would silently gut the
+## mode — that a run does NOT get handed a free replacement ship when its own is
+## gone. The world is restored afterwards: this check teleports the ship, and
+## every later check counts what it finds where it left it.
+func _check_dive(world: Node, fleet) -> void:
+	_ok(world.has_method("begin_dive"), "the world can start a dive")
+	if not world.has_method("begin_dive"):
+		return
+	var ship = world.get("local_ship")
+	var pl = world.get("player")
+	if ship == null or not is_instance_valid(ship) or pl == null:
+		_ok(false, "a ship and a body to dive with")
+		return
+	var was_ship: Vector2 = ship.global_position
+	var was_player: Vector2 = pl.global_position
+
+	# Outside a run the mode does not exist at all — no gauge, no ledger, no cost.
+	_ok(world.call("dive_status") == null, "no run: the Dive HUD is fed nothing")
+
+	world.call("begin_dive")
+	var run = world.get("dive")
+	_ok(run != null, "a run is live after begin_dive")
+	var st: Variant = world.call("dive_status")
+	_ok(st != null, "...and the HUD is fed while it is")
+	if st != null:
+		var d := st as Dictionary
+		var shaped := true
+		for key in ["depth", "deepest", "pot", "kills", "elapsed", "outcome",
+				"depths", "depth_label", "surge_in"]:
+			shaped = shaped and d.has(key)
+		_ok(shaped, "dive_status carries the whole run in plain values")
+		_ok(int(d.get("depth", 0)) == 1 and String(d.get("outcome", "x")) == "",
+			"a fresh run is at depth 1 and unfinished")
+
+	# The ship really moved to the top of the ladder — the run's altitude is not
+	# a number on a HUD, it is where the ship IS.
+	await world.get_tree().physics_frame
+	var top_y: float = world.call("dive_altitude_y", DiveRun.depth_altitude(1))
+	var floor_y: float = world.call("dive_altitude_y",
+		DiveRun.depth_altitude(DiveRun.DEPTHS))
+	_ok(top_y < floor_y, "the ladder's top is above its floor in world space")
+	if is_instance_valid(ship):
+		_ok(absf(ship.global_position.y - top_y) < 4000.0 * float(world.get("world_scale")),
+			"the ship was placed at the top of the ladder")
+
+	# THE STAKE. Losing the ship must not quietly hand you another one — the
+	# world's "never strand the player shipless" safety net is the exact thing
+	# that would delete the mode's only consequence.
+	# (The complement — that OUTSIDE a run a shipless respawn still rescues you —
+	# is deliberately not exercised here: it spawns a real extra ship, and every
+	# later check in this suite counts the fleet it finds.)
+	var kept = world.get("local_ship")
+	world.set("local_ship", null)
+	world.call("respawn_player")
+	_ok(world.get("local_ship") == null,
+		"inside a run, a shipless respawn does NOT grant a fresh ship")
+	world.set("local_ship", kept)
+
+	world.call("end_dive")
+	_ok(world.get("dive") == null and world.call("dive_status") == null,
+		"ending a run clears the mode entirely")
+
+	# The real boot chooser's third door starts a real run, through a real key.
+	var chooser = world.get("_start_chooser")
+	if chooser != null and is_instance_valid(chooser):
+		chooser.call("open")
+		var ev := InputEventKey.new()
+		ev.keycode = KEY_3
+		ev.pressed = true
+		chooser._input(ev)
+		_ok(world.get("dive") != null, "boot chooser [3] starts THE DIVE")
+		world.call("end_dive")
+
+	# Put the world back where the rest of the suite left it.
+	var fresh = world.get("local_ship")
+	if fresh != null and is_instance_valid(fresh):
+		fresh.global_position = was_ship
+		fresh.linear_velocity = Vector2.ZERO
+	if pl != null and is_instance_valid(pl):
+		pl.global_position = was_player
+		pl.velocity = Vector2.ZERO
+	await world.get_tree().physics_frame
 
 
 ## THE LAYERED BACKDROP + THE START CHOOSER against the live world (owner

@@ -54,6 +54,7 @@ func _initialize() -> void:
 	_test_edge_marker_placement()
 	_test_backdrop_generation()
 	_test_backdrop_is_calm()
+	_test_dive_run()
 	await _test_sealed_pockets_cut_a_holed_body()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
 	await _test_creature_skin_faces_its_motion()
@@ -1725,6 +1726,110 @@ func _test_backdrop_is_calm() -> void:
 				seen[String((f2 as Dictionary)["kind"])] = true
 	_check(seen.size() >= 2 and real_open,
 		"the shipped factors still give scenery AND open air (%d kinds)" % seen.size())
+
+
+## THE DIVE — the roguelite run model (owner arc Q-G, 2026-08-30). The whole
+## point of `modes/dive_run.gd` having no nodes in it is this test: a complete
+## ten-minute run is driven here with a for-loop, no physics and no scene, so the
+## SHAPE of the mode (ladder, beat, greed, verdicts) is pinned before a single
+## kraken is spawned.
+func _test_dive_run() -> void:
+	_t("THE DIVE: the ladder, the beat, the greed and the three verdicts")
+
+	# --- The ladder is a ladder ---------------------------------------------
+	_check(DiveRun.depth_altitude(1) > DiveRun.depth_altitude(DiveRun.DEPTHS),
+		"depth 1 is above the floor")
+	_check(is_equal_approx(DiveRun.depth_altitude(1), DiveRun.TOP_FRAC),
+		"depth 1 sits at the surface fraction")
+	_check(is_equal_approx(DiveRun.depth_altitude(DiveRun.DEPTHS), DiveRun.FLOOR_FRAC),
+		"the last depth sits at the floor fraction")
+	# Depth 1 must be BREATHABLE and the floor must not be — the mode's cost of
+	# going down is the air, and that is Airspace's threshold, not a new one.
+	_check(not Airspace.is_unbreathable_frac(DiveRun.depth_altitude(1)),
+		"you start in air you can breathe")
+	_check(Airspace.is_unbreathable_frac(DiveRun.depth_altitude(DiveRun.DEPTHS)),
+		"the floor's air kills you without a lung")
+	for d in range(2, DiveRun.DEPTHS + 1):
+		_check(DiveRun.depth_altitude(d) < DiveRun.depth_altitude(d - 1),
+			"depth %d is below depth %d" % [d, d - 1])
+	# ...and reading an altitude back gives the rung it came from.
+	for d in range(1, DiveRun.DEPTHS + 1):
+		_check(DiveRun.depth_of(DiveRun.depth_altitude(d)) == d,
+			"altitude of depth %d reads back as depth %d" % [d, d])
+	_check(DiveRun.depth_of(0.99) == 1 and DiveRun.depth_of(-1.0) == DiveRun.DEPTHS,
+		"above the surface is the surface; below the floor is the floor")
+
+	# --- Down is worth more, and getting out with it is worth more still ----
+	_check(DiveRun.coins_for("kraken", DiveRun.DEPTHS) > DiveRun.coins_for("kraken", 1),
+		"the same kill pays more the deeper you make it")
+	_check(DiveRun.coins_for("critter", 3) < DiveRun.coins_for("kraken", 3),
+		"a kraken is worth more than a critter at the same depth")
+	_check(DiveRun.bank_value(100, DiveRun.DEPTHS) > DiveRun.bank_value(100, 1),
+		"banking pays a premium for how deep you got")
+	_check(DiveRun.bank_value(0, DiveRun.DEPTHS) == 0, "nothing carried banks nothing")
+	_check(DiveRun.surge_count(DiveRun.DEPTHS) > DiveRun.surge_count(1),
+		"the floor's den throws more at you than the surface's")
+
+	# --- A whole run: down to the floor, then back out alive ----------------
+	var run := DiveRun.new()
+	_check(run.outcome == "" and run.deepest == 1, "a fresh run starts at the top")
+	# Sitting at the start line must NOT count as an escape.
+	var early: Array = run.advance(1.0, DiveRun.depth_altitude(1), 45.0)
+	_check(not early.has("escaped"), "you cannot escape a run you never dived")
+
+	var saw_depths := {}
+	var surge_events := 0
+	var leviathan := 0
+	# Descend one rung at a time, dwelling long enough at each for the den.
+	for d in range(2, DiveRun.DEPTHS + 1):
+		for step in 60:
+			for ev in run.advance(1.0, DiveRun.depth_altitude(d), 45.0):
+				match String(ev):
+					"depth": saw_depths[run.depth] = true
+					"surge": surge_events += 1
+					"leviathan": leviathan += 1
+					"escaped": _check(false, "escaped while descending?!")
+			if step == 0:
+				run.credit_kill("kraken")
+	_check(saw_depths.size() == DiveRun.DEPTHS - 1,
+		"every new depth announced itself once (%d)" % saw_depths.size())
+	_check(leviathan == 1, "the Leviathan is woken exactly once at the floor")
+	_check(surge_events > 0, "the dens attacked on the way down (%d)" % surge_events)
+	_check(run.deepest == DiveRun.DEPTHS, "the run remembers reaching the floor")
+	_check(run.pot > 0 and run.kills == DiveRun.DEPTHS - 1,
+		"kills paid into the pot (%d coins, %d kills)" % [run.pot, run.kills])
+
+	var carried := run.pot
+	var events: Array = run.advance(1.0, DiveRun.EXTRACT_FRAC, 45.0)
+	_check(events.has("escaped"), "climbing back to the surface ends the run")
+	_check(run.outcome == "escaped", "...as an escape")
+	_check(run.banked == DiveRun.bank_value(carried, DiveRun.DEPTHS),
+		"the pot banked at the floor's premium (%d -> %d)" % [carried, run.banked])
+	_check(run.advance(1.0, 0.2, 45.0).is_empty(), "a finished run is inert")
+
+	# --- Losing the ship burns the pot --------------------------------------
+	var doomed := DiveRun.new()
+	doomed.advance(1.0, DiveRun.depth_altitude(5), 45.0)
+	doomed.credit_kill("whale")
+	var lost_pot := doomed.pot
+	doomed.lose()
+	_check(lost_pot > 0 and doomed.outcome == "lost" and doomed.banked == 0,
+		"a lost ship banks nothing (%d coins burned)" % lost_pot)
+	_check(doomed.credit_kill("kraken") == 0, "a dead run cannot earn")
+	_check(DiveRun.outcome_line(doomed.ledger()).contains("%d" % lost_pot),
+		"the ledger names what fell with the ship")
+
+	# --- Killing the Leviathan pays the completion bonus ---------------------
+	var won := DiveRun.new()
+	won.advance(1.0, DiveRun.depth_altitude(DiveRun.DEPTHS), 45.0)
+	won.credit_kill("whale_city")
+	var won_pot := won.pot
+	won.triumph()
+	_check(won.outcome == "triumph", "the Leviathan's death is a triumph")
+	_check(won.banked == DiveRun.bank_value(won_pot, DiveRun.DEPTHS) + DiveRun.TRIUMPH_BONUS,
+		"triumph pays the banked pot plus the completion bonus (%d)" % won.banked)
+	_check(DiveRun.depth_label(DiveRun.DEPTHS) == "THE FLOOR",
+		"the last depth is a place, not a number")
 
 
 func _test_living_creature_gets_a_coarse_collider() -> void:

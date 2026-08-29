@@ -87,6 +87,17 @@ var _hud_layer: HudLayer
 ## The layered parallax background (maps/world/backdrop.gd), on its own
 ## CanvasLayer BEHIND the world. Fed by backdrop_status(); pure scenery.
 var _backdrop: Backdrop
+
+## THE DIVE (owner arc Q-G): the live roguelite run, or null in the ordinary
+## expedition/sandbox game. Everything mode-scoped is gated on this being
+## non-null, so the full game is untouched when nobody is diving. The MODEL is
+## `modes/dive_run.gd` — this node only drives it and gives it bodies.
+var dive: DiveRun = null
+var _dive_hud: DiveHud
+## How long the local ship has been gone. Losing it ends the run, but
+## `local_ship` blinks null for a frame during a rebind, so the verdict waits.
+var _dive_shipless := 0.0
+const DIVE_SHIPLESS_GRACE := 1.5
 ## The sandbox-or-expedition chooser shown once at boot (maps/world/start_chooser.gd).
 var _start_chooser: StartChooser
 ## The edge POI markers (maps/world/edge_markers.gd): a pointing triangle with an
@@ -331,6 +342,13 @@ func _ready() -> void:
 	_edge_markers = EdgeMarkers.new()
 	_edge_markers.world = self
 	layer.add_child(_edge_markers)
+
+	# THE DIVE's depth gauge and its run-over ledger. Above the edge markers (it
+	# is the mode's own read-out and must not be pointed over) and below the map,
+	# which is a mode that covers everything. Draws NOTHING outside a run.
+	_dive_hud = DiveHud.new()
+	_dive_hud.world = self
+	layer.add_child(_dive_hud)
 
 	# The toggled world map, hidden until Tab.
 	_map_view = MapView.new()
@@ -797,6 +815,175 @@ func backdrop_status() -> Variant:
 		map_px = _discovery.cell_px
 	return {"cam": camera.global_position, "alt": alt, "seed": world_seed,
 		"map_cell_px": map_px, "zoom": camera.zoom.x}
+
+
+# --- THE DIVE (modes/dive_run.gd) — the roguelite mode ---------------------
+#
+# The world's half of the mode: it gives the run BODIES (where the ship starts,
+# what a surge spawns, when the ship is gone) and reads its altitude. Every
+# decision about the run itself lives in the DiveRun model, which has no nodes
+# in it and is therefore drivable by a headless test for a whole ten minutes.
+#
+# Everything here is gated on `dive != null`. The expedition and sandbox games
+# never touch a line of it.
+
+
+## Start a run. Places the local ship (and the body aboard it) at depth 1's
+## altitude over the middle of the world and hands the model a clean slate.
+## Single-player / authority, like every other world verb.
+func begin_dive() -> void:
+	if Net.is_online() and not Net.is_server():
+		return
+	dive = DiveRun.new()
+	_dive_shipless = 0.0
+	_place_for_dive()
+	_notify("THE DIVE — you start at the top. Down is richer and worse; "
+		+ "climb back to this air to bank what you are carrying.")
+
+
+## Abandon the run without a verdict (a reset, a load, a mode exit). The ledger
+## is NOT shown — this is not an outcome, it is the run ceasing to exist.
+func end_dive() -> void:
+	dive = null
+	_dive_shipless = 0.0
+
+
+## Dismiss the run-over ledger and return to an ordinary world. The run's coins
+## were already banked (or burned) when the outcome landed, so this only clears
+## the plate.
+func dismiss_dive_ledger() -> void:
+	if dive != null and dive.outcome != "":
+		end_dive()
+
+
+## The world y of an altitude fraction (0 = lava floor, 1 = ceiling) — the
+## ladder's only contact with real coordinates.
+func dive_altitude_y(frac: float) -> float:
+	if _world_rect.size.y <= 0.0:
+		return SHIP_START.y
+	return _world_rect.end.y - frac * _world_rect.size.y
+
+
+## Put the ship and the body at the top of the ladder. The ship is TELEPORTED
+## (a run has not started yet, so there is no motion to respect) to a footprint
+## probed clear of rock, exactly like every other spawn.
+func _place_for_dive() -> void:
+	if not is_instance_valid(local_ship):
+		return
+	var at := Vector2(_world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0,
+		dive_altitude_y(DiveRun.depth_altitude(1)))
+	if terrain != null:
+		at = WhaleSpawn.clear_spawn_pos(terrain, at,
+			local_ship.solid_bounds, float(world_scale))
+	local_ship.global_position = at
+	local_ship.linear_velocity = Vector2.ZERO
+	local_ship.angular_velocity = 0.0
+	if player != null and is_instance_valid(player):
+		player.velocity = Vector2.ZERO
+		player.global_position = at + Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale
+
+
+## One frame of the run. Reads the altitude, hands it to the model, and gives
+## the events bodies.
+func _tick_dive(delta: float) -> void:
+	if dive == null or dive.outcome != "":
+		return
+	if player == null or not is_instance_valid(player):
+		return
+	# LOSING THE SHIP ENDS THE RUN (owner ruling). `local_ship` blinks null for a
+	# frame whenever the binding is refreshed, so the verdict waits out a grace —
+	# a run ended by a rebind would be the cruellest bug in the mode.
+	if is_instance_valid(local_ship) and local_ship.has_helm():
+		_dive_shipless = 0.0
+	else:
+		_dive_shipless += delta
+		if _dive_shipless >= DIVE_SHIPLESS_GRACE:
+			dive.lose()
+			_notify(DiveRun.outcome_line(dive.ledger()))
+			return
+	for ev in dive.advance(delta, _player_altitude_frac(),
+			Tunables.get_num("dive_surge_period")):
+		match String(ev):
+			"depth":
+				_notify("%s. The air is worse down here." % DiveRun.depth_label(dive.depth))
+			"surge":
+				_dive_surge()
+			"leviathan":
+				_notify("THE FLOOR. Something enormous is down here with you.")
+				_dive_wake_leviathan()
+			"escaped":
+				_dive_bank()
+
+
+## A depth's den comes for you: hunters spawned around the player, as many as
+## the ladder says. They arrive OFF to the sides rather than on top of you —
+## being crushed by a spawn is not a fight.
+func _dive_surge() -> void:
+	if dive == null or player == null or not is_instance_valid(player):
+		return
+	var n := DiveRun.surge_count(dive.depth)
+	var reach := 2600.0 * float(world_scale)
+	for i in n:
+		var side := 1.0 if i % 2 == 0 else -1.0
+		var at := player.global_position + Vector2(
+			side * reach * (1.0 + 0.35 * float(i / 2)),
+			(float(i % 3) - 1.0) * 420.0 * float(world_scale))
+		debug_spawn("kraken", at)
+	_notify("They come — %d out of the dark." % n)
+
+
+## The floor's resident. Until the Leviathan encounter is built (BACKLOG), the
+## existing city-whale boss body stands in: it already lairs in every world and
+## already has a boss-tier pool, so the depth-8 beat is playable now and the
+## bespoke fight replaces this one call.
+func _dive_wake_leviathan() -> void:
+	if player == null or not is_instance_valid(player):
+		return
+	_spawn_boss_at(player.global_position
+		+ Vector2(3400.0 * float(world_scale), 0.0))
+
+
+## The escape landed: move the banked coins into the permanent wallet. THIS is
+## the only path from a run's pot to the meta economy — dying pays nothing, and
+## that is the whole tension of the mode.
+func _dive_bank() -> void:
+	if dive == null:
+		return
+	if player != null and is_instance_valid(player) and player.wallet != null:
+		player.wallet.add(dive.banked)
+	_notify(DiveRun.outcome_line(dive.ledger()))
+
+
+## Credit a creature death to the run, if one is live. Called from the same
+## place the ecology hears about a death, so anything with a brain counts.
+## WHO killed it is not asked — a networked/attributed kill is the same seam
+## harvesting already has (BACKLOG).
+func _dive_credit_kill(kind: String) -> void:
+	if dive == null or dive.outcome != "":
+		return
+	var coins := dive.credit_kill(kind)
+	if coins > 0 and _pickups != null and player != null and is_instance_valid(player):
+		_pickups.add(player.global_position + Vector2(0.0, -120.0 * world_scale),
+			"+%d coins" % coins, float(world_scale))
+
+
+## Is a run over and showing its ledger? The fall-out-of-the-world respawn is
+## suppressed while it is: on a lost run the body FALLING is the run-over
+## screen, and teleporting it back to a deck would delete the ending.
+func dive_over() -> bool:
+	return dive != null and dive.outcome != ""
+
+
+## THE DIVE in plain values for DiveHud, or null when no run is live. The
+## world-decides/layer-paints seam for the mode.
+func dive_status() -> Variant:
+	if dive == null:
+		return null
+	var out := dive.ledger()
+	out["depths"] = DiveRun.DEPTHS
+	out["depth_label"] = DiveRun.depth_label(dive.depth)
+	out["headline"] = DiveRun.outcome_line(out)
+	return out
 
 
 # --- Save / load (save/save_game.gd) ---------------------------------------
@@ -2603,6 +2790,9 @@ func _announce_eco() -> void:
 ## per creature in `_whale_ai_for` (the one place every brain is set up), server-
 ## side like all spawning. A non-whale death is ignored.
 func _on_creature_perished(kind: String) -> void:
+	# THE DIVE pays coins for ANY creature death (the ecology below cares only
+	# about whales) — the mode's whole economy is "kill things on the way down".
+	_dive_credit_kill(kind)
 	if not Tunables.get_bool("eco_enabled") or not WHALE_KINDS.has(kind):
 		return
 	kraken_ascendancy = clampf(
@@ -3751,6 +3941,7 @@ func _build_systems() -> void:
 		["hazards", func(d: float) -> void: _update_hazards(d)],
 		["suffocation", func(d: float) -> void: _update_suffocation(d)],
 		["lava", func(d: float) -> void: _update_lava_core(d)],
+		["dive", func(d: float) -> void: _tick_dive(d)],
 	]
 
 
@@ -3804,7 +3995,10 @@ func _physics_process(delta: float) -> void:
 			Input.get_axis("ship_left", "ship_right"),
 			Input.get_axis("ship_down", "ship_up"))
 
-	if player != null and player.global_position.y > WORLD_BOTTOM:
+	# Falling out of the world normally respawns you. On a LOST dive it must not:
+	# the body dropping through the haze is the run-over screen the ledger is
+	# written over (owner: "do you just fall until you die and that's that?").
+	if player != null and player.global_position.y > WORLD_BOTTOM and not dive_over():
 		respawn_player()
 
 	_track_camera()
@@ -3844,6 +4038,12 @@ func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not (event as InputEventKey).echo):
 		return
 	var keycode := (event as InputEventKey).keycode
+	# The run-over ledger eats the next key, whatever it is — the same "any key"
+	# idiom as the boot chooser, and it must not also fire that key's verb.
+	if dive_over():
+		dismiss_dive_ledger()
+		get_viewport().set_input_as_handled()
+		return
 	if _save_panel != null and _save_panel.visible:
 		match keycode:
 			KEY_UP:
@@ -5330,7 +5530,10 @@ func respawn_player() -> void:
 	# their ship (owner: "say goodbye"). Single-player / host only; a fresh starter
 	# at base beats the "No ship — this is a bug" dead end. (No-op when they still
 	# have a ship: the guard only fires when local_ship is gone.)
-	if (not Net.is_online() or Net.is_server()) and not is_instance_valid(local_ship):
+	# ...except in THE DIVE, where losing the ship IS the run ending (owner
+	# ruling). Handing over a fresh starter here would quietly undo the mode's
+	# only stake, so the run is left to reach its own verdict.
+	if (not Net.is_online() or Net.is_server()) and not is_instance_valid(local_ship) 			and dive == null:
 		_give_ship_to(_my_id())
 		_refresh_local_ship()
 	var anchor := SHIP_START

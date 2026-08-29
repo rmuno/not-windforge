@@ -231,6 +231,17 @@ func _build_spawn_tab() -> void:
 		func() -> void:
 			if world != null and world.has_method("debug_stir_deep"):
 				world.call("debug_stir_deep", 0.25))
+	# THE DIVE (Q-G): start a run without going back to the boot chooser, so the
+	# mode is playtestable from inside a live world (standing order — a feature
+	# F2 cannot reach is invisible).
+	_action_button(box, "START A DIVE (roguelite run: 8 depths down)",
+		func() -> void:
+			if world != null and world.has_method("begin_dive"):
+				world.call("begin_dive"))
+	_action_button(box, "END the dive (abandon the run, no ledger)",
+		func() -> void:
+			if world != null and world.has_method("end_dive"):
+				world.call("end_dive"))
 
 
 func _build_player_tab() -> void:
