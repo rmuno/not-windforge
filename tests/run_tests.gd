@@ -53,6 +53,7 @@ func _initialize() -> void:
 	_test_creature_hit_flash()
 	_test_edge_marker_placement()
 	_test_backdrop_generation()
+	_test_backdrop_is_calm()
 	await _test_sealed_pockets_cut_a_holed_body()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
 	await _test_creature_skin_faces_its_motion()
@@ -1646,6 +1647,84 @@ func _test_backdrop_generation() -> void:
 	var h_col := (seam_hi[0] as Color)
 	_check(absf(d_col.r - h_col.r) + absf(d_col.g - h_col.g) + absf(d_col.b - h_col.b) < 0.02,
 		"the sky is continuous across a band seam")
+
+
+## THE CALM-DOWN (owner live report 2026-08-29: the parallax was "too bright and
+## moves TOO fast, makes me dizzy — should not feel so 'close' to the screen").
+## Nothing here is taste: these pin the two properties the first cut got WRONG.
+## (1) A factor must mean "fraction of the world's APPARENT speed" — the first
+## cut multiplied raw world pixels, so the on-foot zoom of 0.9 turned a nominal
+## 0.5 into 0.56 and the helm's 0.69 turned it into 0.72, i.e. the backdrop
+## sped UP when you pulled back. (2) The silhouettes must be haze, not ink.
+func _test_backdrop_is_calm() -> void:
+	_t("the backdrop rides a small, zoom-invariant fraction of the world's speed")
+
+	# --- Speed: what the eye actually compares ------------------------------
+	# The world's apparent motion for a camera step is step * zoom. A layer's
+	# share of that must be the FACTOR itself, at any zoom — that is what makes
+	# the helm zoom-out stop dragging the scenery forward.
+	var step := Vector2(1000.0, 0.0)
+	var on_foot := 0.9      # world.camera_zoom
+	var at_helm := 0.9 / 1.3  # ...divided by pilot_zoom_out
+	for li in Backdrop.LAYERS.size():
+		var f := float(Backdrop.LAYERS[li])
+		var share_foot := Backdrop.layer_scroll(step, f, on_foot, 1.0).x 			/ (step.x * on_foot)
+		var share_helm := Backdrop.layer_scroll(step, f, at_helm, 1.0).x 			/ (step.x * at_helm)
+		_check(absf(share_foot - f) < 0.0001 and absf(share_helm - f) < 0.0001,
+			"layer %d rides %.0f%% of the world's apparent speed at BOTH zooms"
+				% [li, f * 100.0])
+	# The near layer is the one that made the owner dizzy. It must stay far.
+	var near := float(Backdrop.LAYERS[Backdrop.LAYERS.size() - 1])
+	_check(near <= 0.15, "even the nearest layer rides <=15%% of the world (%.2f)" % near)
+	for li in range(1, Backdrop.LAYERS.size()):
+		_check(float(Backdrop.LAYERS[li]) > float(Backdrop.LAYERS[li - 1]),
+			"layer %d is nearer than layer %d" % [li, li - 1])
+	# The F2 dial reaches both ends: 0 pins the scenery still, >1 walks it back.
+	_check(Backdrop.layer_scroll(step, near, on_foot, 0.0) == Vector2.ZERO,
+		"backdrop_parallax 0 stops the scenery dead")
+	_check(Backdrop.layer_scroll(step, near, on_foot, 2.0).x
+		> Backdrop.layer_scroll(step, near, on_foot, 1.0).x,
+		"...and turning the dial up moves it more")
+
+	# --- Brightness: a haze, not cut paper ----------------------------------
+	var brightest := Backdrop.feature_alpha(1.0, 1.0, 1.0)
+	_check(brightest <= 0.25,
+		"the boldest silhouette is faint (alpha %.2f)" % brightest)
+	_check(Backdrop.feature_alpha(1.0, 0.5, 1.0)
+		> Backdrop.feature_alpha(0.0, 0.5, 1.0),
+		"near silhouettes still read stronger than far ones")
+	_check(Backdrop.feature_alpha(0.5, 0.5, 0.0) == 0.0,
+		"backdrop_opacity 0 leaves the bare band sky")
+	_check(Backdrop.feature_alpha(1.0, 1.0, 99.0) <= 1.0,
+		"the opacity dial cannot push alpha past opaque")
+
+	# --- The motif grid does NOT dilate with the slow factors ---------------
+	# Slowing a layer scales its virtual world anchors by 1/factor, so without
+	# the MOTIF_FLOOR clamp one screenful would span dozens of map cells and
+	# every silhouette would roll its own motif. Regions must stay map-cell
+	# sized at EVERY depth, or "spire country" becomes confetti.
+	var map_px := 4096.0
+	for li in Backdrop.LAYERS.size():
+		var f := float(Backdrop.LAYERS[li])
+		var lat := float(Backdrop.LATTICE[li])
+		var span := lat / maxf(f, Backdrop.MOTIF_FLOOR) / map_px
+		_check(span <= 1.5,
+			"layer %d steps %.2f map cells per lattice cell (regions survive)"
+				% [li, span])
+	# ...and with the real shipped factors, the sky still holds variety and air.
+	var seen := {}
+	var real_open := false
+	for y in range(-8, 9):
+		for x in range(-8, 9):
+			var feats := Backdrop.cell_features(20260829, 2, Vector2i(x, y),
+				float(Backdrop.LATTICE[2]),
+				float(Backdrop.LAYERS[2]), map_px)
+			if feats.is_empty():
+				real_open = true
+			for f2 in feats:
+				seen[String((f2 as Dictionary)["kind"])] = true
+	_check(seen.size() >= 2 and real_open,
+		"the shipped factors still give scenery AND open air (%d kinds)" % seen.size())
 
 
 func _test_living_creature_gets_a_coarse_collider() -> void:

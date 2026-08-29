@@ -2383,9 +2383,14 @@ func _check_backdrop_and_chooser(world: Node, fleet) -> void:
 	if st != null:
 		var d := st as Dictionary
 		var shaped := true
-		for key in ["cam", "alt", "seed", "map_cell_px"]:
+		for key in ["cam", "alt", "seed", "map_cell_px", "zoom"]:
 			shaped = shaped and d.has(key)
-		_ok(shaped, "backdrop_status carries cam / alt / seed / map_cell_px")
+		_ok(shaped, "backdrop_status carries cam / alt / seed / map_cell_px / zoom")
+		# The LIVE zoom is what makes a parallax factor mean the same thing on
+		# foot and at the helm (the 2026-08-29 calm-down) — a stale 1.0 would
+		# quietly restore the dizzy behaviour.
+		var z := float(d.get("zoom", -1.0))
+		_ok(z > 0.0, "the backdrop is fed the live camera zoom (%.2f)" % z)
 		var alt := float(d.get("alt", -1.0))
 		_ok(alt >= 0.0 and alt <= 1.0, "the altitude fraction is normalised (%.2f)" % alt)
 		_ok(float(d.get("map_cell_px", 0.0)) > 0.0,

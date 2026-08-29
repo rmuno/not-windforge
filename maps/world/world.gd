@@ -783,7 +783,10 @@ func edge_marker_targets() -> Array:
 ## the camera position (the parallax input), the CAMERA's altitude fraction
 ## (the palette input — the backdrop should read as where the VIEW is, which is
 ## the player's altitude in practice), the world seed (the motif input) and the
-## map-grid cell size (the owner's "changes based on CELL in the map's grid").
+## map-grid cell size (the owner's "changes based on CELL in the map's grid"),
+## and the LIVE zoom — the backdrop rides a fraction of the world's APPARENT
+## motion, so pulling back at the helm must not drag the scenery forward
+## (Backdrop.layer_scroll; the 2026-08-29 calm-down).
 func backdrop_status() -> Variant:
 	if _world_rect.size.y <= 0.0 or camera == null or not is_instance_valid(camera):
 		return null
@@ -793,7 +796,7 @@ func backdrop_status() -> Variant:
 	if _discovery != null:
 		map_px = _discovery.cell_px
 	return {"cam": camera.global_position, "alt": alt, "seed": world_seed,
-		"map_cell_px": map_px}
+		"map_cell_px": map_px, "zoom": camera.zoom.x}
 
 
 # --- Save / load (save/save_game.gd) ---------------------------------------
