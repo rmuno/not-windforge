@@ -55,6 +55,12 @@ if ($Quick) {
     Write-Output "=== quick mode: startup/pilot/net suites skipped (full run certifies the merge) ==="
 }
 if (-not $Quick) {
+# The MAIN SCENE is the intro now, so it is checked first: everything else in
+# the game is reached through it.
+Write-Output "=== intro scene ==="
+& $godot --headless --path $project --script "res://tests/intro_test.gd" | Select-String "INTRO|FAIL"
+if ($LASTEXITCODE -ne 0) { $failed += "intro" }
+
 Write-Output "=== 8x default startup ==="
 & $godot --headless --path $project --script "res://tests/scale_startup_test.gd" | Select-String "SCALE STARTUP|FAIL"
 if ($LASTEXITCODE -ne 0) { $failed += "8x_startup" }

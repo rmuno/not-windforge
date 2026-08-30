@@ -1,23 +1,16 @@
 class_name TitleScreen
 extends PanelContainer
 
-## THE FRONT DOOR (owner 2026-08-30: "what if we have an intro screen of just
-## the whales floating around in the sky, then you can choose PLAY -> choose 1
-## of the 3 modes").
+## THE FRONT DOOR'S PANEL — two pages of text over the intro scene
+## (maps/intro/intro.gd), which is what actually moves behind it.
 ##
-## Two pages over a LIVE world — nothing is paused, nothing is a separate scene:
-##
-##   TITLE — the name, and PLAY. While this is up the camera stops following
-##           your body and drifts across the whale pod instead (world._track_
-##           camera). That is the whole intro: the game's own sky, its own
-##           whales, its own backdrop, moving. No mock-up, no video, no assets.
+##   TITLE — the name, and PLAY.
 ##   MODES — the three doors: [1] EXPEDITION, [2] SANDBOX, [3] THE DIVE.
 ##
-## It grew out of the v0.88.0 boot chooser (StartChooser) and keeps its rules:
-## it does not show in HEADLESS runs (the suite boots dozens of worlds and a
-## panel eating digit keys would poison unrelated checks) or ONLINE (sandbox and
-## the Dive are single-player things) — but `open()` is public, so the startup
-## test drives the real panel with real keys.
+## It knows nothing about the world or the modes: it calls `choose_mode(name)`
+## on whatever owns it, and the intro decides what that means. That is what let
+## the intro become its own scene without this file changing shape — it was
+## already talking to an owner rather than to a world.
 ##
 ## Any key that is not a listed choice falls through to EXPEDITION, so a player
 ## who mashes past the whole thing gets the unchanged game.
@@ -62,8 +55,6 @@ func _ready() -> void:
 	add_child(_label)
 	_repaint()
 	visible = false
-	if DisplayServer.get_name() != "headless" and not Net.is_online():
-		open()
 
 
 func open() -> void:
@@ -114,14 +105,12 @@ func _input(event: InputEvent) -> void:
 ## Apply one mode. Anything unlisted is EXPEDITION — the world is already the
 ## world, so that door costs nothing to walk through.
 func _choose(keycode: int) -> void:
-	if world == null:
+	if world == null or not world.has_method("choose_mode"):
 		return
 	match keycode:
 		KEY_2, KEY_KP_2:
-			if world.has_method("debug_sandbox_loadout"):
-				world.call("debug_sandbox_loadout")
+			world.call("choose_mode", GameMode.SANDBOX)
 		KEY_3, KEY_KP_3:
-			if world.has_method("begin_dive"):
-				world.call("begin_dive")
+			world.call("choose_mode", GameMode.DIVE)
 		_:
-			pass  # 1, Esc, anything: expedition
+			world.call("choose_mode", GameMode.EXPEDITION)

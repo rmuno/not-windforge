@@ -126,25 +126,22 @@ const DIVE_DROP_GAP := 120.0
 ## the whale pod instead of following the body. `_title_anchor` is INF until the
 ## first frame computes the pod's centroid, so it is decided once the world is
 ## actually populated rather than at _ready.
-## The intro camera's PATH is maps/world/title_camera.gd — pure, so the suite can
-## pin that it really loops. Only the zoom lives here.
-const TITLE_ZOOM_OUT := 2.2     ## camera_zoom is divided by this on the title
-var _title_anchor := Vector2.INF
-var _title_cam_t := 0.0
-## THE FRONT DOOR (maps/world/title_screen.gd): the title over a live drifting
-## sky, then the three modes. Visible only at a single-player boot.
-var _title_screen: TitleScreen
-
-
-## Is the front door up? While it is, the intro is a picture of the world and
-## nothing else — so every piece of PLAYER-facing chrome goes quiet (owner
-## 2026-08-30: the edge markers, the "F1 help / Tab map" line and the health bar
-## were all still on over the title, and the helm was still offering itself).
-## One predicate, asked by every provider, so the intro can never disagree with
-## itself about what it is showing.
-func hud_quiet() -> bool:
-	return _title_screen != null and is_instance_valid(_title_screen) \
-		and _title_screen.visible
+## THE INTRO IS ITS OWN SCENE (maps/intro/intro.tscn), so the world no longer
+## carries a title panel, a title camera, or the `hud_quiet()` predicate that
+## kept the two from contradicting each other. Every bug that predicate existed
+## to fix — edge markers over the title, a helm offering itself to nobody, a
+## health bar on the front page — is now impossible rather than suppressed,
+## because the intro has no player and no HUD to leak.
+##
+## What the world does instead is READ the choice the intro made, once, at boot.
+func _apply_boot_mode() -> void:
+	match GameMode.take():
+		GameMode.SANDBOX:
+			debug_sandbox_loadout()
+		GameMode.DIVE:
+			begin_dive()
+		_:
+			pass   # expedition: the world is already the world
 ## The edge POI markers (maps/world/edge_markers.gd): a pointing triangle with an
 ## icon in it for every near thing that is currently off-screen. Fed by
 ## edge_marker_targets(); paints nothing when that is empty.
@@ -428,12 +425,6 @@ func _ready() -> void:
 	_ghost_label.visible = false
 	layer.add_child(_ghost_label)
 
-	# THE FRONT DOOR (owner 2026-08-30): the title over a live sky, then the
-	# three modes. Hidden in headless runs and online sessions; see the class.
-	_title_screen = TitleScreen.new()
-	_title_screen.world = self
-	layer.add_child(_title_screen)
-
 	# Small, gray corner status, bottom-right: build + FPS, and the one always-on
 	# trace of what moved to a toggle ("F1 help   Tab map").
 	_corner_label = Label.new()
@@ -489,6 +480,12 @@ func _ready() -> void:
 	# goes through Crew so the same body replicates when a session is live.
 	if not Net.is_online() or Net.is_server():
 		player = crew.spawn_player(_my_id(), _spawn_offset(), _player_scale_mult())
+
+	# ...and open in whatever mode the intro scene picked. Last in _ready, so the
+	# mode acts on a world that is fully built (the Dive re-parks hulls and cuts
+	# terrain, and neither works against a half-made scene).
+	if not Net.is_online() or Net.is_server():
+		_apply_boot_mode()
 
 
 ## Where the player stands relative to their ship, at any world scale.
@@ -779,7 +776,7 @@ static func edge_marker_color(ship: Ship, kind: String) -> Color:
 ## so distance is read without a number on the glass.
 func edge_marker_targets() -> Array:
 	var out: Array = []
-	if hud_quiet() or Tunables.get_num("edge_markers_enabled") == 0.0:
+	if Tunables.get_num("edge_markers_enabled") == 0.0:
 		return out
 	var focus: Vector2
 	if player != null and is_instance_valid(player):
@@ -941,11 +938,10 @@ func dismiss_dive_ledger() -> void:
 	# BACK TO THE FRONT DOOR (owner 2026-08-30: "dying during dive mode seems to
 	# change modes?? oh em gee"). It did — the ledger dropped you into an
 	# ordinary world, shipless, a hundred thousand pixels up, with no sign that
-	# the run had ended. A run ends at the title screen, which is the loop every
+	# the run had ended. A run ends at the intro scene, which is the loop every
 	# roguelite has and the only place a next run can start from.
-	if _title_screen != null and is_instance_valid(_title_screen) \
-			and DisplayServer.get_name() != "headless" and not Net.is_online():
-		_title_screen.open()
+	if DisplayServer.get_name() != "headless" and not Net.is_online():
+		get_tree().change_scene_to_file("res://maps/intro/intro.tscn")
 
 
 ## The world y of an altitude fraction (0 = lava floor, 1 = ceiling) — the
@@ -1741,8 +1737,8 @@ func player_money() -> int:
 ## The GRIT pool IS the player's life (combat/suffocation drain it), so a small
 ## bar for it is the one vital the owner asked to always see (2026-08-23).
 func player_vitals() -> Dictionary:
-	if hud_quiet() or player == null or not is_instance_valid(player):
-		return {"health": 0.0, "max": 0.0}   # max <= 0 means "draw nothing"
+	if player == null or not is_instance_valid(player):
+		return {"health": 0.0, "max": 0.0}
 	return {"health": player.health, "max": player.max_health}
 
 
@@ -4516,53 +4512,11 @@ func _physics_process(delta: float) -> void:
 	_track_camera()
 
 
-## The intro camera. It LOOPS (owner 2026-08-30: "could it be looped in some
-## way?") — a slow closed figure-eight over the whale pod, pulled back far enough
-## that several of them fit. A one-way drift eventually sails off into empty sky
-## and the intro dies of nothing to look at; a closed path can run forever.
-##
-## The anchor also FOLLOWS the pod, gently. Whales roam, so a centroid sampled
-## once at boot is stale within a minute — easing toward the live one keeps them
-## in frame however long the title sits there.
-func _track_title_camera() -> void:
-	_title_cam_t += get_physics_process_delta_time()
-	var live := _whale_pod_centre()
-	if _title_anchor == Vector2.INF:
-		_title_anchor = live
-	else:
-		_title_anchor = _title_anchor.lerp(live, TitleCamera.ANCHOR_EASE)
-	camera.global_position = _title_anchor \
-		+ TitleCamera.offset(_title_cam_t) * float(world_scale)
-	var target := camera_zoom / TITLE_ZOOM_OUT
-	camera.zoom = camera.zoom.lerp(Vector2(target, target), 0.12)
-
-
-## Where the whales are, for the intro camera to look at. Falls back to a point
-## to port of the ship start (where the pod spawns) if none is alive yet.
-func _whale_pod_centre() -> Vector2:
-	var sum := Vector2.ZERO
-	var n := 0
-	for ship in fleet.ships():
-		if is_instance_valid(ship) and ship.creature_kind == "whale" and not ship.is_carcass():
-			sum += ship.global_position
-			n += 1
-	if n == 0:
-		return SHIP_START + Vector2(-2200.0, -350.0) * float(world_scale)
-	return sum / float(n)
-
-
 ## Dead centre on the player, every frame, nothing else. The player is the
 ## subject on foot and at the helm alike. At the helm the view pulls back
 ## by pilot_zoom_out (position stays hard-locked — the smoothing veto was
 ## about camera *motion*, zoom eases scale only).
 func _track_camera() -> void:
-	# THE INTRO. While the title is up the camera is not yours — it drifts
-	# across the whale pod, so the first thing anyone sees is the game's own
-	# sky with whales in it (owner 2026-08-30). The world is running the whole
-	# time; this is a camera state, not a scene.
-	if _title_screen != null and _title_screen.visible:
-		_track_title_camera()
-		return
 	if player != null:
 		camera.global_position = player.global_position
 	elif is_instance_valid(local_ship):
@@ -5690,7 +5644,8 @@ func _palette_index(palette: Array) -> int:
 ## up) or — for a quick tap — cycles one step. Shift+tap cycles backward.
 ## Is the game in THE DIVE's reduced verb set right now? One predicate, so the
 ## mining, placing, ghost and palette paths can never disagree about whether
-## building is a thing. `hud_quiet` is the intro's twin of this.
+## building is a thing. (The intro's twin of this used to be `hud_quiet`;
+## it is gone — the intro has no HUD to quiet now that it is its own scene.)
 func dive_style() -> bool:
 	return dive != null and dive.outcome == ""
 
@@ -6018,8 +5973,6 @@ func helm_in_reach() -> bool:
 ## player/ship references to another node's _draw crashed on freed
 ## instances (respawn races the redraw).
 func interact_prompt() -> Variant:
-	if hud_quiet():
-		return null   # the intro is not offering you a helm
 	if player == null or not is_instance_valid(player) or player.is_piloting():
 		return null
 	match _nearest_interactable():
@@ -6219,11 +6172,6 @@ func _update_corner_status() -> void:
 	# and FPS") — the build number is the thing you read deliberately, so it sits
 	# at the end of the line where the eye stops.
 	var status := "%d fps   v%s" % [Engine.get_frames_per_second(), ver]
-	if hud_quiet():
-		# The intro keeps the build number and drops the key hints: there is
-		# nothing to help with yet, and no map to open.
-		_corner_label.text = status
-		return
 	# Same platform split as the help panel: name the key that actually works here.
 	_corner_label.text = "%s help   Tab map\n%s" % [_help_key_name, status]
 
