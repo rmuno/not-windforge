@@ -12,10 +12,18 @@ extends RefCounted
 ## rendering) so it is unit-testable directly; the WorldOverlay draws active().
 
 ## How long a pickup float lives (rise + fade), in seconds. Short — it is a
-## confirmation, not a message to read.
-const LIFETIME := 0.9
+## confirmation, not a message to read... except that `world._notify` reuses this
+## class for its one-line messages, so it is also the only thing that shows a
+## run's "SHE IS YOURS" or a new depth.
+##
+## CALMED 2026-08-30 (owner: *"text flies off too fast when getting money or
+## going a new level. Maybe 25% slower and less height"*) — a quarter longer,
+## 30% less rise. "Going a new level" IS this class, not a separate path: the
+## Dive's depth notices come through `_notify`. `DamageNumbers` carries the same
+## pair and the two move together.
+const LIFETIME := 1.15
 ## How far it drifts upward over its life, in cells (× world scale).
-const RISE_CELLS := 1.6
+const RISE_CELLS := 1.1
 
 ## Each: {"pos": Vector2, "text": String, "age": float, "scale": float}.
 var _floats: Array[Dictionary] = []
