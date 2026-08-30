@@ -86,6 +86,13 @@ var elapsed := 0.0
 ## "" while running, then one of "escaped" / "lost" / "triumph".
 var outcome := ""
 
+## Have you taken a hull? A run starts on the LAUNCH DECK with nobody's ship
+## under you (owner 2026-08-30) — the candidates are parked, and boarding one is
+## the first decision of the run. It matters because it decides HOW THE RUN CAN
+## END: with a hull, losing it is the ending; with none, only your body is.
+var committed := false
+
+var _lost_shipless := false
 var _grace := ARRIVAL_GRACE   ## seconds until this depth's den comes for you
 var _seen := {1: true}        ## depths already arrived at (the surge arms once)
 var _leviathan_called := false
@@ -212,6 +219,13 @@ func advance(delta: float, a: float, surge_period: float) -> Array:
 		out.append("leviathan")
 	# The den's clock. It runs everywhere, but arriving somewhere new resets it,
 	# so the beat is always "get there, breathe, then they come".
+	#
+	# THE DOCK IS SAFE UNTIL YOU HAVE BEEN DOWN. While you have never left the
+	# top rung the clock does not run at all, so choosing a ship on the launch
+	# deck is unhurried. Come back up here to extract, though, and `deepest` is
+	# long past 1 — the way home is not a safe place, which is the point.
+	if deepest <= 1:
+		return out
 	_grace -= delta
 	if _grace <= 0.0:
 		_grace = maxf(surge_period, 1.0)
@@ -237,10 +251,18 @@ func credit_kill(kind: String) -> int:
 	return coins
 
 
-## The ship is gone. The run is over and the pot burns with it.
-func lose() -> void:
+## You took this hull; from here, losing it is the ending.
+func commit() -> void:
+	committed = true
+
+
+## The run is over with nothing banked. `shipless` distinguishes the two ways
+## that happens: your hull was destroyed, or you never took one and your body
+## gave out. The pot burns either way.
+func lose(shipless := false) -> void:
 	if outcome == "":
 		outcome = "lost"
+		_lost_shipless = shipless
 		banked = 0
 
 
@@ -262,6 +284,8 @@ func surge_in() -> float:
 func ledger() -> Dictionary:
 	return {
 		"outcome": outcome,
+		"committed": committed,
+		"shipless_end": _lost_shipless,
 		"depth": depth,
 		"deepest": deepest,
 		"deepest_label": depth_label(deepest),
@@ -284,6 +308,9 @@ static func outcome_line(l: Dictionary) -> String:
 			return "YOU MADE IT OUT. %s, and %d coins banked." % [
 				String(l.get("deepest_label", "")), int(l.get("banked", 0))]
 		"lost":
+			if bool(l.get("shipless_end", false)):
+				return "YOU FELL. No ship, %s reached, %d coins gone with you." % [
+					String(l.get("deepest_label", "")), int(l.get("pot", 0))]
 			return "YOUR SHIP IS GONE. You reached %s. %d coins fell with it." % [
 				String(l.get("deepest_label", "")), int(l.get("pot", 0))]
 	return ""

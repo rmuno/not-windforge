@@ -316,9 +316,13 @@ func _initialize() -> void:
 	await _check_sandbox(world, fleet)
 	await _check_edge_markers(world, fleet)
 	await _check_backdrop_and_chooser(world, fleet)
-	await _check_dive(world, fleet)
 
 	await _check_hosting_after_offline_play(world, fleet)
+
+	# LAST, deliberately. A dive teleports every candidate hull 200k px up the
+	# world, stamps terrain, and un-claims the ship the boot gave you — every
+	# later check would be counting a world this one had rearranged.
+	await _check_dive(world, fleet)
 
 	_finish()
 
@@ -2373,6 +2377,24 @@ func _check_edge_markers(world: Node, fleet) -> void:
 	await process_frame
 
 
+## Take the first available helm and let one tick COMMIT the run to it — the
+## launch deck means a run no longer starts with a claimed hull, so any check
+## that needs "your ship" has to choose one first, exactly as a player does.
+func _dive_take_a_hull(world: Node, fleet) -> void:
+	var pl = world.get("player")
+	if pl == null or not is_instance_valid(pl):
+		return
+	for hull in fleet.ships():
+		if is_instance_valid(hull) and hull.faction == 0 and hull.has_helm() \
+				and hull.creature_kind == "" and not hull.is_carcass():
+			pl.global_position = hull.to_global(hull.local_pos_of(hull.helm_cells[0]))
+			if pl.board(hull, hull.helm_cells[0]):
+				await world.get_tree().physics_frame
+				await world.get_tree().physics_frame
+				pl.disembark()
+			return
+
+
 ## THE DIVE against the live world (owner arc Q-G, 2026-08-30). The run MODEL is
 ## pinned pure in the unit suite; what has to be true here is that the mode is
 ## reachable, that it moves the real ship to the real top of the ladder, that the
@@ -2410,20 +2432,64 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(int(d.get("depth", 0)) == 1 and String(d.get("outcome", "x")) == "",
 			"a fresh run is at depth 1 and unfinished")
 
-	# The ship really moved to the top of the ladder — the run's altitude is not
-	# a number on a HUD, it is where the ship IS.
+	# THE LAUNCH DECK (owner 2026-08-30). A run does not hand you a hull: it
+	# stands your BODY at the top of the ladder on a shelf it cut, parks the
+	# candidates, and leaves `local_ship` unclaimed until you take a helm.
 	await world.get_tree().physics_frame
 	var top_y: float = world.call("dive_altitude_y", DiveRun.depth_altitude(1))
 	var floor_y: float = world.call("dive_altitude_y",
 		DiveRun.depth_altitude(DiveRun.DEPTHS))
 	_ok(top_y < floor_y, "the ladder's top is above its floor in world space")
-	if is_instance_valid(ship):
-		_ok(absf(ship.global_position.y - top_y) < 4000.0 * float(world.get("world_scale")),
-			"the ship was placed at the top of the ladder")
+	var slack := 6000.0 * float(world.get("world_scale"))
+	if pl != null and is_instance_valid(pl):
+		_ok(absf(pl.global_position.y - top_y) < slack,
+			"the BODY starts at the top of the ladder")
+		# ...standing on something. The shelf is stamped terrain, so there must
+		# be solid ground under the spawn point or the run opens in freefall.
+		var terr = world.get("terrain")
+		if terr != null:
+			var ws := float(world.get("world_scale"))
+			var grounded := false
+			for step in 30:
+				var under: Vector2 = pl.global_position \
+					+ Vector2(0.0, float(step) * 100.0 * ws)
+				if terr.is_solid(terr.world_to_cell(under)):
+					grounded = true
+					break
+			_ok(grounded, "...on a shelf, not in mid-air")
+	_ok(world.get("local_ship") == null,
+		"a run starts with NOBODY'S ship claimed (you choose one)")
+	if run != null:
+		_ok(not run.committed, "...and the run knows no hull is committed yet")
+	# The candidates are parked within reach of the deck, not left behind.
+	var near_deck := 0
+	for hull in fleet.ships():
+		if is_instance_valid(hull) and hull.faction == 0 and not hull.is_carcass() \
+				and hull.creature_kind == "" \
+				and absf(hull.global_position.y - top_y) < slack:
+			near_deck += 1
+	_ok(near_deck >= 2, "at least two hulls are parked to choose from (%d)" % near_deck)
 
 	# THE STAKE. Losing the ship must not quietly hand you another one — the
 	# world's "never strand the player shipless" safety net is the exact thing
 	# that would delete the mode's only consequence.
+	# COMMIT to a hull, the way the run means you to: take a helm. From here the
+	# ship-loss ending is armed.
+	var chosen: Ship = null
+	for hull in fleet.ships():
+		if is_instance_valid(hull) and hull.faction == 0 and hull.has_helm() \
+				and hull.creature_kind == "" and not hull.is_carcass():
+			chosen = hull
+			break
+	if chosen != null and pl != null and is_instance_valid(pl):
+		pl.global_position = chosen.to_global(chosen.local_pos_of(chosen.helm_cells[0]))
+		_ok(pl.board(chosen, chosen.helm_cells[0]), "took a helm on the launch deck")
+		await world.get_tree().physics_frame
+		await world.get_tree().physics_frame
+		_ok(run == null or run.committed, "...which COMMITS the run to that hull")
+		_ok(world.get("local_ship") == chosen, "...and it is now your ship")
+		pl.disembark()
+
 	# (The complement — that OUTSIDE a run a shipless respawn still rescues you —
 	# is deliberately not exercised here: it spawns a real extra ship, and every
 	# later check in this suite counts the fleet it finds.)
@@ -2440,6 +2506,7 @@ func _check_dive(world: Node, fleet) -> void:
 	# on the hull, running, with somebody standing at it — even though the
 	# starter blueprint has no repair block at all.
 	world.call("begin_dive")
+	await _dive_take_a_hull(world, fleet)
 	var mend = world.get("local_ship")
 	if mend != null and is_instance_valid(mend):
 		_ok(not mend.repair_cells.is_empty(),
@@ -2460,6 +2527,7 @@ func _check_dive(world: Node, fleet) -> void:
 	# Three things have to be true together, or "leaving the ship still has you
 	# open the doors to actually leave" comes straight back.
 	world.call("begin_dive")
+	await _dive_take_a_hull(world, fleet)
 	var hull = world.get("local_ship")
 	if hull != null and is_instance_valid(hull):
 		var shut := 0
@@ -2513,7 +2581,14 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(world.get("dive") != null, "title screen [3] starts THE DIVE")
 		world.call("end_dive")
 
-	# Put the world back where the rest of the suite left it.
+	# Put the world back where the rest of the suite left it. A run UN-CLAIMS the
+	# hull the boot gave you (that is the launch deck's whole point), and a host
+	# with no claimed ship is handed a new one — which would read downstream as a
+	# phantom vessel. So the claim is restored here, explicitly.
+	if ship != null and is_instance_valid(ship):
+		ship.pilot_peer = 1
+		world.set("local_ship", ship)
+	await world.get_tree().process_frame
 	var fresh = world.get("local_ship")
 	if fresh != null and is_instance_valid(fresh):
 		fresh.global_position = was_ship
