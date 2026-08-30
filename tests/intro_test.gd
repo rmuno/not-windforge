@@ -141,6 +141,14 @@ func _initialize() -> void:
 	if panel != null:
 		_ok(panel.visible and bool(panel.call("on_title_page")),
 			"...showing the title page")
+		# QUIT IS A DOOR HERE, and Escape is not it: Escape means "back", and
+		# there is nothing behind the front page.
+		var esc := InputEventKey.new()
+		esc.keycode = KEY_ESCAPE
+		esc.pressed = true
+		panel._input(esc)
+		_ok(panel.visible and bool(panel.call("on_title_page")),
+			"Escape on the title does nothing — it is not the way out")
 		var enter := InputEventKey.new()
 		enter.keycode = KEY_ENTER
 		enter.pressed = true

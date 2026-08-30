@@ -109,6 +109,10 @@ var _dive_landings := {}
 var _dive_shelf := Vector2.ZERO
 ## The launch deck this run raised, and the blueprint it was raised from — the
 ## berths are read out of the cells, so the owner moves a ship by moving a gap.
+## The Escape menu (maps/world/pause_menu.gd). Nothing pauses — it is chrome
+## like every other panel — but Escape goes through it rather than through
+## `get_tree().quit()`.
+var _pause_menu: PauseMenu = null
 var _dive_deck: Ship = null
 var _dive_deck_cells := {}
 var _dive_berth_taken := {}
@@ -427,6 +431,11 @@ func _ready() -> void:
 	# line, folded into ONE panel that is HIDDEN by default and shown on F1.
 	_help_panel = _build_help_panel()
 	layer.add_child(_help_panel)
+
+	# The Escape menu: resume, or back to the front door. Hidden until Escape.
+	_pause_menu = PauseMenu.new()
+	_pause_menu.world = self
+	layer.add_child(_pause_menu)
 
 	# The saves panel (F9): the list of saves with their metadata, hidden by
 	# default. Built once; only its visibility and text change.
@@ -952,6 +961,17 @@ func _dive_strip_run_gear() -> void:
 		return
 	for id in dive.granted:
 		player.inventory.remove(int(id), int(dive.granted[id]))
+
+
+## BACK TO THE FRONT DOOR. Abandons a run without a verdict (it was not
+## finished, so there is no ledger to write) and loads the intro scene, which is
+## where a next run starts from. Headless and online are left alone: the suites
+## boot worlds directly and a session has no title to return to.
+func quit_to_title() -> void:
+	end_dive()
+	if DisplayServer.get_name() == "headless" or Net.is_online():
+		return
+	get_tree().change_scene_to_file("res://maps/intro/intro.tscn")
 
 
 ## Dismiss the run-over ledger and return to an ordinary world. The run's coins
@@ -4790,8 +4810,13 @@ func _process(_delta: float) -> void:
 	_update_build_picker()
 	_handle_crafting()
 	# Handled before anything else, so they still work when the rest is broken.
+	# ESCAPE NO LONGER QUITS WHERE YOU STAND (owner 2026-08-30). It was the one
+	# keypress that could throw away ten minutes of a run by accident, with no
+	# confirmation and no way back. It opens the menu instead — same key, same
+	# verb, one step less abrupt.
 	if Input.is_action_just_pressed("quit_game"):
-		get_tree().quit()
+		if _pause_menu != null and is_instance_valid(_pause_menu):
+			_pause_menu.toggle()
 		return
 	# THE SESSION VERBS ARE NOT RUN VERBS (owner 2026-08-30: "the keybindings
 	# from the regular game are still active during the dive — you can hit T to
