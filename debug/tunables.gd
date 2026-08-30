@@ -230,6 +230,9 @@ const _REGISTRY := [
 	{"id": "dive_surge_period", "label": "Dive: seconds between a depth's attacks",
 		"group": "World", "kind": KIND_FLOAT, "default": 45.0, "min": 5.0,
 		"max": 180.0, "step": 5.0},   # world._tick_dive -> DiveRun.advance
+	{"id": "dive_assistant", "label": "Dive: the assistant mans the repair station",
+		"group": "World", "kind": KIND_BOOL, "default": true},
+		# world._dive_post_the_assistant — off = no station, no crew, X-wand only
 	# --- Ecology: the deep stirs (Q-C — whales keep the krakens down) --------
 	# Overhunt whales and nothing holds the deep in check; the meter rises per
 	# whale kill and DECAYS slowly (whales breeding back). The decay IS the
