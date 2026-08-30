@@ -120,7 +120,23 @@ const DIVE_HELM_REACH_MULT := 4.0
 const DIVE_AIR_FLOOR := 0.12
 ## Air between the shelf's underside and a moored candidate's hull, px at
 ## scale 1. A step off the rim, not a plummet.
-const DIVE_DROP_GAP := 120.0
+## Air between the deck's walking surface and a moored hull's top, px at scale 1.
+## Small on purpose: the point is that you can SEE the ship you are about to drop
+## onto from where you are standing.
+const DIVE_DROP_GAP := 150.0
+## Width of one deck platform, px at scale 1 — a few seconds' walk.
+const DIVE_PLATFORM_PX := 2200.0
+## How much wider than its hull a berth is. The clearance is what stops a ship
+## that has just been taken (and is climbing, lift 1.07) from catching a platform
+## corner on the way up.
+const DIVE_BAY_CLEARANCE := 1.35
+## Half-width of the corridor a run holds you in, in shelf widths. The Dive is a
+## shaft, not a country (owner 2026-08-30) — wander past this and the air pushes
+## you back toward the ladder.
+const DIVE_CORRIDOR_WIDTHS := 4.0
+## How hard the corridor pushes back, px/s² at scale 1 per shelf-width of
+## trespass. Firm enough to turn you, gentle enough that it reads as weather.
+const DIVE_CORRIDOR_PUSH := 260.0
 
 ## THE INTRO (TitleScreen): while the title page is up the camera drifts across
 ## the whale pod instead of following the body. `_title_anchor` is INF until the
@@ -1025,54 +1041,78 @@ func _build_launch_deck() -> void:
 	# drops you into open sky, not onto your own rock.
 	var i := 0
 	for ship in parked:
-		_park_candidate(ship as Ship, _dive_park_at(ship as Ship, at, span, i))
+		_park_candidate(ship as Ship, _dive_park_at(ship as Ship, at, i))
 		i += 1
 	# ...and the owner's own Blueprint Loft ship as the second candidate, so
 	# whatever they design in the Loft is a hull they can dive with. Made ONCE
 	# and reused: a run prop that respawned per dive would litter the sky.
 	if is_instance_valid(_dive_loft):
-		_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, span, 1))
+		_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, 1))
 	else:
-		_dive_loft = _spawn_loft_at(at + Vector2(span.x, span.y))
+		_dive_loft = _spawn_loft_at(at + Vector2(_dive_bay_width(), span.y))
 		if _dive_loft != null:
-			_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, span, 1))
+			_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, 1))
 
 	# Stand the body just above the shelf, not high over it: the run opens with
 	# a look around, not a fall.
+	# On the middle platform, between the berths, looking down at both.
 	if player != null and is_instance_valid(player):
 		player.velocity = Vector2.ZERO
-		player.global_position = at - Vector2(0.0, 150.0 * float(world_scale))
+		player.global_position = Vector2(at.x,
+			at.y - 150.0 * float(world_scale))
 
 
-## Where a candidate moors, relative to the shelf's centre. THIRD TIME, and the
-## first two failures are worth keeping written down because they were both
-## "obviously fine" until the owner tried to walk to one:
+## Where a candidate moors. FOURTH layout, and the first three are kept written
+## down because each was "obviously fine" until somebody walked it:
 ##
-##   1. Parked a hull-length out in clear air — visible and unreachable without
-##      a grapple ("the starting spot in dive mode has no accessible ships").
-##   2. Moored abeam with the inner edge on the rim — which put a six-thousand-
-##      pixel wall of hull in front of a hundred-and-forty-pixel person, AND
-##      left them unfrozen, so the starter (lift ratio 1.07) simply CLIMBED
-##      away while you walked toward it.
+##   1. Parked a hull-length out in clear air — visible, unreachable.
+##   2. Moored abeam with its inner edge on the rim — a six-thousand-pixel wall
+##      of hull in front of a hundred-and-forty-pixel person, and unfrozen, so
+##      the starter climbed away at lift 1.07 while you walked toward it.
+##   3. Hung below the rim, frozen — reachable at last, but BELOW THE SCREEN
+##      ("you have to jump down and hope to land near one"), and worse: taking
+##      one thawed a hull with lift under solid rock, which drove it up into the
+##      launch platform and broke it ("I got propelled upward and immediately
+##      broke the ship against the starting platform").
 ##
-## What the owner actually described on day one was vertical: *"choose which
-## ship to FALL ONTO"*. So a candidate now hangs BELOW the shelf with its centre
-## directly under a rim — walk to the edge, step off, land amidships. You cannot
-## miss a hull that is twelve thousand pixels wide and directly beneath you, and
-## walking off the MIDDLE of the shelf still drops you into open sky with
-## nothing, which is the shipless run.
-func _dive_park_at(ship: Ship, at: Vector2, span: Vector2, index: int) -> Vector2:
+## The owner's own fix is the shape now: *"why can't the ships be at the same
+## level or slightly below the starting spot, but under platforms so a player
+## can just choose one by falling through and landing on top?"* The deck is a row
+## of narrow PLATFORMS with wide GAPS between them, and a candidate sits in a
+## gap — its top a short drop below the walking surface, so you can SEE it from
+## where you stand, and OPEN SKY directly above it, so taking it and climbing
+## away cannot drive it into anything. Walk off the LAST platform instead and
+## there is nothing under you, which is the shipless run.
+func _dive_park_at(ship: Ship, at: Vector2, index: int) -> Vector2:
 	var ws := float(world_scale)
-	var half_w := 2000.0 * ws
 	var half_h := 2000.0 * ws
-	if ship != null and is_instance_valid(ship) and ship.solid_bounds.size.x > 0.0:
-		half_w = ship.solid_bounds.size.x * 0.5 * ws
+	if ship != null and is_instance_valid(ship) and ship.solid_bounds.size.y > 0.0:
 		half_h = ship.solid_bounds.size.y * 0.5 * ws
-	# Port for the first, starboard for the second, then queue outboard.
+	return Vector2(_dive_bay_centre(index),
+		at.y + DIVE_DROP_GAP * ws + half_h)
+
+
+## The centre of berth `index`, alternating port and starboard of the middle
+## platform. Each berth is a gap in the deck wide enough that a hull rising out
+## of it never touches a platform corner.
+func _dive_bay_centre(index: int) -> float:
+	var ws := float(world_scale)
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	var pitch := (_dive_bay_width() + DIVE_PLATFORM_PX * ws)
 	var side := -1.0 if index % 2 == 0 else 1.0
-	var out := float(index / 2) * half_w * 2.2
-	return Vector2(at.x + side * (span.x * 0.5 + out),
-		at.y + span.y + DIVE_DROP_GAP * ws + half_h)
+	return cx + side * pitch * (0.5 + float(index / 2))
+
+
+## How wide one berth is: the widest candidate plus air, so nothing is moored
+## under an overhang.
+func _dive_bay_width() -> float:
+	var ws := float(world_scale)
+	var widest := 3000.0 * ws
+	for ship in fleet.ships():
+		if is_instance_valid(ship) and ship.faction == 0 \
+				and ship.creature_kind == "" and not ship.is_carcass():
+			widest = maxf(widest, ship.solid_bounds.size.x * ws)
+	return widest * DIVE_BAY_CLEARANCE
 
 
 ## Where depth `d`'s landing is in the world. The ladder decides the altitude and
@@ -1098,15 +1138,54 @@ func _cut_landing(d: int) -> void:
 	_dive_landings[d] = true
 	var at := dive_landing_pos(d)
 	var span := _dive_shelf_span()
-	IslandGen.ensure_generated(terrain, world_seed, [at], span.x, 64)
-	var cp := maxf(terrain.cell_px(), 1.0)
-	var top_left := terrain.world_to_cell(at + Vector2(-span.x * 0.5, 0.0))
-	terrain.fill_rect(Rect2i(top_left,
-		Vector2i(int(span.x / cp), maxi(1, int(span.y / cp)))),
-		TerrainDB.Type.STONE)
+	IslandGen.ensure_generated(terrain, world_seed, [at],
+		maxf(span.x, _dive_deck_reach()), 64)
+	if d == 1:
+		_cut_launch_platforms(at, span)
+	else:
+		_stone(at + Vector2(-span.x * 0.5, 0.0), span)
 	terrain.flush_rebuilds()
 	if DiveRun.is_outpost(dive.seed_v, d):
 		_plant_outpost(at)
+
+
+## Stamp one slab of stone: `at` is its top-left corner, `size` its extent in
+## world px.
+func _stone(at: Vector2, size: Vector2) -> void:
+	var cp := maxf(terrain.cell_px(), 1.0)
+	terrain.fill_rect(Rect2i(terrain.world_to_cell(at),
+		Vector2i(maxi(1, int(size.x / cp)), maxi(1, int(size.y / cp)))),
+		TerrainDB.Type.STONE)
+
+
+## THE LAUNCH DECK: narrow platforms with wide berths between them, one berth per
+## candidate plus a last one that is empty. You walk the platforms, look down the
+## berths, and drop through the one whose ship you want.
+func _dive_deck_bays() -> int:
+	var n := 0
+	for ship in fleet.ships():
+		if is_instance_valid(ship) and ship.faction == 0 \
+				and ship.creature_kind == "" and not ship.is_carcass():
+			n += 1
+	return n
+
+
+## How far the deck reaches from the centre line, for terrain generation.
+func _dive_deck_reach() -> float:
+	return absf(_dive_bay_centre(maxi(0, _dive_deck_bays() - 1))) \
+		+ _dive_bay_width()
+
+
+func _cut_launch_platforms(at: Vector2, span: Vector2) -> void:
+	var ws := float(world_scale)
+	var plat := Vector2(DIVE_PLATFORM_PX * ws, span.y)
+	var bays := maxi(1, _dive_deck_bays())
+	# The middle platform you start on, then one on the far side of every berth.
+	_stone(Vector2(at.x - plat.x * 0.5, at.y), plat)
+	for i in bays + 1:
+		var side := -1.0 if i % 2 == 0 else 1.0
+		var edge := _dive_bay_centre(i) + side * (_dive_bay_width() * 0.5)
+		_stone(Vector2(edge - plat.x * (0.5 - side * 0.5), at.y), plat)
 
 
 ## Stand a quartermaster on a landing. Three of the eight rungs have one
@@ -1205,8 +1284,14 @@ func _park_candidate(ship: Ship, at: Vector2) -> void:
 ## Thaw the hull you took. Anything still moored stays frozen — change your mind
 ## and the other candidate is exactly where you left it.
 func _dive_thaw(ship: Ship) -> void:
-	if ship != null and is_instance_valid(ship) and not ship.is_nest:
-		ship.freeze = false
+	if ship == null or not is_instance_valid(ship) or ship.is_nest:
+		return
+	# At rest, not launched. A hull that has been held for a minute must not
+	# inherit anything from being held, and the berth above it is open sky, so
+	# lift simply floats it up out of the deck.
+	ship.linear_velocity = Vector2.ZERO
+	ship.angular_velocity = 0.0
+	ship.freeze = false
 
 
 ## The run ends because YOU did, not because a ship did. Only reachable on a
@@ -1342,6 +1427,7 @@ func _tick_dive(delta: float) -> void:
 			and is_instance_valid(local_ship) \
 			and not local_ship.repair_cells.is_empty():
 		local_ship.menders_running = true
+	_hold_the_corridor(delta)
 	for ev in dive.advance(delta, _player_altitude_frac(),
 			Tunables.get_num("dive_surge_period")):
 		match String(ev):
@@ -1358,6 +1444,38 @@ func _tick_dive(delta: float) -> void:
 				_dive_wake_leviathan()
 			"escaped":
 				_dive_bank()
+
+
+## Half the width of the shaft a run holds you in, in world px.
+func dive_corridor_half() -> float:
+	return DIVE_CORRIDOR_WIDTHS * _dive_shelf_span().x
+
+
+## THE DIVE IS A SHAFT, NOT A COUNTRY (owner 2026-08-30: "I'm not sure how much
+## sense it makes for the dive to have a FULL wide map if the purpose is to go
+## straight down … just looking for ways to make things more linear").
+##
+## The answer is a CORRIDOR rather than a rail: nothing takes the stick away and
+## nothing stops you climbing (the climb IS the extraction), but stray far enough
+## sideways and the air leans on you until you come back. It reads as weather,
+## it needs no wall to collide with, and it keeps the ladder's slalom — itself
+## clamped to `DiveRun.LADDER_SPREAD` — comfortably inside what you can see.
+func _hold_the_corridor(delta: float) -> void:
+	if not is_instance_valid(local_ship):
+		return
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	var half := dive_corridor_half()
+	if half <= 0.0:
+		return
+	var over := absf(local_ship.global_position.x - cx) - half
+	if over <= 0.0:
+		return
+	var widths := over / maxf(_dive_shelf_span().x, 1.0)
+	var push := -signf(local_ship.global_position.x - cx) \
+		* DIVE_CORRIDOR_PUSH * float(world_scale) * minf(widths, 4.0)
+	local_ship.apply_central_force(Vector2(push, 0.0) * local_ship.mass)
+	if player != null and is_instance_valid(player) and not player.is_piloting():
+		player.velocity.x += push * delta
 
 
 ## A depth's den comes for you: hunters spawned AHEAD of you on your own line,

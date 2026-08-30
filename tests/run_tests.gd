@@ -1974,12 +1974,21 @@ func _test_dive_run() -> void:
 		"the launch deck is the centre line")
 	_check(is_equal_approx(DiveRun.landing_offset(sv, 5), DiveRun.landing_offset(sv, 5)),
 		"a landing's place is stable within a run")
-	# The slalom: consecutive landings are a modest sidestep apart, never a haul.
+	# The slalom: consecutive landings are a sidestep apart, never a haul — and
+	# the walk is CLAMPED, so the ladder cannot wander out of the shaft the run
+	# holds you in (owner 2026-08-30: "I'm not sure how much sense it makes for
+	# the dive to have a FULL wide map if the purpose is to go straight down").
 	for d in range(2, DiveRun.DEPTHS + 1):
 		var step := absf(DiveRun.landing_offset(sv, d) - DiveRun.landing_offset(sv, d - 1))
-		_check(step >= 1.4 and step <= 4.1,
+		_check(step <= 4.1,
 			"depth %d sits %.1f shelf-widths off depth %d (a slalom, not a haul)"
 				% [d, step, d - 1])
+	for k in 40:
+		for d in range(1, DiveRun.DEPTHS + 1):
+			var off := DiveRun.landing_offset(9000 + k * 31337, d)
+			_check(absf(off) <= DiveRun.LADDER_SPREAD + 0.001,
+				"the ladder stays inside the shaft (%.1f of %.1f widths)"
+					% [off, DiveRun.LADDER_SPREAD])
 	# Runs differ. (Not every pair of seeds must differ at every rung, but a
 	# spread of seeds must not all lay the same ladder.)
 	var shapes := {}
