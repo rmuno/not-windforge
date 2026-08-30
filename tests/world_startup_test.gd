@@ -2444,31 +2444,29 @@ func _check_dive(world: Node, fleet) -> void:
 	if pl != null and is_instance_valid(pl):
 		_ok(absf(pl.global_position.y - top_y) < slack,
 			"the BODY starts at the top of the ladder")
-		# ...standing on something. The shelf is stamped terrain, so there must
-		# be solid ground under the spawn point or the run opens in freefall.
-		var terr = world.get("terrain")
-		if terr != null:
-			var ws := float(world.get("world_scale"))
-			var grounded := false
-			for step in 30:
-				var under: Vector2 = pl.global_position \
-					+ Vector2(0.0, float(step) * 100.0 * ws)
-				if terr.is_solid(terr.world_to_cell(under)):
-					grounded = true
-					break
-			_ok(grounded, "...on a shelf, not in mid-air")
+		# ...standing on the DECK. Depth 1 is the authored blueprint
+		# (ships/dive_deck.ship) now rather than stamped stone, so the question
+		# is whether a deck exists under the body, not whether the ground does.
+		var deck = world.get("_dive_deck")
+		_ok(deck != null and is_instance_valid(deck) and deck.is_nest,
+			"...on the launch deck, which hangs frozen like a nest")
+		if deck != null and is_instance_valid(deck):
+			var local: Vector2 = deck.to_local(pl.global_position)
+			_ok(local.y <= deck.solid_bounds.end.y,
+				"...and the body is on it, not below it")
 	# THE LADDER OF LANDINGS: depth 1 is cut, so is depth 2 (the lookahead you
 	# aim at), and depth 3 is not yet — shelves are cut as you arrive, not all
 	# at once, or a run would stamp eight regions of terrain at the start line.
 	var terr2 = world.get("terrain")
 	if terr2 != null:
-		for d in [1, 2]:
-			var lp: Vector2 = world.call("dive_landing_pos", d)
-			# Probe INSIDE the slab: it is LAUNCH_SHELF_PX.y thick at scale 1,
-			# so a fixed 400 px punched straight through it in the legacy scene.
-			_ok(terr2.is_solid(terr2.world_to_cell(
-					lp + Vector2(0.0, 60.0 * float(world.get("world_scale"))))),
-				"depth %d's landing is cut" % d)
+		# Depth 1 is the authored DECK, not stamped stone — only the rungs below
+		# it are terrain.
+		var lp2: Vector2 = world.call("dive_landing_pos", 2)
+		_ok(terr2.is_solid(terr2.world_to_cell(
+				lp2 + Vector2(0.0, 60.0 * float(world.get("world_scale"))))),
+			"depth 2's landing is cut")
+		_ok(not (world.call("dive_berth_positions") as Array).is_empty(),
+			"...and depth 1 raised the authored deck, berths and all")
 		var cut = world.get("_dive_landings")
 		_ok(not (cut as Dictionary).has(4),
 			"...and the rungs below are not cut until you get there")

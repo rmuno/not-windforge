@@ -1,0 +1,32 @@
+# THE DIVE'S LAUNCH DECK — EDIT ME (owner 2026-08-30: "you can just plan it out
+# with ascii characters like we've done with the ship builder").
+#
+# This is the ground a run starts on. It spawns FROZEN at depth 1, like a nest,
+# and the game reads the BERTHS straight out of it: every run of empty cells
+# wide enough to hold a hull becomes a berth, and a candidate ship is moored
+# just below its centre. Move a gap here and the ship moves with it.
+#
+#   -  platform  — solid to stand on, and S+jump drops you through it
+#   .  empty     — a BERTH. A ship hangs under the middle of each one.
+#
+# SCALE, because it is the thing that keeps biting: the game runs at 8x, so ONE
+# CHARACTER HERE IS 128 WORLD PIXELS. The player is 80x144 px — about one cell
+# wide and one tall. An on-foot screen is ~6,500 px, so about 50 characters.
+# The starter hull is 96 characters wide; the Blueprint Loft test ship is 22.
+#
+# The layout below, left to right:
+#
+#   20 platform  |  32 berth (a small hull)  |  20 platform  |  110 berth (the
+#   starter)  |  20 platform
+#
+# You start on the MIDDLE platform, with a berth a step to either side. Walk off
+# an edge — or drop through the platform — and you land on the ship below. Walk
+# off the FAR END instead and there is nothing under you, which is the run with
+# no ship at all.
+#
+# 'origin COL ROW' names which character is deck cell (0,0).
+
+origin 61 0
+--------------------................................--------------------..............................................................................................................--------------------
+--------------------................................--------------------..............................................................................................................--------------------
+--------------------................................--------------------..............................................................................................................--------------------

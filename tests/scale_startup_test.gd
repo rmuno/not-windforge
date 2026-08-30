@@ -343,8 +343,9 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 	var nearest := INF
 	var top_gap := INF
 	for hull in fleet.ships():
-		if not is_instance_valid(hull) or hull.faction != 0 \
-				or hull.creature_kind != "" or hull.is_carcass():
+		# ...not the DECK, which is faction 0 and a structure. Counting it read
+		# as "nearest hull 0 px away", which is true and useless.
+		if not is_instance_valid(hull) or hull.faction != 0 or hull.is_nest 				or hull.creature_kind != "" or hull.is_carcass():
 			continue
 		var dx: float = absf(hull.global_position.x - pl.global_position.x)
 		var dy: float = hull.global_position.y - pl.global_position.y
