@@ -2509,7 +2509,7 @@ func _check_dive(world: Node, fleet) -> void:
 			if hull.freeze:
 				held += 1
 			if terr3 != null:
-				var top: float = hull.global_position.y 					- hull.solid_bounds.size.y * 0.5 * ws
+				var top: float = hull.global_position.y 					- hull.solid_bounds.size.y * 0.5   # ALREADY world px at any scale
 				for step in 12:
 					var probe := Vector2(hull.global_position.x,
 						top - float(step) * 60.0 * ws)

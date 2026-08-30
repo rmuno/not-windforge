@@ -1892,6 +1892,22 @@ func _test_dive_run() -> void:
 			"'%s' is centred on its anchor, not boxed" % line)
 		_check(off.y < 0.0, "...and floats above it")
 
+	# `Ship.solid_bounds` IS ALREADY WORLD PIXELS at any world scale. The 8× world
+	# is built by upscaling the CELL GRID, not by scaling the node, so an
+	# authored hull's bounds grow on their own and multiplying them by
+	# world_scale is an eightfold error. That error is what kept the Dive's
+	# launch deck unreachable through four rewrites — and the legacy suite runs
+	# at scale 1, where ×world_scale is ×1 and therefore invisible. So it is
+	# pinned here, in arithmetic, at a scale where it would show.
+	var authored := ShipLayout.load_cells("res://ships/starter.ship")
+	var wide_1x := _cells_span_x(authored)
+	for mult in [1, 4, 8]:
+		var up := ShipLayout.upscale_cells(authored, mult)
+		var span := _cells_span_x(up)
+		_check(absf(span - wide_1x * float(mult)) < Ship.CELL * 2.0,
+			"an upscaled hull is %d× as wide ON ITS OWN (%.0f vs %.0f)"
+				% [mult, span, wide_1x * float(mult)])
+
 	_check(Tunables.get_num("dive_surge_lead") >= 0.5,
 		"a surge always arrives some distance ahead, never on top of you")
 	_check(DiveRun.surge_kinds(0) == DiveRun.surge_kinds(1)
@@ -2061,6 +2077,16 @@ func _test_dive_run() -> void:
 			"stock row '%s' is priced and named" % r["id"])
 		_check(String(r["id"]) in ["lung", "patch", "balloon"],
 			"stock row '%s' is one the world knows how to hand over" % r["id"])
+
+
+## The world-px width of a cell layout, the way `Ship.solid_bounds` measures it.
+func _cells_span_x(cells: Dictionary) -> float:
+	var lo := 1 << 30
+	var hi := -(1 << 30)
+	for cell in cells:
+		lo = mini(lo, (cell as Vector2i).x)
+		hi = maxi(hi, (cell as Vector2i).x)
+	return 0.0 if hi < lo else float(hi - lo + 1) * Ship.CELL
 
 
 func _test_living_creature_gets_a_coarse_collider() -> void:
