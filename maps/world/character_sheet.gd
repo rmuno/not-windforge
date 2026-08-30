@@ -55,7 +55,10 @@ func _draw() -> void:
 	var line := fs + 6 * s
 
 	# A calm, centred panel sized to the content.
+	var stock: Array = m.get("outpost_stock", [])
 	var stats: Array = m.get("stats", [])
+	if not stock.is_empty():
+		return _draw_outpost(m, stock)
 	var rows := 3 + stats.size() * 7 + 3   # title/money + per-stat header+5 perks+gap + footer
 	var w := 360.0 * s
 	var h := float(rows) * (small + 3 * s) + 40.0 * s
@@ -106,3 +109,46 @@ func _draw() -> void:
 		draw_string(font, Vector2(x, y),
 			"Stand by a trainer to train or sell salvage.",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, small, Color(0.62, 0.66, 0.72))
+
+
+## THE OUTPOST'S COUNTER — the same panel, the same digits, a different trade
+## (owner 2026-08-30: "a few natural safe zones along the way … in-run upgrades
+## which are temporary but MUCH cheaper than anything permanent").
+##
+## It replaces the stat sheet entirely while you stand at a quartermaster: the
+## two can never be in reach at once, and a run has no use for the permanent
+## ladder — what it needs is the line at the top, which says that everything
+## here is bought with coins you have not taken home yet.
+func _draw_outpost(m: Dictionary, stock: Array) -> void:
+	var font := ThemeDB.fallback_font
+	var s := _scale()
+	var fs := 14 * s
+	var small := 12 * s
+	var line := fs + 6 * s
+	var w := 420.0 * s
+	var h := float(stock.size() + 5) * line + 30.0 * s
+	var origin := Vector2((size.x - w) * 0.5, (size.y - h) * 0.5)
+	draw_rect(Rect2(origin, Vector2(w, h)), Color(0.06, 0.06, 0.05, 0.95))
+	draw_rect(Rect2(origin, Vector2(w, h)), Color(0.55, 0.46, 0.32, 0.9), false, 1.0)
+
+	var x := origin.x + 16.0 * s
+	var y := origin.y + 26.0 * s
+	draw_string(font, Vector2(x, y), "THE OUTPOST   (K to close)",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(0.94, 0.88, 0.74))
+	y += line
+	draw_string(font, Vector2(x, y), "Carrying:  %d coins  (unbanked)"
+		% int(m.get("pot", 0)), HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
+		Color(0.95, 0.86, 0.45))
+	y += line + 4.0 * s
+	for row in stock:
+		var r := row as Dictionary
+		var afford := bool(r.get("afford", false))
+		var col := Color(0.86, 0.90, 0.96) if afford else Color(0.48, 0.46, 0.44)
+		draw_string(font, Vector2(x, y), "[%d]  %-46s %4d" % [
+			int(r.get("key", 0)), String(r.get("label", "")), int(r.get("cost", 0))],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, small, col)
+		y += line
+	y += 6.0 * s
+	draw_string(font, Vector2(x, y),
+		"Every coin spent here is a coin you do not carry home.",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, small, Color(0.62, 0.60, 0.56))

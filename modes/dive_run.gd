@@ -182,6 +182,39 @@ static func is_outpost(sv: int, d: int) -> bool:
 	return outpost_depths(sv).has(clampi(d, 1, DEPTHS))
 
 
+## WHAT AN OUTPOST SELLS (owner 2026-08-30: "in-run upgrades which are temporary
+## but MUCH cheaper than anything permanent").
+##
+## Three things, all of them gear that already exists, all of them bought with
+## THE POT — the coins you are carrying and have not banked. That is the whole
+## economy in one sentence: **every purchase is money you are choosing not to
+## take home**, so the shop and the extraction premium pull against each other
+## every single time you land.
+##
+## The Aether Lung is the important one. Depths 6–8 sit below
+## `Airspace.DEEP_TOP`, so the air down there kills an unprotected pilot — the
+## headless playtest ended a run on exactly that. The Lung is therefore not a
+## nice-to-have: it is the ticket past the gate, and it is why the landings are
+## load-bearing rather than scenery.
+const STOCK := [
+	{"id": "lung", "cost": 220,
+		"label": "Aether Lung — breathe below the line"},
+	{"id": "patch", "cost": 120,
+		"label": "Hull patch — mend her where she stands"},
+	{"id": "balloon", "cost": 90,
+		"label": "Large balloon — more lift, tether it with Q"},
+]
+
+
+## Spend `cost` from the pot. Refused (and nothing changes) if you cannot afford
+## it — no debt, exactly like `Wallet.spend`.
+func spend(cost: int) -> bool:
+	if outcome != "" or cost < 0 or pot < cost:
+		return false
+	pot -= cost
+	return true
+
+
 ## What one creature of `kind` is worth killed at `d`. Whole coins, never
 ## negative.
 static func coins_for(kind: String, d: int) -> int:

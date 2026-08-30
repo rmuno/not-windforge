@@ -105,6 +105,9 @@ var _dive_loft: Ship = null
 ## (owner 2026-08-30: "every level having some landmass … guardrailed and semi
 ## forced progress"), cut lazily one rung ahead of you.
 var _dive_landings := {}
+## The quartermasters standing on this run's outpost landings (Trainer nodes in a
+## different coat — same reach idiom, different trade). Cleared with the run.
+var _dive_outposts: Array = []
 const DIVE_SHIPLESS_GRACE := 1.5
 ## How much further the helm answers E inside a run — enough to take it while
 ## standing on the hull above it, which is where `_dive_step_out` leaves you.
@@ -878,6 +881,11 @@ func begin_dive() -> void:
 func end_dive() -> void:
 	dive = null
 	_dive_shipless = 0.0
+	for post in _dive_outposts:
+		if is_instance_valid(post):
+			post.queue_free()
+	_dive_outposts.clear()
+	_dive_landings.clear()
 	# The unchosen candidate goes with the run — unless you took it, in which
 	# case it is your ship now and stays.
 	if is_instance_valid(_dive_loft) and _dive_loft != local_ship \
@@ -1005,6 +1013,85 @@ func _cut_landing(d: int) -> void:
 		Vector2i(int(span.x / cp), maxi(1, int(span.y / cp)))),
 		TerrainDB.Type.STONE)
 	terrain.flush_rebuilds()
+	if DiveRun.is_outpost(dive.seed_v, d):
+		_plant_outpost(at)
+
+
+## Stand a quartermaster on a landing. Three of the eight rungs have one
+## (`DiveRun.outpost_depths`); they are the run's only safe errand, and the only
+## place the pot can be spent instead of banked.
+func _plant_outpost(at: Vector2) -> void:
+	var post := Trainer.new()
+	post.name = "DiveOutpost"
+	post.reach = Ship.CELL * 4.0 * world_scale
+	post.coat = Color(0.62, 0.50, 0.34)   # a quartermaster, not a trainer
+	post.position = at - Vector2(0.0, Ship.CELL * 1.2 * world_scale)
+	add_child(post)
+	_dive_outposts.append(post)
+
+
+## The quartermaster you are standing at, or null. Same "are you close enough"
+## idiom as helms, doors and trainers.
+func near_outpost() -> Node2D:
+	if dive == null or player == null or not is_instance_valid(player):
+		return null
+	for post in _dive_outposts:
+		if is_instance_valid(post) and post.in_reach(player.global_position):
+			return post
+	return null
+
+
+## The outpost's stock as plain rows for the sheet: label, cost, and whether the
+## pot covers it. Empty when you are not standing at one.
+func dive_stock() -> Array:
+	var out: Array = []
+	if dive == null or dive.outcome != "" or near_outpost() == null:
+		return out
+	var key := 1
+	for row in DiveRun.STOCK:
+		var r := row as Dictionary
+		out.append({"key": key, "label": r["label"], "cost": int(r["cost"]),
+			"afford": dive.pot >= int(r["cost"])})
+		key += 1
+	return out
+
+
+## Buy stock row `index` (0-based) with the POT. Returns whether it happened.
+## Refused off an outpost, on a finished run, or when the pot is short.
+func try_buy_stock(index: int) -> bool:
+	if dive == null or dive.outcome != "" or near_outpost() == null:
+		return false
+	if index < 0 or index >= DiveRun.STOCK.size():
+		return false
+	if player == null or not is_instance_valid(player):
+		return false
+	var row: Dictionary = DiveRun.STOCK[index]
+	var cost := int(row["cost"])
+	if not dive.spend(cost):
+		_notify("Not enough on you — %d coins short." % (cost - dive.pot))
+		return false
+	match String(row["id"]):
+		"lung":
+			player.inventory.add(ItemDB.Crafted.LIFE_SUPPORT, 1)
+		"balloon":
+			player.inventory.add(ItemDB.Crafted.BALLOON_LARGE, 1)
+		"patch":
+			_dive_patch_hull()
+	if _pickups != null:
+		_pickups.add(player.global_position, "-%d coins" % cost, float(world_scale))
+	return true
+
+
+## The hull patch: one sweep of the repair wand's effect over the WHOLE ship,
+## paid for instead of held. Restores toward the blueprint exactly like the wand
+## and the repair station do — nothing new can be built, only mended.
+const DIVE_PATCH_AMOUNT := 400.0
+func _dive_patch_hull() -> void:
+	if not is_instance_valid(local_ship):
+		return
+	for cell in local_ship.blueprint_map().keys():
+		local_ship.repair_cell(cell as Vector2i, DIVE_PATCH_AMOUNT)
+	local_ship.rebuild()
 
 
 ## Move one candidate hull to the launch deck at rest. Teleporting is fine here:
@@ -1451,6 +1538,12 @@ func try_sell_salvage() -> int:
 ## Shop keys are live only while the sheet (the shop panel) is open.
 func _train_from_sheet(stat_index: int) -> void:
 	if _character_sheet != null and _character_sheet.visible:
+		# AT AN OUTPOST the digits buy stock instead of stat levels. The two can
+		# never both be in reach (a Dive landing has no trainer on it), so this
+		# is a precedence rule with nothing to disambiguate.
+		if near_outpost() != null:
+			try_buy_stock(stat_index)
+			return
 		try_train(stat_index)
 
 
@@ -1467,6 +1560,12 @@ func character_sheet_model() -> Dictionary:
 	var out := {
 		"money": 0, "near_trainer": _near_trainer(),
 		"salvage_value": 0, "taming": false, "stats": [],
+		# THE OUTPOST takes over the sheet when you are standing at one: it is
+		# the same panel, the same digits, a different trade. `pot` is what you
+		# are spending — the coins you have NOT banked, which is what makes every
+		# purchase a decision and not a formality.
+		"outpost_stock": dive_stock(),
+		"pot": 0 if dive == null else dive.pot,
 	}
 	if player == null or not is_instance_valid(player) or player.stats == null:
 		return out
