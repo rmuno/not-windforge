@@ -1853,6 +1853,45 @@ func _test_dive_run() -> void:
 	# geometry lives in world._dive_surge; what is pinned here is the ladder it
 	# reads.) The measured dive is ~1950 px/s and the default lead is 4 s, so a
 	# picket lands roughly 8 km ahead at 8x — well outside a hull.
+	# THE INTRO LOOPS (owner 2026-08-30: "could it be looped in some way?"). The
+	# camera's path must close on itself exactly, or a title left running walks
+	# off into empty sky and the intro dies of nothing to look at.
+	var p0 := TitleCamera.offset(0.0)
+	var p1 := TitleCamera.offset(TitleCamera.PERIOD)
+	_check(p0.distance_to(p1) < 0.01,
+		"the intro camera returns to where it started after one period")
+	_check(TitleCamera.offset(TitleCamera.PERIOD * 3.0).distance_to(p0) < 0.01,
+		"...and after three, so it can run all night")
+	var widest := 0.0
+	var last := TitleCamera.offset(0.0)
+	var step_max := 0.0
+	for i in 461:
+		var t := TitleCamera.PERIOD * float(i) / 460.0
+		var at := TitleCamera.offset(t)
+		widest = maxf(widest, at.length())
+		step_max = maxf(step_max, at.distance_to(last))
+		last = at
+	_check(widest <= TitleCamera.SWEEP + TitleCamera.RISE,
+		"the intro never wanders further than its own sweep (%.0f px)" % widest)
+	_check(step_max < TitleCamera.SWEEP * 0.1,
+		"...and moves smoothly, never jumping (%.0f px per 0.1 s)" % step_max)
+	# It has to actually MOVE, or it is a still photograph.
+	_check(TitleCamera.offset(TitleCamera.PERIOD * 0.25).distance_to(p0)
+		> TitleCamera.SWEEP * 0.5, "the intro camera really travels")
+
+	# A PROMPT IS CENTRED BY MEASUREMENT, NEVER CLIPPED INTO A BOX. The shipped
+	# game read "[E] take the hel" for weeks: a fixed 96x-scale width with
+	# HORIZONTAL_ALIGNMENT_CENTER, and Godot clips to the width it is handed.
+	var font := ThemeDB.fallback_font
+	for line in ["[E] take the helm", "[E] open the door", "[E] close the door",
+			"[E] run the repair station", "[E] stop the repair station"]:
+		var fs := 96
+		var off := WorldOverlay.prompt_offset(line, fs)
+		var w: float = font.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		_check(absf(off.x + w * 0.5) < 0.01,
+			"'%s' is centred on its anchor, not boxed" % line)
+		_check(off.y < 0.0, "...and floats above it")
+
 	_check(Tunables.get_num("dive_surge_lead") >= 0.5,
 		"a surge always arrives some distance ahead, never on top of you")
 	_check(DiveRun.surge_kinds(0) == DiveRun.surge_kinds(1)

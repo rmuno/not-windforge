@@ -2484,6 +2484,23 @@ func _check_dive(world: Node, fleet) -> void:
 				and absf(hull.global_position.y - top_y) < slack:
 			near_deck += 1
 	_ok(near_deck >= 2, "at least two hulls are parked to choose from (%d)" % near_deck)
+	# ...AND YOU CAN WALK TO ONE (owner 2026-08-30: "the starting spot in dive
+	# mode has no accessible ships"). The hulls moor with their inner edge on
+	# the shelf's rim, so the gap from the body to the nearest hull is a walk,
+	# not a grapple.
+	if pl != null and is_instance_valid(pl):
+		var gap := INF
+		for hull in fleet.ships():
+			if not is_instance_valid(hull) or hull.faction != 0 \
+					or hull.creature_kind != "" or hull.is_carcass():
+				continue
+			if absf(hull.global_position.y - top_y) >= slack:
+				continue
+			var half: float = hull.solid_bounds.size.x * 0.5 * float(world.get("world_scale"))
+			gap = minf(gap, maxf(0.0,
+				absf(hull.global_position.x - pl.global_position.x) - half))
+		_ok(gap < 6000.0 * float(world.get("world_scale")),
+			"a hull is a walk away from where you land (%.0f px of shelf)" % gap)
 
 	# THE STAKE. Losing the ship must not quietly hand you another one — the
 	# world's "never strand the player shipless" safety net is the exact thing
@@ -2615,6 +2632,15 @@ func _check_dive(world: Node, fleet) -> void:
 	_ok((world.get("_dive_outposts") as Array).is_empty(),
 		"the quartermasters go with the run")
 
+	# --- THE SESSION VERBS ARE NOT RUN VERBS (owner 2026-08-30) -------------
+	# "You can hit T to teleport way down (and your ship is still there!)"
+	world.call("begin_dive")
+	_ok(bool(world.call("_refuse_in_run", "test")),
+		"a run refuses the session verbs (reset / respawn / save / host)")
+	world.call("end_dive")
+	_ok(not bool(world.call("_refuse_in_run", "test")),
+		"...and allows them again outside one")
+
 	world.call("end_dive")
 	_ok(world.get("dive") == null and world.call("dive_status") == null,
 		"ending a run clears the mode entirely")
@@ -2728,6 +2754,36 @@ func _check_backdrop_and_chooser(world: Node, fleet) -> void:
 		"...and turns sandbox mode ON (the same toggle F2 drives)")
 	_ok(pl == null or pl.wallet == null or pl.wallet.balance >= 5000,
 		"...with the kit-me-out loadout applied")
+
+	# THE INTRO IS A PICTURE, NOT A COCKPIT (owner 2026-08-30). While the title
+	# is up, every piece of player-facing chrome has to be silent: the edge
+	# markers were still pointing at things, the helm was still offering itself,
+	# and the health bar was still there over the game's own front page.
+	chooser.open()
+	_ok(bool(world.call("hud_quiet")), "the title screen quiets the HUD")
+	_ok((world.call("edge_marker_targets") as Array).is_empty(),
+		"...no edge markers over the intro")
+	_ok(world.call("interact_prompt") == null,
+		"...and the helm does not offer itself")
+	var vit: Dictionary = world.call("player_vitals")
+	_ok(float(vit.get("max", 1.0)) <= 0.0, "...nor is there a health bar")
+	# The corner keeps the build number and drops the key hints.
+	world.call("_update_corner_status")
+	var corner = world.get("_corner_label")
+	if corner != null:
+		_ok(not String(corner.text).contains("Tab map"),
+			"...and no 'help / map' hints on the front page")
+		_ok(String(corner.text).contains("v"), "...but the build number stays")
+	chooser._input(key1)
+	chooser._input(key1)
+	_ok(not bool(world.call("hud_quiet")), "dismissing the title brings the HUD back")
+	world.call("_update_corner_status")
+	if corner != null:
+		_ok(String(corner.text).contains("Tab map"),
+			"...hints and all")
+		var line: String = String(corner.text).split("\n")[-1]
+		_ok(line.find("fps") < line.find("v0"),
+			"fps reads before the version (%s)" % line)
 
 	# The intro camera: while the title is up the camera is NOT on the body.
 	# (A regression here would show as "the game starts looking at nothing".)

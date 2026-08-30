@@ -112,18 +112,34 @@ const DIVE_SHIPLESS_GRACE := 1.5
 ## How much further the helm answers E inside a run — enough to take it while
 ## standing on the hull above it, which is where `_dive_step_out` leaves you.
 const DIVE_HELM_REACH_MULT := 4.0
+## The share of your pool the deep air can never take you below inside a run.
+## Low enough that being down there unprotected is genuinely dangerous, above
+## zero so the AIR is never the killer.
+const DIVE_AIR_FLOOR := 0.12
 
 ## THE INTRO (TitleScreen): while the title page is up the camera drifts across
 ## the whale pod instead of following the body. `_title_anchor` is INF until the
 ## first frame computes the pod's centroid, so it is decided once the world is
 ## actually populated rather than at _ready.
-const TITLE_CAM_DRIFT := 26.0   ## px/s at scale 1 — a drift, not a pan
+## The intro camera's PATH is maps/world/title_camera.gd — pure, so the suite can
+## pin that it really loops. Only the zoom lives here.
 const TITLE_ZOOM_OUT := 2.2     ## camera_zoom is divided by this on the title
 var _title_anchor := Vector2.INF
 var _title_cam_t := 0.0
 ## THE FRONT DOOR (maps/world/title_screen.gd): the title over a live drifting
 ## sky, then the three modes. Visible only at a single-player boot.
 var _title_screen: TitleScreen
+
+
+## Is the front door up? While it is, the intro is a picture of the world and
+## nothing else — so every piece of PLAYER-facing chrome goes quiet (owner
+## 2026-08-30: the edge markers, the "F1 help / Tab map" line and the health bar
+## were all still on over the title, and the helm was still offering itself).
+## One predicate, asked by every provider, so the intro can never disagree with
+## itself about what it is showing.
+func hud_quiet() -> bool:
+	return _title_screen != null and is_instance_valid(_title_screen) \
+		and _title_screen.visible
 ## The edge POI markers (maps/world/edge_markers.gd): a pointing triangle with an
 ## icon in it for every near thing that is currently off-screen. Fed by
 ## edge_marker_targets(); paints nothing when that is empty.
@@ -758,7 +774,7 @@ static func edge_marker_color(ship: Ship, kind: String) -> Color:
 ## so distance is read without a number on the glass.
 func edge_marker_targets() -> Array:
 	var out: Array = []
-	if Tunables.get_num("edge_markers_enabled") == 0.0:
+	if hud_quiet() or Tunables.get_num("edge_markers_enabled") == 0.0:
 		return out
 	var focus: Vector2
 	if player != null and is_instance_valid(player):
@@ -912,8 +928,17 @@ func _dive_strip_run_gear() -> void:
 ## were already banked (or burned) when the outcome landed, so this only clears
 ## the plate.
 func dismiss_dive_ledger() -> void:
-	if dive != null and dive.outcome != "":
-		end_dive()
+	if dive == null or dive.outcome == "":
+		return
+	end_dive()
+	# BACK TO THE FRONT DOOR (owner 2026-08-30: "dying during dive mode seems to
+	# change modes?? oh em gee"). It did — the ledger dropped you into an
+	# ordinary world, shipless, a hundred thousand pixels up, with no sign that
+	# the run had ended. A run ends at the title screen, which is the loop every
+	# roguelite has and the only place a next run can start from.
+	if _title_screen != null and is_instance_valid(_title_screen) \
+			and DisplayServer.get_name() != "headless" and not Net.is_online():
+		_title_screen.open()
 
 
 ## The world y of an altitude fraction (0 = lava floor, 1 = ceiling) — the
@@ -937,13 +962,22 @@ func dive_altitude_y(frac: float) -> float:
 ##
 ## It also makes depth 1 a PLACE rather than an altitude, which is the shape the
 ## rest of the ladder is heading for (one landing per depth — BACKLOG).
-## The shelf, at scale 1 (x world_scale in use). Deliberately SMALL — about one
-## and a half starter-hull lengths across. The first cut was 9000 wide and the
-## headless playtest (tools/dive_probe.gd) caught what that meant: a boarded ship
-## holding DOWN pressed into 5600 px of its own launch pad and went nowhere for
-## twelve simulated minutes. A launch deck you have to fly half a minute
-## sideways to get out from under is not a launch deck.
-const LAUNCH_SHELF_PX := Vector2(2500.0, 260.0)
+## The shelf, at scale 1 (× world_scale in use). Deliberately SMALL, and it has
+## been wrong in both directions already:
+##
+##   * The first cut was 9000 wide. The headless playtest caught what that meant:
+##     a boarded ship holding DOWN pressed into 5600 px of its own launch pad and
+##     went nowhere for twelve simulated minutes.
+##   * The second was 2500 wide with the hulls parked most of a hull-length out
+##     into clear air — safe to fly off, and (owner 2026-08-30) "the starting
+##     spot in dive mode has no accessible ships": you could see them and not
+##     reach them without a grapple.
+##
+## So the shelf is now barely wider than the body that stands on it, and the
+## hulls are moored with their inner edge exactly AT its rim (`_dive_park_x`):
+## a few seconds' walk to the edge, one step onto a deck, and every hull still
+## floats over open air so pushing the stick down drops you into sky.
+const LAUNCH_SHELF_PX := Vector2(1400.0, 200.0)
 func _build_launch_deck() -> void:
 	var at := dive_landing_pos(1)
 	var span := LAUNCH_SHELF_PX * float(world_scale)
@@ -965,20 +999,18 @@ func _build_launch_deck() -> void:
 	var i := 0
 	for ship in parked:
 		_park_candidate(ship as Ship,
-			at + Vector2(-_dive_park_x(ship as Ship, span.x, i), -span.y * 0.5))
+			at + Vector2(-_dive_park_x(ship as Ship, span.x, i), 0.0))
 		i += 1
 	# ...and the owner's own Blueprint Loft ship as the second candidate, so
 	# whatever they design in the Loft is a hull they can dive with. Made ONCE
 	# and reused: a run prop that respawned per dive would litter the sky.
 	if is_instance_valid(_dive_loft):
-		_park_candidate(_dive_loft,
-			at + Vector2(_dive_park_x(_dive_loft, span.x, 0), -span.y * 0.5))
+		_park_candidate(_dive_loft, at + Vector2(_dive_park_x(_dive_loft, span.x, 0), 0.0))
 	else:
-		_dive_loft = _spawn_loft_at(at + Vector2(span.x, -span.y * 0.5))
+		_dive_loft = _spawn_loft_at(at + Vector2(span.x, 0.0))
 		if _dive_loft != null:
 			_dive_loft.linear_velocity = Vector2.ZERO
-			_park_candidate(_dive_loft,
-				at + Vector2(_dive_park_x(_dive_loft, span.x, 0), -span.y * 0.5))
+			_park_candidate(_dive_loft, at + Vector2(_dive_park_x(_dive_loft, span.x, 0), 0.0))
 
 	# Stand the body just above the shelf, not high over it: the run opens with
 	# a look around, not a fall.
@@ -987,14 +1019,15 @@ func _build_launch_deck() -> void:
 		player.global_position = at - Vector2(0.0, 150.0 * float(world_scale))
 
 
-## How far to port/starboard a candidate parks: clear of the shelf's edge by its
-## own half-width plus a hull length of air, so nothing is moored over the rock
-## and two candidates never overlap.
+## How far to port/starboard a candidate moors. Its INNER EDGE lands exactly on
+## the shelf's rim — half the shelf plus half the hull — so you walk to the edge
+## and step straight aboard, while the hull itself hangs entirely over open air.
+## Further candidates queue outboard by a full hull plus a gap.
 func _dive_park_x(ship: Ship, shelf_w: float, index: int) -> float:
 	var w := 4000.0 * float(world_scale)
 	if ship != null and is_instance_valid(ship) and ship.solid_bounds.size.x > 0.0:
 		w = ship.solid_bounds.size.x * float(world_scale)
-	return shelf_w * 0.5 + w * (0.75 + float(index) * 1.35)
+	return shelf_w * 0.5 + w * 0.5 + float(index) * w * 1.15
 
 
 ## Where depth `d`'s landing is in the world. The ladder decides the altitude and
@@ -1186,6 +1219,17 @@ func _helm_candidates() -> Array:
 	if dive != null and is_instance_valid(local_ship):
 		return [local_ship]
 	return fleet.ships()
+
+
+## Put the body ON the helm before boarding, so the ride pose is the helm rather
+## than wherever you happened to be standing outside the hull. In-run only; the
+## expedition game walks to its cabin.
+func _dive_step_in(ship: Ship, cell: Vector2i) -> void:
+	if ship == null or not is_instance_valid(ship) or player == null \
+			or not is_instance_valid(player) or not ship.has_block(cell):
+		return
+	player.global_position = ship.to_global(ship.local_pos_of(cell))
+	player.velocity = Vector2.ZERO
 
 
 ## Stepping off the helm in THE DIVE puts you on TOP of the hull, above where
@@ -1636,8 +1680,8 @@ func player_money() -> int:
 ## The GRIT pool IS the player's life (combat/suffocation drain it), so a small
 ## bar for it is the one vital the owner asked to always see (2026-08-23).
 func player_vitals() -> Dictionary:
-	if player == null or not is_instance_valid(player):
-		return {"health": 0.0, "max": 0.0}
+	if hud_quiet() or player == null or not is_instance_valid(player):
+		return {"health": 0.0, "max": 0.0}   # max <= 0 means "draw nothing"
 	return {"health": player.health, "max": player.max_health}
 
 
@@ -4069,6 +4113,14 @@ func _update_suffocation(delta: float) -> void:
 		_suffocate_cd = 0.0
 		return
 	_suffocate_cd = LifeSupport.tick(player, _player_altitude_frac(), delta, _suffocate_cd)
+	# THE DEEP AIR DOES NOT KILL YOU IN A RUN (owner 2026-08-30: "the player
+	# should be able to survive the nasty air during dive mode"). It still HURTS
+	# — it drains you to a sliver and holds you there, so diving past the line
+	# without an Aether Lung leaves you one kraken away from the ledger — but the
+	# air itself can no longer be the thing that ends a run. That keeps the Lung
+	# worth its 220 coins without making the gate a wall you die against.
+	if dive != null and dive.outcome == "":
+		player.health = maxf(player.health, player.max_health * DIVE_AIR_FLOOR)
 
 
 ## Deep-air status for the HUD warning (HudLayer): {"deep": the local body is in
@@ -4396,15 +4448,23 @@ func _physics_process(delta: float) -> void:
 	_track_camera()
 
 
-## The intro camera: parked on the whale pod and drifting slowly sideways, pulled
-## back far enough that several of them fit. The anchor is the pod's own centroid
-## (not a constant), so it keeps working if the pod's spawn tuning moves.
+## The intro camera. It LOOPS (owner 2026-08-30: "could it be looped in some
+## way?") — a slow closed figure-eight over the whale pod, pulled back far enough
+## that several of them fit. A one-way drift eventually sails off into empty sky
+## and the intro dies of nothing to look at; a closed path can run forever.
+##
+## The anchor also FOLLOWS the pod, gently. Whales roam, so a centroid sampled
+## once at boot is stale within a minute — easing toward the live one keeps them
+## in frame however long the title sits there.
 func _track_title_camera() -> void:
 	_title_cam_t += get_physics_process_delta_time()
+	var live := _whale_pod_centre()
 	if _title_anchor == Vector2.INF:
-		_title_anchor = _whale_pod_centre()
-	camera.global_position = _title_anchor + Vector2(
-		TITLE_CAM_DRIFT * float(world_scale) * _title_cam_t, 0.0)
+		_title_anchor = live
+	else:
+		_title_anchor = _title_anchor.lerp(live, TitleCamera.ANCHOR_EASE)
+	camera.global_position = _title_anchor \
+		+ TitleCamera.offset(_title_cam_t) * float(world_scale)
 	var target := camera_zoom / TITLE_ZOOM_OUT
 	camera.zoom = camera.zoom.lerp(Vector2(target, target), 0.12)
 
@@ -4503,9 +4563,12 @@ func _input(event: InputEvent) -> void:
 		KEY_F3:
 			_toggle_whale_diag()
 		KEY_F5:
-			save_game()
+			# A run you can quicksave in front of the Leviathan is not a run.
+			if not _refuse_in_run("Not in a run — the ledger is the only record."):
+				save_game()
 		KEY_F9:
-			_toggle_save_panel()
+			if not _refuse_in_run("Not in a run — the ledger is the only record."):
+				_toggle_save_panel()
 		_:
 			return
 	get_viewport().set_input_as_handled()
@@ -4540,11 +4603,20 @@ func _process(_delta: float) -> void:
 	if Input.is_action_just_pressed("quit_game"):
 		get_tree().quit()
 		return
+	# THE SESSION VERBS ARE NOT RUN VERBS (owner 2026-08-30: "the keybindings
+	# from the regular game are still active during the dive — you can hit T to
+	# teleport way down (and your ship is still there!)"). R rebuilds the world,
+	# T teleports you to the world's original spawn, and both of them walk
+	# straight through a run: R deletes it, T abandons your hull at depth 1 and
+	# drops your body a hundred thousand pixels away, for free. In a run they are
+	# refused out loud rather than silently — a dead key reads as a bug.
 	if Input.is_action_just_pressed("reset_world"):
-		reset_world()
+		if not _refuse_in_run("Not in a run — climb out or go down."):
+			reset_world()
 		return
 	if Input.is_action_just_pressed("respawn_player"):
-		respawn_player()
+		if not _refuse_in_run("Not in a run — you go where you fly."):
+			respawn_player()
 
 	# INTERACT RUNS UNCONDITIONALLY (owner 2026-08-25, the stranded corpse
 	# pilot): this used to sit below the no-ship gate, so losing local_ship
@@ -4757,6 +4829,8 @@ func _ghost_tint() -> Color:
 ## into another node's _draw is what crashed the interact prompt on freed
 ## instances (see interact_prompt).
 func build_ghost() -> Variant:
+	if dive_style():
+		return null   # nothing to place, so nothing to preview
 	if not _ghost_shown or _ghost_ship == null or not is_instance_valid(_ghost_ship):
 		return null
 	var origin := _ghost_ship.local_pos_of(_ghost_cell) - Vector2.ONE * Ship.CELL * 0.5
@@ -4906,6 +4980,14 @@ var _place_debt := {}
 
 
 func _handle_mining(delta: float) -> void:
+	# THE DIVE IS NOT A BUILDING GAME (owner 2026-08-30: "digging should not be
+	# enabled in dive mode, and I wanna say the same should go for placing
+	# blocks — it's a totally different style"). A run is flying, shooting and
+	# spending; the expedition game keeps every one of these verbs. See
+	# docs/KEYBINDINGS.md for the whole table, mode by mode.
+	if dive_style():
+		_mine_reset()
+		return
 	if player == null or not is_instance_valid(player) or player.is_piloting() \
 			or terrain == null:
 		_mine_reset()
@@ -5380,6 +5462,8 @@ func mine_target() -> Variant:
 # the SHIP grid; this writes TERRAIN — one key, dispatched by the palette.
 
 func _handle_placing(delta: float) -> void:
+	if dive_style():
+		return   # a run does not build (see _handle_mining)
 	_place_cooldown = maxf(0.0, _place_cooldown - delta)
 	if player == null or not is_instance_valid(player) or player.is_piloting() \
 			or terrain == null:
@@ -5536,7 +5620,18 @@ func _palette_index(palette: Array) -> int:
 ## Drive the hold-B picker: a press starts the clock, crossing B_HOLD_SECONDS
 ## opens the grid, and RELEASE either commits the hovered cell (if the grid is
 ## up) or — for a quick tap — cycles one step. Shift+tap cycles backward.
+## Is the game in THE DIVE's reduced verb set right now? One predicate, so the
+## mining, placing, ghost and palette paths can never disagree about whether
+## building is a thing. `hud_quiet` is the intro's twin of this.
+func dive_style() -> bool:
+	return dive != null and dive.outcome == ""
+
+
 func _update_build_picker() -> void:
+	if dive_style():
+		if _build_picker != null:
+			_build_picker.visible = false
+		return
 	if _build_picker == null:
 		return
 	if Input.is_action_just_pressed("build_cycle"):
@@ -5791,6 +5886,14 @@ func _handle_interact() -> void:
 		"mender":
 			(_nearby_mender[0] as Ship).net_toggle_mender()
 		"helm":
+			# IN A RUN, E FROM OUTSIDE PUTS YOU AT THE HELM (owner 2026-08-30:
+			# "hitting E next to a ship should place the player INSIDE the ship
+			# on top of the helm"). The Dive lets you board from anywhere on the
+			# hull, and `Player.board` rides you where you were STANDING — so
+			# without this you pilot from outside the hull, floating alongside
+			# your own ship. The mirror of `_dive_step_out`.
+			if dive != null:
+				_dive_step_in(_nearby_helm[0], _nearby_helm[1])
 			player.board(_nearby_helm[0], _nearby_helm[1])
 
 
@@ -5847,6 +5950,8 @@ func helm_in_reach() -> bool:
 ## player/ship references to another node's _draw crashed on freed
 ## instances (respawn races the redraw).
 func interact_prompt() -> Variant:
+	if hud_quiet():
+		return null   # the intro is not offering you a helm
 	if player == null or not is_instance_valid(player) or player.is_piloting():
 		return null
 	match _nearest_interactable():
@@ -5888,9 +5993,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		_konami_recent.clear()
 	match keycode:
 		KEY_H:
-			host_session()
+			if not _refuse_in_run("Not in a run — the Dive is single-player."):
+				host_session()
 		KEY_J:
-			join_session()
+			if not _refuse_in_run("Not in a run — the Dive is single-player."):
+				join_session()
 		# Trainer shop keys — active only while the character sheet (the shop
 		# panel) is open. 1–4 buy a level of a stat; 0 sells all salvage. Raw
 		# keys like H/J/F1/Tab, so no project.godot binding and no clash with the
@@ -5969,7 +6076,14 @@ func respawn_player() -> void:
 	if (not Net.is_online() or Net.is_server()) and not is_instance_valid(local_ship) 			and dive == null:
 		_give_ship_to(_my_id())
 		_refresh_local_ship()
+	# Where a fresh body appears. Your own deck if you have one; otherwise the
+	# world's original spawn — except inside a run, where "the original spawn"
+	# is a hundred thousand pixels from anything the run built, so the LAUNCH
+	# DECK is the only sane ground to put you back on.
 	var anchor := SHIP_START
+	if dive != null and dive.outcome == "":
+		anchor = dive_landing_pos(1) - Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale \
+			- Vector2(0.0, 150.0 * float(world_scale))
 	if is_instance_valid(local_ship):
 		anchor = local_ship.global_position
 	player.global_position = anchor + Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale
@@ -5979,6 +6093,18 @@ func respawn_player() -> void:
 	if player.stats != null:
 		player.max_health = player.stats.max_health()
 	player.health = player.max_health
+
+
+## Refuse a session verb while a run is live, saying so. Returns whether it was
+## refused, so the call site reads as one line. Anything that would teleport,
+## rebuild or rewind the world belongs here: a roguelite run whose world can be
+## reset, whose body can be recalled to spawn, or whose state can be reloaded
+## from disk has no stakes left in it.
+func _refuse_in_run(why: String) -> bool:
+	if dive == null or dive.outcome != "":
+		return false
+	_notify(why)
+	return true
 
 
 ## Debug convenience: throw away every ship and start over. Server-side only —
@@ -6021,9 +6147,17 @@ func _update_corner_status() -> void:
 	if _corner_label == null:
 		return
 	var ver: String = str(ProjectSettings.get_setting("application/config/version", "dev"))
+	# FPS first, version second (owner 2026-08-30: "invert placement of version
+	# and FPS") — the build number is the thing you read deliberately, so it sits
+	# at the end of the line where the eye stops.
+	var status := "%d fps   v%s" % [Engine.get_frames_per_second(), ver]
+	if hud_quiet():
+		# The intro keeps the build number and drops the key hints: there is
+		# nothing to help with yet, and no map to open.
+		_corner_label.text = status
+		return
 	# Same platform split as the help panel: name the key that actually works here.
-	_corner_label.text = "%s help   Tab map\nv%s   %d fps" % [
-		_help_key_name, ver, Engine.get_frames_per_second()]
+	_corner_label.text = "%s help   Tab map\n%s" % [_help_key_name, status]
 
 
 ## The inventory, as plain [color, name, count] rows for the HUD strip to draw as
@@ -6153,9 +6287,15 @@ func _update_hud(_cell: Vector2i) -> void:
 	# this point it was overwritten the same frame.)
 	if local_ship == null and (player == null or not is_instance_valid(player)
 			or not player.is_piloting()):
-		hud.text = ("Connecting to host..." if Net.is_online()
-			else "No ship — build on a carcass, walk to a helm and press E, "
-				+ "or T to respawn")
+		if Net.is_online():
+			hud.text = "Connecting to host..."
+		elif dive != null and dive.outcome == "":
+			# T is refused in a run, so do not offer it. On the launch deck the
+			# answer is always the same one: go and take a hull.
+			hud.text = "No ship — walk to a hull and press E"
+		else:
+			hud.text = "No ship — build on a carcass, walk to a helm and press E, " \
+				+ "or T to respawn"
 		return
 	var flown: Ship = player.piloting if (player != null
 		and is_instance_valid(player) and player.is_piloting()) else null
@@ -6166,6 +6306,16 @@ func _update_hud(_cell: Vector2i) -> void:
 				"HOST" if multiplayer.is_server() else "CLIENT",
 				Net.peer_count(), _my_id()]
 		hud.text = session
+		return
+
+	# THE RUN DOES NOT WANT THE WALL OF NUMBERS (owner 2026-08-30: "all the extra
+	# info that we see on the left under the health is not really needed in dive
+	# mode either"). The Dive has its own read-out — the depth gauge on the right
+	# — and the one number here that can actually kill you, the air, still shouts
+	# for itself through the deep-air warning in HudLayer. So in a run this
+	# corner says the one thing worth saying and stops.
+	if dive != null and dive.outcome == "":
+		hud.text = "AT THE HELM — WASD flies, E to step off"
 		return
 
 	hud.text = "\n".join([
