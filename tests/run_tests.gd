@@ -1916,30 +1916,78 @@ func _test_dive_run() -> void:
 	_check(not deck.is_empty(), "the launch deck blueprint loads")
 	var bays: Array = DiveDeck.berths(deck)
 	_check(bays.size() >= 2, "the deck has at least two berths (%d)" % bays.size())
-	# Every hull the run can offer has to FIT one, or it is moored off the end
-	# and the owner is back to "no ships are accessible".
+	# THE DECK IS A CONTINUOUS FLOOR (owner's drawing, 2026-08-30): a berth is a
+	# run of PLATFORM you drop through, and every column between the ends is
+	# either walkway or hatch. A hole in the walking surface is a hole you can
+	# fall down without meaning to, and there is no way to see one in the file.
+	var held: Dictionary = DiveDeck.occupied_columns(deck)
+	var lo_col := 1 << 30
+	var hi_col := -(1 << 30)
+	for c in held:
+		lo_col = mini(lo_col, int(c))
+		hi_col = maxi(hi_col, int(c))
+	var gaps := 0
+	for c in range(lo_col, hi_col + 1):
+		if not held.has(c):
+			gaps += 1
+	_check(gaps == 0, "the deck is one unbroken floor end to end (%d empty columns)" % gaps)
+	# ...and both ENDS are walkway, so the only way off the deck without a ship
+	# is to walk to an end, which is the shipless run stated as geometry.
+	var hatch: Dictionary = DiveDeck.platform_columns(deck)
+	_check(not hatch.has(lo_col) and not hatch.has(hi_col),
+		"both ends of the deck are solid walkway, not hatch")
+
+	# EVERY HULL THE RUN CAN OFFER HAS TO FIT A HATCH, or it is moored off the
+	# end and the owner is back to "no ships are accessible".
+	#
+	# MEASURE THE HULLS THE WAY THE GAME SPAWNS THEM. This is the arithmetic
+	# that was wrong: ships/starter.ship is NATIVE 8× (world._starter_cells
+	# loads it unscaled above world_scale 1) while ships/loft_test.ship IS
+	# upscaled 8× (world._spawn_loft_at). Upscaling BOTH here claimed the
+	# starter was 12,288 px when it is 1,536, and the deck was authored to
+	# match — berths eight times wider than the hull inside them, so walking
+	# off a berth's edge dropped you a whole screen clear of the ship
+	# ("player drops like a METEOR when getting on the ship").
 	var cell_px := Ship.CELL * 8.0
 	var offs: Array = DiveDeck.berth_offsets(deck, cell_px)
-	for path in ["res://ships/starter.ship", "res://ships/loft_test.ship"]:
-		var hull := ShipLayout.load_cells(path)
-		var w := _cells_span_x(ShipLayout.upscale_cells(hull, 8))
-		var fitted := false
-		for o in offs:
-			if DiveDeck.fits(w, float((o as Dictionary)["width"])):
-				fitted = true
-		_check(fitted, "%s (%.0f px) fits a berth" % [path.get_file(), w])
-	# The berths are BETWEEN platforms, never the open air off the ends — that
-	# air is the edge you walk off to dive with nothing.
-	var held: Dictionary = DiveDeck.occupied_columns(deck)
-	for b in bays:
-		var d := b as Dictionary
-		var lo := int(float(d["centre_cell"]) - float(d["width_cells"]) * 0.5)
-		var hi := int(float(d["centre_cell"]) + float(d["width_cells"]) * 0.5)
-		_check(held.has(lo) and held.has(hi + 1) or held.has(lo - 1) and held.has(hi),
-			"a berth has platform on both sides (cells %d..%d)" % [lo, hi])
+	var hulls := {
+		"res://ships/starter.ship": false,       # native 8×, never upscaled
+		"res://ships/loft_test.ship": true,      # authored 1×, upscaled on spawn
+	}
+	for path in hulls:
+		var cells: Dictionary = ShipLayout.load_cells(path)
+		if bool(hulls[path]):
+			cells = ShipLayout.upscale_cells(cells, 8)
+		var w := _cells_span_x(cells)
+		var fitted := -1
+		for i in offs.size():
+			if DiveDeck.fits(w, float((offs[i] as Dictionary)["width"]), cell_px):
+				fitted = i
+				break
+		_check(fitted >= 0, "%s (%.0f px) fits a hatch" % [path.get_file(), w])
+		# ...and the hatch is EXACTLY that wide, not a canyon around it. A hatch
+		# wider than its hull is a place you can drop through and miss: the
+		# headless probe lands on the hull from the middle of a correct hatch
+		# and falls 38,000 px past it from the lip of one four characters too
+		# wide. The rule is two-sided on purpose — too narrow and the hull
+		# cannot rise out, too wide and the player drops past it.
+		if fitted >= 0:
+			var bw := float((offs[fitted] as Dictionary)["width"])
+			_check(bw - w <= DiveDeck.BERTH_BUFFER_CELLS * cell_px + 0.5,
+				"...and no wider than the rule (%.0f px of hatch for a %.0f px hull)"
+					% [bw, w])
 	_check(DiveDeck.berths({}).is_empty(), "an empty deck has no berths")
-	_check(not DiveDeck.fits(1000.0, 1000.0), "a berth the exact width of a hull is too tight")
-	_check(DiveDeck.fits(1000.0, 1400.0), "...with room to rise, it fits")
+	_check(not DiveDeck.fits(1000.0, 1000.0, 100.0),
+		"a hatch the exact width of a hull is too tight to rise through")
+	_check(DiveDeck.fits(1000.0, 1200.0, 100.0), "...two blocks wider, it fits")
+	# A run of EMPTY is not a berth any more — the inversion, pinned. A deck
+	# that is all walkway with one hole in it offers nothing to moor under.
+	var holed := {}
+	for c in range(0, 40):
+		if c < 10 or c > 25:
+			holed[Vector2i(c, 0)] = BlockDB.Type.HULL
+	_check(DiveDeck.berths(holed).is_empty(),
+		"a hole in the walkway is not a berth (only platform is)")
 
 	_check(Tunables.get_num("dive_surge_lead") >= 0.5,
 		"a surge always arrives some distance ahead, never on top of you")
@@ -2032,12 +2080,55 @@ func _test_dive_run() -> void:
 		_check(step <= 4.1,
 			"depth %d sits %.1f shelf-widths off depth %d (a slalom, not a haul)"
 				% [d, step, d - 1])
-	for k in 40:
+	# THE RUNG BELOW YOU IS NEVER THE FLOOR UNDER YOU. Owner 2026-08-30: "it
+	# seems you get stuck at depth 4 (no more falling)". A landing is a solid
+	# slab about a shelf wide, so two rungs less than a shelf width apart put one
+	# directly under the other and a straight dive lands on it. The old ladder
+	# CLAMPED its walk to ±LADDER_SPREAD, which made the wall a sink: a run that
+	# reached ±3 and kept rolling the same side stayed at ±3 for every rung
+	# after — 381 of 1,400 transitions across 200 seeds came out under one shelf
+	# width apart, many of them exactly zero. Both halves are pinned here over a
+	# wide seed sweep, because ONE seed proves nothing about a clamp.
+	var min_step := 999.0
+	var max_off := 0.0
+	for k in 400:
+		var seed_l := 9000 + k * 31337
 		for d in range(1, DiveRun.DEPTHS + 1):
-			var off := DiveRun.landing_offset(9000 + k * 31337, d)
-			_check(absf(off) <= DiveRun.LADDER_SPREAD + 0.001,
-				"the ladder stays inside the shaft (%.1f of %.1f widths)"
-					% [off, DiveRun.LADDER_SPREAD])
+			var off := DiveRun.landing_offset(seed_l, d)
+			max_off = maxf(max_off, absf(off))
+			if d > 1:
+				min_step = minf(min_step,
+					absf(off - DiveRun.landing_offset(seed_l, d - 1)))
+	_check(max_off <= DiveRun.LADDER_SPREAD + 0.001,
+		"the ladder stays inside the shaft (%.2f of %.2f widths)"
+			% [max_off, DiveRun.LADDER_SPREAD])
+	_check(min_step >= DiveRun.LANDING_STEP_MIN - 0.001,
+		"...and every rung sidesteps at least %.1f widths, so no landing is stacked over the next (worst %.2f)"
+			% [DiveRun.LANDING_STEP_MIN, min_step])
+	_check(DiveRun.LANDING_STEP_MIN > 1.0,
+		"a sidestep clears a shelf-wide slab by construction")
+	# ...AND IT CLEARS A SHIP, which is the half that shelf-widths hide. The
+	# thing flying down the ladder does not shrink when the shelf does: at the
+	# shipped 0.9-hulls-per-landing a rung was NARROWER than the ship diving past
+	# it and the minimum sidestep was 1.24 hulls, so the hull clipped the next
+	# slab's corner and the descent stopped (the headless probe caught it resting
+	# on rung 2 with 379 px of hull on the slab). Expressed in HULLS, the
+	# clearance is: sidestep > half a ship + half a landing.
+	var landing_hulls: float = 2.0   # world.LANDING_HULL_WIDTHS
+	var step_hulls: float = DiveRun.LANDING_STEP_MIN * landing_hulls
+	_check(step_hulls > 0.5 + landing_hulls * 0.5,
+		"a sidestep clears a ship AND the slab it is passing (%.2f > %.2f hulls)"
+			% [step_hulls, 0.5 + landing_hulls * 0.5])
+
+	# The hint the run gives a ship pressing into a ledge. Input-gated in the
+	# world, so the WORDING is what the suite can hold on to.
+	_check(DiveRun.stuck_hint(500.0).contains("starboard"),
+		"a landing to the right is called starboard")
+	_check(DiveRun.stuck_hint(-500.0).contains("port"),
+		"...and one to the left, port")
+	_check(not DiveRun.stuck_hint(0.0).contains("starboard")
+			and not DiveRun.stuck_hint(0.0).contains("port"),
+		"...and one straight below names no side")
 	# Runs differ. (Not every pair of seeds must differ at every rung, but a
 	# spread of seeds must not all lay the same ladder.)
 	var shapes := {}

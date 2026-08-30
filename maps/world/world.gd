@@ -97,6 +97,10 @@ var _dive_hud: DiveHud
 ## How long the local ship has been gone. Losing it ends the run, but
 ## `local_ship` blinks null for a frame during a rebind, so the verdict waits.
 var _dive_shipless := 0.0
+## Seconds the committed hull has spent pressing DOWN into something solid, and
+## the cooldown on saying so. See `_dive_nudge_if_stuck`.
+var _dive_pressing := 0.0
+var _dive_nudge_cd := 0.0
 ## The Blueprint-Loft hull parked on the launch deck as the second candidate.
 ## A run prop: made once, reused across runs, cleared with the run unless you
 ## chose it.
@@ -130,10 +134,13 @@ const DIVE_AIR_FLOOR := 0.12
 ## Air between the shelf's underside and a moored candidate's hull, px at
 ## scale 1. A step off the rim, not a plummet.
 ## Air between the deck's walking surface and a moored hull's top, px at scale 1.
-## SIZED AGAINST THE SCREEN, not against a hunch: at 8x the on-foot camera shows
-## about 3,600 px of height, so half a screen below your feet is ~1,800 px. A
-## 480 px drop puts the hull's deck plainly in frame from where you stand.
-const DIVE_DROP_GAP := 60.0
+## The owner sized this one (2026-08-30): *"ships to be a block or two BELOW the
+## platforms so they're easy to reach"*. A deck cell is 8 Ship.CELLs once
+## upscaled, so a block is 8 × Ship.CELL at scale 1 = 128 px; the deck itself is
+## three rows thick. 72 → 576 px at 8×, which is the deck's own underside plus
+## about a block and a half: the hull's roof is a short hop below the hatch you
+## drop through, and it is in frame from where you stand.
+const DIVE_DROP_GAP := 72.0
 ## (Platform widths and berth clearances used to be computed here. They are
 ## authored in ships/dive_deck.ship now — DiveDeck.fits carries the clearance
 ## rule, and the deck's own gaps carry the widths.)
@@ -931,6 +938,8 @@ func end_dive() -> void:
 	_dive_strip_run_gear()
 	dive = null
 	_dive_shipless = 0.0
+	_dive_pressing = 0.0
+	_dive_nudge_cd = 0.0
 	if is_instance_valid(_dive_deck):
 		_dive_deck.queue_free()
 	_dive_deck = null
@@ -1011,8 +1020,11 @@ func dive_altitude_y(frac: float) -> float:
 ##
 ## It also makes depth 1 a PLACE rather than an altitude, which is the shape the
 ## rest of the ladder is heading for (one landing per depth — BACKLOG).
-## The shelf, at scale 1 (× world_scale in use). Deliberately SMALL, and it has
-## been wrong in both directions already:
+## The shelf, at scale 1 (× world_scale in use). Depth 1 is the authored deck
+## now, so this only sizes the LADDER'S LANDINGS — but it also sets the unit the
+## slalom and the corridor are measured in (`DiveRun.LADDER_SPREAD`,
+## `DIVE_CORRIDOR_WIDTHS`), so it is not a free number. Deliberately SMALL, and
+## it has been wrong in both directions already:
 ##
 ##   * The first cut was 9000 wide. The headless playtest caught what that meant:
 ##     a boarded ship holding DOWN pressed into 5600 px of its own launch pad and
@@ -1029,21 +1041,42 @@ func dive_altitude_y(frac: float) -> float:
 const LAUNCH_SHELF_PX := Vector2(1400.0, 200.0)
 
 
-## The shelf's real size this run. It is the constant above, EXCEPT that it is
-## never allowed to be wider than the hulls moored under it: a candidate hangs
-## with its centre beneath a rim so you can step off and land amidships, and that
-## only works while the rim is actually over the hull. (The shipped 8× ship is
-## 12k px wide and the constant is 11k, so this changes nothing there — but the
-## legacy 1× test scene flies a much smaller starter, and there the fixed shelf
-## was wider than the ship, so the drop went straight past it into open sky.)
-## Cached per run so every landing on the ladder is cut the same size.
+## How many of the widest hull a LANDING is across. Two, and the number is load-
+## bearing in a way "make it look right" is not — it is what makes a straight
+## dive legal.
+##
+## The ladder's sidestep is measured in SHELF WIDTHS
+## (`DiveRun.LANDING_STEP_MIN`, 1.5), but the thing that has to fit through the
+## gap is a SHIP, whose width does not shrink when the shelf does. Cut the
+## landings at 0.9 hulls — which is what shipped — and the geometry inverts: a
+## rung is NARROWER than the ship diving past it, the minimum sidestep is only
+## 1.24 hulls, and the ship clips the next slab and stops. That is the second
+## half of the owner's *"stuck at depth 4 (no more falling)"*, and the headless
+## probe caught it stalled on rung 2 with 379 px of hull resting on the slab's
+## corner. At two hulls per landing every clearance is comfortable at both world
+## scales, and a landing is also, finally, a place you can actually set a ship
+## down on — which is what a landing is for.
+const LANDING_HULL_WIDTHS := 2.0
+
+
+## The shelf's real size this run — the size of every LANDING on the ladder, and
+## the unit the slalom and the corridor are measured in. Sized against the widest
+## hull in the sky (see LANDING_HULL_WIDTHS), capped by the constant above so a
+## fleet of monsters cannot turn the shaft into a country.
+##
+## Cached per run so every landing is cut the same size — and the cache is
+## DELIBERATELY CLEARED once the candidates are moored (`_build_launch_deck`),
+## because the first call happens while the deck is still being raised and the
+## Blueprint Loft hull does not exist yet. Measured before it lands, the "widest
+## hull" is the starter alone and every landing on the ladder comes out sized for
+## a ship that is not the biggest one you can be flying.
 func _dive_shelf_span() -> Vector2:
 	if _dive_shelf != Vector2.ZERO:
 		return _dive_shelf
 	var span := LAUNCH_SHELF_PX * float(world_scale)
 	var widest := _dive_widest_hull()
 	if widest > 0.0:
-		span.x = minf(span.x, widest * 0.9)
+		span.x = minf(span.x, widest * LANDING_HULL_WIDTHS)
 	_dive_shelf = span
 	return _dive_shelf
 
@@ -1075,7 +1108,6 @@ func _build_launch_deck() -> void:
 	var at := dive_landing_pos(1)
 	var span := _dive_shelf_span()
 	_cut_landing(1)   # raises the deck, which is where the berths come from
-	_cut_landing(2)   # one rung of lookahead, so you can SEE where you are going
 
 	# NOBODY'S SHIP. Un-claim whatever the boot handed you and park it as one
 	# of the candidates: `_refresh_local_ship` then leaves `local_ship` null until
@@ -1103,9 +1135,17 @@ func _build_launch_deck() -> void:
 		if _dive_loft != null:
 			_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, 1))
 
-	# Stand the body just above the shelf, not high over it: the run opens with
-	# a look around, not a fall.
-	# On the middle platform, between the berths, looking down at both.
+	# EVERY CANDIDATE IS IN THE SKY NOW, so re-measure the landing size before a
+	# single rung of the ladder is cut. The first measurement happened above,
+	# while the deck was still being raised and the Loft hull did not exist — and
+	# a ladder sized for the starter alone is a ladder the Loft cannot fly down.
+	_dive_shelf = Vector2.ZERO
+	_cut_landing(2)   # one rung of lookahead, so you can SEE where you are going
+
+	# Stand the body just above the deck, not high over it: the run opens with
+	# a look around, not a fall. On the MIDDLE WALKWAY, with a hatch a short
+	# stroll to either side (the blueprint's `origin` is what puts cell (0,0)
+	# there — move it and the run stands you somewhere else).
 	if player != null and is_instance_valid(player):
 		player.velocity = Vector2.ZERO
 		# Standing ON the platform, not dropped onto it from a storey up: the
@@ -1127,20 +1167,41 @@ func _build_launch_deck() -> void:
 ##      launch platform and broke it ("I got propelled upward and immediately
 ##      broke the ship against the starting platform").
 ##
-## The owner's own fix is the shape now: *"why can't the ships be at the same
-## level or slightly below the starting spot, but under platforms so a player
-## can just choose one by falling through and landing on top?"* The deck is a row
-## of narrow PLATFORMS with wide GAPS between them, and a candidate sits in a
-## gap — its top a short drop below the walking surface, so you can SEE it from
-## where you stand, and OPEN SKY directly above it, so taking it and climbing
-## away cannot drive it into anything. Walk off the LAST platform instead and
-## there is nothing under you, which is the shipless run.
+##   4. A row of narrow platforms with wide GAPS, a candidate hanging in each
+##      gap. Reachable and visible at last — but the owner had drawn something
+##      else, and walking it made the difference plain: a deck of holes is a
+##      deck you jump across, and missing a jump is a run over.
+##
+## FIFTH, and it is the owner's own drawing (2026-08-30): *"`.` is a block and
+## `-` a platform, which would allow for ships to be a block or two BELOW the
+## platforms so they're easy to reach and you can just keep walking to the ship
+## you want/have unlocked... and also the platforms can be as wide as whatever
+## ship is right under it plus a small buffer of 2 blocks."* The deck is now ONE
+## CONTINUOUS FLOOR — solid hull you can walk end to end — with a DROP-THROUGH
+## PLATFORM over each moored ship. You stroll the deck, stand over the hull you
+## want, and S+jump through. Nothing to jump across and nothing to miss.
+##
+## The roof this puts back over a candidate is the thing that broke a hull in
+## v0.95.x, and it is harmless here for a reason worth writing down: a platform
+## strip is an `AnimatableBody2D` on collision layer 3 with a one-way shape
+## (`Ship._rebuild_platforms`), and a `Ship` is a `RigidBody2D` masking layer 1
+## only — so a rising hull passes straight through its own hatch and never
+## touches it. What it CAN hit is the walkway either side, which is ordinary
+## solid hull, and that is what `DiveDeck.BERTH_BUFFER_CELLS` is for.
+##
+## Walk off either END of the deck and there is nothing under you, which is the
+## shipless run.
 func _dive_park_at(ship: Ship, at: Vector2, index: int) -> Vector2:
-	# solid_bounds is ALREADY world px — see _dive_widest_hull.
-	var half_h := 2000.0 * float(world_scale)
+	# solid_bounds is ALREADY world px — see _dive_widest_hull. `roof` is the
+	# offset from the ship's ORIGIN to the top of its hull, which is not
+	# −half-height: a blueprint's `origin` puts cell (0,0) wherever the author
+	# wanted it. Using half the height put the starter's deck 520 px under the
+	# hatch and the Loft's 632 px under it — the same drop was two different
+	# drops depending on which hull you chose.
+	var roof := -2000.0 * float(world_scale)
 	var wide := 0.0
 	if ship != null and is_instance_valid(ship) and ship.solid_bounds.size.y > 0.0:
-		half_h = ship.solid_bounds.size.y * 0.5
+		roof = ship.solid_bounds.position.y
 		wide = ship.solid_bounds.size.x
 	# The berth the blueprint gave us — the WIDEST one this hull fits, so the
 	# starter takes the big bay and a small hull takes the small one whichever
@@ -1151,7 +1212,7 @@ func _dive_park_at(ship: Ship, at: Vector2, index: int) -> Vector2:
 		if _dive_berth_taken.has(i):
 			continue
 		var bw := float((berths[i] as Dictionary)["width"])
-		if not DiveDeck.fits(wide, bw):
+		if not DiveDeck.fits(wide, bw, Ship.CELL * float(world_scale)):
 			continue
 		if best < 0 or bw < float((berths[best] as Dictionary)["width"]):
 			best = i   # the SNUGGEST berth that fits, so nothing hogs the big bay
@@ -1162,10 +1223,10 @@ func _dive_park_at(ship: Ship, at: Vector2, index: int) -> Vector2:
 		push_warning("dive: no berth fits a %.0f px hull — check ships/dive_deck.ship"
 			% wide)
 		return Vector2(at.x + float(index + 1) * maxf(wide, 3000.0) * 1.2,
-			at.y + DIVE_DROP_GAP * float(world_scale) + half_h)
+			at.y + DIVE_DROP_GAP * float(world_scale) - roof)
 	_dive_berth_taken[best] = true
 	return Vector2(float((berths[best] as Dictionary)["pos"].x),
-		at.y + DIVE_DROP_GAP * float(world_scale) + half_h)
+		at.y + DIVE_DROP_GAP * float(world_scale) - roof)
 
 
 ## How wide one berth is: the widest candidate plus air, so nothing is moored
@@ -1250,9 +1311,24 @@ func dive_berth_positions() -> Array:
 	return out
 
 
-## How far the deck reaches from the centre line, for terrain generation.
+## How far the deck reaches from the centre line, for terrain generation. Read
+## from the BLUEPRINT, because that is the thing that decides it: the deck is
+## 80 characters of 128 px and the landing shelves are a tenth of that, so
+## sizing this off the shelf left the deck's ends outside the region the run
+## generates before it stamps (`_cut_landing`) — and an ungenerated region is
+## one lazy island generation away from being repainted under your feet.
 func _dive_deck_reach() -> float:
-	return _dive_shelf_span().x * 2.0
+	var cells := _dive_deck_cells
+	if cells.is_empty():
+		cells = ShipLayout.load_cells(DIVE_DECK_PATH)
+	if cells.is_empty():
+		return _dive_shelf_span().x * 2.0
+	var lo := 1 << 30
+	var hi := -(1 << 30)
+	for c in DiveDeck.occupied_columns(cells):
+		lo = mini(lo, int(c))
+		hi = maxi(hi, int(c))
+	return maxf(absf(float(lo)), absf(float(hi)) + 1.0) * Ship.CELL * float(world_scale)
 
 
 ## Stand a quartermaster on a landing. Three of the eight rungs have one
@@ -1354,8 +1430,9 @@ func _dive_thaw(ship: Ship) -> void:
 	if ship == null or not is_instance_valid(ship) or ship.is_nest:
 		return
 	# At rest, not launched. A hull that has been held for a minute must not
-	# inherit anything from being held, and the berth above it is open sky, so
-	# lift simply floats it up out of the deck.
+	# inherit anything from being held. The hatch above it is a one-way platform
+	# strip on collision layer 3 and a ship masks layer 1 only, so lift floats
+	# the hull straight up through its own berth without ever touching it.
 	ship.linear_velocity = Vector2.ZERO
 	ship.angular_velocity = 0.0
 	ship.freeze = false
@@ -1371,6 +1448,35 @@ func _dive_perish() -> bool:
 	dive.lose(true)
 	_notify(DiveRun.outcome_line(dive.ledger()))
 	return true
+
+
+## SAY WHY THE SHIP WILL NOT GO DOWN. The ladder is a slalom of solid slabs, so
+## holding the stick down from one column eventually rests you on a rung — which
+## is the mode working, but it reads as *"stuck at depth 4 (no more falling)"*
+## when nothing says so and the marker you should be flying at is off to one
+## side. Gated on the DOWN input actually being held, so a ship parked at an
+## outpost (which stands ON a landing) is never nagged for parking; throttled so
+## the answer is a sentence, not a drumbeat.
+##
+## `Input` is untouched headless, which is why this cannot fire in the suites —
+## the wording is pinned through `DiveRun.stuck_hint` instead.
+const DIVE_STUCK_AFTER := 2.5    ## seconds of pressing into rock before the hint
+const DIVE_STUCK_COOLDOWN := 12.0
+func _dive_nudge_if_stuck(delta: float) -> void:
+	_dive_nudge_cd = maxf(0.0, _dive_nudge_cd - delta)
+	if dive == null or not dive.committed or dive.depth >= DiveRun.DEPTHS 			or not is_instance_valid(local_ship):
+		_dive_pressing = 0.0
+		return
+	if not Input.is_action_pressed("ship_down") 			or absf(local_ship.linear_velocity.y) > 40.0 * float(world_scale):
+		_dive_pressing = 0.0
+		return
+	_dive_pressing += delta
+	if _dive_pressing < DIVE_STUCK_AFTER or _dive_nudge_cd > 0.0:
+		return
+	_dive_pressing = 0.0
+	_dive_nudge_cd = DIVE_STUCK_COOLDOWN
+	_notify(DiveRun.stuck_hint(
+		dive_landing_pos(dive.depth + 1).x - local_ship.global_position.x))
 
 
 ## THE DIVE HAS NO INTERIORS (owner 2026-08-30: "just getting off the helm
@@ -1497,6 +1603,7 @@ func _tick_dive(delta: float) -> void:
 			and is_instance_valid(local_ship) \
 			and not local_ship.repair_cells.is_empty():
 		local_ship.menders_running = true
+	_dive_nudge_if_stuck(delta)
 	_hold_the_corridor(delta)
 	for ev in dive.advance(delta, _player_altitude_frac(),
 			Tunables.get_num("dive_surge_period")):

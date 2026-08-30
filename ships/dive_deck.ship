@@ -2,31 +2,71 @@
 # with ascii characters like we've done with the ship builder").
 #
 # This is the ground a run starts on. It spawns FROZEN at depth 1, like a nest,
-# and the game reads the BERTHS straight out of it: every run of empty cells
-# wide enough to hold a hull becomes a berth, and a candidate ship is moored
-# just below its centre. Move a gap here and the ship moves with it.
+# and the game reads the BERTHS straight out of it: every run of PLATFORM cells
+# wide enough to hold a hull becomes a berth, and a candidate ship is moored a
+# short drop below its centre. Move a platform here and the ship moves with it.
 #
-#   -  platform  — solid to stand on, and S+jump drops you through it
-#   .  empty     — a BERTH. A ship hangs under the middle of each one.
+#   #  hull      — the WALKWAY. Solid, continuous, walk the whole deck on it.
+#   -  platform  — a DROP-THROUGH hatch, and a BERTH: a ship hangs under it.
+#   .  empty     — the air under a hatch, so the ship has somewhere to be.
 #
-# SCALE, because it is the thing that keeps biting: the game runs at 8x, so ONE
-# CHARACTER HERE IS 128 WORLD PIXELS. The player is 80x144 px — about one cell
-# wide and one tall. An on-foot screen is ~6,500 px, so about 50 characters.
-# The starter hull is 96 characters wide; the Blueprint Loft test ship is 22.
+# The owner drew this layout (2026-08-30): "which would allow for ships to be a
+# block or two BELOW the platforms so they're easy to reach and you can just
+# keep walking to the ship you want/have unlocked... and also the platforms can
+# be as wide as whatever ship is right under it plus a small buffer of 2 blocks."
+# So the deck has no GAPS to jump across any more — it is one unbroken floor,
+# and choosing a ship is S+jump through the hatch above it. Walk off either END
+# and there is nothing under you at all, which is the run with no ship.
+#
+# SCALE — READ THIS BEFORE YOU RESIZE A PLATFORM. This blueprint is UPSCALED by
+# the world scale (8), so ONE CHARACTER HERE IS 8 × Ship.CELL = 128 WORLD PIXELS.
+# The player is 80×144 px, so a character is a block a bit wider than a person.
+#
+# THE HULLS ARE NOT ALL AUTHORED AT THE SAME SCALE, and sizing a platform by
+# counting a hull's columns is how this deck came out FOUR TIMES TOO WIDE
+# (2026-08-30). Measure in PIXELS:
+#
+#   ships/starter.ship   is NATIVE 8× — never upscaled — so its 96 columns are
+#                        96 × Ship.CELL = 1,536 px =  12 characters here.
+#   ships/loft_test.ship IS upscaled 8× on spawn, so its 22 columns are
+#                        22 × 8 × Ship.CELL = 2,816 px = 22 characters here.
+#
+# A deck sized off "96 columns must be 96 characters" gave the starter a berth
+# 14,080 px wide for a 1,536 px ship — so walking off the platform edge dropped
+# you into open air a whole screen from the hull, and you fell past everything
+# (owner: "player drops like a METEOR when getting on the ship").
+#
+# In CHARACTERS the sizes are the same at every world scale, which is why this
+# file counts in them: the legacy 1× scene flies a 12-column starter (192 px at
+# a 16 px cell) and a 1×-spawned Loft of 22 columns (352 px), so both hulls are
+# still 12 and 22 characters of deck. Size a platform in characters and it is
+# right at both scales; size it in pixels and it is right at neither.
 #
 # The layout below, left to right:
 #
-#   20 platform  |  32 berth (a small hull)  |  20 platform  |  110 berth (the
-#   starter)  |  20 platform
+#   12 walkway  |  14 hatch (the 12-wide starter)  |  14 walkway  |
+#   24 hatch (the 22-wide Loft ship)  |  12 walkway
 #
-# You start on the MIDDLE platform, with a berth a step to either side. Walk off
-# an edge — or drop through the platform — and you land on the ship below. Walk
-# off the FAR END instead and there is nothing under you, which is the run with
-# no ship at all.
+# THE HATCH IS EXACTLY HULL + 2 CHARACTERS (DiveDeck.BERTH_BUFFER_CELLS), which
+# is the owner's number and is the tightest it can be: the hull rises out
+# through its own hatch when you take it, and needs that block either side to
+# clear the walkway. It is also the LOOSEST it should be — a hatch wider than
+# its hull is a place you can drop through and miss, and the headless probe
+# lands you on the hull from the middle of a hatch and drops you 38,000 px past
+# it from the lip of one four characters too wide.
 #
-# 'origin COL ROW' names which character is deck cell (0,0).
+# So a hatch is not a free size. Widen a hull and this file must follow, and the
+# unit suite fails loudly (both directions) rather than letting a run quietly
+# moor a candidate off the end of the deck.
+#
+# Only the TOP row is platform: a hatch is one surface per storey, not a stack
+# of planks (ShipLayout.upscale_cells keeps PLATFORM one row deep), and stacked
+# strips would need one S+jump each. The rows under it are empty air.
+#
+# 'origin COL ROW' names which character is deck cell (0,0) — put it in the
+# middle of the MIDDLE walkway, because that is where the run stands you.
 
-origin 61 0
---------------------................................--------------------..............................................................................................................--------------------
---------------------................................--------------------..............................................................................................................--------------------
---------------------................................--------------------..............................................................................................................--------------------
+origin 33 0
+############--------------##############------------------------############
+############..............##############........................############
+############..............##############........................############

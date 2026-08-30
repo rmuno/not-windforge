@@ -156,20 +156,67 @@ static func depth_of(a: float) -> int:
 const LADDER_SPREAD := 3.0
 
 
+## The smallest sidestep between one landing and the next, in shelf widths. A
+## landing IS a shelf wide, so anything under 1.0 leaves the two slabs
+## overlapping and a straight drop lands on the next one down.
+const LANDING_STEP_MIN := 1.5
+## The largest, so the slalom is a lean and not a lunge.
+const LANDING_STEP_MAX := 4.0
+
+
 ## Where depth `d`'s LANDING sits, as a horizontal offset in SHELF WIDTHS from
 ## the world's centre line. Depth 1 (the launch deck) is the centre line; every
 ## rung below sidesteps to one side or the other, CUMULATIVELY — so the descent
-## is a slalom you fly rather than a lift shaft you drop down — but the walk is
-## CLAMPED to `LADDER_SPREAD`, so it can never wander out of the corridor the run
-## holds you in (`world.dive_corridor_half`). Pure in (seed, depth).
+## is a slalom you fly rather than a lift shaft you drop down — and the walk
+## stays inside `LADDER_SPREAD`, the corridor the run holds you in
+## (`world.dive_corridor_half`). Pure in (seed, depth).
+##
+## THE BOUND IS NOT A CLAMP, and that distinction was a shipped bug (owner
+## 2026-08-30: *"it seems you get stuck at depth 4 (no more falling)"*). Clamping
+## `x + step` to ±LADDER_SPREAD makes the wall a SINK: a run that reaches ±3 and
+## keeps rolling the same side stays at ±3 for every rung after it, so landing
+## after landing is stamped at exactly the same x — and since each one is a solid
+## slab about a shelf wide, the ship simply lands on the next rung down and the
+## descent stops. Measured over 200 seeds, **381 of 1,400 rung transitions came
+## out under one shelf width apart, many of them exactly zero.**
+##
+## So the SIDE is chosen against the room available instead: if the rolled side
+## has less than `LANDING_STEP_MIN` to give, the ladder turns around, and the
+## step is then trimmed to what that side actually has. Because the corridor is
+## ±3 and the minimum step is 1.5, at least one side always has room — so every
+## rung is guaranteed to sidestep at least a shelf and a half, at every depth,
+## for every seed. That is the invariant `_test_dive_ladder_never_stacks` pins.
 static func landing_offset(sv: int, d: int) -> float:
 	var x := 0.0
 	for k in range(2, clampi(d, 1, DEPTHS) + 1):
 		var r := absi(hash([sv, "landing", k]))
 		var side := 1.0 if (r & 1) == 1 else -1.0
-		x = clampf(x + side * (1.5 + float((r >> 1) % 250) / 100.0),
-			-LADDER_SPREAD, LADDER_SPREAD)
+		if LADDER_SPREAD - side * x < LANDING_STEP_MIN:
+			side = -side
+		var span := LANDING_STEP_MAX - LANDING_STEP_MIN
+		var step := LANDING_STEP_MIN + float((r >> 1) % 250) / 250.0 * span
+		x += side * minf(step, LADDER_SPREAD - side * x)
 	return x
+
+
+## WHAT TO SAY WHEN THE SHIP WILL NOT GO DOWN (owner 2026-08-30: "it seems you
+## get stuck at depth 4 (no more falling)").
+##
+## Half of that report was a bug in this file (see `landing_offset`) and half of
+## it was the mode working as designed with nothing saying so: the ladder is a
+## SLALOM, every rung is a solid slab, and a ship that holds the stick down from
+## a fixed column meets one sooner or later and simply rests on it. Flying clear
+## of it is the answer, and the run already draws an edge marker at the next
+## landing — but a player pressing DOWN and going nowhere has no reason to look
+## at a marker they are not currently failing to reach.
+##
+## So the run says it, once, in the direction the next landing actually lies.
+## Pure so the wording is testable without a ship, a shelf or an input.
+static func stuck_hint(dx: float) -> String:
+	if absf(dx) < 1.0:
+		return "The ledge has you. Fly clear of it — straight down is rock."
+	var side := "starboard" if dx > 0.0 else "port"
+	return "The ledge has you. Fly clear of it — the next landing is to %s." % side
 
 
 ## Which depths hold an OUTPOST — a landing that trades (owner 2026-08-30: "a few

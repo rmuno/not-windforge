@@ -27,9 +27,16 @@ extends RefCounted
 const COALESCE_WINDOW := 0.5
 ## A number rises and fades over this long, measured from its LAST hit — so a
 ## number being fed keeps living, and only starts dying once the hits stop.
-const LIFETIME := 0.75
+##
+## CALMED 2026-08-30 (owner: *"text flies off too fast when getting money or
+## going a new level. Maybe 25% slower and less height"*). The animation now runs
+## a quarter longer and rises 30% less, which together cut the apparent rise
+## speed roughly in half — the number reads as a label that lifts off the hit
+## rather than a spark leaving it. `PickupFloats` carries the same pair and they
+## are meant to move together; they are the two halves of one idiom.
+const LIFETIME := 0.95
 ## How far a number drifts upward over its life, in cells (× world scale).
-const RISE_CELLS := 1.4
+const RISE_CELLS := 1.0
 ## Spatial bucket edge for the coalescing key, in cells (× world scale). Four
 ## cells is generous enough that a crush "at roughly one spot" stays one number.
 const BUCKET_CELLS := 4.0

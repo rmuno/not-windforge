@@ -2488,9 +2488,13 @@ func _check_dive(world: Node, fleet) -> void:
 	#   * the hull is BELOW you, so you fall onto it;
 	#   * it is CLOSE enough to be on screen from where you stand ("they're not
 	#     even visible - you have to jump down and hope to land near one");
-	#   * there is OPEN SKY above it, or taking it drives a hull with lift
-	#     straight up into the platform ("I got propelled upward and immediately
-	#     broke the ship against the starting platform").
+	#   * nothing SOLID is above it, or taking it drives a hull with lift
+	#     straight up into it ("I got propelled upward and immediately broke the
+	#     ship against the starting platform"). The deck's fifth layout puts a
+	#     one-way PLATFORM back over each hull — deliberately, because a platform
+	#     strip is collision layer 3 and a Ship masks layer 1, so a rising hull
+	#     goes straight through its own hatch. Terrain is what must not be there,
+	#     and that is what this probes.
 	if pl != null and is_instance_valid(pl):
 		var ws := float(world.get("world_scale"))
 		var berthed := 0
@@ -2516,7 +2520,26 @@ func _check_dive(world: Node, fleet) -> void:
 						break
 		_ok(berthed >= 2, "two hulls sit in berths below the deck (%d)" % berthed)
 		_ok(held == berthed, "...frozen, so they are still there when you land")
-		_ok(roofed == 0, "...with open sky above every one (%d roofed)" % roofed)
+		_ok(roofed == 0, "...with no rock above any of them (%d roofed)" % roofed)
+		# ...and the thing that IS above each of them is a hatch, not walkway:
+		# the deck is one continuous floor now and the only way down to a hull
+		# is the drop-through over it.
+		var deck_cells: Dictionary = world.get("_dive_deck_cells")
+		var over_hatch := 0
+		if not deck_cells.is_empty():
+			var hatch_cols: Dictionary = DiveDeck.platform_columns(deck_cells)
+			var deck_ship = world.get("_dive_deck")
+			for hull in fleet.ships():
+				if not is_instance_valid(hull) or hull.faction != 0 						or hull.is_nest or hull.creature_kind != "" 						or hull.is_carcass():
+					continue
+				if not is_instance_valid(deck_ship):
+					continue
+				var col := int(round(deck_ship.to_local(hull.global_position).x
+					/ (Ship.CELL * ws)))
+				if hatch_cols.has(col):
+					over_hatch += 1
+		_ok(over_hatch >= 2,
+			"each moored hull hangs under a DROP-THROUGH hatch (%d)" % over_hatch)
 
 	# THE STAKE. Losing the ship must not quietly hand you another one — the
 	# world's "never strand the player shipless" safety net is the exact thing

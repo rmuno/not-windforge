@@ -72,7 +72,16 @@ func _initialize() -> void:
 	var hull0 = world.get("local_ship")
 	if hull0 != null and is_instance_valid(hull0):
 		hp0 = float(hull0.blocks.size())
+	# FLY THE LADDER, DO NOT JUST FALL DOWN IT. The descent is a SLALOM — every
+	# rung is a solid slab about two hulls wide, laid a sidestep off the one
+	# above — so a pilot who only holds DOWN eventually rests on a rung's corner
+	# and stops. That is not a bug and this probe used to report it as one: it
+	# stalled at depth 2, 3 and 4 on three different seeds, each time with a few
+	# hundred px of hull on a slab edge. A player reads the edge marker at the
+	# next landing and steers; so does this now, which is what makes the seconds-
+	# per-depth numbers below mean anything.
 	Input.action_press("ship_down")
+	var steer := 0
 	var guard := 0
 	var beat := 0.0
 	while guard < 60 * 60 * 8:    # 8 simulated minutes, hard stop
@@ -83,6 +92,20 @@ func _initialize() -> void:
 		if run == null or String(run.get("outcome")) != "":
 			break
 		var d := int(run.get("depth"))
+		# Steer toward the rung below, the way the edge marker points.
+		var helm = world.get("local_ship")
+		var want := 0
+		if helm != null and is_instance_valid(helm) and d < 8:
+			var aim: Vector2 = world.call("dive_landing_pos", d + 1)
+			var off: float = aim.x - helm.global_position.x
+			if absf(off) > helm.solid_bounds.size.x * 0.5:
+				want = 1 if off > 0.0 else -1
+		if want != steer:
+			if steer != 0:
+				Input.action_release("ship_right" if steer > 0 else "ship_left")
+			if want != 0:
+				Input.action_press("ship_right" if want > 0 else "ship_left")
+			steer = want
 		if d != last_depth:
 			log_lines.append("  depth %d -> %d after %5.1f s   (pot %d, kills %d, surges %d)"
 				% [last_depth, d, t - depth_started, int(run.get("pot")),
@@ -109,6 +132,8 @@ func _initialize() -> void:
 		if d >= 8:
 			break
 	Input.action_release("ship_down")
+	if steer != 0:
+		Input.action_release("ship_right" if steer > 0 else "ship_left")
 
 	var hull1 = world.get("local_ship")
 	var hp1 := 0.0
