@@ -1971,6 +1971,38 @@ func _test_dive_run() -> void:
 	var r2 := DiveRun.new()
 	_check(r1.seed_v != 0 or r2.seed_v != 0, "a run carries its own seed")
 
+	# --- THE OUTPOST'S COUNTER ----------------------------------------------
+	# Stock is bought with THE POT, which is the whole economy: every purchase
+	# is money you are choosing not to take home. So spending has to come off
+	# the same number the extraction premium multiplies.
+	var shopper := DiveRun.new()
+	shopper.commit()
+	shopper.advance(1.0, DiveRun.depth_altitude(4), 45.0)
+	for i in 12:
+		shopper.credit_kill("kraken")
+	var before_pot := shopper.pot
+	var lung: Dictionary = DiveRun.STOCK[0]
+	_check(String(lung["id"]) == "lung",
+		"the first thing an outpost sells is the Lung (the gate past depth 5)")
+	_check(shopper.spend(int(lung["cost"])), "the pot pays for stock")
+	_check(shopper.pot == before_pot - int(lung["cost"]),
+		"...and the pot is what shrinks (%d -> %d)" % [before_pot, shopper.pot])
+	_check(DiveRun.bank_value(shopper.pot, 4) < DiveRun.bank_value(before_pot, 4),
+		"...so buying really does cost you at the bank")
+	var broke := DiveRun.new()
+	_check(not broke.spend(1), "an empty pot buys nothing")
+	_check(broke.pot == 0, "...and a refused purchase changes nothing")
+	var done := DiveRun.new()
+	done.credit_kill("whale_city")
+	done.lose()
+	_check(not done.spend(1), "a finished run cannot shop")
+	for row in DiveRun.STOCK:
+		var r := row as Dictionary
+		_check(int(r["cost"]) > 0 and not String(r["label"]).is_empty(),
+			"stock row '%s' is priced and named" % r["id"])
+		_check(String(r["id"]) in ["lung", "patch", "balloon"],
+			"stock row '%s' is one the world knows how to hand over" % r["id"])
+
 
 func _test_living_creature_gets_a_coarse_collider() -> void:
 	_t("a living creature gets a COARSE collider; carcasses and vessels stay exact")

@@ -2576,6 +2576,38 @@ func _check_dive(world: Node, fleet) -> void:
 				world.call("_handle_interact")
 				_ok(not (world.get("_nearby_helm") as Array).is_empty(),
 					"...and the helm still answers E from outside the hull")
+	# --- THE OUTPOST (owner 2026-08-30) -------------------------------------
+	# Three of the eight rungs trade. The counter must open off the pot, refuse
+	# what you cannot afford, and actually hand the goods over.
+	world.call("begin_dive")
+	await _dive_take_a_hull(world, fleet)
+	var live = world.get("dive")
+	if live != null and pl != null and is_instance_valid(pl):
+		_ok((world.call("dive_stock") as Array).is_empty(),
+			"no counter opens away from an outpost")
+		world.call("_plant_outpost", pl.global_position)
+		var stock: Array = world.call("dive_stock")
+		_ok(stock.size() == DiveRun.STOCK.size(),
+			"standing at a quartermaster opens the counter (%d rows)" % stock.size())
+		# Broke: the purchase is refused and nothing moves.
+		live.pot = 0
+		_ok(not bool(world.call("try_buy_stock", 0)), "a broke run buys nothing")
+		# Flush: the Lung really lands in the pack and the pot really pays.
+		var cost := int((DiveRun.STOCK[0] as Dictionary)["cost"])
+		live.pot = cost + 10
+		var had: int = pl.inventory.count(ItemDB.Crafted.LIFE_SUPPORT)
+		_ok(bool(world.call("try_buy_stock", 0)), "a funded run buys the Lung")
+		_ok(pl.inventory.count(ItemDB.Crafted.LIFE_SUPPORT) == had + 1,
+			"...and it is in the pack")
+		_ok(live.pot == 10, "...paid for out of the POT, not the wallet (%d left)" % live.pot)
+		# The sheet shows the counter instead of the stat ladder.
+		var model: Dictionary = world.call("character_sheet_model")
+		_ok(not (model.get("outpost_stock", []) as Array).is_empty(),
+			"the character sheet becomes the outpost counter at one")
+	world.call("end_dive")
+	_ok((world.get("_dive_outposts") as Array).is_empty(),
+		"the quartermasters go with the run")
+
 	world.call("end_dive")
 	_ok(world.get("dive") == null and world.call("dive_status") == null,
 		"ending a run clears the mode entirely")

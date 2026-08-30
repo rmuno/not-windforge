@@ -22,6 +22,11 @@ var reach := 48.0
 ## needs no code change here.
 var trains: Array = []
 
+## Coat colour. The Dive's outposts reuse this node as a QUARTERMASTER — same
+## person-shaped figure, same reach idiom, different trade — and the coat is what
+## tells the two apart at a glance without a second body to draw.
+var coat := Color(0.38, 0.52, 0.66)
+
 
 func in_reach(from: Vector2) -> bool:
 	return global_position.distance_to(from) <= reach
@@ -50,7 +55,6 @@ func _draw() -> void:
 	# Scale is baked into `reach` upstream; draw relative to it so the figure
 	# tracks the world scale like every other reach in the game.
 	var s := reach / 48.0
-	var coat := Color(0.38, 0.52, 0.66)
 	var body := Rect2(-BODY.x * 0.5 * s, -BODY.y * 0.5 * s, BODY.x * s, BODY.y * s)
 	draw_rect(body, coat)
 	draw_rect(body, coat.darkened(0.45), false, maxf(1.0, s))

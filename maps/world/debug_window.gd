@@ -238,6 +238,10 @@ func _build_spawn_tab() -> void:
 		func() -> void:
 			if world != null and world.has_method("begin_dive"):
 				world.call("begin_dive"))
+	_action_button(box, "Plant a Dive OUTPOST beside you (K trades at it)",
+		func() -> void:
+			if world != null and world.has_method("_plant_outpost"):
+				world.call("_plant_outpost", _spawn_pos()))
 	_action_button(box, "END the dive (abandon the run, no ledger)",
 		func() -> void:
 			if world != null and world.has_method("end_dive"):
