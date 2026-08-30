@@ -95,6 +95,12 @@ func _draw_gauge(d: Dictionary) -> void:
 	var y := y0 + float(rungs) * (h + gap) + fs * 2.6
 	draw_string(font, Vector2(x - 52.0 * s, y), "carrying %d" % int(d.get("pot", 0)),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _COIN)
+	# NO HULL YET. On the launch deck the run has no ship to lose, and the one
+	# thing worth saying is what the deck is for.
+	if bool(d.get("shipless", false)):
+		draw_string(font, Vector2(x - 52.0 * s, y + fs * 1.4), "no ship",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _ALARM)
+		return
 	# The den's clock. Only shown when it is close enough to mean something —
 	# a permanent countdown would be a nag, and the screen is meant to be calm.
 	var into := float(d.get("surge_in", 99.0))

@@ -97,6 +97,10 @@ var _dive_hud: DiveHud
 ## How long the local ship has been gone. Losing it ends the run, but
 ## `local_ship` blinks null for a frame during a rebind, so the verdict waits.
 var _dive_shipless := 0.0
+## The Blueprint-Loft hull parked on the launch deck as the second candidate.
+## A run prop: made once, reused across runs, cleared with the run unless you
+## chose it.
+var _dive_loft: Ship = null
 const DIVE_SHIPLESS_GRACE := 1.5
 ## How much further the helm answers E inside a run — enough to take it while
 ## standing on the hull above it, which is where `_dive_step_out` leaves you.
@@ -849,11 +853,9 @@ func begin_dive() -> void:
 		return
 	dive = DiveRun.new()
 	_dive_shipless = 0.0
-	_place_for_dive()
-	_dive_open_doors()
-	_dive_post_the_assistant()
-	_notify("THE DIVE — you start at the top. Down is richer and worse; "
-		+ "climb back to this air to bank what you are carrying.")
+	_build_launch_deck()
+	_notify("THE LAUNCH DECK. Take a ship, or step off the edge with nothing. "
+		+ "Down is richer and worse; climb back to this air to bank what you carry.")
 
 
 ## Abandon the run without a verdict (a reset, a load, a mode exit). The ledger
@@ -861,6 +863,12 @@ func begin_dive() -> void:
 func end_dive() -> void:
 	dive = null
 	_dive_shipless = 0.0
+	# The unchosen candidate goes with the run — unless you took it, in which
+	# case it is your ship now and stays.
+	if is_instance_valid(_dive_loft) and _dive_loft != local_ship \
+			and _dive_loft.pilot_peer == 0:
+		_dive_loft.queue_free()
+	_dive_loft = null
 
 
 ## Dismiss the run-over ledger and return to an ordinary world. The run's coins
@@ -879,23 +887,87 @@ func dive_altitude_y(frac: float) -> float:
 	return _world_rect.end.y - frac * _world_rect.size.y
 
 
-## Put the ship and the body at the top of the ladder. The ship is TELEPORTED
-## (a run has not started yet, so there is no motion to respect) to a footprint
-## probed clear of rock, exactly like every other spawn.
-func _place_for_dive() -> void:
-	if not is_instance_valid(local_ship):
-		return
+## THE LAUNCH DECK (owner 2026-08-30: "what if you just start on a small island
+## and that's where you can choose which ship to fall onto & pilot, or even to
+## just fall without a ship?").
+##
+## A run does NOT hand you a hull. It cuts a small stone shelf at the top of the
+## ladder, stands you on it, parks the sky's candidates either side, and lets
+## the first decision of the run be which one you take — or whether you take
+## one at all. Stepping off the edge with nothing is a legal run: the ship-loss
+## ending simply cannot fire, and your body becomes the thing you can lose
+## (`DiveRun.committed`).
+##
+## It also makes depth 1 a PLACE rather than an altitude, which is the shape the
+## rest of the ladder is heading for (one landing per depth — BACKLOG).
+const LAUNCH_SHELF_PX := Vector2(9000.0, 700.0)   ## at scale 1; x world_scale
+func _build_launch_deck() -> void:
 	var at := Vector2(_world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0,
 		dive_altitude_y(DiveRun.depth_altitude(1)))
+	var span := LAUNCH_SHELF_PX * float(world_scale)
 	if terrain != null:
-		at = WhaleSpawn.clear_spawn_pos(terrain, at,
-			local_ship.solid_bounds, float(world_scale))
-	local_ship.global_position = at
-	local_ship.linear_velocity = Vector2.ZERO
-	local_ship.angular_velocity = 0.0
+		# Generate the neighbourhood FIRST, then carve. A region already
+		# generated is never repainted, so stamping after generation is what
+		# stops lazy island generation eating the shelf half a minute later.
+		IslandGen.ensure_generated(terrain, world_seed, [at], span.x, 64)
+		var cp := maxf(terrain.cell_px(), 1.0)
+		var top_left := terrain.world_to_cell(at + Vector2(-span.x * 0.5, 0.0))
+		terrain.fill_rect(Rect2i(top_left,
+			Vector2i(int(span.x / cp), maxi(1, int(span.y / cp)))),
+			TerrainDB.Type.STONE)
+		terrain.flush_rebuilds()
+
+	# NOBODY'S SHIP. Un-claim whatever the boot handed you and park it as one
+	# of the candidates: `_refresh_local_ship` then leaves `local_ship` null until
+	# you actually take a helm, which is what makes "or no ship at all" real.
+	var parked: Array = []
+	for ship in fleet.ships():
+		if is_instance_valid(ship) and ship.pilot_peer == _my_id():
+			ship.pilot_peer = 0
+			parked.append(ship)
+	local_ship = null
+	var gap := span.x * 0.42
+	var i := 0
+	for ship in parked:
+		_park_candidate(ship as Ship, at + Vector2(-gap - float(i) * gap, -span.y))
+		i += 1
+	# ...and the owner's own Blueprint Loft ship as the second candidate, so
+	# whatever they design in the Loft is a hull they can dive with. Made ONCE
+	# and reused: a run prop that respawned per dive would litter the sky.
+	if is_instance_valid(_dive_loft):
+		_park_candidate(_dive_loft, at + Vector2(gap, -span.y))
+	else:
+		_dive_loft = _spawn_loft_at(at + Vector2(gap, -span.y))
+		if _dive_loft != null:
+			_dive_loft.linear_velocity = Vector2.ZERO
+
+	# Stand the body just above the shelf, not high over it: the run opens with
+	# a look around, not a fall.
 	if player != null and is_instance_valid(player):
 		player.velocity = Vector2.ZERO
-		player.global_position = at + Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale
+		player.global_position = at - Vector2(0.0, 150.0 * float(world_scale))
+
+
+## Move one candidate hull to the launch deck at rest. Teleporting is fine here:
+## the run has not started, so there is no motion to respect.
+func _park_candidate(ship: Ship, at: Vector2) -> void:
+	if ship == null or not is_instance_valid(ship):
+		return
+	ship.global_position = at
+	ship.linear_velocity = Vector2.ZERO
+	ship.angular_velocity = 0.0
+
+
+## The run ends because YOU did, not because a ship did. Only reachable on a
+## shipless run (owner 2026-08-30: "or even to just fall without a ship?") —
+## with a hull under you there is a deck to wake up on, so death is a respawn and
+## the run goes on. With none, there is nowhere to put you back.
+func _dive_perish() -> bool:
+	if dive == null or dive.outcome != "" or dive.committed:
+		return false
+	dive.lose(true)
+	_notify(DiveRun.outcome_line(dive.ledger()))
+	return true
 
 
 ## THE DIVE HAS NO INTERIORS (owner 2026-08-30: "just getting off the helm
@@ -908,7 +980,8 @@ func _dive_open_doors() -> void:
 	if not is_instance_valid(local_ship):
 		return
 	for cell in local_ship.door_cells.duplicate():
-		if local_ship.has_block(cell) 				and local_ship.blocks[cell]["type"] == BlockDB.Type.DOOR_CLOSED:
+		if local_ship.has_block(cell) \
+				and local_ship.blocks[cell]["type"] == BlockDB.Type.DOOR_CLOSED:
 			local_ship.net_toggle_door(cell)
 
 
@@ -958,7 +1031,8 @@ func _helm_candidates() -> Array:
 ## Ship-local units throughout (`solid_bounds` and `local_pos_of` are un-scaled;
 ## the node's own transform carries world_scale).
 func _dive_step_out(ship: Ship) -> void:
-	if ship == null or not is_instance_valid(ship) or player == null 			or not is_instance_valid(player):
+	if ship == null or not is_instance_valid(ship) or player == null \
+			or not is_instance_valid(player):
 		return
 	var b := ship.solid_bounds
 	if b.size == Vector2.ZERO:
@@ -977,10 +1051,20 @@ func _tick_dive(delta: float) -> void:
 		return
 	if player == null or not is_instance_valid(player):
 		return
-	# LOSING THE SHIP ENDS THE RUN (owner ruling). `local_ship` blinks null for a
-	# frame whenever the binding is refreshed, so the verdict waits out a grace —
-	# a run ended by a rebind would be the cruellest bug in the mode.
-	if is_instance_valid(local_ship) and local_ship.has_helm():
+	# TAKING A HULL IS THE FIRST DECISION OF THE RUN. Until you do, the run has
+	# no ship to lose and the ship-loss ending cannot fire; the moment you take
+	# one it becomes yours — doors open, the assistant posts, and from here
+	# losing it is the ending.
+	if not dive.committed:
+		if is_instance_valid(local_ship) and player.is_piloting():
+			dive.commit()
+			_dive_open_doors()
+			_dive_post_the_assistant()
+			_notify("She is yours. Lose her and the run ends with her.")
+	elif is_instance_valid(local_ship) and local_ship.has_helm():
+		# LOSING THE SHIP ENDS THE RUN (owner ruling). `local_ship` blinks null
+		# for a frame whenever the binding is refreshed, so the verdict waits out
+		# a grace — a run ended by a rebind would be the cruellest bug here.
 		_dive_shipless = 0.0
 	else:
 		_dive_shipless += delta
@@ -991,7 +1075,9 @@ func _tick_dive(delta: float) -> void:
 	# The assistant never downs tools: if the station stopped (a rebuild, a stray
 	# E, a repaired hull), they start it again. That is what "automatically mans
 	# the repair spot" means — you should never have to think about it again.
-	if Tunables.get_bool("dive_assistant") and is_instance_valid(local_ship) 			and not local_ship.repair_cells.is_empty():
+	if dive.committed and Tunables.get_bool("dive_assistant") \
+			and is_instance_valid(local_ship) \
+			and not local_ship.repair_cells.is_empty():
 		local_ship.menders_running = true
 	for ev in dive.advance(delta, _player_altitude_frac(),
 			Tunables.get_num("dive_surge_period")):
@@ -1078,6 +1164,7 @@ func dive_status() -> Variant:
 		return null
 	var out := dive.ledger()
 	out["depths"] = DiveRun.DEPTHS
+	out["shipless"] = not dive.committed
 	out["depth_label"] = DiveRun.depth_label(dive.depth)
 	out["headline"] = DiveRun.outcome_line(out)
 	return out
@@ -3878,6 +3965,8 @@ func _watch_player_death() -> void:
 func _on_player_died(dead: Player) -> void:
 	if dead != player:
 		return
+	if _dive_perish():
+		return
 	respawn_player()
 
 
@@ -4096,7 +4185,8 @@ func _physics_process(delta: float) -> void:
 	# the body dropping through the haze is the run-over screen the ledger is
 	# written over (owner: "do you just fall until you die and that's that?").
 	if player != null and player.global_position.y > WORLD_BOTTOM and not dive_over():
-		respawn_player()
+		if not _dive_perish():
+			respawn_player()
 
 	_track_camera()
 
@@ -5476,7 +5566,8 @@ func _handle_interact() -> void:
 	# THE DIVE has no doors to work: they are opened at the start of a run and E
 	# never offers one again, so the use key means helm (or station) and nothing
 	# else — the "heavily simplify the nuisances" the mode was asked for.
-	_nearby_door = [] if dive != null 		else Player.find_door(fleet.ships(), player.global_position, _door_reach())
+	_nearby_door = [] if dive != null \
+		else Player.find_door(fleet.ships(), player.global_position, _door_reach())
 	_nearby_mender = Player.find_mender(fleet.ships(), player.global_position, _mender_reach())
 
 	if not Input.is_action_just_pressed("interact"):

@@ -1853,6 +1853,48 @@ func _test_dive_run() -> void:
 		and DiveRun.surge_kinds(99) == DiveRun.surge_kinds(DiveRun.DEPTHS),
 		"an off-ladder depth clamps rather than emptying")
 
+	# --- THE LAUNCH DECK: you start with NOBODY'S ship (owner 2026-08-30) ----
+	# A run begins uncommitted, which is what makes "or even just fall without a
+	# ship" a legal way to play rather than an instant loss.
+	var fresh := DiveRun.new()
+	_check(not fresh.committed, "a run starts with no hull committed")
+	# ...and the dock does not attack you while you are choosing one. The clock
+	# only starts once you have actually been below the top rung.
+	var quiet: Array = []
+	for i in 400:
+		quiet.append_array(fresh.advance(1.0, DiveRun.depth_altitude(1), 45.0))
+	_check(not quiet.has("surge"),
+		"nothing comes for you on the launch deck (%d s of standing still)" % 400)
+	# Going down starts it.
+	var woke := false
+	for i in 200:
+		if fresh.advance(1.0, DiveRun.depth_altitude(3), 45.0).has("surge"):
+			woke = true
+	_check(woke, "...and leaving the top rung starts the den's clock")
+	# Coming BACK to the top does not make it safe again — the way home is not
+	# a safe place, and by then `deepest` is long past 1.
+	var home := false
+	for i in 200:
+		if fresh.advance(1.0, DiveRun.depth_altitude(1), 45.0).has("surge"):
+			home = true
+	_check(fresh.outcome == "escaped" or home,
+		"the dock is not safe once you have been down")
+
+	# Dying with no hull is its OWN ending, and says so.
+	var fell := DiveRun.new()
+	fell.advance(1.0, DiveRun.depth_altitude(4), 45.0)
+	fell.credit_kill("kraken")
+	fell.lose(true)
+	_check(fell.outcome == "lost" and fell.banked == 0, "a shipless death ends the run")
+	_check(DiveRun.outcome_line(fell.ledger()).contains("No ship"),
+		"...and the ledger says you had no ship, not that you lost one")
+	var sunk := DiveRun.new()
+	sunk.commit()
+	sunk.advance(1.0, DiveRun.depth_altitude(4), 45.0)
+	sunk.lose()
+	_check(DiveRun.outcome_line(sunk.ledger()).contains("SHIP IS GONE"),
+		"...while losing a hull you took still reads as losing a hull")
+
 
 func _test_living_creature_gets_a_coarse_collider() -> void:
 	_t("a living creature gets a COARSE collider; carcasses and vessels stay exact")
