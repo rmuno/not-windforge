@@ -206,6 +206,20 @@ const STOCK := [
 ]
 
 
+## WHAT THIS RUN HANDED YOU, as {item id: count}. Everything an outpost sells is
+## TEMPORARY — that is the owner's word for it — and temporary has to mean
+## something, or the Aether Lung is bought once and the depth gate is open
+## forever after. So the run remembers exactly what it granted and the world
+## takes that much back when the run ends. What you owned before a run is
+## untouched: only the counted grants come off.
+var granted := {}
+
+
+## Record that this run handed over `n` of item `id`.
+func grant(id: int, n := 1) -> void:
+	granted[id] = int(granted.get(id, 0)) + n
+
+
 ## Spend `cost` from the pot. Refused (and nothing changes) if you cannot afford
 ## it — no debt, exactly like `Wallet.spend`.
 func spend(cost: int) -> bool:

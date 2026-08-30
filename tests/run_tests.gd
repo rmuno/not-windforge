@@ -1849,6 +1849,12 @@ func _test_dive_run() -> void:
 	_check(DiveRun.surge_kinds(DiveRun.DEPTHS).has("kraken")
 		and not DiveRun.surge_kinds(DiveRun.DEPTHS).has("hulk"),
 		"the floor is the deep's own, not somebody's gunboat")
+	# The lead-in-front rule has a floor: nothing ever spawns ON you. (The
+	# geometry lives in world._dive_surge; what is pinned here is the ladder it
+	# reads.) The measured dive is ~1950 px/s and the default lead is 4 s, so a
+	# picket lands roughly 8 km ahead at 8x — well outside a hull.
+	_check(Tunables.get_num("dive_surge_lead") >= 0.5,
+		"a surge always arrives some distance ahead, never on top of you")
 	_check(DiveRun.surge_kinds(0) == DiveRun.surge_kinds(1)
 		and DiveRun.surge_kinds(99) == DiveRun.surge_kinds(DiveRun.DEPTHS),
 		"an off-ladder depth clamps rather than emptying")
@@ -1989,7 +1995,12 @@ func _test_dive_run() -> void:
 		"...and the pot is what shrinks (%d -> %d)" % [before_pot, shopper.pot])
 	_check(DiveRun.bank_value(shopper.pot, 4) < DiveRun.bank_value(before_pot, 4),
 		"...so buying really does cost you at the bank")
+	shopper.grant(ItemDB.Crafted.LIFE_SUPPORT)
+	shopper.grant(ItemDB.Crafted.LIFE_SUPPORT)
+	_check(int(shopper.granted[ItemDB.Crafted.LIFE_SUPPORT]) == 2,
+		"a run counts what it handed you, so it can take exactly that back")
 	var broke := DiveRun.new()
+	_check(broke.granted.is_empty(), "a fresh run has handed you nothing")
 	_check(not broke.spend(1), "an empty pot buys nothing")
 	_check(broke.pot == 0, "...and a refused purchase changes nothing")
 	var done := DiveRun.new()

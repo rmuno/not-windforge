@@ -879,6 +879,7 @@ func begin_dive() -> void:
 ## Abandon the run without a verdict (a reset, a load, a mode exit). The ledger
 ## is NOT shown — this is not an outcome, it is the run ceasing to exist.
 func end_dive() -> void:
+	_dive_strip_run_gear()
 	dive = null
 	_dive_shipless = 0.0
 	for post in _dive_outposts:
@@ -892,6 +893,19 @@ func end_dive() -> void:
 			and _dive_loft.pilot_peer == 0:
 		_dive_loft.queue_free()
 	_dive_loft = null
+
+
+## Take back exactly what the run handed you. The outpost's stock is TEMPORARY
+## (the owner's word), and if it were not, the Aether Lung would be bought once
+## and the depth gate would stand open for every run after — which would quietly
+## delete the reason the shops exist. Counted, so gear you owned before the run
+## is never touched.
+func _dive_strip_run_gear() -> void:
+	if dive == null or player == null or not is_instance_valid(player) \
+			or player.inventory == null:
+		return
+	for id in dive.granted:
+		player.inventory.remove(int(id), int(dive.granted[id]))
 
 
 ## Dismiss the run-over ledger and return to an ordinary world. The run's coins
@@ -1073,10 +1087,12 @@ func try_buy_stock(index: int) -> bool:
 	match String(row["id"]):
 		"lung":
 			player.inventory.add(ItemDB.Crafted.LIFE_SUPPORT, 1)
+			dive.grant(ItemDB.Crafted.LIFE_SUPPORT)
 		"balloon":
 			player.inventory.add(ItemDB.Crafted.BALLOON_LARGE, 1)
+			dive.grant(ItemDB.Crafted.BALLOON_LARGE)
 		"patch":
-			_dive_patch_hull()
+			_dive_patch_hull()   # spent the moment it is bought; nothing to take back
 	if _pickups != null:
 		_pickups.add(player.global_position, "-%d coins" % cost, float(world_scale))
 	return true
@@ -1243,20 +1259,38 @@ func _tick_dive(delta: float) -> void:
 				_dive_bank()
 
 
-## A depth's den comes for you: hunters spawned around the player, as many as
-## the ladder says. They arrive OFF to the sides rather than on top of you —
-## being crushed by a spawn is not a fight.
+## A depth's den comes for you: hunters spawned AHEAD of you on your own line,
+## as many as the ladder says, spread across it so you fly into a picket rather
+## than a stack.
+##
+## Ahead, not abeam, and the measurement is why. `tools/dive_probe.gd` clocked a
+## committed dive at about 1,950 px/s; a kraken closes at a fraction of that, so
+## anything spawned beside you is scenery you have already left before its brain
+## finishes waking. Putting the picket a few seconds down your travel vector
+## means you meet it — and it is the honest fiction too: they live below you and
+## come up. Nothing spawns ON you; the lead is always at least a hull length.
 func _dive_surge() -> void:
 	if dive == null or player == null or not is_instance_valid(player):
 		return
 	var n := DiveRun.surge_count(dive.depth)
 	var kinds := DiveRun.surge_kinds(dive.depth)
-	var reach := 2600.0 * float(world_scale)
+	var ws := float(world_scale)
+	# Your line: where you are actually going. A drifting or parked ship gets a
+	# straight-down picket, which is where the deep is anyway.
+	var vel := Vector2.DOWN
+	var speed := 0.0
+	if is_instance_valid(local_ship):
+		speed = local_ship.linear_velocity.length()
+		if speed > 200.0 * ws:
+			vel = local_ship.linear_velocity / speed
+	var lead := maxf(Tunables.get_num("dive_surge_lead") * maxf(speed, 900.0 * ws),
+		1800.0 * ws)
+	var ahead := player.global_position + vel * lead
+	var across := Vector2(-vel.y, vel.x)
 	for i in n:
-		var side := 1.0 if i % 2 == 0 else -1.0
-		var at := player.global_position + Vector2(
-			side * reach * (1.0 + 0.35 * float(i / 2)),
-			(float(i % 3) - 1.0) * 420.0 * float(world_scale))
+		var off := float(i) - 0.5 * float(n - 1)
+		var at := ahead + across * off * 900.0 * ws \
+			+ vel * float(i % 2) * 500.0 * ws
 		debug_spawn(String(kinds[i % kinds.size()]), at)
 	# The top of the ladder is gunboats and the bottom is krakens, so the line
 	# says which — "they come" reads the same whether it is a crewed vessel you
