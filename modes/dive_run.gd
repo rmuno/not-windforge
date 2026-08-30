@@ -130,6 +130,43 @@ static func bank_value(p: int, d: int) -> int:
 	return int(round(float(p) * (1.0 + DEPTH_BONUS * reach)))
 
 
+## WHAT a depth throws at you, as `world.debug_spawn` kinds, in the order they
+## arrive (owner 2026-08-30: "the first height levels can have just enemies on
+## their tiny ships shooting at you").
+##
+## The ladder is a ladder of KIND before it is a ladder of number. The top is
+## crewed vessels — things with guns that shoot back and can be out-flown, which
+## is a fight you can lose without dying. The bottom is krakens, which is the
+## deep's own answer. The middle is where the two overlap and the basilisk (a
+## stand-off fire-spitter) makes altitude matter.
+##
+## Deliberately NOT a whale in sight: the whale is the sky's neutral third party.
+## It already retaliates against whoever shot it LAST (Shot stamps the shooter
+## onto `Ship.last_attacker_id`, the world's damage wiring hands it to
+## `WhaleAI.provoke`, pinned by `_test_provoked_whale_rams_its_attacker`), so a
+## whale that wanders into a firefight is a weapon lying on the floor for
+## whichever side is willing to aim it. Spawning them as ENEMIES would delete
+## that: a whale sent at you is not a whale you can turn.
+const SURGE_LADDER := [
+	["hulk"],                    # 1 — one gunboat. You can simply leave.
+	["hulk"],                    # 2
+	["hulk", "basilisk"],        # 3 — the first thing that punishes hovering
+	["hulk", "kraken"],          # 4 — the deep starts reaching up
+	["kraken", "basilisk"],      # 5
+	["kraken"],                  # 6 — vessels stop coming this far down
+	["kraken"],                  # 7
+	["kraken"],                  # 8 — and something else lives here
+]
+
+
+## What depth `d` sends. Never empty — a depth with nothing in it is a corridor.
+static func surge_kinds(d: int) -> Array:
+	var i := clampi(d, 1, DEPTHS) - 1
+	if i < 0 or i >= SURGE_LADDER.size():
+		return ["kraken"]
+	return (SURGE_LADDER[i] as Array).duplicate()
+
+
 ## How many hunters a depth's den throws at you in one surge. Deliberately gentle
 ## at the top and unreasonable at the bottom — the ladder IS the difficulty
 ## curve, so nothing else has to be.

@@ -1831,6 +1831,28 @@ func _test_dive_run() -> void:
 	_check(DiveRun.depth_label(DiveRun.DEPTHS) == "THE FLOOR",
 		"the last depth is a place, not a number")
 
+	# --- WHAT each depth sends (owner 2026-08-30) ---------------------------
+	# The ladder is a ladder of KIND before it is one of number: gunboats at the
+	# top (a fight you can lose without dying), the deep's own answer at the
+	# bottom. And never a whale — the whale is the neutral third party you can
+	# turn on whoever shot it, and spawning them AT you would delete that.
+	for d in range(1, DiveRun.DEPTHS + 1):
+		var kinds: Array = DiveRun.surge_kinds(d)
+		_check(not kinds.is_empty(), "depth %d sends something" % d)
+		for k in kinds:
+			_check(String(k) in ["hulk", "kraken", "basilisk"],
+				"depth %d's '%s' is a kind world.debug_spawn knows" % [d, k])
+			_check(String(k) != "whale" and String(k) != "critter",
+				"depth %d sends no wildlife as an enemy" % d)
+	_check(DiveRun.surge_kinds(1).has("hulk") and not DiveRun.surge_kinds(1).has("kraken"),
+		"the first depth is crewed vessels, not the deep")
+	_check(DiveRun.surge_kinds(DiveRun.DEPTHS).has("kraken")
+		and not DiveRun.surge_kinds(DiveRun.DEPTHS).has("hulk"),
+		"the floor is the deep's own, not somebody's gunboat")
+	_check(DiveRun.surge_kinds(0) == DiveRun.surge_kinds(1)
+		and DiveRun.surge_kinds(99) == DiveRun.surge_kinds(DiveRun.DEPTHS),
+		"an off-ladder depth clamps rather than emptying")
+
 
 func _test_living_creature_gets_a_coarse_collider() -> void:
 	_t("a living creature gets a COARSE collider; carcasses and vessels stay exact")

@@ -851,6 +851,7 @@ func begin_dive() -> void:
 	_dive_shipless = 0.0
 	_place_for_dive()
 	_dive_open_doors()
+	_dive_post_the_assistant()
 	_notify("THE DIVE — you start at the top. Down is richer and worse; "
 		+ "climb back to this air to bank what you are carrying.")
 
@@ -911,6 +912,29 @@ func _dive_open_doors() -> void:
 			local_ship.net_toggle_door(cell)
 
 
+## THE ASSISTANT (owner 2026-08-30: "I'm not exactly sure if the repairs like
+## that even make sense — perhaps we'd need a starting assistant recruit who just
+## automatically mans the repair spot"). A run starts with a repair station on
+## your hull (bolted on if the blueprint has none) and ONE crew member standing
+## at it, keeping it running. You never hire, manage or lose them — so this is
+## not the recruitment system the owner deferred for good (ROADMAP → Q-F); it is
+## the repair station given a face and a hand, because holding X over your own
+## hull mid-fight is the nuisance the mode exists to shed.
+##
+## The station still DRAWS SHIP POWER, so a shot-out grid still cannot keep up:
+## the stakes stay where v0.79.0 put them (fragility, not attrition). F2 →
+## `dive_assistant` turns the whole thing off.
+func _dive_post_the_assistant() -> void:
+	if not Tunables.get_bool("dive_assistant") or not is_instance_valid(local_ship):
+		return
+	if local_ship.repair_cells.is_empty():
+		debug_add_mender()
+	if local_ship.repair_cells.is_empty():
+		return  # no room on this hull; the X wand is still the way
+	local_ship.menders_running = true
+	_spawn_crewman(local_ship, "R", "mender")
+
+
 ## How far the helm answers E. In THE DIVE you board from OUTSIDE — standing
 ## anywhere on or near your own hull — because the mode deleted the walk to the
 ## cabin. Everywhere else the helm is a station you stand at, unchanged.
@@ -964,6 +988,11 @@ func _tick_dive(delta: float) -> void:
 			dive.lose()
 			_notify(DiveRun.outcome_line(dive.ledger()))
 			return
+	# The assistant never downs tools: if the station stopped (a rebuild, a stray
+	# E, a repaired hull), they start it again. That is what "automatically mans
+	# the repair spot" means — you should never have to think about it again.
+	if Tunables.get_bool("dive_assistant") and is_instance_valid(local_ship) 			and not local_ship.repair_cells.is_empty():
+		local_ship.menders_running = true
 	for ev in dive.advance(delta, _player_altitude_frac(),
 			Tunables.get_num("dive_surge_period")):
 		match String(ev):
@@ -985,14 +1014,19 @@ func _dive_surge() -> void:
 	if dive == null or player == null or not is_instance_valid(player):
 		return
 	var n := DiveRun.surge_count(dive.depth)
+	var kinds := DiveRun.surge_kinds(dive.depth)
 	var reach := 2600.0 * float(world_scale)
 	for i in n:
 		var side := 1.0 if i % 2 == 0 else -1.0
 		var at := player.global_position + Vector2(
 			side * reach * (1.0 + 0.35 * float(i / 2)),
 			(float(i % 3) - 1.0) * 420.0 * float(world_scale))
-		debug_spawn("kraken", at)
-	_notify("They come — %d out of the dark." % n)
+		debug_spawn(String(kinds[i % kinds.size()]), at)
+	# The top of the ladder is gunboats and the bottom is krakens, so the line
+	# says which — "they come" reads the same whether it is a crewed vessel you
+	# can out-fly or something from the floor.
+	_notify("They come — %d %s." % [n, "out of the dark" if kinds.has("kraken")
+		else "under sail"])
 
 
 ## The floor's resident. Until the Leviathan encounter is built (BACKLOG), the

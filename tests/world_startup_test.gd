@@ -2434,6 +2434,28 @@ func _check_dive(world: Node, fleet) -> void:
 		"inside a run, a shipless respawn does NOT grant a fresh ship")
 	world.set("local_ship", kept)
 
+	# --- THE ASSISTANT (owner 2026-08-30) -----------------------------------
+	# "A starting assistant recruit who just automatically mans the repair spot."
+	# The point is that you never think about it: a run must END with a station
+	# on the hull, running, with somebody standing at it — even though the
+	# starter blueprint has no repair block at all.
+	world.call("begin_dive")
+	var mend = world.get("local_ship")
+	if mend != null and is_instance_valid(mend):
+		_ok(not mend.repair_cells.is_empty(),
+			"a run puts a repair station on your hull (%d cells)" % mend.repair_cells.size())
+		_ok(mend.menders_running, "...and it is already running")
+		var manned := false
+		for npc in (world.get("_npcs") as Array):
+			if is_instance_valid(npc) and npc.get("ship") == mend and npc.get("role") == "mender":
+				manned = true
+		_ok(manned, "...with an assistant standing at it")
+		# It must not stay stopped: the assistant restarts it every tick.
+		mend.menders_running = false
+		world.call("_tick_dive", 0.016)
+		_ok(mend.menders_running, "the assistant starts it again if it stops")
+	world.call("end_dive")
+
 	# --- THE DIVE HAS NO INTERIORS (owner 2026-08-30) -----------------------
 	# Three things have to be true together, or "leaving the ship still has you
 	# open the doors to actually leave" comes straight back.
