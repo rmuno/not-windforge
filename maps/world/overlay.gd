@@ -347,10 +347,26 @@ func _draw_interact_prompt() -> void:
 	var text := (prompt as Array)[1] as String
 	var s: float = float(world.get("world_scale"))
 	var bob := sin(Time.get_ticks_msec() / 250.0) * 2.0 * s
-	draw_string(ThemeDB.fallback_font,
-		pos + Vector2(-46.0 * s, -18.0 * s + bob),
-		text, HORIZONTAL_ALIGNMENT_CENTER, int(96 * s),
-		int(12 * s), Color(1.0, 0.95, 0.75))
+	# CENTRED BY MEASUREMENT, NOT BY GUESS. This used to pass a fixed 96×scale
+	# box with HORIZONTAL_ALIGNMENT_CENTER, and Godot CLIPS a string to the width
+	# it is given — so "[E] take the helm" lost its last letter and had been
+	# reading "[E] take the hel" in the shipped game (owner 2026-08-30). There is
+	# no box any more: the string is measured and offset by half its own width,
+	# so no prompt can ever be cut off again however long it gets.
+	var font := ThemeDB.fallback_font
+	var fs := int(12 * s)
+	draw_string(font, pos + prompt_offset(text, fs) + Vector2(0.0, bob),
+		text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1.0, 0.95, 0.75))
+
+
+## Where a floating prompt's text starts, relative to the thing it labels: half
+## its measured width to port, and a little above. Static and pure so the suite
+## can pin that a prompt is centred on its anchor rather than clipped into a
+## fixed box (see _draw_interact_prompt).
+static func prompt_offset(text: String, font_size: int) -> Vector2:
+	var font := ThemeDB.fallback_font
+	var w: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+	return Vector2(-w * 0.5, -1.5 * float(font_size))
 
 
 ## Floating collision-damage numbers, in WORLD space at each impact point. They
