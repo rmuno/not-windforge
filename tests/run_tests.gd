@@ -1888,12 +1888,88 @@ func _test_dive_run() -> void:
 	_check(fell.outcome == "lost" and fell.banked == 0, "a shipless death ends the run")
 	_check(DiveRun.outcome_line(fell.ledger()).contains("No ship"),
 		"...and the ledger says you had no ship, not that you lost one")
+
+	# DYING ABOARD is a countdown, not a loop. The playtest drove a run into the
+	# unbreathable air at depth 6, where the pilot suffocated, respawned on the
+	# deck still in unbreathable air, and died there forever.
+	var worn := DiveRun.new()
+	worn.commit()
+	worn.advance(1.0, DiveRun.depth_altitude(6), 45.0)
+	worn.credit_kill("kraken")
+	worn.credit_kill("kraken")
+	var full := worn.pot
+	_check(not worn.perish_aboard(), "the first death aboard does not end the run")
+	_check(worn.pot < full and worn.pot > 0, "...but it costs coin (%d -> %d)"
+		% [full, worn.pot])
+	_check(not worn.perish_aboard(), "nor the second")
+	_check(worn.perish_aboard(), "the third death ends it")
+	_check(worn.outcome == "lost" and worn.banked == 0 and worn.deaths == DiveRun.DEATH_LIMIT,
+		"...as a loss, banking nothing, after %d deaths" % worn.deaths)
+	_check(DiveRun.outcome_line(worn.ledger()).contains("WORE YOU DOWN"),
+		"...and the ledger says what actually happened")
+	# The air gate that made the cap necessary is REAL: the rung the playtest
+	# stalled on is below Airspace's unbreathable line, and the one above is not.
+	_check(Airspace.is_unbreathable_frac(DiveRun.depth_altitude(6)),
+		"depth 6's air is unbreathable without a lung")
+	_check(not Airspace.is_unbreathable_frac(DiveRun.depth_altitude(5)),
+		"...and depth 5's is not — the gate sits between them")
 	var sunk := DiveRun.new()
 	sunk.commit()
 	sunk.advance(1.0, DiveRun.depth_altitude(4), 45.0)
 	sunk.lose()
 	_check(DiveRun.outcome_line(sunk.ledger()).contains("SHIP IS GONE"),
 		"...while losing a hull you took still reads as losing a hull")
+
+	# --- THE LADDER OF LANDINGS (owner 2026-08-30) --------------------------
+	# "Every level having some landmass … guardrailed and semi forced progress."
+	# One landing per depth, drifting sideways run to run, with three outposts
+	# spread down the middle of the ladder.
+	var sv := 20260830
+	_check(is_equal_approx(DiveRun.landing_offset(sv, 1), 0.0),
+		"the launch deck is the centre line")
+	_check(is_equal_approx(DiveRun.landing_offset(sv, 5), DiveRun.landing_offset(sv, 5)),
+		"a landing's place is stable within a run")
+	# The slalom: consecutive landings are a modest sidestep apart, never a haul.
+	for d in range(2, DiveRun.DEPTHS + 1):
+		var step := absf(DiveRun.landing_offset(sv, d) - DiveRun.landing_offset(sv, d - 1))
+		_check(step >= 1.4 and step <= 4.1,
+			"depth %d sits %.1f shelf-widths off depth %d (a slalom, not a haul)"
+				% [d, step, d - 1])
+	# Runs differ. (Not every pair of seeds must differ at every rung, but a
+	# spread of seeds must not all lay the same ladder.)
+	var shapes := {}
+	for k in 24:
+		var line := ""
+		for d in range(1, DiveRun.DEPTHS + 1):
+			line += "%.2f," % DiveRun.landing_offset(1000 + k * 7717, d)
+		shapes[line] = true
+	_check(shapes.size() >= 20, "different runs lay different ladders (%d/24)" % shapes.size())
+
+	# The outposts: three, spread, never the deck and never the floor.
+	for k in 12:
+		var seed_k := 5000 + k * 104729
+		var posts: Array = DiveRun.outpost_depths(seed_k)
+		_check(posts.size() == 3, "seed %d has three outposts" % seed_k)
+		var seen_posts := {}
+		var prev := 1
+		var worst := 0
+		for d in posts:
+			var di := int(d)
+			seen_posts[di] = true
+			_check(di > 1 and di < DiveRun.DEPTHS,
+				"an outpost sits between the deck and the floor (depth %d)" % di)
+			worst = maxi(worst, di - prev)
+			prev = di
+		_check(seen_posts.size() == 3, "no depth is an outpost twice")
+		_check(worst <= 3, "never more than three rungs without a shop (%d)" % worst)
+		_check(not DiveRun.is_outpost(seed_k, 1)
+			and not DiveRun.is_outpost(seed_k, DiveRun.DEPTHS),
+			"neither end of the ladder trades")
+
+	# A run rolls its own seed rather than borrowing the world's.
+	var r1 := DiveRun.new()
+	var r2 := DiveRun.new()
+	_check(r1.seed_v != 0 or r2.seed_v != 0, "a run carries its own seed")
 
 
 func _test_living_creature_gets_a_coarse_collider() -> void:

@@ -57,7 +57,8 @@ func _initialize() -> void:
 	var log_lines: Array[String] = []
 	Input.action_press("ship_down")
 	var guard := 0
-	while guard < 60 * 60 * 12:   # 12 simulated minutes, hard stop
+	var beat := 0.0
+	while guard < 60 * 60 * 5:    # 5 simulated minutes, hard stop
 		guard += 1
 		await world.get_tree().physics_frame
 		t += STEP
@@ -71,6 +72,14 @@ func _initialize() -> void:
 					int(run.get("kills")), int(run.get("surges"))])
 			last_depth = d
 			depth_started = t
+		beat += STEP
+		if beat >= 30.0:
+			beat = 0.0
+			var hull2 = world.get("local_ship")
+			print("   t=%5.1f  depth %d  y %.0f  vy %.0f  alt %.3f" % [t, d,
+				pl.global_position.y,
+				0.0 if hull2 == null or not is_instance_valid(hull2) else hull2.linear_velocity.y,
+				float(run.get("depth"))])
 		if d >= 8:
 			break
 	Input.action_release("ship_down")
