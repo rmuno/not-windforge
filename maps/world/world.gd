@@ -101,6 +101,10 @@ var _dive_shipless := 0.0
 ## the cooldown on saying so. See `_dive_nudge_if_stuck`.
 var _dive_pressing := 0.0
 var _dive_nudge_cd := 0.0
+## Every hull a surge has spawned this run, so the run can clean up after itself
+## (`_dive_cull_the_wake`). Instance ids, because the ships die by other means too.
+var _dive_surged: Array[int] = []
+var _dive_cull_clock := 0.0
 ## The Blueprint-Loft hull parked on the launch deck as the second candidate.
 ## A run prop: made once, reused across runs, cleared with the run unless you
 ## chose it.
@@ -124,9 +128,6 @@ var _dive_berth_taken := {}
 ## different coat — same reach idiom, different trade). Cleared with the run.
 var _dive_outposts: Array = []
 const DIVE_SHIPLESS_GRACE := 1.5
-## How much further the helm answers E inside a run — enough to take it while
-## standing on the hull above it, which is where `_dive_step_out` leaves you.
-const DIVE_HELM_REACH_MULT := 4.0
 ## The share of your pool the deep air can never take you below inside a run.
 ## Low enough that being down there unprotected is genuinely dangerous, above
 ## zero so the AIR is never the killer.
@@ -148,6 +149,9 @@ const DIVE_DROP_GAP := 72.0
 ## shaft, not a country (owner 2026-08-30) — wander past this and the air pushes
 ## you back toward the ladder.
 const DIVE_CORRIDOR_WIDTHS := 4.0
+## Clear air between two pickets of a surge, px at scale 1 - on TOP of both their
+## hulls, which is the part a flat spacing left out.
+const DIVE_PICKET_AIR := 700.0
 ## How hard the corridor pushes back, px/s² at scale 1 per shelf-width of
 ## trespass. Firm enough to turn you, gentle enough that it reads as weather.
 const DIVE_CORRIDOR_PUSH := 260.0
@@ -940,6 +944,8 @@ func end_dive() -> void:
 	_dive_shipless = 0.0
 	_dive_pressing = 0.0
 	_dive_nudge_cd = 0.0
+	_dive_surged.clear()
+	_dive_cull_clock = 0.0
 	if is_instance_valid(_dive_deck):
 		_dive_deck.queue_free()
 	_dive_deck = null
@@ -1225,7 +1231,14 @@ func _dive_park_at(ship: Ship, at: Vector2, index: int) -> Vector2:
 		return Vector2(at.x + float(index + 1) * maxf(wide, 3000.0) * 1.2,
 			at.y + DIVE_DROP_GAP * float(world_scale) - roof)
 	_dive_berth_taken[best] = true
-	return Vector2(float((berths[best] as Dictionary)["pos"].x),
+	# Centre the HULL in the hatch, not the ship's ORIGIN: a blueprint's `origin`
+	# puts cell (0,0) where the author wanted it, so `solid_bounds` is rarely
+	# centred on it. Subtracting the bounds' own centre is what makes the gap the
+	# same on both sides — the other half of the owner's "off by 1 or 2 tiles".
+	var mid := 0.0
+	if ship != null and is_instance_valid(ship) and ship.solid_bounds.size.x > 0.0:
+		mid = ship.solid_bounds.position.x + ship.solid_bounds.size.x * 0.5
+	return Vector2(float((berths[best] as Dictionary)["pos"].x) - mid,
 		at.y + DIVE_DROP_GAP * float(world_scale) - roof)
 
 
@@ -1450,6 +1463,104 @@ func _dive_perish() -> bool:
 	return true
 
 
+## SOME OF THEM CAN KEEP UP (owner 2026-08-30: "there should be many more
+## menacing threats on the way down ... some of which ideally can keep up with
+## you?").
+##
+## They could not, and the reason is arithmetic rather than AI: a committed hull
+## sinks at about 3,900 px/s with the stick down and a free-falling BODY reaches
+## 6,400, while a powered vessel tops out near 2,720 px/s at 8x. Every brain in
+## the game was chasing something it is physically unable to catch, so the whole
+## descent reads as unopposed no matter how much is spawned into it.
+##
+## The fix is not a faster ship - it is that THEY ARE DIVING TOO. A picket the
+## surge put in your path gets gravity's help the same way you do: while you are
+## below it, its downward speed is floored at a share of your own, so it falls
+## after you instead of hanging in the sky you just left. Closing sideways stays
+## the AI's job - this only stops the vertical race being over before it starts.
+##
+## Bounded on purpose. It applies ONLY to what a surge spawned (`_dive_surged` -
+## the world's own inhabitants keep their own physics), only while you are BELOW
+## it, only downward, and never past DIVE_PURSUIT_MATCH of your speed - so a
+## pursuer closes slowly if you dive straight and loses you if you turn. Running
+## is still an answer; it is just no longer a free one.
+const DIVE_PURSUIT_MATCH := 0.92
+## Beyond this many rung-heights a pursuer has lost you and stops diving.
+const DIVE_PURSUIT_RUNGS := 0.8
+func _dive_pursue(delta: float) -> void:
+	# NOT gated on `committed`: the owner's case for this is the SHIPLESS jump
+	# ("if you just jump off without a ship"), and a body falls faster than any
+	# hull — 6,400 px/s against 3,900 — so that is the line most in need of
+	# something able to follow it down.
+	if dive == null or dive.outcome != "" or player == null:
+		return
+	if not is_instance_valid(player) or _dive_surged.is_empty():
+		return
+	# How fast the thing they are chasing is actually going down.
+	var mine := player.velocity.y
+	if is_instance_valid(local_ship) and player.is_piloting():
+		mine = local_ship.linear_velocity.y
+	if mine <= 0.0:
+		return   # climbing or hovering: nothing to keep up WITH
+	var want := mine * DIVE_PURSUIT_MATCH
+	var reach := absf(dive_altitude_y(DiveRun.depth_altitude(2))
+		- dive_altitude_y(DiveRun.depth_altitude(1))) * DIVE_PURSUIT_RUNGS
+	var at := player.global_position
+	for id in _dive_surged:
+		var ship := instance_from_id(id) as Ship
+		if ship == null or not is_instance_valid(ship) or ship.freeze:
+			continue
+		if at.y <= ship.global_position.y:
+			continue   # you are level with it or above it - no chase downward
+		if ship.global_position.distance_to(at) > reach:
+			continue
+		if ship.linear_velocity.y >= want:
+			continue   # already falling at least as fast
+		# Ease toward the matched speed rather than snapping to it, so a picket
+		# accelerates into the dive the way a body would.
+		ship.linear_velocity.y = minf(want,
+			ship.linear_velocity.y + want * 2.0 * delta)
+
+
+## THE RUN CLEANS UP AFTER ITSELF (owner 2026-08-30: *"FPS really drops once I'm
+## toward the final level. Perhaps for the Dive mode we can just allocate
+## downward and remove layers above, since they'd no longer matter?"*).
+##
+## The owner's instinct is right and the target is not the terrain — extraction
+## is CLIMBING BACK UP, so the layers above are exactly the ones a successful run
+## still needs (and the streamer already demotes what is far away). What actually
+## accumulates is the WAKE: every surge spawns a picket, a surge lands every
+## `dive_surge_period` seconds, and nothing has ever removed one. By the floor a
+## run is dragging every gunboat it out-flew at depth 2 — awake or dormant, they
+## are still bodies, still colliders, still drawn.
+##
+## So only what a SURGE spawned is culled, and only once it is a ladder-rung and
+## a half away — far enough that it is not the fight you are in, in either
+## direction, so a climb home still meets what it left near it. The world's own
+## inhabitants and the floor's resident are never touched: this list holds the
+## run's litter and nothing else.
+const DIVE_CULL_RUNGS := 1.5
+func _dive_cull_the_wake(delta: float) -> void:
+	_dive_cull_clock += delta
+	if _dive_cull_clock < 1.0 or dive == null or player == null 			or not is_instance_valid(player):
+		return
+	_dive_cull_clock = 0.0
+	if _dive_surged.is_empty():
+		return
+	var far := absf(dive_altitude_y(DiveRun.depth_altitude(2))
+		- dive_altitude_y(DiveRun.depth_altitude(1))) * DIVE_CULL_RUNGS
+	var kept: Array[int] = []
+	for id in _dive_surged:
+		var ship := instance_from_id(id) as Ship
+		if ship == null or not is_instance_valid(ship):
+			continue   # already dead by other means; drop the id
+		if ship.global_position.distance_to(player.global_position) < far:
+			kept.append(id)
+			continue
+		ship.queue_free()
+	_dive_surged = kept
+
+
 ## SAY WHY THE SHIP WILL NOT GO DOWN. The ladder is a slalom of solid slabs, so
 ## holding the stick down from one column eventually rests you on a rung — which
 ## is the mode working, but it reads as *"stuck at depth 4 (no more falling)"*
@@ -1485,8 +1596,18 @@ func _dive_nudge_if_stuck(delta: float) -> void:
 ## first: every door on your ship is thrown OPEN when the run starts. The other
 ## two are `_helm_reach` (board from outside) and `_dive_step_out` (step off onto
 ## the hull). The expedition game keeps its doors, its cabin and its walk.
+## ...and it costs ONE rebuild, not one per door (owner 2026-08-30: "there's also
+## a moderate lag when getting on the ship"). `Ship.toggle_door` rebuilds the
+## whole hull - colliders, merged rects, skin regions - and this called it once
+## per closed door in a single frame. On a small starter that is a blink; on the
+## owner's large hand-built ship it is a dozen full rebuilds of a few thousand
+## blocks, all inside the frame you press E. `Ship.open_all_doors` flips them all
+## and rebuilds once.
 func _dive_open_doors() -> void:
 	if not is_instance_valid(local_ship):
+		return
+	if local_ship.is_authority():
+		local_ship.open_all_doors()
 		return
 	for cell in local_ship.door_cells.duplicate():
 		if local_ship.has_block(cell) \
@@ -1517,13 +1638,66 @@ func _dive_post_the_assistant() -> void:
 	_spawn_crewman(local_ship, "R", "mender")
 
 
-## How far the helm answers E. In THE DIVE you board from OUTSIDE — standing
-## anywhere on or near your own hull — because the mode deleted the walk to the
-## cabin. Everywhere else the helm is a station you stand at, unchanged.
+## How far the helm answers E OUTSIDE a run — the helm is a station you stand at,
+## unchanged. In a run the answer is not a radius at all; see `_dive_helm`.
 func _helm_reach() -> float:
 	if player == null:
 		return 0.0
-	return player.HELM_REACH * (DIVE_HELM_REACH_MULT if dive != null else 1.0)
+	return player.HELM_REACH
+
+
+## THE HELM IN A RUN IS THE SHIP, NOT A SPOT ON IT (owner 2026-08-30: *"the 'E
+## take the helm' is WAY too reachable from above the platform even. It should be
+## just basically within the boundaries of the ship + one or two more tiles"*).
+##
+## A radius around the helm CELL is the wrong shape twice over, and both showed
+## up in one play session. On a small hull a 4× radius reaches far past the bow
+## and answers from empty sky. On a BIG one it does the opposite — the owner's
+## *"other massive ship … is unmannable"* — because standing on the far end of a
+## long deck puts you outside a radius drawn from a cell buried amidships, no
+## matter how generous the radius is. Radius scales with the wrong thing: the
+## helm's position, not the hull.
+##
+## So a run asks the honest question instead: **are you ON this ship?** The body
+## has to be inside the hull's own `solid_bounds` grown by
+## `DIVE_HELM_MARGIN_CELLS` authored blocks, and then the nearest helm cell is
+## yours however far away it is. Big hulls become boardable from anywhere on
+## them; small hulls stop answering from off the bow.
+##
+## `solid_bounds` is in the ship's frame and is ALREADY world pixels at any
+## scale (CODEMAP; the eightfold bug) — the margin is what carries the scale.
+## The owner's number, in the units they said it in: BLOCKS of the deck, which at
+## 8× is 8 × Ship.CELL each ("so it'd be 8 or 16 tiles").
+const DIVE_HELM_MARGIN_CELLS := 2.0
+func _dive_helm() -> Array:
+	if player == null or not is_instance_valid(player):
+		return []
+	# Before you commit there is no `local_ship` — the candidates on the deck are
+	# the ships that answer, which is how a run starts at all. After, it is only
+	# yours (`_helm_candidates`).
+	# One BLOCK is Ship.CELL x world_scale, because a blueprint cell upscales into
+	# that many. Two blocks is 256 px at 8x and 32 px at 1x.
+	var margin := DIVE_HELM_MARGIN_CELLS * Ship.CELL * float(world_scale)
+	var here := player.global_position
+	for s in _helm_candidates():
+		var ship := s as Ship
+		if ship == null or not is_instance_valid(ship) or ship.helm_cells.is_empty() 				or ship.faction != 0 or ship.is_carcass() 				or ship.creature_kind != "" or ship.is_nest:
+			continue
+		var b := ship.solid_bounds
+		if b.size == Vector2.ZERO:
+			continue
+		var local := ship.to_local(here)
+		if not DiveRun.helm_in_reach(b, local, margin):
+			continue
+		var best: Vector2i = ship.helm_cells[0]
+		var best_d := INF
+		for cell in ship.helm_cells:
+			var d: float = ship.local_pos_of(cell as Vector2i).distance_squared_to(local)
+			if d < best_d:
+				best_d = d
+				best = cell
+		return [ship, best]
+	return []
 
 
 ## Which ships offer a helm to E. In THE DIVE, only YOUR OWN — the extended
@@ -1604,6 +1778,8 @@ func _tick_dive(delta: float) -> void:
 			and not local_ship.repair_cells.is_empty():
 		local_ship.menders_running = true
 	_dive_nudge_if_stuck(delta)
+	_dive_pursue(delta)
+	_dive_cull_the_wake(delta)
 	_hold_the_corridor(delta)
 	for ev in dive.advance(delta, _player_altitude_frac(),
 			Tunables.get_num("dive_surge_period")):
@@ -1614,6 +1790,17 @@ func _tick_dive(delta: float) -> void:
 				_cut_landing(dive.depth)
 				_cut_landing(dive.depth + 1)
 				_notify("%s. The air is worse down here." % DiveRun.depth_label(dive.depth))
+				# EVERY RUNG IS GARRISONED (owner 2026-08-30: "does it sound
+				# alright to simply jump down, get a few things, and die having
+				# FULLY IGNORED the entire 8 levels?"). It did not, and a purely
+				# TIMED surge is what allowed it: a full descent takes about two
+				# minutes, `dive_surge_period` is 45 s, so a fast line down met
+				# two pickets in eight rungs and out-fell both. Arriving at a
+				# depth now spawns that depth's own picket, so what you meet is a
+				# function of HOW DEEP YOU WENT, not how long you loitered. The
+				# timer stays on top of it — that is the pressure to keep moving.
+				if dive.depth > 1:
+					_dive_surge()
 			"surge":
 				_dive_surge()
 			"leviathan":
@@ -1683,11 +1870,38 @@ func _dive_surge() -> void:
 		1800.0 * ws)
 	var ahead := player.global_position + vel * lead
 	var across := Vector2(-vel.y, vel.x)
+	# SPACE THEM BY WHAT THEY ACTUALLY ARE (owner 2026-08-30: "some enemies are
+	# spawning way too close together, so their ships are literally stuck to each
+	# other"). The spread was a flat 900 px x scale between pickets - a number
+	# that knew nothing about the hulls it was separating. A kraken is several
+	# times a gunboat, so at the bottom of the ladder the line spawned
+	# interpenetrating. Each picket is now placed clear of the LAST one's real
+	# solid_bounds, so the gap is measured in hulls and DiveRun.SURGE_LADDER can
+	# hold anything without this needing a new number. They alternate sides of
+	# your line, so the picket brackets your course instead of trailing off it.
+	var air := DIVE_PICKET_AIR * ws
+	var right := 0.0
+	var left := 0.0
 	for i in n:
-		var off := float(i) - 0.5 * float(n - 1)
-		var at := ahead + across * off * 900.0 * ws \
-			+ vel * float(i % 2) * 500.0 * ws
-		debug_spawn(String(kinds[i % kinds.size()]), at)
+		var born := debug_spawn(String(kinds[i % kinds.size()]),
+			ahead + vel * float(i % 2) * 500.0 * ws)
+		if born == null or not is_instance_valid(born):
+			continue
+		var half := 900.0 * ws
+		if born.solid_bounds.size.x > 0.0:
+			half = born.solid_bounds.size.x * 0.5
+		var centre := 0.0
+		if i == 0:
+			right = half + air
+			left = -half - air
+		elif (i % 2) == 1:
+			centre = right + half
+			right = centre + half + air
+		else:
+			centre = left - half
+			left = centre - half - air
+		born.global_position = ahead + across * centre 			+ vel * float(i % 2) * 500.0 * ws
+		_dive_surged.append(born.get_instance_id())
 	# The top of the ladder is gunboats and the bottom is krakens, so the line
 	# says which — "they come" reads the same whether it is a crewed vessel you
 	# can out-fly or something from the floor.
@@ -2330,10 +2544,49 @@ func _stream_terrain() -> void:
 	# reach any focus generate first (amortized), so a chunk always promotes
 	# with its data present. Budget 2/frame — a fresh area trickles in over a
 	# few frames instead of hitching one.
-	IslandGen.ensure_generated(terrain, world_seed, primary + secondary,
-		terrain.primary_range_px if terrain.primary_range_px > 0.0
-			else terrain.chunk_px() * terrain.subdiv * 2.0)
+	#
+	# GENERATION HAS TO LEAD THE CAMERA (owner 2026-08-30: "terrain and creatures
+	# generate kind of late - half way through the screen"). The radius was
+	# `primary_range_px`, which IS half the visible extent - so the BEST case was
+	# land appearing exactly at the screen edge, and with a 2-regions-per-frame
+	# budget anything moving outran it and land appeared inside the frame. Two
+	# changes, both about being EARLY rather than doing more work per frame:
+	#
+	#   * the radius is GEN_LOOKAHEAD x the render range, so a region generates
+	#     while it is still off-screen and has frames to spare;
+	#   * whatever the camera is following also asks for ground GEN_LEAD_SECONDS
+	#     down its own velocity, so the direction you are actually travelling is
+	#     generated FIRST. At a dive's ~3,900 px/s that is most of a screen of
+	#     warning; standing still it costs nothing (the lead point is where you
+	#     already are).
+	var gen_foci: Array = []
+	gen_foci.append_array(primary)
+	gen_foci.append_array(secondary)
+	gen_foci.append_array(_gen_lead_points())
+	IslandGen.ensure_generated(terrain, world_seed, gen_foci,
+		(terrain.primary_range_px if terrain.primary_range_px > 0.0
+			else terrain.chunk_px() * terrain.subdiv * 2.0) * GEN_LOOKAHEAD)
 	terrain.update_streaming(primary, secondary)
+
+
+## How much wider than the visible half-extent terrain generates (`_stream_terrain`).
+const GEN_LOOKAHEAD := 1.75
+## How far down its own travel vector a moving camera asks for ground, seconds.
+const GEN_LEAD_SECONDS := 1.2
+
+
+## Where the camera-carrying body is HEADING, as an extra generation focus. Only
+## what the camera follows - a distant whale's course is nobody's problem.
+func _gen_lead_points() -> Array:
+	var out: Array = []
+	if player == null or not is_instance_valid(player):
+		return out
+	if is_instance_valid(local_ship) and player.is_piloting():
+		out.append(local_ship.global_position
+			+ local_ship.linear_velocity * GEN_LEAD_SECONDS)
+	else:
+		out.append(player.global_position + player.velocity * GEN_LEAD_SECONDS)
+	return out
 
 
 ## Something to fight: an enemy hulk hangs mid-arena (faction 1), with a
@@ -4921,9 +5174,14 @@ func _process(_delta: float) -> void:
 	# keypress that could throw away ten minutes of a run by accident, with no
 	# confirmation and no way back. It opens the menu instead — same key, same
 	# verb, one step less abrupt.
+	# ...and ONLY to OPEN it. Closing is the panel's own `_input`, which marks the
+	# event handled — but `Input.is_action_just_pressed` does not care about
+	# handled events, so this line ran on the same press and toggled it straight
+	# back open. Owner: *"hitting escape again mid-game does NOT unpause"*. It
+	# was closing and reopening in one frame.
 	if Input.is_action_just_pressed("quit_game"):
-		if _pause_menu != null and is_instance_valid(_pause_menu):
-			_pause_menu.toggle()
+		if _pause_menu != null and is_instance_valid(_pause_menu) 				and not _pause_menu.visible:
+			_pause_menu.open()
 		return
 	# THE SESSION VERBS ARE NOT RUN VERBS (owner 2026-08-30: "the keybindings
 	# from the regular game are still active during the dive — you can hit T to
@@ -6185,7 +6443,7 @@ func _handle_interact() -> void:
 		if Input.is_action_just_pressed("interact"):
 			dismount_creature()
 		return
-	_nearby_helm = Player.find_helm(_helm_candidates(), player.global_position, _helm_reach())
+	_nearby_helm = _dive_helm() if dive != null 		else Player.find_helm(_helm_candidates(), player.global_position, _helm_reach())
 	# THE DIVE has no doors to work: they are opened at the start of a run and E
 	# never offers one again, so the use key means helm (or station) and nothing
 	# else — the "heavily simplify the nuisances" the mode was asked for.
@@ -6387,6 +6645,11 @@ func respawn_player() -> void:
 		if is_instance_valid(mount):
 			_whale_ai_for(mount).dismount()
 	player.velocity = Vector2.ZERO
+	# LET GO OF THE ROPE (owner 2026-08-30: "player dying should unhook/reset
+	# their grappling hook"). A fresh body inherits a hook that was latched to
+	# something a world away — the tether is drawn across the screen and the reel
+	# fights every step you take. Death is a reset; the rope is part of it.
+	player.release_grapple()
 	# Safety net: never strand the local player shipless — e.g., the core just ate
 	# their ship (owner: "say goodbye"). Single-player / host only; a fresh starter
 	# at base beats the "No ship — this is a bug" dead end. (No-op when they still

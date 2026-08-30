@@ -99,12 +99,23 @@ static func berths(cells: Dictionary) -> Array:
 ## authored cell measures once the layout has been upscaled — `Ship.CELL` times
 ## the world scale — because a `.ship` is authored at 1× and the world builds it
 ## by multiplying the cell COUNT (see `ShipLayout.upscale_cells`).
+##
+## THE HALF-BLOCK. An authored cell `c` does not become one block at `c *
+## cell_px`; it becomes `world_scale` blocks of `Ship.CELL`, occupying upscaled
+## cells `c*s .. c*s+s-1`. `Ship.local_pos_of` puts cell `k` at `k * Ship.CELL`,
+## which is that block's CENTRE — so the authored cell's true centre is
+## `c * cell_px + (cell_px - Ship.CELL) * 0.5`, half a block to the right of the
+## naive answer. Left out, every berth is reported (s−1)/2 blocks too far LEFT:
+## 56 px at 8×, which is what the owner saw as *"off by 1 or 2 tiles ... for the
+## left side of each ship"*. It vanishes at 1× (s = 1), which is exactly why it
+## survived — the legacy suite multiplies it by zero.
 static func berth_offsets(cells: Dictionary, cell_px: float) -> Array:
 	var out: Array = []
+	var half_block := (cell_px - Ship.CELL) * 0.5
 	for b in berths(cells):
 		var d := b as Dictionary
 		out.append({
-			"x": float(d["centre_cell"]) * cell_px,
+			"x": float(d["centre_cell"]) * cell_px + half_block,
 			"width": float(d["width_cells"]) * cell_px,
 		})
 	return out

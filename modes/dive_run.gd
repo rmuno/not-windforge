@@ -199,6 +199,29 @@ static func landing_offset(sv: int, d: int) -> float:
 	return x
 
 
+## CAN THIS BODY TAKE THAT HELM? (owner 2026-08-30: *"could you compute the
+## boundaries for 'getting on' such that it works above, below, to the sides, and
+## by the corners? you're really just drawing a bounding square and making it 1-2
+## (or 8-16) blocks wider in every direction (so double that)"*.)
+##
+## Exactly that, and it is one line: the hull's own bounding box grown by the
+## margin ON ALL FOUR SIDES, which is what `Rect2.grow` does — so the box gets
+## `2 * margin` wider and `2 * margin` taller, above and below and to the sides,
+## and the corners come out right for free because it is a rectangle test rather
+## than four edge tests or a radius.
+##
+## `local` is the body in the SHIP'S frame and `bounds` is `Ship.solid_bounds`,
+## which is already world pixels at any scale — the margin is what carries the
+## scale (`world.DIVE_HELM_MARGIN_CELLS`).
+##
+## Pure, so every direction the owner listed is pinned in the suite without a
+## ship, a deck or a keypress.
+static func helm_in_reach(bounds: Rect2, local: Vector2, margin: float) -> bool:
+	if bounds.size == Vector2.ZERO:
+		return false
+	return bounds.grow(margin).has_point(local)
+
+
 ## WHAT TO SAY WHEN THE SHIP WILL NOT GO DOWN (owner 2026-08-30: "it seems you
 ## get stuck at depth 4 (no more falling)").
 ##

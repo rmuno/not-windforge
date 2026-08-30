@@ -975,6 +975,28 @@ func toggle_door(cell: Vector2i) -> bool:
 	return true
 
 
+## Throw EVERY closed door open in one pass, for ONE rebuild. Returns how many
+## were opened.
+##
+## `toggle_door` rebuilds the hull each call - colliders, merged rects, skin
+## regions - which is right for a player working one door and wrong for the
+## Dive, which opens the lot the instant you take a helm
+## (`world._dive_open_doors`). A large hull paid a full rebuild per door inside a
+## single frame; the owner felt it as "a moderate lag when getting on the ship".
+func open_all_doors() -> int:
+	var opened := 0
+	for cell in door_cells.duplicate():
+		if not has_block(cell) or blocks[cell]["type"] != BlockDB.Type.DOOR_CLOSED:
+			continue
+		for c in _component_members(cell):
+			if is_door(c):
+				blocks[c]["type"] = BlockDB.Type.DOOR
+		opened += 1
+	if opened > 0:
+		rebuild()
+	return opened
+
+
 ## Correct in single-player and online alike, same contract as net_set_block.
 func net_toggle_door(cell: Vector2i) -> void:
 	if is_authority():
