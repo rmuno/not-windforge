@@ -191,7 +191,7 @@ func _enter_tree() -> void:
 ## own body never touches this path, and a replica always converges on the
 ## pose it was sent.
 const NET_SMOOTH_RATE := 22.0  ## e-folds per second; a person corrects faster
-                               ## than a ship — there is no mass to sell.
+							   ## than a ship — there is no mass to sell.
 ## Error that means "teleport, do not glide": respawn, or joining a session.
 ## `var` because scale_body multiplies every linear quantity.
 var NET_SNAP_DISTANCE := 200.0
