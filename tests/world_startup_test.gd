@@ -2657,6 +2657,28 @@ func _check_dive(world: Node, fleet) -> void:
 	_ok(not bool(world.call("_refuse_in_run", "test")),
 		"...and allows them again outside one")
 
+	# --- ESCAPE IS A MENU, NOT AN EXIT (owner 2026-08-30) -------------------
+	# It used to end the process where you stood, mid-run, with no confirmation:
+	# the one keypress that could throw ten minutes away by accident.
+	var menu = world.get("_pause_menu")
+	_ok(menu != null and is_instance_valid(menu), "the world carries an Escape menu")
+	if menu != null and is_instance_valid(menu):
+		_ok(not menu.visible, "...closed until you ask for it")
+		menu.call("toggle")
+		_ok(menu.visible, "Escape opens it")
+		var esc := InputEventKey.new()
+		esc.keycode = KEY_ESCAPE
+		esc.pressed = true
+		menu._input(esc)
+		_ok(not menu.visible, "...and Escape again goes back to the game")
+		# In a run it warns that leaving throws the run away; outside one it
+		# points at F5 instead. The text is the only warning there is.
+		_ok(PauseMenu._text(true).contains("LOST"),
+			"in a run it says the run is lost")
+		_ok(not PauseMenu._text(false).contains("LOST"),
+			"...and outside one it does not")
+	_ok(world.has_method("quit_to_title"), "the world can go back to the front door")
+
 	world.call("end_dive")
 	_ok(world.get("dive") == null and world.call("dive_status") == null,
 		"ending a run clears the mode entirely")

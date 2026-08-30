@@ -28,8 +28,7 @@ static func _title_text() -> String:
 	"        N O T   W I N D F O R G E        ",
 	"",
 	"            [Enter]   PLAY            ",
-	"",
-	"              (Esc quits)              ",
+	"            [Q]       QUIT            ",
 	"",
 ])
 
@@ -95,11 +94,15 @@ func _input(event: InputEvent) -> void:
 	var keycode := (event as InputEventKey).keycode
 	_handled()
 	if page == Page.TITLE:
-		# Esc quits from the title — the one place in the game where it means
-		# "I did not want to play", rather than "close this".
-		if keycode == KEY_ESCAPE:
+		# QUIT IS A DOOR, NOT A REFLEX (owner 2026-08-30: "we can have a quit
+		# button there"). The title is the one place in the game where leaving is
+		# a thing you meant to do, so it is offered as [Q] beside PLAY — and Esc
+		# is freed to mean "back", which is what it means everywhere else now.
+		if keycode == KEY_Q:
 			get_tree().quit()
 			return
+		if keycode == KEY_ESCAPE:
+			return   # there is nothing behind the front page to go back to
 		page = Page.MODES
 		_repaint()
 		return
