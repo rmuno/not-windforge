@@ -1908,6 +1908,39 @@ func _test_dive_run() -> void:
 			"an upscaled hull is %d× as wide ON ITS OWN (%.0f vs %.0f)"
 				% [mult, span, wide_1x * float(mult)])
 
+	# --- THE LAUNCH DECK IS AUTHORED, so it can be CHECKED (owner 2026-08-30) --
+	# ships/dive_deck.ship is the ground a run starts on and the berths are read
+	# out of it. This geometry has been wrong four times; arithmetic on the file
+	# catches in a millisecond what only walking it caught before.
+	var deck := ShipLayout.load_cells("res://ships/dive_deck.ship")
+	_check(not deck.is_empty(), "the launch deck blueprint loads")
+	var bays: Array = DiveDeck.berths(deck)
+	_check(bays.size() >= 2, "the deck has at least two berths (%d)" % bays.size())
+	# Every hull the run can offer has to FIT one, or it is moored off the end
+	# and the owner is back to "no ships are accessible".
+	var cell_px := Ship.CELL * 8.0
+	var offs: Array = DiveDeck.berth_offsets(deck, cell_px)
+	for path in ["res://ships/starter.ship", "res://ships/loft_test.ship"]:
+		var hull := ShipLayout.load_cells(path)
+		var w := _cells_span_x(ShipLayout.upscale_cells(hull, 8))
+		var fitted := false
+		for o in offs:
+			if DiveDeck.fits(w, float((o as Dictionary)["width"])):
+				fitted = true
+		_check(fitted, "%s (%.0f px) fits a berth" % [path.get_file(), w])
+	# The berths are BETWEEN platforms, never the open air off the ends — that
+	# air is the edge you walk off to dive with nothing.
+	var held: Dictionary = DiveDeck.occupied_columns(deck)
+	for b in bays:
+		var d := b as Dictionary
+		var lo := int(float(d["centre_cell"]) - float(d["width_cells"]) * 0.5)
+		var hi := int(float(d["centre_cell"]) + float(d["width_cells"]) * 0.5)
+		_check(held.has(lo) and held.has(hi + 1) or held.has(lo - 1) and held.has(hi),
+			"a berth has platform on both sides (cells %d..%d)" % [lo, hi])
+	_check(DiveDeck.berths({}).is_empty(), "an empty deck has no berths")
+	_check(not DiveDeck.fits(1000.0, 1000.0), "a berth the exact width of a hull is too tight")
+	_check(DiveDeck.fits(1000.0, 1400.0), "...with room to rise, it fits")
+
 	_check(Tunables.get_num("dive_surge_lead") >= 0.5,
 		"a surge always arrives some distance ahead, never on top of you")
 	_check(DiveRun.surge_kinds(0) == DiveRun.surge_kinds(1)

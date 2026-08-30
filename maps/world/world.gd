@@ -107,6 +107,11 @@ var _dive_loft: Ship = null
 var _dive_landings := {}
 ## This run's shelf size, sized against the hulls (see _dive_shelf_span).
 var _dive_shelf := Vector2.ZERO
+## The launch deck this run raised, and the blueprint it was raised from — the
+## berths are read out of the cells, so the owner moves a ship by moving a gap.
+var _dive_deck: Ship = null
+var _dive_deck_cells := {}
+var _dive_berth_taken := {}
 ## The quartermasters standing on this run's outpost landings (Trainer nodes in a
 ## different coat — same reach idiom, different trade). Cleared with the run.
 var _dive_outposts: Array = []
@@ -125,16 +130,9 @@ const DIVE_AIR_FLOOR := 0.12
 ## about 3,600 px of height, so half a screen below your feet is ~1,800 px. A
 ## 480 px drop puts the hull's deck plainly in frame from where you stand.
 const DIVE_DROP_GAP := 60.0
-## Width of one deck platform, px at scale 1. Also sized against the screen: a
-## screen is ~6,500 px wide at 8x and the player is 80 px wide, so 2,400 px is a
-## walk of about a second. The first cut was 2,200 AT SCALE 1 — 17,600 px, most
-## of three screens, which is why the berths were still off in the distance
-## after the eightfold bug was fixed.
-const DIVE_PLATFORM_PX := 300.0
-## How much wider than its hull a berth is. The clearance is what stops a ship
-## that has just been taken (and is climbing, lift 1.07) from catching a platform
-## corner on the way up.
-const DIVE_BAY_CLEARANCE := 1.35
+## (Platform widths and berth clearances used to be computed here. They are
+## authored in ships/dive_deck.ship now — DiveDeck.fits carries the clearance
+## rule, and the deck's own gaps carry the widths.)
 ## Half-width of the corridor a run holds you in, in shelf widths. The Dive is a
 ## shaft, not a country (owner 2026-08-30) — wander past this and the air pushes
 ## you back toward the ladder.
@@ -911,6 +909,8 @@ func begin_dive() -> void:
 	_dive_shipless = 0.0
 	_dive_landings.clear()
 	_dive_shelf = Vector2.ZERO
+	_dive_deck_cells = {}
+	_dive_berth_taken = {}
 	_build_launch_deck()
 	_notify("THE LAUNCH DECK. Take a ship, or step off the edge with nothing. "
 		+ "Down is richer and worse; climb back to this air to bank what you carry.")
@@ -922,6 +922,11 @@ func end_dive() -> void:
 	_dive_strip_run_gear()
 	dive = null
 	_dive_shipless = 0.0
+	if is_instance_valid(_dive_deck):
+		_dive_deck.queue_free()
+	_dive_deck = null
+	_dive_deck_cells = {}
+	_dive_berth_taken = {}
 	for post in _dive_outposts:
 		if is_instance_valid(post):
 			post.queue_free()
@@ -1042,14 +1047,14 @@ func _dive_shelf_span() -> Vector2:
 func _dive_widest_hull() -> float:
 	var widest := 0.0
 	for ship in fleet.ships():
-		if is_instance_valid(ship) and ship.faction == 0 \
+		if is_instance_valid(ship) and ship.faction == 0 and not ship.is_nest \
 				and ship.creature_kind == "" and not ship.is_carcass():
 			widest = maxf(widest, ship.solid_bounds.size.x)
 	return widest
 func _build_launch_deck() -> void:
 	var at := dive_landing_pos(1)
 	var span := _dive_shelf_span()
-	_cut_landing(1)
+	_cut_landing(1)   # raises the deck, which is where the berths come from
 	_cut_landing(2)   # one rung of lookahead, so you can SEE where you are going
 
 	# NOBODY'S SHIP. Un-claim whatever the boot handed you and park it as one
@@ -1057,7 +1062,7 @@ func _build_launch_deck() -> void:
 	# you actually take a helm, which is what makes "or no ship at all" real.
 	var parked: Array = []
 	for ship in fleet.ships():
-		if is_instance_valid(ship) and ship.pilot_peer == _my_id():
+		if is_instance_valid(ship) and ship.pilot_peer == _my_id() and not ship.is_nest:
 			ship.pilot_peer = 0
 			parked.append(ship)
 	local_ship = null
@@ -1074,7 +1079,7 @@ func _build_launch_deck() -> void:
 	if is_instance_valid(_dive_loft):
 		_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, 1))
 	else:
-		_dive_loft = _spawn_loft_at(at + Vector2(_dive_bay_width(), span.y))
+		_dive_loft = _spawn_loft_at(at + Vector2(span.x, span.y))
 		if _dive_loft != null:
 			_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, 1))
 
@@ -1113,35 +1118,38 @@ func _build_launch_deck() -> void:
 func _dive_park_at(ship: Ship, at: Vector2, index: int) -> Vector2:
 	# solid_bounds is ALREADY world px — see _dive_widest_hull.
 	var half_h := 2000.0 * float(world_scale)
+	var wide := 0.0
 	if ship != null and is_instance_valid(ship) and ship.solid_bounds.size.y > 0.0:
 		half_h = ship.solid_bounds.size.y * 0.5
-	return Vector2(_dive_bay_centre(index),
+		wide = ship.solid_bounds.size.x
+	# The berth the blueprint gave us — the WIDEST one this hull fits, so the
+	# starter takes the big bay and a small hull takes the small one whichever
+	# order they happen to be parked in.
+	var berths := dive_berth_positions()
+	var best := -1
+	for i in berths.size():
+		if _dive_berth_taken.has(i):
+			continue
+		var bw := float((berths[i] as Dictionary)["width"])
+		if not DiveDeck.fits(wide, bw):
+			continue
+		if best < 0 or bw < float((berths[best] as Dictionary)["width"]):
+			best = i   # the SNUGGEST berth that fits, so nothing hogs the big bay
+	if best < 0:
+		# Nothing fits (a hand-edited deck, or a hull bigger than every gap):
+		# moor it off the end rather than dropping it through the floor, and say
+		# so, because a silently missing candidate is the bug we keep fixing.
+		push_warning("dive: no berth fits a %.0f px hull — check ships/dive_deck.ship"
+			% wide)
+		return Vector2(at.x + float(index + 1) * maxf(wide, 3000.0) * 1.2,
+			at.y + DIVE_DROP_GAP * float(world_scale) + half_h)
+	_dive_berth_taken[best] = true
+	return Vector2(float((berths[best] as Dictionary)["pos"].x),
 		at.y + DIVE_DROP_GAP * float(world_scale) + half_h)
-
-
-## The centre of berth `index`, alternating port and starboard of the middle
-## platform. Each berth is a gap in the deck wide enough that a hull rising out
-## of it never touches a platform corner.
-func _dive_bay_centre(index: int) -> float:
-	var ws := float(world_scale)
-	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
-	var pitch := (_dive_bay_width() + DIVE_PLATFORM_PX * ws)
-	var side := -1.0 if index % 2 == 0 else 1.0
-	return cx + side * pitch * (0.5 + float(index / 2))
 
 
 ## How wide one berth is: the widest candidate plus air, so nothing is moored
 ## under an overhang.
-func _dive_bay_width() -> float:
-	# solid_bounds is ALREADY world px — see _dive_widest_hull. The FLOOR is a
-	# fallback for a deck with no candidates on it, and it is in world px too:
-	# written as `3000 * world_scale` it came out at 24,000 px and silently
-	# dominated the real hull (12,288), which is why the berths were still two
-	# screens out after the eightfold bug was fixed. A floor that can beat the
-	# thing it is a floor for is not a floor.
-	return maxf(_dive_widest_hull(), 3000.0) * DIVE_BAY_CLEARANCE
-
-
 ## Where depth `d`'s landing is in the world. The ladder decides the altitude and
 ## this run's seed decides the drift, so the descent is a slalom you fly rather
 ## than a shaft you drop down (`DiveRun.landing_offset`).
@@ -1168,7 +1176,7 @@ func _cut_landing(d: int) -> void:
 	IslandGen.ensure_generated(terrain, world_seed, [at],
 		maxf(span.x, _dive_deck_reach()), 64)
 	if d == 1:
-		_cut_launch_platforms(at, span)
+		_raise_launch_deck(at)
 	else:
 		_stone(at + Vector2(-span.x * 0.5, 0.0), span)
 	terrain.flush_rebuilds()
@@ -1185,34 +1193,46 @@ func _stone(at: Vector2, size: Vector2) -> void:
 		TerrainDB.Type.STONE)
 
 
-## THE LAUNCH DECK: narrow platforms with wide berths between them, one berth per
-## candidate plus a last one that is empty. You walk the platforms, look down the
-## berths, and drop through the one whose ship you want.
-func _dive_deck_bays() -> int:
-	var n := 0
-	for ship in fleet.ships():
-		if is_instance_valid(ship) and ship.faction == 0 \
-				and ship.creature_kind == "" and not ship.is_carcass():
-			n += 1
-	return n
+## THE LAUNCH DECK IS AN AUTHORED BLUEPRINT (owner 2026-08-30: "you can just plan
+## it out with ascii characters like we've done with the ship builder").
+##
+## `ships/dive_deck.ship` is the ground a run starts on, and the berths are read
+## straight out of it (`DiveDeck.berth_offsets`) — move a gap in that file and
+## the moored ship moves with it. It spawns FROZEN and marked as a structure, the
+## same way a nest hangs where it was built, so it is scenery with a floor rather
+## than a vessel anybody could fly.
+##
+## Authoring beat computing here for a reason worth remembering: this geometry
+## was wrong four times running, and every version of it was arithmetic I could
+## not see. A file the owner can look at is a file the owner can correct.
+const DIVE_DECK_PATH := "res://ships/dive_deck.ship"
+func _raise_launch_deck(at: Vector2) -> void:
+	var cells := ShipLayout.load_cells(DIVE_DECK_PATH)
+	if cells.is_empty():
+		push_warning("dive: no launch deck blueprint at %s" % DIVE_DECK_PATH)
+		return
+	_dive_deck_cells = cells
+	_dive_deck = fleet.spawn_ship_from_cells(
+		ShipLayout.upscale_cells(cells, world_scale), at, 0, 0.0,
+		float(world_scale), 0, {"is_nest": true})
+
+
+## Where each berth's middle sits in the world, left to right, read from the
+## deck the run actually raised.
+func dive_berth_positions() -> Array:
+	var out: Array = []
+	if not is_instance_valid(_dive_deck) or _dive_deck_cells.is_empty():
+		return out
+	for b in DiveDeck.berth_offsets(_dive_deck_cells, Ship.CELL * float(world_scale)):
+		var d := b as Dictionary
+		out.append({"pos": _dive_deck.to_global(Vector2(float(d["x"]), 0.0)),
+			"width": float(d["width"])})
+	return out
 
 
 ## How far the deck reaches from the centre line, for terrain generation.
 func _dive_deck_reach() -> float:
-	return absf(_dive_bay_centre(maxi(0, _dive_deck_bays() - 1))) \
-		+ _dive_bay_width()
-
-
-func _cut_launch_platforms(at: Vector2, span: Vector2) -> void:
-	var ws := float(world_scale)
-	var plat := Vector2(DIVE_PLATFORM_PX * ws, span.y)
-	var bays := maxi(1, _dive_deck_bays())
-	# The middle platform you start on, then one on the far side of every berth.
-	_stone(Vector2(at.x - plat.x * 0.5, at.y), plat)
-	for i in bays + 1:
-		var side := -1.0 if i % 2 == 0 else 1.0
-		var edge := _dive_bay_centre(i) + side * (_dive_bay_width() * 0.5)
-		_stone(Vector2(edge - plat.x * (0.5 - side * 0.5), at.y), plat)
+	return _dive_shelf_span().x * 2.0
 
 
 ## Stand a quartermaster on a landing. Three of the eight rungs have one
