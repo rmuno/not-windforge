@@ -243,6 +243,15 @@ func backdrop_status() -> Variant:
 
 ## The title screen calls this. Remembers the choice across the scene change and
 ## opens the world — the one place the intro hands over.
+##
+## The scene change is DEFERRED by Godot (it lands at the end of the frame), so
+## everything after the call still runs against a live tree. That is exactly the
+## window the crash lived in, so nothing is done after it: record, hand over,
+## return.
 func choose_mode(mode: String) -> void:
+	if not GameMode.is_known(mode):
+		mode = GameMode.EXPEDITION
 	GameMode.pending = mode
-	get_tree().change_scene_to_file("res://maps/world/world.tscn")
+	var err := get_tree().change_scene_to_file("res://maps/world/world.tscn")
+	if err != OK:
+		push_error("Intro: could not open the world (%d)" % err)

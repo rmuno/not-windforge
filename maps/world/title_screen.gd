@@ -80,32 +80,52 @@ func _repaint() -> void:
 ## Keys are taken at the INPUT stage while visible, marked handled so they reach
 ## nothing behind the panel (the same pre-GUI stage the world's global toggles
 ## use, and for the same reason — the first press must always land).
+##
+## ORDER MATTERS HERE, and it cost the owner a crash: choosing a door tears this
+## whole scene down (`SceneTree.change_scene_to_file`), so ANYTHING this node
+## touches afterwards — `visible`, `get_viewport()` — is touching a node on its
+## way out. The event is marked handled FIRST, and the choice is the LAST thing
+## this function does. `_handled()` also tolerates a null viewport, because a
+## panel being torn down is exactly when it has one.
 func _input(event: InputEvent) -> void:
 	if not visible:
 		return
 	if not (event is InputEventKey and event.pressed and not (event as InputEventKey).echo):
 		return
 	var keycode := (event as InputEventKey).keycode
+	_handled()
 	if page == Page.TITLE:
 		# Esc quits from the title — the one place in the game where it means
 		# "I did not want to play", rather than "close this".
 		if keycode == KEY_ESCAPE:
-			get_viewport().set_input_as_handled()
 			get_tree().quit()
 			return
 		page = Page.MODES
 		_repaint()
-		get_viewport().set_input_as_handled()
 		return
-	_choose(keycode)
+	# Hide before choosing, so the last frame of this scene is not a menu over a
+	# world that is already loading — and choose last, because after this call
+	# there may be no `self` worth touching.
 	visible = false
-	get_viewport().set_input_as_handled()
+	_choose(keycode)
+
+
+## Mark the event consumed, tolerating a node that is already leaving the tree.
+func _handled() -> void:
+	var vp := get_viewport()
+	if vp != null:
+		vp.set_input_as_handled()
 
 
 ## Apply one mode. Anything unlisted is EXPEDITION — the world is already the
 ## world, so that door costs nothing to walk through.
 func _choose(keycode: int) -> void:
-	if world == null or not world.has_method("choose_mode"):
+	if world == null or not is_instance_valid(world) or not world.has_method("choose_mode"):
+		# Loud rather than silent: a panel that quietly does nothing is the
+		# worst front door there is. This fires if the intro scene ever hands
+		# the panel an owner that cannot take a choice.
+		push_error("TitleScreen: no owner to choose a mode — the front door is inert")
+		visible = true
 		return
 	match keycode:
 		KEY_2, KEY_KP_2:

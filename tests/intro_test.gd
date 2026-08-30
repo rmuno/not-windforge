@@ -128,12 +128,49 @@ func _initialize() -> void:
 			ahead += 1
 	_ok(ahead >= 2, "there is always something still to come (%d acts ahead)" % ahead)
 
-	# --- The doors ----------------------------------------------------------
-	# The panel talks to its owner, not to a world: choosing sets GameMode.
+	# --- The doors, driven by REAL KEYS -------------------------------------
+	# This suite used to call choose_mode() directly, which is exactly the gap
+	# that let a crash ship: the _input path a player actually walks was never
+	# run. Drive the panel the way a person does — a key to leave the title, then
+	# the door — and survive it.
+	var panel: TitleScreen = null
+	for node in _walk(intro):
+		if node is TitleScreen:
+			panel = node
+	_ok(panel != null, "the intro carries the title panel")
+	if panel != null:
+		_ok(panel.visible and bool(panel.call("on_title_page")),
+			"...showing the title page")
+		var enter := InputEventKey.new()
+		enter.keycode = KEY_ENTER
+		enter.pressed = true
+		panel._input(enter)
+		_ok(panel.visible and not bool(panel.call("on_title_page")),
+			"a key leaves the title and shows the doors, choosing nothing")
+		_ok(GameMode.pending == GameMode.EXPEDITION,
+			"...so the title's own keypress cannot have picked a mode")
+		GameMode.pending = GameMode.EXPEDITION
+		var three := InputEventKey.new()
+		three.keycode = KEY_3
+		three.pressed = true
+		panel._input(three)
+		_ok(GameMode.pending == GameMode.DIVE, "[3] chooses the Dive")
+		_ok(is_instance_valid(panel), "...and the panel survives choosing")
 	GameMode.pending = GameMode.EXPEDITION
-	intro.call("choose_mode", GameMode.DIVE)
-	_ok(GameMode.pending == GameMode.DIVE, "choosing a door records the mode")
-	GameMode.pending = GameMode.EXPEDITION
+
+	# A panel with no owner must complain, not crash and not silently do nothing.
+	var orphan := TitleScreen.new()
+	root.add_child(orphan)
+	orphan.open()
+	var key := InputEventKey.new()
+	key.keycode = KEY_1
+	key.pressed = true
+	orphan._input(key)          # title page -> modes
+	orphan._input(key)          # modes -> choose, with nobody to tell
+	_ok(is_instance_valid(orphan), "a panel with no owner does not take the game down")
+	_ok(orphan.visible, "...and stays up rather than vanishing into nothing")
+	orphan.queue_free()
+	await process_frame
 
 	# --- The handover ---------------------------------------------------------
 	# The whole point of the scene split is that the intro picks and the WORLD
