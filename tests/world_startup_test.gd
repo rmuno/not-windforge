@@ -2457,6 +2457,21 @@ func _check_dive(world: Node, fleet) -> void:
 					grounded = true
 					break
 			_ok(grounded, "...on a shelf, not in mid-air")
+	# THE LADDER OF LANDINGS: depth 1 is cut, so is depth 2 (the lookahead you
+	# aim at), and depth 3 is not yet — shelves are cut as you arrive, not all
+	# at once, or a run would stamp eight regions of terrain at the start line.
+	var terr2 = world.get("terrain")
+	if terr2 != null:
+		for d in [1, 2]:
+			var lp: Vector2 = world.call("dive_landing_pos", d)
+			# Probe INSIDE the slab: it is LAUNCH_SHELF_PX.y thick at scale 1,
+			# so a fixed 400 px punched straight through it in the legacy scene.
+			_ok(terr2.is_solid(terr2.world_to_cell(
+					lp + Vector2(0.0, 60.0 * float(world.get("world_scale"))))),
+				"depth %d's landing is cut" % d)
+		var cut = world.get("_dive_landings")
+		_ok(not (cut as Dictionary).has(4),
+			"...and the rungs below are not cut until you get there")
 	_ok(world.get("local_ship") == null,
 		"a run starts with NOBODY'S ship claimed (you choose one)")
 	if run != null:

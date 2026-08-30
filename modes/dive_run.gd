@@ -48,6 +48,18 @@ const EXTRACT_FRAC := TOP_FRAC
 ## This is the "calm" half of the beat — mine, build, patch gasbags, breathe.
 const ARRIVAL_GRACE := 30.0
 
+## DYING ABOARD. The owner ruled that dying on foot respawns you on the deck
+## "at a cost"; this is the cost, and the cap that stops it being a loop.
+##
+## The cap is not decoration. The headless playtest (tools/dive_probe.gd) drove a
+## run to depth 6, where the air is already unbreathable (Airspace.DEEP_TOP is
+## 0.34 and that rung sits at 0.317) — the pilot suffocated, respawned on the
+## deck still in unbreathable air, and the run stalled there dying forever. With
+## a cap the air gate becomes a countdown you can feel instead of a wall you
+## bounce off, and the way past it is the kit an outpost sells.
+const DEATH_LIMIT := 3
+const DEATH_POT_LOSS := 0.35
+
 ## Extraction premium: banking pays the pot times 1 + this × how far down you
 ## got (0 at depth 1, the full bonus at the floor). So a wise retreat from depth
 ## 5 is never a wasted ten minutes, which is what keeps "one more depth" a hard
@@ -82,9 +94,16 @@ var pot := 0            ## coins carried and NOT yet banked — burns with the s
 var banked := 0         ## what reached the permanent wallet (set when the run ends)
 var kills := 0
 var surges := 0
+var deaths := 0
 var elapsed := 0.0
 ## "" while running, then one of "escaped" / "lost" / "triumph".
 var outcome := ""
+
+## THIS RUN'S SEED. Not the world's: regenerating terrain mid-session is a world
+## rebuild, and what actually has to vary run to run is the run's SHAPE — where
+## each depth's landing sits and which of them are outposts. The sky around them
+## still comes from the world seed, which is the part that should stay familiar.
+var seed_v := 0
 
 ## Have you taken a hull? A run starts on the LAUNCH DECK with nobody's ship
 ## under you (owner 2026-08-30) — the candidates are parked, and boarding one is
@@ -92,10 +111,17 @@ var outcome := ""
 ## END: with a hull, losing it is the ending; with none, only your body is.
 var committed := false
 
-var _lost_shipless := false
+## How the run ended, when it ended badly: "ship" (the hull you took was
+## destroyed), "shipless" (you never took one and your body gave out), or "worn"
+## (you kept dying aboard until there was nothing left of you).
+var lost_how := ""
 var _grace := ARRIVAL_GRACE   ## seconds until this depth's den comes for you
 var _seen := {1: true}        ## depths already arrived at (the surge arms once)
 var _leviathan_called := false
+
+
+func _init() -> void:
+	seed_v = randi()
 
 
 # --- The pure ladder --------------------------------------------------------
@@ -119,6 +145,41 @@ static func depth_of(a: float) -> int:
 		return 1
 	var t := (TOP_FRAC - a) / span
 	return clampi(1 + int(round(t * float(DEPTHS - 1))), 1, DEPTHS)
+
+
+## Where depth `d`'s LANDING sits, as a horizontal offset in SHELF WIDTHS from
+## the world's centre line. Depth 1 (the launch deck) is the centre line; every
+## rung below drifts a modest amount to one side or the other, CUMULATIVELY, so
+## the descent is a slalom rather than a lift shaft and no single landing is ever
+## an impossible sideways haul from the one above it. Pure in (seed, depth).
+static func landing_offset(sv: int, d: int) -> float:
+	var x := 0.0
+	for k in range(2, clampi(d, 1, DEPTHS) + 1):
+		var r := absi(hash([sv, "landing", k]))
+		var side := 1.0 if (r & 1) == 1 else -1.0
+		x += side * (1.5 + float((r >> 1) % 250) / 100.0)   # 1.5..4.0 widths
+	return x
+
+
+## Which depths hold an OUTPOST — a landing that trades (owner 2026-08-30: "a few
+## natural safe zones along the way … in-run upgrades which are temporary but
+## MUCH cheaper than anything permanent").
+##
+## Always three, always spread: one from each PAIR of the middle rungs, so the
+## longest stretch without a shop is three rungs and there is never a barren
+## descent. Never depth 1 (the launch deck is not a shop) and never the floor
+## (nobody trades down there).
+const OUTPOST_PAIRS := [[2, 3], [4, 5], [6, 7]]
+static func outpost_depths(sv: int) -> Array:
+	var out: Array = []
+	for i in OUTPOST_PAIRS.size():
+		var pair: Array = OUTPOST_PAIRS[i]
+		out.append(pair[absi(hash([sv, "outpost", i])) % pair.size()])
+	return out
+
+
+static func is_outpost(sv: int, d: int) -> bool:
+	return outpost_depths(sv).has(clampi(d, 1, DEPTHS))
 
 
 ## What one creature of `kind` is worth killed at `d`. Whole coins, never
@@ -251,6 +312,21 @@ func credit_kill(kind: String) -> int:
 	return coins
 
 
+## A death with a deck to wake up on. Burns part of the pot; the DEATH_LIMIT-th
+## one ends the run. Returns true when it did.
+func perish_aboard() -> bool:
+	if outcome != "":
+		return true
+	deaths += 1
+	pot = maxi(0, int(round(float(pot) * (1.0 - DEATH_POT_LOSS))))
+	if deaths >= DEATH_LIMIT:
+		outcome = "lost"
+		lost_how = "worn"
+		banked = 0
+		return true
+	return false
+
+
 ## You took this hull; from here, losing it is the ending.
 func commit() -> void:
 	committed = true
@@ -262,7 +338,7 @@ func commit() -> void:
 func lose(shipless := false) -> void:
 	if outcome == "":
 		outcome = "lost"
-		_lost_shipless = shipless
+		lost_how = "shipless" if shipless else "ship"
 		banked = 0
 
 
@@ -285,7 +361,8 @@ func ledger() -> Dictionary:
 	return {
 		"outcome": outcome,
 		"committed": committed,
-		"shipless_end": _lost_shipless,
+		"lost_how": lost_how,
+		"deaths": deaths,
 		"depth": depth,
 		"deepest": deepest,
 		"deepest_label": depth_label(deepest),
@@ -308,9 +385,13 @@ static func outcome_line(l: Dictionary) -> String:
 			return "YOU MADE IT OUT. %s, and %d coins banked." % [
 				String(l.get("deepest_label", "")), int(l.get("banked", 0))]
 		"lost":
-			if bool(l.get("shipless_end", false)):
-				return "YOU FELL. No ship, %s reached, %d coins gone with you." % [
-					String(l.get("deepest_label", "")), int(l.get("pot", 0))]
+			match String(l.get("lost_how", "ship")):
+				"shipless":
+					return "YOU FELL. No ship, %s reached, %d coins gone with you." % [
+						String(l.get("deepest_label", "")), int(l.get("pot", 0))]
+				"worn":
+					return "THE DEEP WORE YOU DOWN at %s. %d coins left aboard." % [
+						String(l.get("deepest_label", "")), int(l.get("pot", 0))]
 			return "YOUR SHIP IS GONE. You reached %s. %d coins fell with it." % [
 				String(l.get("deepest_label", "")), int(l.get("pot", 0))]
 	return ""

@@ -101,6 +101,10 @@ var _dive_shipless := 0.0
 ## A run prop: made once, reused across runs, cleared with the run unless you
 ## chose it.
 var _dive_loft: Ship = null
+## Depths whose shelf has already been cut this run. One landing per depth
+## (owner 2026-08-30: "every level having some landmass … guardrailed and semi
+## forced progress"), cut lazily one rung ahead of you.
+var _dive_landings := {}
 const DIVE_SHIPLESS_GRACE := 1.5
 ## How much further the helm answers E inside a run — enough to take it while
 ## standing on the hull above it, which is where `_dive_step_out` leaves you.
@@ -804,13 +808,23 @@ func edge_marker_targets() -> Array:
 		out.append({"pos": sp, "kind": "site", "dist": sqrt(sd2),
 			"color": SpawnSites.kind_color(site["kind"])})
 
+	# THE NEXT LANDING DOWN. In a run this is the one thing you must be able to
+	# find, so it ignores the range gate the rest of the markers obey and keeps a
+	# floor under its fade — a landing you cannot see is a lift shaft with extra
+	# steps. Reuses the "site" icon: it IS a place.
+	if dive != null and dive.outcome == "" and dive.depth < DiveRun.DEPTHS:
+		var lp := dive_landing_pos(dive.depth + 1)
+		out.append({"pos": lp, "kind": "site", "dist": focus.distance_to(lp),
+			"color": Color(0.62, 0.86, 0.78), "near_min": 0.55})
+
 	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return float(a["dist"]) < float(b["dist"]))
 	if out.size() > EDGE_MARKER_MAX:
 		out.resize(EDGE_MARKER_MAX)
 	for m in out:
-		(m as Dictionary)["near"] = clampf(
-			1.0 - float((m as Dictionary)["dist"]) / reach, 0.0, 1.0)
+		var md := m as Dictionary
+		md["near"] = maxf(clampf(1.0 - float(md["dist"]) / reach, 0.0, 1.0),
+			float(md.get("near_min", 0.0)))
 	return out
 
 
@@ -853,6 +867,7 @@ func begin_dive() -> void:
 		return
 	dive = DiveRun.new()
 	_dive_shipless = 0.0
+	_dive_landings.clear()
 	_build_launch_deck()
 	_notify("THE LAUNCH DECK. Take a ship, or step off the edge with nothing. "
 		+ "Down is richer and worse; climb back to this air to bank what you carry.")
@@ -900,22 +915,18 @@ func dive_altitude_y(frac: float) -> float:
 ##
 ## It also makes depth 1 a PLACE rather than an altitude, which is the shape the
 ## rest of the ladder is heading for (one landing per depth — BACKLOG).
-const LAUNCH_SHELF_PX := Vector2(9000.0, 700.0)   ## at scale 1; x world_scale
+## The shelf, at scale 1 (x world_scale in use). Deliberately SMALL — about one
+## and a half starter-hull lengths across. The first cut was 9000 wide and the
+## headless playtest (tools/dive_probe.gd) caught what that meant: a boarded ship
+## holding DOWN pressed into 5600 px of its own launch pad and went nowhere for
+## twelve simulated minutes. A launch deck you have to fly half a minute
+## sideways to get out from under is not a launch deck.
+const LAUNCH_SHELF_PX := Vector2(2500.0, 260.0)
 func _build_launch_deck() -> void:
-	var at := Vector2(_world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0,
-		dive_altitude_y(DiveRun.depth_altitude(1)))
+	var at := dive_landing_pos(1)
 	var span := LAUNCH_SHELF_PX * float(world_scale)
-	if terrain != null:
-		# Generate the neighbourhood FIRST, then carve. A region already
-		# generated is never repainted, so stamping after generation is what
-		# stops lazy island generation eating the shelf half a minute later.
-		IslandGen.ensure_generated(terrain, world_seed, [at], span.x, 64)
-		var cp := maxf(terrain.cell_px(), 1.0)
-		var top_left := terrain.world_to_cell(at + Vector2(-span.x * 0.5, 0.0))
-		terrain.fill_rect(Rect2i(top_left,
-			Vector2i(int(span.x / cp), maxi(1, int(span.y / cp)))),
-			TerrainDB.Type.STONE)
-		terrain.flush_rebuilds()
+	_cut_landing(1)
+	_cut_landing(2)   # one rung of lookahead, so you can SEE where you are going
 
 	# NOBODY'S SHIP. Un-claim whatever the boot handed you and park it as one
 	# of the candidates: `_refresh_local_ship` then leaves `local_ship` null until
@@ -926,26 +937,74 @@ func _build_launch_deck() -> void:
 			ship.pilot_peer = 0
 			parked.append(ship)
 	local_ship = null
-	var gap := span.x * 0.42
+	# Candidates float in CLEAR AIR either side of the shelf, never over it: the
+	# whole point of the deck is that taking a helm and pushing the stick down
+	# drops you into open sky, not onto your own rock.
 	var i := 0
 	for ship in parked:
-		_park_candidate(ship as Ship, at + Vector2(-gap - float(i) * gap, -span.y))
+		_park_candidate(ship as Ship,
+			at + Vector2(-_dive_park_x(ship as Ship, span.x, i), -span.y * 0.5))
 		i += 1
 	# ...and the owner's own Blueprint Loft ship as the second candidate, so
 	# whatever they design in the Loft is a hull they can dive with. Made ONCE
 	# and reused: a run prop that respawned per dive would litter the sky.
 	if is_instance_valid(_dive_loft):
-		_park_candidate(_dive_loft, at + Vector2(gap, -span.y))
+		_park_candidate(_dive_loft,
+			at + Vector2(_dive_park_x(_dive_loft, span.x, 0), -span.y * 0.5))
 	else:
-		_dive_loft = _spawn_loft_at(at + Vector2(gap, -span.y))
+		_dive_loft = _spawn_loft_at(at + Vector2(span.x, -span.y * 0.5))
 		if _dive_loft != null:
 			_dive_loft.linear_velocity = Vector2.ZERO
+			_park_candidate(_dive_loft,
+				at + Vector2(_dive_park_x(_dive_loft, span.x, 0), -span.y * 0.5))
 
 	# Stand the body just above the shelf, not high over it: the run opens with
 	# a look around, not a fall.
 	if player != null and is_instance_valid(player):
 		player.velocity = Vector2.ZERO
 		player.global_position = at - Vector2(0.0, 150.0 * float(world_scale))
+
+
+## How far to port/starboard a candidate parks: clear of the shelf's edge by its
+## own half-width plus a hull length of air, so nothing is moored over the rock
+## and two candidates never overlap.
+func _dive_park_x(ship: Ship, shelf_w: float, index: int) -> float:
+	var w := 4000.0 * float(world_scale)
+	if ship != null and is_instance_valid(ship) and ship.solid_bounds.size.x > 0.0:
+		w = ship.solid_bounds.size.x * float(world_scale)
+	return shelf_w * 0.5 + w * (0.75 + float(index) * 1.35)
+
+
+## Where depth `d`'s landing is in the world. The ladder decides the altitude and
+## this run's seed decides the drift, so the descent is a slalom you fly rather
+## than a shaft you drop down (`DiveRun.landing_offset`).
+func dive_landing_pos(d: int) -> Vector2:
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	var span := LAUNCH_SHELF_PX * float(world_scale)
+	var sv: int = dive.seed_v if dive != null else 0
+	return Vector2(cx + DiveRun.landing_offset(sv, d) * span.x,
+		dive_altitude_y(DiveRun.depth_altitude(d)))
+
+
+## Cut depth `d`'s shelf, once per run. Generate the neighbourhood FIRST and
+## stamp second: a region that has already been generated is never repainted, so
+## this is what stops lazy island generation eating the shelf half a minute after
+## you land on it (DECISIONS 2026-08-30).
+func _cut_landing(d: int) -> void:
+	if dive == null or terrain == null or _dive_landings.has(d):
+		return
+	if d < 1 or d > DiveRun.DEPTHS:
+		return
+	_dive_landings[d] = true
+	var at := dive_landing_pos(d)
+	var span := LAUNCH_SHELF_PX * float(world_scale)
+	IslandGen.ensure_generated(terrain, world_seed, [at], span.x, 64)
+	var cp := maxf(terrain.cell_px(), 1.0)
+	var top_left := terrain.world_to_cell(at + Vector2(-span.x * 0.5, 0.0))
+	terrain.fill_rect(Rect2i(top_left,
+		Vector2i(int(span.x / cp), maxi(1, int(span.y / cp)))),
+		TerrainDB.Type.STONE)
+	terrain.flush_rebuilds()
 
 
 ## Move one candidate hull to the launch deck at rest. Teleporting is fine here:
@@ -1083,6 +1142,10 @@ func _tick_dive(delta: float) -> void:
 			Tunables.get_num("dive_surge_period")):
 		match String(ev):
 			"depth":
+				# Cut the NEXT rung as you arrive at this one, so there is always
+				# somewhere visible below to aim at.
+				_cut_landing(dive.depth)
+				_cut_landing(dive.depth + 1)
 				_notify("%s. The air is worse down here." % DiveRun.depth_label(dive.depth))
 			"surge":
 				_dive_surge()
@@ -3967,6 +4030,15 @@ func _on_player_died(dead: Player) -> void:
 		return
 	if _dive_perish():
 		return
+	# Dying with a deck under you costs part of the pot, and the third one ends
+	# the run — without the cap, unbreathable air at depth 6 is a place you die
+	# in forever (the headless playtest found exactly that).
+	if dive != null and dive.outcome == "" and dive.committed:
+		if dive.perish_aboard():
+			_notify(DiveRun.outcome_line(dive.ledger()))
+			return
+		_notify("You went down. %d of %d — and it cost you coin."
+			% [dive.deaths, DiveRun.DEATH_LIMIT])
 	respawn_player()
 
 
