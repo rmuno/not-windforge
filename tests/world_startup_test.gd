@@ -2484,28 +2484,41 @@ func _check_dive(world: Node, fleet) -> void:
 				and absf(hull.global_position.y - top_y) < slack:
 			near_deck += 1
 	_ok(near_deck >= 2, "at least two hulls are parked to choose from (%d)" % near_deck)
-	# ...AND YOU CAN GET TO ONE (owner 2026-08-30, twice: "the starting spot in
-	# dive mode has no accessible ships"). What they described from the start was
-	# vertical — "choose which ship to FALL ONTO" — so a candidate hangs BELOW a
-	# rim: step off the edge and land amidships. Two things have to hold, and the
-	# second is the one that bit: the hull must be UNDER you, and it must still
-	# be there when you arrive (an unfrozen starter climbs away at lift 1.07).
+	# ...AND YOU CAN SEE ONE AND DROP ONTO IT (owner 2026-08-30, three reports).
+	# The deck is platforms with BERTHS between them, a hull sitting in each. All
+	# three of these were separate reports, and they only work together:
+	#   * the hull is BELOW you, so you fall onto it;
+	#   * it is CLOSE enough to be on screen from where you stand ("they're not
+	#     even visible - you have to jump down and hope to land near one");
+	#   * there is OPEN SKY above it, or taking it drives a hull with lift
+	#     straight up into the platform ("I got propelled upward and immediately
+	#     broke the ship against the starting platform").
 	if pl != null and is_instance_valid(pl):
-		var below := 0
+		var ws := float(world.get("world_scale"))
+		var berthed := 0
 		var held := 0
+		var roofed := 0
+		var terr3 = world.get("terrain")
 		for hull in fleet.ships():
 			if not is_instance_valid(hull) or hull.faction != 0 					or hull.creature_kind != "" or hull.is_carcass():
 				continue
-			if hull.global_position.y <= pl.global_position.y:
-				continue   # not below the body
-			var half: float = hull.solid_bounds.size.x * 0.5 * float(world.get("world_scale"))
 			var drop: float = hull.global_position.y - pl.global_position.y
-			if absf(hull.global_position.x - pl.global_position.x) <= half 					and drop < 12000.0 * float(world.get("world_scale")):
-				below += 1
-				if hull.freeze:
-					held += 1
-		_ok(below >= 2, "two hulls hang below the deck to drop onto (%d)" % below)
-		_ok(held == below, "...and they are FROZEN, so they are still there when you land")
+			if drop <= 0.0 or drop > 4000.0 * ws:
+				continue   # not below, or too far below to be on screen
+			berthed += 1
+			if hull.freeze:
+				held += 1
+			if terr3 != null:
+				var top: float = hull.global_position.y 					- hull.solid_bounds.size.y * 0.5 * ws
+				for step in 12:
+					var probe := Vector2(hull.global_position.x,
+						top - float(step) * 60.0 * ws)
+					if terr3.is_solid(terr3.world_to_cell(probe)):
+						roofed += 1
+						break
+		_ok(berthed >= 2, "two hulls sit in berths below the deck (%d)" % berthed)
+		_ok(held == berthed, "...frozen, so they are still there when you land")
+		_ok(roofed == 0, "...with open sky above every one (%d roofed)" % roofed)
 
 	# THE STAKE. Losing the ship must not quietly hand you another one — the
 	# world's "never strand the player shipless" safety net is the exact thing

@@ -147,17 +147,28 @@ static func depth_of(a: float) -> int:
 	return clampi(1 + int(round(t * float(DEPTHS - 1))), 1, DEPTHS)
 
 
+## How far the ladder may wander from the centre line, in shelf widths. The
+## descent is a SHAFT, not a country (owner 2026-08-30: "I'm not sure how much
+## sense it makes for the dive to have a FULL wide map if the purpose is to go
+## straight down"). Unbounded, the cumulative slalom below could drift thirty
+## widths over eight rungs — a third of a million pixels at 8×, which is a map,
+## not a dive.
+const LADDER_SPREAD := 3.0
+
+
 ## Where depth `d`'s LANDING sits, as a horizontal offset in SHELF WIDTHS from
 ## the world's centre line. Depth 1 (the launch deck) is the centre line; every
-## rung below drifts a modest amount to one side or the other, CUMULATIVELY, so
-## the descent is a slalom rather than a lift shaft and no single landing is ever
-## an impossible sideways haul from the one above it. Pure in (seed, depth).
+## rung below sidesteps to one side or the other, CUMULATIVELY — so the descent
+## is a slalom you fly rather than a lift shaft you drop down — but the walk is
+## CLAMPED to `LADDER_SPREAD`, so it can never wander out of the corridor the run
+## holds you in (`world.dive_corridor_half`). Pure in (seed, depth).
 static func landing_offset(sv: int, d: int) -> float:
 	var x := 0.0
 	for k in range(2, clampi(d, 1, DEPTHS) + 1):
 		var r := absi(hash([sv, "landing", k]))
 		var side := 1.0 if (r & 1) == 1 else -1.0
-		x += side * (1.5 + float((r >> 1) % 250) / 100.0)   # 1.5..4.0 widths
+		x = clampf(x + side * (1.5 + float((r >> 1) % 250) / 100.0),
+			-LADDER_SPREAD, LADDER_SPREAD)
 	return x
 
 
