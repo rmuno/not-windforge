@@ -98,8 +98,21 @@ var _dive_hud: DiveHud
 ## `local_ship` blinks null for a frame during a rebind, so the verdict waits.
 var _dive_shipless := 0.0
 const DIVE_SHIPLESS_GRACE := 1.5
-## The sandbox-or-expedition chooser shown once at boot (maps/world/start_chooser.gd).
-var _start_chooser: StartChooser
+## How much further the helm answers E inside a run — enough to take it while
+## standing on the hull above it, which is where `_dive_step_out` leaves you.
+const DIVE_HELM_REACH_MULT := 4.0
+
+## THE INTRO (TitleScreen): while the title page is up the camera drifts across
+## the whale pod instead of following the body. `_title_anchor` is INF until the
+## first frame computes the pod's centroid, so it is decided once the world is
+## actually populated rather than at _ready.
+const TITLE_CAM_DRIFT := 26.0   ## px/s at scale 1 — a drift, not a pan
+const TITLE_ZOOM_OUT := 2.2     ## camera_zoom is divided by this on the title
+var _title_anchor := Vector2.INF
+var _title_cam_t := 0.0
+## THE FRONT DOOR (maps/world/title_screen.gd): the title over a live drifting
+## sky, then the three modes. Visible only at a single-player boot.
+var _title_screen: TitleScreen
 ## The edge POI markers (maps/world/edge_markers.gd): a pointing triangle with an
 ## icon in it for every near thing that is currently off-screen. Fed by
 ## edge_marker_targets(); paints nothing when that is empty.
@@ -383,11 +396,11 @@ func _ready() -> void:
 	_ghost_label.visible = false
 	layer.add_child(_ghost_label)
 
-	# The start chooser: expedition or sandbox, shown once at boot (owner
-	# 2026-08-29). Hidden in headless runs and online sessions; see the class.
-	_start_chooser = StartChooser.new()
-	_start_chooser.world = self
-	layer.add_child(_start_chooser)
+	# THE FRONT DOOR (owner 2026-08-30): the title over a live sky, then the
+	# three modes. Hidden in headless runs and online sessions; see the class.
+	_title_screen = TitleScreen.new()
+	_title_screen.world = self
+	layer.add_child(_title_screen)
 
 	# Small, gray corner status, bottom-right: build + FPS, and the one always-on
 	# trace of what moved to a toggle ("F1 help   Tab map").
@@ -837,6 +850,7 @@ func begin_dive() -> void:
 	dive = DiveRun.new()
 	_dive_shipless = 0.0
 	_place_for_dive()
+	_dive_open_doors()
 	_notify("THE DIVE — you start at the top. Down is richer and worse; "
 		+ "climb back to this air to bank what you are carrying.")
 
@@ -881,6 +895,55 @@ func _place_for_dive() -> void:
 	if player != null and is_instance_valid(player):
 		player.velocity = Vector2.ZERO
 		player.global_position = at + Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale
+
+
+## THE DIVE HAS NO INTERIORS (owner 2026-08-30: "just getting off the helm
+## placed you outside (above?) the ship, and perhaps you can just get on by being
+## outside (e.g. disable doors)"). Three things make that true, and this is the
+## first: every door on your ship is thrown OPEN when the run starts. The other
+## two are `_helm_reach` (board from outside) and `_dive_step_out` (step off onto
+## the hull). The expedition game keeps its doors, its cabin and its walk.
+func _dive_open_doors() -> void:
+	if not is_instance_valid(local_ship):
+		return
+	for cell in local_ship.door_cells.duplicate():
+		if local_ship.has_block(cell) 				and local_ship.blocks[cell]["type"] == BlockDB.Type.DOOR_CLOSED:
+			local_ship.net_toggle_door(cell)
+
+
+## How far the helm answers E. In THE DIVE you board from OUTSIDE — standing
+## anywhere on or near your own hull — because the mode deleted the walk to the
+## cabin. Everywhere else the helm is a station you stand at, unchanged.
+func _helm_reach() -> float:
+	if player == null:
+		return 0.0
+	return player.HELM_REACH * (DIVE_HELM_REACH_MULT if dive != null else 1.0)
+
+
+## Which ships offer a helm to E. In THE DIVE, only YOUR OWN — the extended
+## reach would otherwise let you board a passing hulk from across the sky, and
+## in a mode where the ship IS the run, boarding someone else's is not a verb.
+func _helm_candidates() -> Array:
+	if dive != null and is_instance_valid(local_ship):
+		return [local_ship]
+	return fleet.ships()
+
+
+## Stepping off the helm in THE DIVE puts you on TOP of the hull, above where
+## you were standing — not in a cabin whose door the mode just made pointless.
+## Ship-local units throughout (`solid_bounds` and `local_pos_of` are un-scaled;
+## the node's own transform carries world_scale).
+func _dive_step_out(ship: Ship) -> void:
+	if ship == null or not is_instance_valid(ship) or player == null 			or not is_instance_valid(player):
+		return
+	var b := ship.solid_bounds
+	if b.size == Vector2.ZERO:
+		return
+	var local := Vector2(
+		clampf(ship.to_local(player.global_position).x, b.position.x, b.end.x),
+		b.position.y - Ship.CELL * 1.5)
+	player.global_position = ship.to_global(local)
+	player.velocity = Vector2.ZERO
 
 
 ## One frame of the run. Reads the altitude, hands it to the model, and gives
@@ -4004,11 +4067,45 @@ func _physics_process(delta: float) -> void:
 	_track_camera()
 
 
+## The intro camera: parked on the whale pod and drifting slowly sideways, pulled
+## back far enough that several of them fit. The anchor is the pod's own centroid
+## (not a constant), so it keeps working if the pod's spawn tuning moves.
+func _track_title_camera() -> void:
+	_title_cam_t += get_physics_process_delta_time()
+	if _title_anchor == Vector2.INF:
+		_title_anchor = _whale_pod_centre()
+	camera.global_position = _title_anchor + Vector2(
+		TITLE_CAM_DRIFT * float(world_scale) * _title_cam_t, 0.0)
+	var target := camera_zoom / TITLE_ZOOM_OUT
+	camera.zoom = camera.zoom.lerp(Vector2(target, target), 0.12)
+
+
+## Where the whales are, for the intro camera to look at. Falls back to a point
+## to port of the ship start (where the pod spawns) if none is alive yet.
+func _whale_pod_centre() -> Vector2:
+	var sum := Vector2.ZERO
+	var n := 0
+	for ship in fleet.ships():
+		if is_instance_valid(ship) and ship.creature_kind == "whale" and not ship.is_carcass():
+			sum += ship.global_position
+			n += 1
+	if n == 0:
+		return SHIP_START + Vector2(-2200.0, -350.0) * float(world_scale)
+	return sum / float(n)
+
+
 ## Dead centre on the player, every frame, nothing else. The player is the
 ## subject on foot and at the helm alike. At the helm the view pulls back
 ## by pilot_zoom_out (position stays hard-locked — the smoothing veto was
 ## about camera *motion*, zoom eases scale only).
 func _track_camera() -> void:
+	# THE INTRO. While the title is up the camera is not yours — it drifts
+	# across the whale pod, so the first thing anyone sees is the game's own
+	# sky with whales in it (owner 2026-08-30). The world is running the whole
+	# time; this is a camera state, not a scene.
+	if _title_screen != null and _title_screen.visible:
+		_track_title_camera()
+		return
 	if player != null:
 		camera.global_position = player.global_position
 	elif is_instance_valid(local_ship):
@@ -5341,14 +5438,20 @@ func _handle_interact() -> void:
 		if Input.is_action_just_pressed("interact"):
 			dismount_creature()
 		return
-	_nearby_helm = Player.find_helm(fleet.ships(), player.global_position, player.HELM_REACH)
-	_nearby_door = Player.find_door(fleet.ships(), player.global_position, _door_reach())
+	_nearby_helm = Player.find_helm(_helm_candidates(), player.global_position, _helm_reach())
+	# THE DIVE has no doors to work: they are opened at the start of a run and E
+	# never offers one again, so the use key means helm (or station) and nothing
+	# else — the "heavily simplify the nuisances" the mode was asked for.
+	_nearby_door = [] if dive != null 		else Player.find_door(fleet.ships(), player.global_position, _door_reach())
 	_nearby_mender = Player.find_mender(fleet.ships(), player.global_position, _mender_reach())
 
 	if not Input.is_action_just_pressed("interact"):
 		return
 	if player.is_piloting():
+		var left := player.piloting
 		player.disembark()
+		if dive != null:
+			_dive_step_out(left)
 		return
 	# One use-key, three interactables: act on whichever is NEAREST (the same
 	# nearest-wins that disambiguates a helm from a doorway in a cramped cabin).

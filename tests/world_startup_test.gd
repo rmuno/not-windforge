@@ -2434,19 +2434,61 @@ func _check_dive(world: Node, fleet) -> void:
 		"inside a run, a shipless respawn does NOT grant a fresh ship")
 	world.set("local_ship", kept)
 
+	# --- THE DIVE HAS NO INTERIORS (owner 2026-08-30) -----------------------
+	# Three things have to be true together, or "leaving the ship still has you
+	# open the doors to actually leave" comes straight back.
+	world.call("begin_dive")
+	var hull = world.get("local_ship")
+	if hull != null and is_instance_valid(hull):
+		var shut := 0
+		for cell in hull.door_cells:
+			if hull.has_block(cell) and hull.blocks[cell]["type"] == BlockDB.Type.DOOR_CLOSED:
+				shut += 1
+		_ok(shut == 0, "a run throws every door on your ship open (%d still shut)" % shut)
+		# E must never mean "door" inside a run — the use key is the helm.
+		world.call("_handle_interact")
+		_ok((world.get("_nearby_door") as Array).is_empty(),
+			"E is never offered a door inside a run")
+		# Stepping off the helm puts you ABOVE the hull, not inside it.
+		var helm_cell := Vector2i.ZERO
+		if not hull.helm_cells.is_empty():
+			helm_cell = hull.helm_cells[0]
+		if pl != null and is_instance_valid(pl) and not hull.helm_cells.is_empty():
+			pl.global_position = hull.to_global(hull.local_pos_of(helm_cell))
+			var boarded: bool = pl.board(hull, helm_cell)
+			_ok(boarded, "took the helm to test stepping off it")
+			if boarded:
+				# The real sequence _handle_interact runs: disembark (which
+				# leaves you at the helm), then step outside.
+				pl.disembark()
+				world.call("_dive_step_out", hull)
+				var lp: Vector2 = hull.to_local(pl.global_position)
+				_ok(lp.y < hull.solid_bounds.position.y,
+					"stepping off the helm leaves you ON TOP of the hull (%.0f < %.0f)"
+						% [lp.y, hull.solid_bounds.position.y])
+				# ...and from up there the helm is still in reach, so E boards
+				# without a walk. This is the pair: step out high, board high.
+				world.call("_handle_interact")
+				_ok(not (world.get("_nearby_helm") as Array).is_empty(),
+					"...and the helm still answers E from outside the hull")
 	world.call("end_dive")
 	_ok(world.get("dive") == null and world.call("dive_status") == null,
 		"ending a run clears the mode entirely")
 
-	# The real boot chooser's third door starts a real run, through a real key.
-	var chooser = world.get("_start_chooser")
+	# The real title screen's third door starts a real run, through real keys:
+	# one to leave the title, then [3].
+	var chooser = world.get("_title_screen")
 	if chooser != null and is_instance_valid(chooser):
 		chooser.call("open")
+		var enter := InputEventKey.new()
+		enter.keycode = KEY_ENTER
+		enter.pressed = true
+		chooser._input(enter)
 		var ev := InputEventKey.new()
 		ev.keycode = KEY_3
 		ev.pressed = true
 		chooser._input(ev)
-		_ok(world.get("dive") != null, "boot chooser [3] starts THE DIVE")
+		_ok(world.get("dive") != null, "title screen [3] starts THE DIVE")
 		world.call("end_dive")
 
 	# Put the world back where the rest of the suite left it.
@@ -2492,9 +2534,12 @@ func _check_backdrop_and_chooser(world: Node, fleet) -> void:
 			"...on a CanvasLayer BEHIND the world (layer %d)"
 				% ((cl as CanvasLayer).layer if cl is CanvasLayer else 0))
 
-	# --- The start chooser ---------------------------------------------------
-	var chooser = world.get("_start_chooser")
-	_ok(chooser != null and is_instance_valid(chooser), "the start chooser exists")
+	# --- The title screen ----------------------------------------------------
+	# Two pages now (owner 2026-08-30): the title over a drifting sky, then the
+	# three modes. The PAGE MATTERS — a key on the title must not fall through
+	# and silently pick a mode, or the intro would be unskippable-then-instant.
+	var chooser = world.get("_title_screen")
+	_ok(chooser != null and is_instance_valid(chooser), "the title screen exists")
 	if chooser == null or not is_instance_valid(chooser):
 		return
 	_ok(not chooser.visible,
@@ -2502,19 +2547,27 @@ func _check_backdrop_and_chooser(world: Node, fleet) -> void:
 	Tunables.reset_all()
 	var pl = world.get("player")
 
-	# EXPEDITION: open, press 1 — the panel closes and NOTHING changed.
+	# EXPEDITION: open (title), any key advances to the modes, press 1 — the
+	# panel closes and NOTHING changed.
 	chooser.open()
-	_ok(chooser.visible, "open() shows the panel")
+	_ok(chooser.visible and bool(chooser.call("on_title_page")),
+		"open() shows the TITLE page")
 	var key1 := InputEventKey.new()
 	key1.keycode = KEY_1
 	key1.pressed = true
 	chooser._input(key1)
-	_ok(not chooser.visible, "[1] dismisses it")
+	_ok(chooser.visible and not bool(chooser.call("on_title_page")),
+		"a key on the title advances to the modes and does NOT choose one")
+	_ok(not Tunables.get_bool("sandbox_mode"),
+		"...so the title's own keypress cannot have picked sandbox")
+	chooser._input(key1)
+	_ok(not chooser.visible, "[1] on the modes page dismisses it")
 	_ok(not Tunables.get_bool("sandbox_mode"),
 		"...and expedition leaves the full game untouched")
 
-	# SANDBOX: open, press 2 — the panel closes and the v0.85.0 loadout landed.
+	# SANDBOX: open, past the title, press 2 — the v0.85.0 loadout landed.
 	chooser.open()
+	chooser._input(key1)
 	var key2 := InputEventKey.new()
 	key2.keycode = KEY_2
 	key2.pressed = true
@@ -2524,6 +2577,20 @@ func _check_backdrop_and_chooser(world: Node, fleet) -> void:
 		"...and turns sandbox mode ON (the same toggle F2 drives)")
 	_ok(pl == null or pl.wallet == null or pl.wallet.balance >= 5000,
 		"...with the kit-me-out loadout applied")
+
+	# The intro camera: while the title is up the camera is NOT on the body.
+	# (A regression here would show as "the game starts looking at nothing".)
+	chooser.open()
+	await world.get_tree().physics_frame
+	await world.get_tree().physics_frame
+	var cam = world.get("camera")
+	if cam != null and is_instance_valid(cam) and pl != null and is_instance_valid(pl):
+		_ok(cam.global_position.distance_to(pl.global_position) > 1.0,
+			"the title camera leaves the body and drifts over the sky")
+	chooser._input(key1)
+	chooser._input(key1)
+	_ok(not chooser.visible, "...and the title is dismissed again")
+	Tunables.reset_all()
 
 	# Leave the world as we found it (the sandbox check's own idiom).
 	Tunables.reset_all()
