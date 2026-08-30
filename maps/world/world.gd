@@ -121,11 +121,16 @@ const DIVE_AIR_FLOOR := 0.12
 ## Air between the shelf's underside and a moored candidate's hull, px at
 ## scale 1. A step off the rim, not a plummet.
 ## Air between the deck's walking surface and a moored hull's top, px at scale 1.
-## Small on purpose: the point is that you can SEE the ship you are about to drop
-## onto from where you are standing.
-const DIVE_DROP_GAP := 150.0
-## Width of one deck platform, px at scale 1 — a few seconds' walk.
-const DIVE_PLATFORM_PX := 2200.0
+## SIZED AGAINST THE SCREEN, not against a hunch: at 8x the on-foot camera shows
+## about 3,600 px of height, so half a screen below your feet is ~1,800 px. A
+## 480 px drop puts the hull's deck plainly in frame from where you stand.
+const DIVE_DROP_GAP := 60.0
+## Width of one deck platform, px at scale 1. Also sized against the screen: a
+## screen is ~6,500 px wide at 8x and the player is 80 px wide, so 2,400 px is a
+## walk of about a second. The first cut was 2,200 AT SCALE 1 — 17,600 px, most
+## of three screens, which is why the berths were still off in the distance
+## after the eightfold bug was fixed.
+const DIVE_PLATFORM_PX := 300.0
 ## How much wider than its hull a berth is. The clearance is what stops a ship
 ## that has just been taken (and is climbing, lift 1.07) from catching a platform
 ## corner on the way up.
@@ -1010,17 +1015,37 @@ const LAUNCH_SHELF_PX := Vector2(1400.0, 200.0)
 func _dive_shelf_span() -> Vector2:
 	if _dive_shelf != Vector2.ZERO:
 		return _dive_shelf
-	var ws := float(world_scale)
-	var span := LAUNCH_SHELF_PX * ws
-	var widest := 0.0
-	for ship in fleet.ships():
-		if is_instance_valid(ship) and ship.faction == 0 \
-				and ship.creature_kind == "" and not ship.is_carcass():
-			widest = maxf(widest, ship.solid_bounds.size.x * ws)
+	var span := LAUNCH_SHELF_PX * float(world_scale)
+	var widest := _dive_widest_hull()
 	if widest > 0.0:
 		span.x = minf(span.x, widest * 0.9)
 	_dive_shelf = span
 	return _dive_shelf
+
+
+## The widest player-side hull, IN WORLD PIXELS.
+##
+## `Ship.solid_bounds` is ALREADY world pixels and must never be multiplied by
+## `world_scale`. The 8× world is built by UPSCALING THE CELL GRID
+## (`ShipLayout.upscale_cells`), not by scaling the node — a `Ship` never sets
+## `scale` — so an authored 96-column hull becomes 768 columns of `Ship.CELL`
+## and its bounds come out at 12,288 px on their own.
+##
+## Scaling them again is an EIGHTFOLD error, and it is the one that kept the
+## launch deck unreachable through four rewrites: the berths were computed
+## 98,000 px wide instead of 16,000, which put the nearest hull most of a
+## hundred thousand pixels to one side and twenty-five thousand below. Every
+## other reader in this file already treats the bounds as world px
+## (`_creature_bite_radius`, the lava check, the edge markers); the Dive code
+## was the odd one out. The owner spotted it from the outside: "are you scaling
+## to x8 for dive too, and could that influence".
+func _dive_widest_hull() -> float:
+	var widest := 0.0
+	for ship in fleet.ships():
+		if is_instance_valid(ship) and ship.faction == 0 \
+				and ship.creature_kind == "" and not ship.is_carcass():
+			widest = maxf(widest, ship.solid_bounds.size.x)
+	return widest
 func _build_launch_deck() -> void:
 	var at := dive_landing_pos(1)
 	var span := _dive_shelf_span()
@@ -1058,8 +1083,10 @@ func _build_launch_deck() -> void:
 	# On the middle platform, between the berths, looking down at both.
 	if player != null and is_instance_valid(player):
 		player.velocity = Vector2.ZERO
+		# Standing ON the platform, not dropped onto it from a storey up: the
+		# body is 144 px tall at 8x, so 160 px of clearance is plenty.
 		player.global_position = Vector2(at.x,
-			at.y - 150.0 * float(world_scale))
+			at.y - 20.0 * float(world_scale))
 
 
 ## Where a candidate moors. FOURTH layout, and the first three are kept written
@@ -1084,12 +1111,12 @@ func _build_launch_deck() -> void:
 ## away cannot drive it into anything. Walk off the LAST platform instead and
 ## there is nothing under you, which is the shipless run.
 func _dive_park_at(ship: Ship, at: Vector2, index: int) -> Vector2:
-	var ws := float(world_scale)
-	var half_h := 2000.0 * ws
+	# solid_bounds is ALREADY world px — see _dive_widest_hull.
+	var half_h := 2000.0 * float(world_scale)
 	if ship != null and is_instance_valid(ship) and ship.solid_bounds.size.y > 0.0:
-		half_h = ship.solid_bounds.size.y * 0.5 * ws
+		half_h = ship.solid_bounds.size.y * 0.5
 	return Vector2(_dive_bay_centre(index),
-		at.y + DIVE_DROP_GAP * ws + half_h)
+		at.y + DIVE_DROP_GAP * float(world_scale) + half_h)
 
 
 ## The centre of berth `index`, alternating port and starboard of the middle
@@ -1106,13 +1133,13 @@ func _dive_bay_centre(index: int) -> float:
 ## How wide one berth is: the widest candidate plus air, so nothing is moored
 ## under an overhang.
 func _dive_bay_width() -> float:
-	var ws := float(world_scale)
-	var widest := 3000.0 * ws
-	for ship in fleet.ships():
-		if is_instance_valid(ship) and ship.faction == 0 \
-				and ship.creature_kind == "" and not ship.is_carcass():
-			widest = maxf(widest, ship.solid_bounds.size.x * ws)
-	return widest * DIVE_BAY_CLEARANCE
+	# solid_bounds is ALREADY world px — see _dive_widest_hull. The FLOOR is a
+	# fallback for a deck with no candidates on it, and it is in world px too:
+	# written as `3000 * world_scale` it came out at 24,000 px and silently
+	# dominated the real hull (12,288), which is why the berths were still two
+	# screens out after the eightfold bug was fixed. A floor that can beat the
+	# thing it is a floor for is not a floor.
+	return maxf(_dive_widest_hull(), 3000.0) * DIVE_BAY_CLEARANCE
 
 
 ## Where depth `d`'s landing is in the world. The ladder decides the altitude and
@@ -1375,8 +1402,11 @@ func _dive_step_in(ship: Ship, cell: Vector2i) -> void:
 
 ## Stepping off the helm in THE DIVE puts you on TOP of the hull, above where
 ## you were standing — not in a cabin whose door the mode just made pointless.
-## Ship-local units throughout (`solid_bounds` and `local_pos_of` are un-scaled;
-## the node's own transform carries world_scale).
+## `solid_bounds` and `local_pos_of` are in the ship's own frame, which at any
+## world scale is ALREADY world pixels: the scale lives in the CELL COUNT
+## (`ShipLayout.upscale_cells`), never in the node's transform. So the offset
+## below is scaled explicitly and the bounds are not. (This comment used to say
+## the opposite, and cost four rewrites of the launch deck.)
 func _dive_step_out(ship: Ship) -> void:
 	if ship == null or not is_instance_valid(ship) or player == null \
 			or not is_instance_valid(player):
@@ -1386,7 +1416,7 @@ func _dive_step_out(ship: Ship) -> void:
 		return
 	var local := Vector2(
 		clampf(ship.to_local(player.global_position).x, b.position.x, b.end.x),
-		b.position.y - Ship.CELL * 1.5)
+		b.position.y - Ship.CELL * float(world_scale) * 1.5)
 	player.global_position = ship.to_global(local)
 	player.velocity = Vector2.ZERO
 

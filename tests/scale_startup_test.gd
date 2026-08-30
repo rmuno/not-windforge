@@ -207,6 +207,10 @@ func _initialize() -> void:
 		if net_node != null:
 			net_node.stop()
 
+	# LAST: a dive un-claims your hull, stamps terrain and moves every candidate,
+	# so every check above it would otherwise be counting a world it rearranged.
+	await _check_dive_deck_at_8x(world)
+
 	_finish()
 
 
@@ -311,6 +315,60 @@ func _enemy_shot_exists(world: Node) -> bool:
 		if child is Shot and (child as Shot).faction != 0:
 			return true
 	return false
+
+
+## THE LAUNCH DECK, AT THE SCALE THE OWNER PLAYS. Everything about the Dive's
+## deck is geometry against a body 144 px tall in a world where a hull is twelve
+## thousand px wide, and the legacy suite — which is where the deck was checked
+## until now — runs at scale 1, where a stray ×world_scale is ×1 and invisible.
+## Four rewrites of this deck passed that suite while the shipped game had the
+## ships a hundred thousand pixels away. So the reachability numbers are asserted
+## HERE, in the world the owner actually boots.
+func _check_dive_deck_at_8x(world: Node) -> void:
+	if not world.has_method("begin_dive"):
+		_ok(false, "the 8x world can start a dive")
+		return
+	world.call("begin_dive")
+	await world.get_tree().physics_frame
+	var pl = world.get("player")
+	var fleet = world.get("fleet")
+	if pl == null or not is_instance_valid(pl) or fleet == null:
+		_ok(false, "a body on the launch deck")
+		return
+	# A screen at the on-foot zoom is about 6,500 x 3,600 px at 8x. A candidate
+	# has to be inside roughly that, or it is the report the owner filed twice:
+	# "they're not even visible - you have to jump down and hope to land near
+	# one".
+	var seen := 0
+	var nearest := INF
+	var top_gap := INF
+	for hull in fleet.ships():
+		if not is_instance_valid(hull) or hull.faction != 0 \
+				or hull.creature_kind != "" or hull.is_carcass():
+			continue
+		var dx: float = absf(hull.global_position.x - pl.global_position.x)
+		var dy: float = hull.global_position.y - pl.global_position.y
+		nearest = minf(nearest, dx)
+		if dy > 0.0:
+			top_gap = minf(top_gap,
+				hull.global_position.y - hull.solid_bounds.size.y * 0.5
+					- pl.global_position.y)
+		if dx < 14000.0 and dy > 0.0 and dy < 12000.0:
+			seen += 1
+	# The numbers are the SCREEN, at the zoom the owner plays: about 6,500 px
+	# wide and 3,600 tall on foot. A berth centre inside 14,000 px is roughly two
+	# screens of walking, and a hull TOP inside 2,000 px below your feet is
+	# plainly in frame.
+	_ok(seen >= 2,
+		"at 8x, two hulls are berthed within sight and below (%d; nearest %.0f px)"
+			% [seen, nearest])
+	_ok(nearest < 14000.0,
+		"...and the closest berth is about a screen away (%.0f px)" % nearest)
+	_ok(top_gap < 2000.0,
+		"...with its deck visible below your feet, not off-screen (%.0f px down)"
+			% top_gap)
+	world.call("end_dive")
+	await world.get_tree().physics_frame
 
 
 func _ok(condition: bool, detail: String) -> void:
