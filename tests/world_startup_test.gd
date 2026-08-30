@@ -315,7 +315,7 @@ func _initialize() -> void:
 	await _check_lava_core(world, fleet)
 	await _check_sandbox(world, fleet)
 	await _check_edge_markers(world, fleet)
-	await _check_backdrop_and_chooser(world, fleet)
+	await _check_backdrop(world, fleet)
 
 	await _check_hosting_after_offline_play(world, fleet)
 
@@ -2398,7 +2398,7 @@ func _dive_take_a_hull(world: Node, fleet) -> void:
 ## THE DIVE against the live world (owner arc Q-G, 2026-08-30). The run MODEL is
 ## pinned pure in the unit suite; what has to be true here is that the mode is
 ## reachable, that it moves the real ship to the real top of the ladder, that the
-## real boot chooser's [3] starts one, and — the one that would silently gut the
+## the intro's choice really reaches the world, and — the one that would silently gut the
 ## mode — that a run does NOT get handed a free replacement ship when its own is
 ## gone. The world is restored afterwards: this check teleports the ship, and
 ## every later check counts what it finds where it left it.
@@ -2650,21 +2650,14 @@ func _check_dive(world: Node, fleet) -> void:
 	_ok(world.get("dive") == null and world.call("dive_status") == null,
 		"ending a run clears the mode entirely")
 
-	# The real title screen's third door starts a real run, through real keys:
-	# one to leave the title, then [3].
-	var chooser = world.get("_title_screen")
-	if chooser != null and is_instance_valid(chooser):
-		chooser.call("open")
-		var enter := InputEventKey.new()
-		enter.keycode = KEY_ENTER
-		enter.pressed = true
-		chooser._input(enter)
-		var ev := InputEventKey.new()
-		ev.keycode = KEY_3
-		ev.pressed = true
-		chooser._input(ev)
-		_ok(world.get("dive") != null, "title screen [3] starts THE DIVE")
-		world.call("end_dive")
+	# The intro hands its choice over through GameMode, and the world applies it
+	# at boot. Check the seam, not the panel (the panel is intro_test.gd's).
+	GameMode.pending = GameMode.DIVE
+	_ok(GameMode.take() == GameMode.DIVE, "the intro's choice survives to the world")
+	_ok(GameMode.pending == GameMode.EXPEDITION,
+		"...and is taken ONCE, so a later reset does not re-enter a mode")
+	GameMode.pending = "nonsense"
+	_ok(GameMode.take() == GameMode.EXPEDITION, "an unknown mode falls back to expedition")
 
 	# Put the world back where the rest of the suite left it. A run UN-CLAIMS the
 	# hull the boot gave you (that is the launch deck's whole point), and a host
@@ -2684,11 +2677,10 @@ func _check_dive(world: Node, fleet) -> void:
 	await world.get_tree().physics_frame
 
 
-## THE LAYERED BACKDROP + THE START CHOOSER against the live world (owner
-## 2026-08-29). The generative half is pinned pure in the unit suite; here:
-## the world actually FEEDS the backdrop, and the boot chooser drives the real
-## sandbox toggle through real key events.
-func _check_backdrop_and_chooser(world: Node, fleet) -> void:
+## THE LAYERED BACKDROP against the live world (owner 2026-08-29). The start
+## chooser used to be checked here too; it is its own scene now (intro_test.gd). The generative half is pinned pure in the unit suite; here:
+## the world actually FEEDS the backdrop.
+func _check_backdrop(world: Node, fleet) -> void:
 	# --- Backdrop: the world's side of the contract --------------------------
 	var st: Variant = world.call("backdrop_status")
 	_ok(st != null, "the world feeds the backdrop")
@@ -2716,96 +2708,16 @@ func _check_backdrop_and_chooser(world: Node, fleet) -> void:
 			"...on a CanvasLayer BEHIND the world (layer %d)"
 				% ((cl as CanvasLayer).layer if cl is CanvasLayer else 0))
 
-	# --- The title screen ----------------------------------------------------
-	# Two pages now (owner 2026-08-30): the title over a drifting sky, then the
-	# three modes. The PAGE MATTERS — a key on the title must not fall through
-	# and silently pick a mode, or the intro would be unskippable-then-instant.
-	var chooser = world.get("_title_screen")
-	_ok(chooser != null and is_instance_valid(chooser), "the title screen exists")
-	if chooser == null or not is_instance_valid(chooser):
-		return
-	_ok(not chooser.visible,
-		"it does not show in a headless boot (the suite would eat its keys)")
+	# (The title screen used to live in this scene and was checked here. It is
+	# its own scene now — maps/intro/intro.tscn — and tests/intro_test.gd owns
+	# it, along with everything the old in-world intro had to suppress by hand.)
+
+	# Leave the world as we found it. (Nothing above dirties the player any more
+	# — the sandbox loadout used to be applied here through the chooser's [2],
+	# and that moved out with the title screen — but the reset is cheap and this
+	# suite runs one live world end to end.)
 	Tunables.reset_all()
 	var pl = world.get("player")
-
-	# EXPEDITION: open (title), any key advances to the modes, press 1 — the
-	# panel closes and NOTHING changed.
-	chooser.open()
-	_ok(chooser.visible and bool(chooser.call("on_title_page")),
-		"open() shows the TITLE page")
-	var key1 := InputEventKey.new()
-	key1.keycode = KEY_1
-	key1.pressed = true
-	chooser._input(key1)
-	_ok(chooser.visible and not bool(chooser.call("on_title_page")),
-		"a key on the title advances to the modes and does NOT choose one")
-	_ok(not Tunables.get_bool("sandbox_mode"),
-		"...so the title's own keypress cannot have picked sandbox")
-	chooser._input(key1)
-	_ok(not chooser.visible, "[1] on the modes page dismisses it")
-	_ok(not Tunables.get_bool("sandbox_mode"),
-		"...and expedition leaves the full game untouched")
-
-	# SANDBOX: open, past the title, press 2 — the v0.85.0 loadout landed.
-	chooser.open()
-	chooser._input(key1)
-	var key2 := InputEventKey.new()
-	key2.keycode = KEY_2
-	key2.pressed = true
-	chooser._input(key2)
-	_ok(not chooser.visible, "[2] dismisses it too")
-	_ok(Tunables.get_bool("sandbox_mode"),
-		"...and turns sandbox mode ON (the same toggle F2 drives)")
-	_ok(pl == null or pl.wallet == null or pl.wallet.balance >= 5000,
-		"...with the kit-me-out loadout applied")
-
-	# THE INTRO IS A PICTURE, NOT A COCKPIT (owner 2026-08-30). While the title
-	# is up, every piece of player-facing chrome has to be silent: the edge
-	# markers were still pointing at things, the helm was still offering itself,
-	# and the health bar was still there over the game's own front page.
-	chooser.open()
-	_ok(bool(world.call("hud_quiet")), "the title screen quiets the HUD")
-	_ok((world.call("edge_marker_targets") as Array).is_empty(),
-		"...no edge markers over the intro")
-	_ok(world.call("interact_prompt") == null,
-		"...and the helm does not offer itself")
-	var vit: Dictionary = world.call("player_vitals")
-	_ok(float(vit.get("max", 1.0)) <= 0.0, "...nor is there a health bar")
-	# The corner keeps the build number and drops the key hints.
-	world.call("_update_corner_status")
-	var corner = world.get("_corner_label")
-	if corner != null:
-		_ok(not String(corner.text).contains("Tab map"),
-			"...and no 'help / map' hints on the front page")
-		_ok(String(corner.text).contains("v"), "...but the build number stays")
-	chooser._input(key1)
-	chooser._input(key1)
-	_ok(not bool(world.call("hud_quiet")), "dismissing the title brings the HUD back")
-	world.call("_update_corner_status")
-	if corner != null:
-		_ok(String(corner.text).contains("Tab map"),
-			"...hints and all")
-		var line: String = String(corner.text).split("\n")[-1]
-		_ok(line.find("fps") < line.find("v0"),
-			"fps reads before the version (%s)" % line)
-
-	# The intro camera: while the title is up the camera is NOT on the body.
-	# (A regression here would show as "the game starts looking at nothing".)
-	chooser.open()
-	await world.get_tree().physics_frame
-	await world.get_tree().physics_frame
-	var cam = world.get("camera")
-	if cam != null and is_instance_valid(cam) and pl != null and is_instance_valid(pl):
-		_ok(cam.global_position.distance_to(pl.global_position) > 1.0,
-			"the title camera leaves the body and drifts over the sky")
-	chooser._input(key1)
-	chooser._input(key1)
-	_ok(not chooser.visible, "...and the title is dismissed again")
-	Tunables.reset_all()
-
-	# Leave the world as we found it (the sandbox check's own idiom).
-	Tunables.reset_all()
 	if pl != null and is_instance_valid(pl):
 		if pl.inventory != null:
 			pl.inventory.clear()

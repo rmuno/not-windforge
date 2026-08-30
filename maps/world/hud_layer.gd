@@ -47,12 +47,6 @@ func _process(delta: float) -> void:
 func _draw() -> void:
 	if world == null:
 		return
-	# THE INTRO IS A PICTURE, NOT A COCKPIT (owner 2026-08-30). Everything this
-	# layer paints is about the player — their aim, their health, their pack,
-	# what they could do right now — and none of it means anything over the title
-	# screen. One ask, and the whole glass goes dark.
-	if world.has_method("hud_quiet") and bool(world.call("hud_quiet")):
-		return
 	_draw_wind()
 	_draw_reticle()
 	_draw_health()
