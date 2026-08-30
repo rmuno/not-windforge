@@ -105,6 +105,8 @@ var _dive_loft: Ship = null
 ## (owner 2026-08-30: "every level having some landmass … guardrailed and semi
 ## forced progress"), cut lazily one rung ahead of you.
 var _dive_landings := {}
+## This run's shelf size, sized against the hulls (see _dive_shelf_span).
+var _dive_shelf := Vector2.ZERO
 ## The quartermasters standing on this run's outpost landings (Trainer nodes in a
 ## different coat — same reach idiom, different trade). Cleared with the run.
 var _dive_outposts: Array = []
@@ -116,6 +118,9 @@ const DIVE_HELM_REACH_MULT := 4.0
 ## Low enough that being down there unprotected is genuinely dangerous, above
 ## zero so the AIR is never the killer.
 const DIVE_AIR_FLOOR := 0.12
+## Air between the shelf's underside and a moored candidate's hull, px at
+## scale 1. A step off the rim, not a plummet.
+const DIVE_DROP_GAP := 120.0
 
 ## THE INTRO (TitleScreen): while the title page is up the camera drifts across
 ## the whale pod instead of following the body. `_title_anchor` is INF until the
@@ -887,6 +892,7 @@ func begin_dive() -> void:
 	dive = DiveRun.new()
 	_dive_shipless = 0.0
 	_dive_landings.clear()
+	_dive_shelf = Vector2.ZERO
 	_build_launch_deck()
 	_notify("THE LAUNCH DECK. Take a ship, or step off the edge with nothing. "
 		+ "Down is richer and worse; climb back to this air to bank what you carry.")
@@ -903,6 +909,7 @@ func end_dive() -> void:
 			post.queue_free()
 	_dive_outposts.clear()
 	_dive_landings.clear()
+	_dive_shelf = Vector2.ZERO
 	# The unchosen candidate goes with the run — unless you took it, in which
 	# case it is your ship now and stays.
 	if is_instance_valid(_dive_loft) and _dive_loft != local_ship \
@@ -978,9 +985,33 @@ func dive_altitude_y(frac: float) -> float:
 ## a few seconds' walk to the edge, one step onto a deck, and every hull still
 ## floats over open air so pushing the stick down drops you into sky.
 const LAUNCH_SHELF_PX := Vector2(1400.0, 200.0)
+
+
+## The shelf's real size this run. It is the constant above, EXCEPT that it is
+## never allowed to be wider than the hulls moored under it: a candidate hangs
+## with its centre beneath a rim so you can step off and land amidships, and that
+## only works while the rim is actually over the hull. (The shipped 8× ship is
+## 12k px wide and the constant is 11k, so this changes nothing there — but the
+## legacy 1× test scene flies a much smaller starter, and there the fixed shelf
+## was wider than the ship, so the drop went straight past it into open sky.)
+## Cached per run so every landing on the ladder is cut the same size.
+func _dive_shelf_span() -> Vector2:
+	if _dive_shelf != Vector2.ZERO:
+		return _dive_shelf
+	var ws := float(world_scale)
+	var span := LAUNCH_SHELF_PX * ws
+	var widest := 0.0
+	for ship in fleet.ships():
+		if is_instance_valid(ship) and ship.faction == 0 \
+				and ship.creature_kind == "" and not ship.is_carcass():
+			widest = maxf(widest, ship.solid_bounds.size.x * ws)
+	if widest > 0.0:
+		span.x = minf(span.x, widest * 0.9)
+	_dive_shelf = span
+	return _dive_shelf
 func _build_launch_deck() -> void:
 	var at := dive_landing_pos(1)
-	var span := LAUNCH_SHELF_PX * float(world_scale)
+	var span := _dive_shelf_span()
 	_cut_landing(1)
 	_cut_landing(2)   # one rung of lookahead, so you can SEE where you are going
 
@@ -998,19 +1029,17 @@ func _build_launch_deck() -> void:
 	# drops you into open sky, not onto your own rock.
 	var i := 0
 	for ship in parked:
-		_park_candidate(ship as Ship,
-			at + Vector2(-_dive_park_x(ship as Ship, span.x, i), 0.0))
+		_park_candidate(ship as Ship, _dive_park_at(ship as Ship, at, span, i))
 		i += 1
 	# ...and the owner's own Blueprint Loft ship as the second candidate, so
 	# whatever they design in the Loft is a hull they can dive with. Made ONCE
 	# and reused: a run prop that respawned per dive would litter the sky.
 	if is_instance_valid(_dive_loft):
-		_park_candidate(_dive_loft, at + Vector2(_dive_park_x(_dive_loft, span.x, 0), 0.0))
+		_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, span, 1))
 	else:
-		_dive_loft = _spawn_loft_at(at + Vector2(span.x, 0.0))
+		_dive_loft = _spawn_loft_at(at + Vector2(span.x, span.y))
 		if _dive_loft != null:
-			_dive_loft.linear_velocity = Vector2.ZERO
-			_park_candidate(_dive_loft, at + Vector2(_dive_park_x(_dive_loft, span.x, 0), 0.0))
+			_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, span, 1))
 
 	# Stand the body just above the shelf, not high over it: the run opens with
 	# a look around, not a fall.
@@ -1019,15 +1048,35 @@ func _build_launch_deck() -> void:
 		player.global_position = at - Vector2(0.0, 150.0 * float(world_scale))
 
 
-## How far to port/starboard a candidate moors. Its INNER EDGE lands exactly on
-## the shelf's rim — half the shelf plus half the hull — so you walk to the edge
-## and step straight aboard, while the hull itself hangs entirely over open air.
-## Further candidates queue outboard by a full hull plus a gap.
-func _dive_park_x(ship: Ship, shelf_w: float, index: int) -> float:
-	var w := 4000.0 * float(world_scale)
+## Where a candidate moors, relative to the shelf's centre. THIRD TIME, and the
+## first two failures are worth keeping written down because they were both
+## "obviously fine" until the owner tried to walk to one:
+##
+##   1. Parked a hull-length out in clear air — visible and unreachable without
+##      a grapple ("the starting spot in dive mode has no accessible ships").
+##   2. Moored abeam with the inner edge on the rim — which put a six-thousand-
+##      pixel wall of hull in front of a hundred-and-forty-pixel person, AND
+##      left them unfrozen, so the starter (lift ratio 1.07) simply CLIMBED
+##      away while you walked toward it.
+##
+## What the owner actually described on day one was vertical: *"choose which
+## ship to FALL ONTO"*. So a candidate now hangs BELOW the shelf with its centre
+## directly under a rim — walk to the edge, step off, land amidships. You cannot
+## miss a hull that is twelve thousand pixels wide and directly beneath you, and
+## walking off the MIDDLE of the shelf still drops you into open sky with
+## nothing, which is the shipless run.
+func _dive_park_at(ship: Ship, at: Vector2, span: Vector2, index: int) -> Vector2:
+	var ws := float(world_scale)
+	var half_w := 2000.0 * ws
+	var half_h := 2000.0 * ws
 	if ship != null and is_instance_valid(ship) and ship.solid_bounds.size.x > 0.0:
-		w = ship.solid_bounds.size.x * float(world_scale)
-	return shelf_w * 0.5 + w * 0.5 + float(index) * w * 1.15
+		half_w = ship.solid_bounds.size.x * 0.5 * ws
+		half_h = ship.solid_bounds.size.y * 0.5 * ws
+	# Port for the first, starboard for the second, then queue outboard.
+	var side := -1.0 if index % 2 == 0 else 1.0
+	var out := float(index / 2) * half_w * 2.2
+	return Vector2(at.x + side * (span.x * 0.5 + out),
+		at.y + span.y + DIVE_DROP_GAP * ws + half_h)
 
 
 ## Where depth `d`'s landing is in the world. The ladder decides the altitude and
@@ -1035,7 +1084,7 @@ func _dive_park_x(ship: Ship, shelf_w: float, index: int) -> float:
 ## than a shaft you drop down (`DiveRun.landing_offset`).
 func dive_landing_pos(d: int) -> Vector2:
 	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
-	var span := LAUNCH_SHELF_PX * float(world_scale)
+	var span := _dive_shelf_span()
 	var sv: int = dive.seed_v if dive != null else 0
 	return Vector2(cx + DiveRun.landing_offset(sv, d) * span.x,
 		dive_altitude_y(DiveRun.depth_altitude(d)))
@@ -1052,7 +1101,7 @@ func _cut_landing(d: int) -> void:
 		return
 	_dive_landings[d] = true
 	var at := dive_landing_pos(d)
-	var span := LAUNCH_SHELF_PX * float(world_scale)
+	var span := _dive_shelf_span()
 	IslandGen.ensure_generated(terrain, world_seed, [at], span.x, 64)
 	var cp := maxf(terrain.cell_px(), 1.0)
 	var top_left := terrain.world_to_cell(at + Vector2(-span.x * 0.5, 0.0))
@@ -1143,14 +1192,25 @@ func _dive_patch_hull() -> void:
 	local_ship.rebuild()
 
 
-## Move one candidate hull to the launch deck at rest. Teleporting is fine here:
-## the run has not started, so there is no motion to respect.
+## Moor one candidate and HOLD it there. The freeze is the important half: a
+## parked hull is still a RigidBody2D with lift, and the starter's lift ratio is
+## 1.07 — so the candidates were quietly climbing away while the player walked
+## toward them. Frozen, they hang like a nest does (`Ship.is_nest` uses the same
+## `freeze`), and taking a helm thaws the one you chose.
 func _park_candidate(ship: Ship, at: Vector2) -> void:
 	if ship == null or not is_instance_valid(ship):
 		return
 	ship.global_position = at
 	ship.linear_velocity = Vector2.ZERO
 	ship.angular_velocity = 0.0
+	ship.freeze = true
+
+
+## Thaw the hull you took. Anything still moored stays frozen — change your mind
+## and the other candidate is exactly where you left it.
+func _dive_thaw(ship: Ship) -> void:
+	if ship != null and is_instance_valid(ship) and not ship.is_nest:
+		ship.freeze = false
 
 
 ## The run ends because YOU did, not because a ship did. Only reachable on a
@@ -1264,6 +1324,7 @@ func _tick_dive(delta: float) -> void:
 	if not dive.committed:
 		if is_instance_valid(local_ship) and player.is_piloting():
 			dive.commit()
+			_dive_thaw(local_ship)
 			_dive_open_doors()
 			_dive_post_the_assistant()
 			_notify("She is yours. Lose her and the run ends with her.")
@@ -4028,6 +4089,13 @@ func _update_hazards(delta: float) -> void:
 		return
 	if Net.is_online() and not Net.is_server():
 		return
+	# METEORS DO NOT MINE IN A RUN (owner 2026-08-30: "meteor thingies should
+	# NOT mine anything during dive mode"). A fireball digs only when it HAS a
+	# terrain reference — `HazardFireball.terrain` is documented nullable for
+	# exactly this — so dropping it in a run leaves the meteors falling and still
+	# dangerous to a hull, while the landings you are trying to stand on stop
+	# being chewed out from under you.
+	_hazards.terrain = null if dive_style() else terrain
 	_hazards.update(delta, _hazard_foci())
 
 

@@ -2484,23 +2484,28 @@ func _check_dive(world: Node, fleet) -> void:
 				and absf(hull.global_position.y - top_y) < slack:
 			near_deck += 1
 	_ok(near_deck >= 2, "at least two hulls are parked to choose from (%d)" % near_deck)
-	# ...AND YOU CAN WALK TO ONE (owner 2026-08-30: "the starting spot in dive
-	# mode has no accessible ships"). The hulls moor with their inner edge on
-	# the shelf's rim, so the gap from the body to the nearest hull is a walk,
-	# not a grapple.
+	# ...AND YOU CAN GET TO ONE (owner 2026-08-30, twice: "the starting spot in
+	# dive mode has no accessible ships"). What they described from the start was
+	# vertical — "choose which ship to FALL ONTO" — so a candidate hangs BELOW a
+	# rim: step off the edge and land amidships. Two things have to hold, and the
+	# second is the one that bit: the hull must be UNDER you, and it must still
+	# be there when you arrive (an unfrozen starter climbs away at lift 1.07).
 	if pl != null and is_instance_valid(pl):
-		var gap := INF
+		var below := 0
+		var held := 0
 		for hull in fleet.ships():
-			if not is_instance_valid(hull) or hull.faction != 0 \
-					or hull.creature_kind != "" or hull.is_carcass():
+			if not is_instance_valid(hull) or hull.faction != 0 					or hull.creature_kind != "" or hull.is_carcass():
 				continue
-			if absf(hull.global_position.y - top_y) >= slack:
-				continue
+			if hull.global_position.y <= pl.global_position.y:
+				continue   # not below the body
 			var half: float = hull.solid_bounds.size.x * 0.5 * float(world.get("world_scale"))
-			gap = minf(gap, maxf(0.0,
-				absf(hull.global_position.x - pl.global_position.x) - half))
-		_ok(gap < 6000.0 * float(world.get("world_scale")),
-			"a hull is a walk away from where you land (%.0f px of shelf)" % gap)
+			var drop: float = hull.global_position.y - pl.global_position.y
+			if absf(hull.global_position.x - pl.global_position.x) <= half 					and drop < 12000.0 * float(world.get("world_scale")):
+				below += 1
+				if hull.freeze:
+					held += 1
+		_ok(below >= 2, "two hulls hang below the deck to drop onto (%d)" % below)
+		_ok(held == below, "...and they are FROZEN, so they are still there when you land")
 
 	# THE STAKE. Losing the ship must not quietly hand you another one — the
 	# world's "never strand the player shipless" safety net is the exact thing
