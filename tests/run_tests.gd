@@ -2122,6 +2122,80 @@ func _test_dive_run() -> void:
 
 	# The hint the run gives a ship pressing into a ledge. Input-gated in the
 	# world, so the WORDING is what the suite can hold on to.
+	# THE HALF-BLOCK. An authored deck cell upscales into `world_scale` blocks of
+	# Ship.CELL, and Ship.local_pos_of puts a block at its CENTRE — so an authored
+	# cell's centre is half a block right of `cell * cell_px`. Left out, every
+	# berth reports (s−1)/2 blocks too far LEFT: 56 px at 8×, which the owner saw
+	# as "off by 1 or 2 tiles ... for the left side of each ship". It is × 0 at
+	# 1×, which is why the legacy suite could never see it.
+	var one_hatch := {}
+	for c in range(0, 12):
+		one_hatch[Vector2i(c, 0)] = BlockDB.Type.PLATFORM
+	for c in [-1, 12]:
+		one_hatch[Vector2i(c, 0)] = BlockDB.Type.HULL
+	var at_1x: Array = DiveDeck.berth_offsets(one_hatch, Ship.CELL)
+	var at_8x: Array = DiveDeck.berth_offsets(one_hatch, Ship.CELL * 8.0)
+	_check(at_1x.size() == 1 and at_8x.size() == 1, "the one-hatch deck has one berth")
+	if at_1x.size() == 1 and at_8x.size() == 1:
+		_check(is_equal_approx(float((at_1x[0] as Dictionary)["x"]), 5.5 * Ship.CELL),
+			"at 1x a 12-cell hatch centres on cell 5.5 (%.1f)"
+				% float((at_1x[0] as Dictionary)["x"]))
+		# 5.5 * 128 = 704, plus the half block (128 - 16) / 2 = 56.
+		_check(is_equal_approx(float((at_8x[0] as Dictionary)["x"]), 5.5 * 128.0 + 56.0),
+			"...and at 8x on the same cell's CENTRE, half a block further (%.1f)"
+				% float((at_8x[0] as Dictionary)["x"]))
+
+	# EVERY DOOR OPENS FOR ONE REBUILD. A run throws the whole hull open the
+	# instant you take a helm, and `toggle_door` rebuilds per call — on a big
+	# hand-built ship that was a dozen full rebuilds inside the frame you press E
+	# (owner: "a moderate lag when getting on the ship").
+	var doored := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.HULL,
+		Vector2i(1, 0): BlockDB.Type.DOOR_CLOSED,
+		Vector2i(2, 0): BlockDB.Type.HULL,
+		Vector2i(3, 0): BlockDB.Type.DOOR_CLOSED,
+		Vector2i(4, 0): BlockDB.Type.HULL,
+	})
+	_check(doored.open_all_doors() == 2, "open_all_doors opens every closed door")
+	var still_shut := 0
+	for cell in doored.door_cells:
+		if doored.has_block(cell) and doored.blocks[cell]["type"] == BlockDB.Type.DOOR_CLOSED:
+			still_shut += 1
+	_check(still_shut == 0, "...and leaves none closed behind it")
+	_check(doored.open_all_doors() == 0, "...and opening an open ship is a no-op")
+	doored.queue_free()
+
+	# BOARDING WORKS FROM EVERY SIDE AND EVERY CORNER (owner 2026-08-30: "could
+	# you compute the boundaries for 'getting on' such that it works above,
+	# below, to the sides, and by the corners?"). It is a grown bounding box, so
+	# all eight directions come out of one rectangle test — and the box grows by
+	# the margin on EACH side, which is the owner's "so double that".
+	var hull_box := Rect2(Vector2(-400.0, -200.0), Vector2(800.0, 400.0))
+	var m := 256.0    # two blocks at 8x
+	for dir in [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT,
+			Vector2(1, 1).normalized(), Vector2(-1, 1).normalized(),
+			Vector2(1, -1).normalized(), Vector2(-1, -1).normalized()]:
+		# A point just outside the hull's own edge in that direction, inside the
+		# margin: the corner cases are the diagonals, and they are the ones a
+		# radius or four edge tests get wrong.
+		var edge := Vector2(hull_box.end.x if dir.x > 0.0 else hull_box.position.x,
+			hull_box.end.y if dir.y > 0.0 else hull_box.position.y)
+		var probe := Vector2(
+			edge.x + signf(dir.x) * m * 0.5 if absf(dir.x) > 0.01 else 0.0,
+			edge.y + signf(dir.y) * m * 0.5 if absf(dir.y) > 0.01 else 0.0)
+		_check(DiveRun.helm_in_reach(hull_box, probe, m),
+			"the helm answers from %s of the hull (%s)" % [str(dir.round()), str(probe)])
+	_check(DiveRun.helm_in_reach(hull_box, Vector2.ZERO, m),
+		"...and from inside it")
+	# ...and stops answering past the margin, on the sides AND the corners.
+	_check(not DiveRun.helm_in_reach(hull_box, Vector2(0.0, -200.0 - m * 1.5), m),
+		"but not from a block and a half above the margin")
+	_check(not DiveRun.helm_in_reach(hull_box,
+			Vector2(400.0 + m * 1.5, -200.0 - m * 1.5), m),
+		"...nor off the corner")
+	_check(not DiveRun.helm_in_reach(Rect2(), Vector2.ZERO, m),
+		"a hull with no bounds offers no helm")
+
 	_check(DiveRun.stuck_hint(500.0).contains("starboard"),
 		"a landing to the right is called starboard")
 	_check(DiveRun.stuck_hint(-500.0).contains("port"),
