@@ -50,15 +50,32 @@ func _initialize() -> void:
 	print("took the helm: %s   committed: %s" % [str(took),
 		str((world.get("dive") as Object).get("committed"))])
 
+	# --- Shop, the way a player who found an outpost would -----------------
+	# Depths 6-8 are below Airspace.DEEP_TOP, so a run without a Lung dies at
+	# the gate (this probe proved that). Buy one through the REAL counter so the
+	# rest of the descent measures the game a prepared player actually plays.
+	var run0 = world.get("dive")
+	run0.pot = 600
+	world.call("_plant_outpost", pl.global_position)
+	var bought: bool = world.call("try_buy_stock", 0)
+	print("bought a Lung at the counter: %s   (pot now %d)" % [str(bought),
+		int(run0.get("pot"))])
+
 	# --- Fly DOWN, holding the dive, and log every rung ---------------------
 	var t := 0.0
 	var last_depth := 1
 	var depth_started := 0.0
 	var log_lines: Array[String] = []
+	var closest := INF
+	var engaged := 0
+	var hp0 := 0.0
+	var hull0 = world.get("local_ship")
+	if hull0 != null and is_instance_valid(hull0):
+		hp0 = float(hull0.blocks.size())
 	Input.action_press("ship_down")
 	var guard := 0
 	var beat := 0.0
-	while guard < 60 * 60 * 5:    # 5 simulated minutes, hard stop
+	while guard < 60 * 60 * 8:    # 8 simulated minutes, hard stop
 		guard += 1
 		await world.get_tree().physics_frame
 		t += STEP
@@ -72,6 +89,15 @@ func _initialize() -> void:
 					int(run.get("kills")), int(run.get("surges"))])
 			last_depth = d
 			depth_started = t
+		# THREAT: did anything actually reach us? A surge that never closes is
+		# a spawn count, not a fight.
+		for sh in fleet.ships():
+			if not is_instance_valid(sh) or sh.faction == 0 or sh.is_carcass():
+				continue
+			var dd: float = sh.global_position.distance_to(pl.global_position)
+			closest = minf(closest, dd)
+			if dd < 4000.0 * 8.0:
+				engaged += 1
 		beat += STEP
 		if beat >= 30.0:
 			beat = 0.0
@@ -84,6 +110,13 @@ func _initialize() -> void:
 			break
 	Input.action_release("ship_down")
 
+	var hull1 = world.get("local_ship")
+	var hp1 := 0.0
+	if hull1 != null and is_instance_valid(hull1):
+		hp1 = float(hull1.blocks.size())
+	print("\nTHREAT: nearest hostile ever %.0f px | frames with one within 4k*8: %d"
+		% [closest, engaged])
+	print("HULL:   %.0f blocks -> %.0f (%.0f lost)" % [hp0, hp1, hp0 - hp1])
 	print("\n--- the descent ---")
 	for l in log_lines:
 		print(l)

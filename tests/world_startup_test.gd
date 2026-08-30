@@ -2604,6 +2604,13 @@ func _check_dive(world: Node, fleet) -> void:
 		var model: Dictionary = world.call("character_sheet_model")
 		_ok(not (model.get("outpost_stock", []) as Array).is_empty(),
 			"the character sheet becomes the outpost counter at one")
+		# TEMPORARY means temporary: what the run handed you comes off when it
+		# ends, or the Lung is bought once and the depth gate never closes again.
+		var kept_before: int = pl.inventory.count(ItemDB.Crafted.LIFE_SUPPORT)
+		world.call("end_dive")
+		_ok(pl.inventory.count(ItemDB.Crafted.LIFE_SUPPORT) == kept_before - 1,
+			"the run takes its gear back when it ends (%d -> %d)"
+				% [kept_before, pl.inventory.count(ItemDB.Crafted.LIFE_SUPPORT)])
 	world.call("end_dive")
 	_ok((world.get("_dive_outposts") as Array).is_empty(),
 		"the quartermasters go with the run")

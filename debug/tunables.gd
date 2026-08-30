@@ -230,6 +230,12 @@ const _REGISTRY := [
 	{"id": "dive_surge_period", "label": "Dive: seconds between a depth's attacks",
 		"group": "World", "kind": KIND_FLOAT, "default": 45.0, "min": 5.0,
 		"max": 180.0, "step": 5.0},   # world._tick_dive -> DiveRun.advance
+	# How far AHEAD of you a surge arrives, in seconds of your current travel.
+	# The measured dive is ~1,950 px/s and a kraken closes far slower, so a
+	# picket spawned abeam is scenery — this is what puts it in your path.
+	{"id": "dive_surge_lead", "label": "Dive: surge arrives this many seconds ahead of you",
+		"group": "World", "kind": KIND_FLOAT, "default": 4.0, "min": 0.5,
+		"max": 15.0, "step": 0.5},   # world._dive_surge
 	{"id": "dive_assistant", "label": "Dive: the assistant mans the repair station",
 		"group": "World", "kind": KIND_BOOL, "default": true},
 		# world._dive_post_the_assistant — off = no station, no crew, X-wand only
