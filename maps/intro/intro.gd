@@ -27,14 +27,49 @@ extends Node2D
 
 ## How fast the camera pans right, px/s at scale 1.
 const PAN_SPEED := 34.0
-## The world scale the cast is built at — the shipped size, so the silhouettes
-## are the ones the game actually flies.
-const SCALE := 8
-## Gap between acts along the procession, px at scale 1.
-const ACT_GAP := 2600.0
+## THE CAST IS BUILT AT 1x, AND THAT COSTS NOTHING VISUALLY (owner 2026-08-30:
+## "the game is still super laggy when loading it... Is the title screen a small
+## scene? (it should be)"). It was not: the intro built all thirteen bodies
+## UPSCALED 8x, which is **358,016 blocks** — measured — and around eleven
+## seconds of work before the first frame. That is the loading lag, and it is
+## paid again every time you quit to the title, because that reloads this scene.
+##
+## `ShipLayout.upscale_cells` multiplies a blueprint's GRANULARITY, never its
+## shape: an 8x whale is the same silhouette made of 64x as many cells. The
+## world needs that granularity so an 8x player fits through an authored door
+## and mining takes bites out of a hull. **An intro needs none of it** — nothing
+## walks, mines, collides or is shot here, and at this camera pull-back one 8x
+## cell was 0.88 screen pixels. So the cast is authored-scale, the camera zoom is
+## multiplied by the same factor to keep the framing identical, and the
+## silhouettes are pixel-for-pixel what they were.
+const SCALE := 1
+## What the cast WOULD have been built at. The zoom is divided by this, so the
+## framing is unchanged from the 8x version — change one and the picture moves.
+const SHIPPED_SCALE := 8
+## Gap between acts along the procession, px at SHIPPED_SCALE.
+##
+## SHRUNK 2600 -> 900 (owner 2026-08-30: "I only see one whale going around in
+## the title screen, then it goes away. It's a little slow for another whale to
+## come in, but I'd just want something going on in the screen"). The gap was
+## 20,800 px against a closing speed of 480 px/s — **forty-three seconds of empty
+## sky between acts.** At 900 the procession overlaps: something is always
+## entering as something else leaves.
+const ACT_GAP := 250.0
+## How far above and below the eye line the procession spreads, px at SCALE.
+##
+## The cast used to fly in SINGLE FILE at y = 0, which is why the only way to
+## get "something going on in the screen" was to close the gaps until the acts
+## queued up nose to tail. Spread them vertically and three or four fit in frame
+## without ever touching — a sky with things in it rather than a parade.
+const ACT_SPREAD_Y := 620.0
+## A slow bob, so nothing on screen is ever perfectly still. Amplitude in px at
+## SCALE, period in seconds.
+const BOB_PX := 55.0
+const BOB_PERIOD := 7.0
 ## How far behind the camera an act may fall before it is sent to the back.
 const RECYCLE_BEHIND := 3400.0
-## Camera pull-back. The cast is huge; this is what makes a whale fit.
+## Camera pull-back, expressed at SHIPPED_SCALE and corrected for the scale the
+## cast is actually built at — so the framing is a constant.
 const ZOOM := 0.055
 
 var fleet: Fleet
@@ -80,7 +115,9 @@ func _ready() -> void:
 	add_child(back)
 
 	camera = Camera2D.new()
-	camera.zoom = Vector2(ZOOM, ZOOM)
+	# The cast is built at SCALE but framed as though it were at SHIPPED_SCALE.
+	var z := ZOOM * float(SHIPPED_SCALE) / float(SCALE)
+	camera.zoom = Vector2(z, z)
 	add_child(camera)
 	camera.make_current()
 
@@ -98,21 +135,34 @@ func _ready() -> void:
 
 func _build_cast() -> void:
 	var x := 0.0
+	var i := 0
 	for entry in cast_plan():
 		var e := entry as Dictionary
-		var node := _spawn_act(e, x)
+		# Deterministic vertical spread — a fixed irrational stride so
+		# consecutive acts never share a lane and the pattern never repeats
+		# inside one pass of the cast.
+		var lane := fposmod(float(i) * 0.618, 1.0) * 2.0 - 1.0
+		var node := _spawn_act(e, x, lane * ACT_SPREAD_Y * float(SCALE))
+		i += 1
 		if node == null:
 			continue
-		var span: float = maxf(node.solid_bounds.size.x * float(SCALE),
-			1000.0 * float(SCALE))
-		_acts.append({"node": node, "drift": float(e["drift"]), "span": span})
+		# `solid_bounds` is ALREADY world px at whatever scale the body was built
+		# at — the scale lives in the CELL COUNT, never in the node (CODEMAP; the
+		# eightfold bug). Multiplying it by SCALE here made every act's span 64x
+		# its real width at the old SCALE=8, which is most of why the procession
+		# had a minute of empty sky in it. Only the AUTHORED constants below
+		# carry the scale.
+		var span: float = maxf(node.solid_bounds.size.x, 600.0 * float(SCALE))
+		_acts.append({"node": node, "drift": float(e["drift"]), "span": span,
+			"base_y": node.global_position.y,
+			"phase": fposmod(float(i) * 2.399, TAU)})
 		x += span + ACT_GAP * float(SCALE)
 	_tail_x = x
 
 
 ## One act. A duel is two hulls facing each other; everything else is one body.
-func _spawn_act(e: Dictionary, x: float) -> Ship:
-	var at := Vector2(x, 0.0)
+func _spawn_act(e: Dictionary, x: float, y: float) -> Ship:
+	var at := Vector2(x, y)
 	var ship := _spawn_body(String(e["path"]), at, 0)
 	if ship == null:
 		return null
@@ -132,7 +182,7 @@ func _spawn_act(e: Dictionary, x: float) -> Ship:
 		# whole procession and neither of them can be hurt, because the bolts
 		# are drawn (see _draw_bolts), not fired.
 		var foe := _spawn_body("res://ships/hulk.ship",
-			at + Vector2(ship.solid_bounds.size.x * float(SCALE) * 1.5,
+			at + Vector2(ship.solid_bounds.size.x * 1.5,   # already world px
 				-260.0 * float(SCALE)), 1)
 		_duel = [ship, foe]
 	return ship
@@ -169,6 +219,12 @@ func _physics_process(delta: float) -> void:
 		var step := Vector2(float(a["drift"]) * s * delta, 0.0)
 		node.global_position += step
 		_shift_duel(node, step)
+		# The bob is an absolute y, not an accumulation, so recycling an act
+		# cannot drift it off its lane over a long night on the title screen.
+		var bob := sin(_t * TAU / BOB_PERIOD + float(a["phase"])) * BOB_PX * s
+		var lift := float(a["base_y"]) + bob - node.global_position.y
+		node.global_position.y += lift
+		_shift_duel(node, Vector2(0.0, lift))
 		if node.global_position.x + float(a["span"]) < behind:
 			var jump := Vector2(_tail_x - node.global_position.x, 0.0)
 			node.global_position += jump

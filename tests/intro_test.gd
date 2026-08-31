@@ -66,6 +66,43 @@ func _initialize() -> void:
 	_ok(intro.get("camera") != null, "the intro has a camera")
 	_ok(intro.get("fleet") != null, "...and a fleet to hold the cast")
 
+	# THE TITLE SCREEN IS A SMALL SCENE, AND THAT IS A BUDGET (owner 2026-08-30:
+	# "the game is still super laggy when loading it... Is the title screen a
+	# small scene? (it should be)").
+	#
+	# It was not. It built all thirteen bodies UPSCALED 8x — **358,016 blocks**,
+	# ~11.5 s before the first frame — and paid it again on every quit to the
+	# title, because quitting reloads this scene. `upscale_cells` multiplies a
+	# blueprint's GRANULARITY and never its shape, and an intro needs none of it:
+	# nothing walks, mines, collides or is shot here, and at this pull-back one
+	# 8x cell was 0.88 screen pixels.
+	#
+	# The budget is the point of the fix, so it is pinned. Add a body to the
+	# procession and this still passes; upscale the cast again and it does not.
+	var built := 0
+	for ship in (intro.get("fleet").call("ships") as Array):
+		if is_instance_valid(ship):
+			built += (ship as Ship).blocks.size()
+	_ok(built < 40000, "the title screen is a SMALL scene (%d blocks, was 358,016)" % built)
+	_ok(IntroScene.SCALE == 1,
+		"...because the cast is built at authored scale, not upscaled")
+	# ...and the framing is a CONSTANT under that: the zoom is corrected by the
+	# same factor the cast was NOT multiplied by. Change one without the other
+	# and the picture silently moves.
+	var eye := intro.get("camera") as Camera2D
+	_ok(is_equal_approx(eye.zoom.x,
+			IntroScene.ZOOM * float(IntroScene.SHIPPED_SCALE) / float(IntroScene.SCALE)),
+		"...with the camera zoom corrected so the framing is unchanged (%.3f)" % eye.zoom.x)
+
+	# The procession is not single file. Acts at one altitude could only fill the
+	# screen by queueing nose to tail (owner: "I only see one whale going around
+	# in the title screen, then it goes away").
+	var lanes := {}
+	for act in (intro.get("_acts") as Array):
+		lanes[roundi(float((act as Dictionary)["base_y"]) / 100.0)] = true
+	_ok(lanes.size() >= 4,
+		"the cast is spread across altitudes, not single file (%d lanes)" % lanes.size())
+
 	# NOTHING PLAYER-FACING EXISTS HERE. This is the whole reason the intro
 	# became its own scene: the leaks it used to have are now unbuildable.
 	_ok(not intro.has_method("player_vitals"), "no health readout to leak")

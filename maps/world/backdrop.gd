@@ -31,6 +31,13 @@ extends Control
 
 var world: Node2D
 
+## Each layer's accumulated scroll in screen px, and the camera position the last
+## frame was drawn from. Integrated rather than derived, so a ZOOM CHANGE never
+## moves the backdrop on its own — see `layer_step`.
+var _scroll: Array[Vector2] = [Vector2.ZERO, Vector2.ZERO, Vector2.ZERO]
+var _last_cam := Vector2.ZERO
+var _primed := false
+
 ## Parallax factor per depth layer, far to near. A factor is how much of the
 ## WORLD'S APPARENT motion the layer rides — see `layer_scroll`: the camera's
 ## motion is multiplied by the live zoom before the factor is applied, so a
@@ -156,16 +163,25 @@ static func band_palette(a: float) -> Array:
 	return out
 
 
-## How far one depth layer has scrolled, in screen px, for a camera at `cam`
-## under a live `zoom`, dialled by `strength` (F2 `backdrop_parallax`).
+## How far one depth layer scrolls, in screen px, for a camera that MOVED by
+## `cam_step` under a live `zoom`, dialled by `strength` (F2 `backdrop_parallax`).
 ##
 ## The zoom is the whole point of this function existing. The world's own
-## apparent motion on screen is `cam * zoom`; riding a FRACTION of that makes
-## `factor` mean the same thing at every zoom, so pulling back at the helm no
-## longer drags the backdrop forward. Pure, so the suite can pin the ratio.
-static func layer_scroll(cam: Vector2, factor: float, zoom: float,
+## apparent motion on screen is `cam_step * zoom`; riding a FRACTION of that
+## makes `factor` mean the same thing at every zoom, so pulling back at the helm
+## no longer drags the backdrop forward. Pure, so the suite can pin the ratio.
+##
+## IT TAKES A STEP, NOT A POSITION, and that distinction is the owner's report
+## (2026-08-30: *"zooming in/out should NOT affect parallax"*). The first version
+## multiplied the camera's ABSOLUTE position by the zoom, which made the RATE
+## zoom-invariant but not the OFFSET: change zoom without moving at all and
+## `cam * factor * Δzoom` teleports the whole backdrop sideways — at a world
+## y of −212,000 and factor 0.02, boarding a ship (zoom 0.9 → 0.69) lurched it
+## nearly a thousand pixels. Integrating the step instead means zoom only ever
+## affects how fast the scenery moves WHILE you move, which is what parallax is.
+static func layer_step(cam_step: Vector2, factor: float, zoom: float,
 		strength: float) -> Vector2:
-	return cam * (factor * maxf(zoom, 0.01) * maxf(strength, 0.0))
+	return cam_step * (factor * maxf(zoom, 0.01) * maxf(strength, 0.0))
 
 
 ## The alpha of one silhouette: `depth_t` is 0 at the farthest layer and 1 at
@@ -201,6 +217,17 @@ func _draw() -> void:
 	if view.x <= 0.0 or view.y <= 0.0 or map_px <= 0.0:
 		return
 
+	# Integrate the camera's motion into each layer's own scroll. Absolute
+	# position times zoom would jump the backdrop on every zoom change (see
+	# `layer_step`); a step cannot.
+	if not _primed:
+		_primed = true
+		_last_cam = cam
+	var cam_step := cam - _last_cam
+	_last_cam = cam
+	for li in LAYERS.size():
+		_scroll[li] += layer_step(cam_step, float(LAYERS[li]), zoom, strength)
+
 	var pal := band_palette(alt)
 	# The sky gradient: two stops, band-coloured. Cheap (a handful of strips)
 	# and it carries most of the "you are somewhere" feeling on its own.
@@ -221,7 +248,7 @@ func _draw() -> void:
 		var ink := (pal[1] as Color).lerp(pal[2] as Color, 0.15 + 0.45 * depth_t)
 		# The layer's scroll: a fraction of the world's APPARENT motion, wrapped
 		# on the lattice so only on-screen cells are ever generated.
-		var scroll := layer_scroll(cam, factor, zoom, strength)
+		var scroll: Vector2 = _scroll[li]
 		var first := Vector2i(floori(scroll.x / lattice) - 1, floori(scroll.y / lattice) - 1)
 		var last := Vector2i(floori((scroll.x + view.x) / lattice) + 1,
 			floori((scroll.y + view.y) / lattice) + 1)
