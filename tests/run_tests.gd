@@ -1669,8 +1669,8 @@ func _test_backdrop_is_calm() -> void:
 	var at_helm := 0.9 / 1.3  # ...divided by pilot_zoom_out
 	for li in Backdrop.LAYERS.size():
 		var f := float(Backdrop.LAYERS[li])
-		var share_foot := Backdrop.layer_scroll(step, f, on_foot, 1.0).x 			/ (step.x * on_foot)
-		var share_helm := Backdrop.layer_scroll(step, f, at_helm, 1.0).x 			/ (step.x * at_helm)
+		var share_foot := Backdrop.layer_step(step, f, on_foot, 1.0).x 			/ (step.x * on_foot)
+		var share_helm := Backdrop.layer_step(step, f, at_helm, 1.0).x 			/ (step.x * at_helm)
 		_check(absf(share_foot - f) < 0.0001 and absf(share_helm - f) < 0.0001,
 			"layer %d rides %.0f%% of the world's apparent speed at BOTH zooms"
 				% [li, f * 100.0])
@@ -1681,10 +1681,10 @@ func _test_backdrop_is_calm() -> void:
 		_check(float(Backdrop.LAYERS[li]) > float(Backdrop.LAYERS[li - 1]),
 			"layer %d is nearer than layer %d" % [li, li - 1])
 	# The F2 dial reaches both ends: 0 pins the scenery still, >1 walks it back.
-	_check(Backdrop.layer_scroll(step, near, on_foot, 0.0) == Vector2.ZERO,
+	_check(Backdrop.layer_step(step, near, on_foot, 0.0) == Vector2.ZERO,
 		"backdrop_parallax 0 stops the scenery dead")
-	_check(Backdrop.layer_scroll(step, near, on_foot, 2.0).x
-		> Backdrop.layer_scroll(step, near, on_foot, 1.0).x,
+	_check(Backdrop.layer_step(step, near, on_foot, 2.0).x
+		> Backdrop.layer_step(step, near, on_foot, 1.0).x,
 		"...and turning the dial up moves it more")
 
 	# --- Brightness: a haze, not cut paper ----------------------------------

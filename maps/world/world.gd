@@ -152,6 +152,9 @@ const DIVE_CORRIDOR_WIDTHS := 4.0
 ## Clear air between two pickets of a surge, px at scale 1 - on TOP of both their
 ## hulls, which is the part a flat spacing left out.
 const DIVE_PICKET_AIR := 700.0
+## How hard taking a helm shoves the hull out of its berth, px/s DOWNWARD at
+## scale 1. See `_dive_thaw`.
+const DIVE_CAST_OFF := 260.0
 ## How hard the corridor pushes back, px/s² at scale 1 per shelf-width of
 ## trespass. Firm enough to turn you, gentle enough that it reads as weather.
 const DIVE_CORRIDOR_PUSH := 260.0
@@ -895,7 +898,7 @@ func edge_marker_targets() -> Array:
 ## map-grid cell size (the owner's "changes based on CELL in the map's grid"),
 ## and the LIVE zoom — the backdrop rides a fraction of the world's APPARENT
 ## motion, so pulling back at the helm must not drag the scenery forward
-## (Backdrop.layer_scroll; the 2026-08-29 calm-down).
+## (Backdrop.layer_step; the 2026-08-29 calm-down).
 func backdrop_status() -> Variant:
 	if _world_rect.size.y <= 0.0 or camera == null or not is_instance_valid(camera):
 		return null
@@ -1442,12 +1445,22 @@ func _park_candidate(ship: Ship, at: Vector2) -> void:
 func _dive_thaw(ship: Ship) -> void:
 	if ship == null or not is_instance_valid(ship) or ship.is_nest:
 		return
-	# At rest, not launched. A hull that has been held for a minute must not
-	# inherit anything from being held. The hatch above it is a one-way platform
-	# strip on collision layer 3 and a ship masks layer 1 only, so lift floats
-	# the hull straight up through its own berth without ever touching it.
-	ship.linear_velocity = Vector2.ZERO
+	# SHE CASTS OFF DOWNWARD (owner 2026-08-30: "getting on the dive ship jumps
+	# the ship UP through the platform, then you start falling like a rock").
+	#
+	# That was the shipped behaviour working as built and reading as a bug. A
+	# thawed hull is buoyant — the starter's lift ratio is 1.07 — so releasing it
+	# at rest under its hatch made it CLIMB, up through the platform it was
+	# moored beneath and out over the deck, before the pilot got a say. Taking a
+	# helm in a dive is casting off INTO the dive: the hull leaves its berth
+	# going down, the deck is behind you in a second, and the first thing the
+	# mode does is the thing the mode is about.
+	#
+	# `DIVE_CAST_OFF` is a shove, not a plummet — about half a free dive, and
+	# lift bleeds it off in a few seconds, so a pilot who does nothing ends up
+	# hovering below the deck rather than pinned to its underside.
 	ship.angular_velocity = 0.0
+	ship.linear_velocity = Vector2(0.0, DIVE_CAST_OFF * float(world_scale))
 	ship.freeze = false
 
 
