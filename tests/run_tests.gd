@@ -56,6 +56,7 @@ func _initialize() -> void:
 	_test_fall_damage()
 	_test_backdrop_is_calm()
 	_test_dive_run()
+	_test_dive_cards()
 	_test_creature_log()
 	await _test_sealed_pockets_cut_a_holed_body()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
@@ -1935,6 +1936,93 @@ func _test_creature_log() -> void:
 	var one_text := CreatureLog.bestiary_text({"whale": true})
 	_check(one_text.contains("Met 1 of") and one_text.contains("Blue Whale"),
 		"a met creature shows its name and bumps the count")
+
+
+## THE DIVE'S CARDS (Q-L) — the pure model: the catalog's declarative parity, the
+## draft draw, and DiveRun's XP bar / draft / modifier / proc plumbing. No world,
+## no nodes.
+func _test_dive_cards() -> void:
+	_t("THE DIVE CARDS: catalog parity, the draft, XP, modifiers and procs")
+
+	# --- The catalog is declarative and stays inside the closed vocabulary ----
+	_check(DiveCards.CATALOG.size() > 0, "the deck is non-empty (%d cards)" % DiveCards.CATALOG.size())
+	var ids := {}
+	var ok := true
+	for c in DiveCards.CATALOG:
+		var cd := c as Dictionary
+		var id := String(cd.get("id", ""))
+		if id == "" or ids.has(id) or String(cd.get("name", "")) == "":
+			ok = false
+		ids[id] = true
+		for key in (cd.get("mods", {}) as Dictionary):
+			if not DiveCards.DIALS.has(String(key)):
+				ok = false   # a card modifies a dial the world does not wire
+		for p in (cd.get("procs", []) as Array):
+			var pd := p as Dictionary
+			if not DiveCards.EVENTS.has(String(pd.get("on", ""))) \
+					or not DiveCards.EFFECTS.has(String(pd.get("effect", ""))):
+				ok = false   # a proc on an event/effect the world cannot apply
+	_check(ok, "every card has a unique id/name and stays in the DIAL/EVENT/EFFECT vocabulary")
+
+	# --- The draft draws distinct, unheld, and drains cleanly -----------------
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 12345
+	var three := DiveCards.draw_choices(rng, [], 3)
+	_check(three.size() == 3 and three[0] != three[1] and three[1] != three[2] and three[0] != three[2],
+		"a draft draws three DISTINCT cards")
+	var all_ids: Array = ids.keys()
+	_check(DiveCards.draw_choices(rng, all_ids, 3).is_empty(),
+		"with everything held, the draft is empty (no phantom offer)")
+	var held_one := [String(DiveCards.CATALOG[0]["id"])]
+	_check(not DiveCards.draw_choices(rng, held_one, 3).has(held_one[0]),
+		"a draft never offers a card you already hold")
+
+	# --- Modifiers multiply; procs filter by event ----------------------------
+	_check(is_equal_approx(DiveCards.modifier(["honed_edge"], "weapon_damage"), 1.35),
+		"Honed Edge multiplies weapon_damage 1.35")
+	_check(is_equal_approx(DiveCards.modifier([], "weapon_damage"), 1.0),
+		"no cards means a 1.0 modifier (ordinary play is untouched)")
+	_check(is_equal_approx(DiveCards.modifier(["quick_hands"], "fire_rate"), 0.80),
+		"Quick Hands shortens fire_rate below 1.0")
+	_check(DiveCards.procs_for(["bounty_hunter"], "kill").size() == 1
+			and DiveCards.procs_for(["bounty_hunter"], "hit").is_empty(),
+		"Bounty Hunter procs on kill, not on hit")
+
+	# --- DiveRun: XP earns drafts, take consumes them, cards drive queries -----
+	var run := DiveRun.new()
+	_check(run.pending == 0 and run.draft.is_empty() and run.cards.is_empty(),
+		"a fresh run holds no cards and owes no draft")
+	# One kraken at depth 1 is worth exactly one XP bar (60), so it earns a draft.
+	_check(DiveRun.coins_for("kraken", 1) == DiveRun.xp_for_level(0),
+		"a first-bar kill is tuned to fill exactly one XP bar")
+	run.credit_kill("kraken")
+	_check(run.pending == 1 and run.xp_level == 1, "a kill that fills the bar owes a draft")
+	var offer := run.offer(rng)
+	_check(offer.size() == 3 and run.draft_pending(), "the owed draft offers three")
+	_check(not run.take("not_on_offer"), "you cannot take a card that is not on offer")
+	var chosen := String(offer[1])
+	_check(run.take(chosen), "taking an offered card succeeds")
+	_check(run.cards.has(chosen) and run.pending == 0 and run.draft.is_empty(),
+		"the card is held, the debt is paid, the offer clears")
+
+	# The held card's effect reaches the run's modifier/proc queries.
+	run.cards = ["honed_edge", "bounty_hunter"]
+	_check(is_equal_approx(run.modifier("weapon_damage"), 1.35), "run.modifier reads the held deck")
+	_check(run.procs_for("kill").size() == 1, "run.procs_for reads the held deck")
+
+	# add_draft owes a non-XP draft (the opening hand / an outpost grant).
+	var r2 := DiveRun.new()
+	r2.add_draft()
+	_check(r2.draft_pending(), "add_draft owes a draft the way the opening hand does")
+	r2.cards = all_ids.duplicate()   # everything held
+	r2.draft = []
+	r2.offer(rng)
+	_check(not r2.draft_pending(), "an offer with nothing left to give drains the debt, never strands it")
+
+	# The ledger carries the card state for the HUD.
+	var led := run.ledger()
+	_check(led.has("cards") and led.has("xp") and led.has("draft") and led.has("xp_need"),
+		"the ledger carries cards / xp / draft for the HUD")
 
 
 func _test_dive_run() -> void:

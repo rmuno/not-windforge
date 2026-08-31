@@ -54,6 +54,10 @@ func _draw() -> void:
 		_draw_ledger(d)
 		return
 	_draw_gauge(d)
+	# THE CARD DRAFT (Q-L): when a choice is on offer, a picker over everything —
+	# it is the one moment the run asks you to stop and choose.
+	if not (d.get("draft", []) as Array).is_empty():
+		_draw_draft(d)
 
 
 ## The depth gauge: the ladder as eight rungs down the right edge, the current
@@ -108,6 +112,52 @@ func _draw_gauge(d: Dictionary) -> void:
 		draw_string(font, Vector2(x - 52.0 * s, y + fs * 1.4),
 			"they come: %.0f" % maxf(into, 0.0),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _ALARM)
+
+	# THE CARD XP BAR + held count (Q-L), tucked under the coin/clock stack. The
+	# bar fills toward the next draft; the count says how strong this run has got.
+	var by := y + fs * 2.8
+	var bw := 62.0 * s
+	var bx := x - 52.0 * s
+	var need := maxf(float(d.get("xp_need", 1)), 1.0)
+	var frac := clampf(float(d.get("xp", 0)) / need, 0.0, 1.0)
+	draw_rect(Rect2(Vector2(bx, by), Vector2(bw, 4.0 * s)), Color(0.18, 0.22, 0.28))
+	draw_rect(Rect2(Vector2(bx, by), Vector2(bw * frac, 4.0 * s)), Color(0.55, 0.78, 0.95))
+	var held := (d.get("cards", []) as Array).size()
+	draw_string(font, Vector2(bx, by + fs * 1.3),
+		"cards %d" % held, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _DIM)
+
+
+## THE DRAFT PICKER — a choice of up to three cards, centred low so it does not
+## cover the sky you are flying. Pick with 1 / 2 / 3 (world._try_pick_card).
+func _draw_draft(d: Dictionary) -> void:
+	var font := ThemeDB.fallback_font
+	var s := _scale()
+	var fs := 13 * s
+	var hs := 15 * s
+	var view := size
+	var cards := d.get("draft", []) as Array
+	var cw := 210.0 * s
+	var gap := 12.0 * s
+	var total := float(cards.size()) * cw + float(maxi(0, cards.size() - 1)) * gap
+	var x0 := view.x * 0.5 - total * 0.5
+	var top := view.y * 0.66
+	var ch := 84.0 * s
+	# A dim banner so the choice reads as a deliberate pause.
+	draw_string(font, Vector2(view.x * 0.5 - 90.0 * s, top - 14.0 * s),
+		"CHOOSE A CARD", HORIZONTAL_ALIGNMENT_LEFT, -1, hs, _INK)
+	for i in cards.size():
+		var card := cards[i] as Dictionary
+		var cx := x0 + float(i) * (cw + gap)
+		var box := Rect2(Vector2(cx, top), Vector2(cw, ch))
+		draw_rect(box, Color(0.05, 0.07, 0.11, 0.92))
+		draw_rect(box, Color(_DIM, 0.7), false, 1.0 * s)
+		draw_string(font, Vector2(cx + 10.0 * s, top + fs * 1.4),
+			"[%d]  %s" % [i + 1, String(card.get("name", ""))],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, hs, _COIN)
+		# The description wraps inside the card width.
+		draw_multiline_string(font, Vector2(cx + 10.0 * s, top + fs * 3.0),
+			String(card.get("desc", "")), HORIZONTAL_ALIGNMENT_LEFT,
+			cw - 20.0 * s, fs, -1, _INK)
 
 
 ## THE LEDGER — the run-over screen. A centred plate over whatever the world is

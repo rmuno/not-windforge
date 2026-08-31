@@ -1008,9 +1008,18 @@ func begin_dive() -> void:
 	_dive_shelf = Vector2.ZERO
 	_dive_deck_cells = {}
 	_dive_berth_taken = {}
+	# The card draft's RNG — seeded off the run's own seed so a given run offers a
+	# fixed sequence of hands (like the ladder), and distinct from the ladder seed.
+	_dive_rng = RandomNumberGenerator.new()
+	_dive_rng.seed = hash([dive.seed_v, "cards"])
+	# THE OPENING HAND (owner 2026-08-31: "draft-of-3 at start, to start"). Owed
+	# immediately, so the first thing a run offers on the launch deck is a choice
+	# of three — the build starts before the descent does.
+	dive.add_draft()
 	_build_launch_deck()
 	_notify("THE LAUNCH DECK. Take a ship, or step off the edge with nothing. "
 		+ "Down is richer and worse; climb back to this air to bank what you carry.")
+	_notify("Choose your opening card — press 1, 2 or 3.")
 
 
 ## Abandon the run without a verdict (a reset, a load, a mode exit). The ledger
@@ -1906,6 +1915,9 @@ func _tick_dive(delta: float) -> void:
 	_dive_pursue(delta)
 	_dive_cull_the_wake(delta)
 	_hold_the_corridor(delta)
+	# Keep the card draft's offer filled while one is owed, so the HUD always has
+	# three to paint and the number keys have something to pick.
+	dive.offer(_dive_rng)
 	for ev in dive.advance(delta, _player_altitude_frac(),
 			Tunables.get_num("dive_surge_period")):
 		match String(ev):
@@ -1915,6 +1927,14 @@ func _tick_dive(delta: float) -> void:
 				_cut_landing(dive.depth)
 				_cut_landing(dive.depth + 1)
 				_notify("%s. The air is worse down here." % DiveRun.depth_label(dive.depth))
+				# CARDS ON LANDING (Q-L): reaching a new depth fires any "land"
+				# procs (Second Wind and the like), and an OUTPOST's quartermaster
+				# hands you a card — the owner's "npcs can sometimes grant cards",
+				# wired to the shops that already exist.
+				_dive_apply_procs("land")
+				if DiveRun.is_outpost(dive.seed_v, dive.depth):
+					dive.add_draft()
+					_notify("The quartermaster offers you a card — press 1, 2 or 3.")
 				# EVERY RUNG IS GARRISONED (owner 2026-08-30: "does it sound
 				# alright to simply jump down, get a few things, and die having
 				# FULLY IGNORED the entire 8 levels?"). It did not, and a purely
@@ -2067,6 +2087,109 @@ func _dive_credit_kill(kind: String) -> void:
 	if coins > 0 and _pickups != null and player != null and is_instance_valid(player):
 		_pickups.add(player.global_position + Vector2(0.0, -120.0 * world_scale),
 			"+%d coins" % coins, float(world_scale))
+	# CARD PROCS ON A KILL (Q-L): Bounty Hunter and the like. Fired after the coin
+	# credit so a kill-proc's coins land on top of the base drop.
+	_dive_apply_procs("kill")
+
+
+# --- The card draft (owner arc Q-L, 2026-08-31) -----------------------------
+#
+# The run MODEL (DiveRun/DiveCards) holds the deck, the XP bar and which cards do
+# what; the world is the INTERPRETER — it reads `dive.modifier(key)` at the dials
+# that already exist (see _dive_mod's call sites) and `dive.procs_for(event)` at
+# the events that already fire (kill / hit / land), and applies the small closed
+# set of effects. Nothing here invents a mechanic; it wires cards onto the combat
+# and progression the mode already had, which is the cohesion the owner asked for.
+
+## The card draft's RNG (seeded off the run seed in begin_dive).
+var _dive_rng: RandomNumberGenerator = null
+
+
+## The held cards' multiplier on dial `key`, or 1.0 outside a live run — the one
+## call every carded dial makes, so adding a dial is one `* _dive_mod("x")`.
+func _dive_mod(key: String) -> float:
+	return dive.modifier(key) if dive != null and dive.outcome == "" else 1.0
+
+
+## Apply every held card's proc for `event`. `damage` carries the hit size for
+## lifesteal; it is 0 for kill/land events, where lifesteal is simply inert.
+func _dive_apply_procs(event: String, damage := 0.0) -> void:
+	if dive == null or dive.outcome != "":
+		return
+	for p in dive.procs_for(event):
+		var pd := p as Dictionary
+		match String(pd.get("effect", "")):
+			"coins":
+				var add := int(round(float(pd.get("amount", 0.0))))
+				if add != 0:
+					dive.pot = maxi(0, dive.pot + add)
+			"heal":
+				_dive_heal_player(float(pd.get("amount", 0.0)))
+			"lifesteal":
+				_dive_heal_player(damage * float(pd.get("amount", 0.0)))
+
+
+## A card's "hit" procs, fired by a player/ship shell landing on an enemy (Shot
+## forwards this with the damage it dealt). Vampiric Rounds lives here.
+func _dive_on_hit(_target: Object, damage: float) -> void:
+	_dive_apply_procs("hit", damage)
+
+
+## Heal the player up to their pool — the sink for heal/lifesteal procs.
+func _dive_heal_player(hp: float) -> void:
+	if hp <= 0.0 or player == null or not is_instance_valid(player):
+		return
+	player.health = minf(player.max_health, player.health + hp)
+
+
+## Take the `index`-th (1-based) card from the current draft offer. The world's
+## number-key handler and the F2 buttons both route here. Returns true if a card
+## was taken.
+func take_dive_card(index: int) -> bool:
+	if dive == null or dive.outcome != "" or _dive_rng == null:
+		return false
+	dive.offer(_dive_rng)
+	var d: Array = dive.draft
+	if index < 1 or index > d.size():
+		return false
+	var id := String(d[index - 1])
+	if dive.take(id):
+		_notify("Card: %s — %s" % [DiveCards.name_of(id), DiveCards.desc_of(id)])
+		return true
+	return false
+
+
+## Is a card draft waiting to be picked right now? (Gates the number-key handler.)
+func dive_draft_open() -> bool:
+	return dive != null and dive.outcome == "" and not dive.draft.is_empty()
+
+
+## The number-row 1–3, while a draft is up and the shop panel is CLOSED, picks a
+## card instead of buying a stat. Returns whether it consumed the key — the shop
+## wins when its panel is open, so an outpost's buy menu is never hijacked.
+func _try_pick_card(index: int) -> bool:
+	if not dive_draft_open():
+		return false
+	if _character_sheet != null and _character_sheet.visible:
+		return false
+	return take_dive_card(index)
+
+
+## Debug (F2): owe another draft, or pour in XP to trigger one — playtest the deck
+## without grinding kills. No-ops outside a live run.
+func debug_grant_card_draft() -> void:
+	if dive == null or dive.outcome != "":
+		return
+	dive.add_draft()
+	dive.offer(_dive_rng)
+	_notify("A card draft is waiting — press 1, 2 or 3.")
+
+
+func debug_grant_dive_xp(amount: int) -> void:
+	if dive == null or dive.outcome != "":
+		return
+	dive._gain_xp(amount)
+	dive.offer(_dive_rng)
 
 
 ## Is a run over and showing its ledger? The fall-out-of-the-world respawn is
@@ -3388,16 +3511,21 @@ func _handle_shooting(delta: float) -> void:
 	# floor's carry is positional, see player.gd), so the platform term has
 	# to be added back in — otherwise a pellet fired while riding a fast
 	# deck is left behind by the ship and thumps into its own hull.
+	# Dive card: Honed Edge multiplies the pellet's damage (_dive_mod is 1.0 outside
+	# a run, so ordinary play is byte-identical).
 	_spawn_shot(player.global_position, aim,
-		900.0 * player._scale_mult, Tunables.get_num("sidearm_damage"), 0, player._scale_mult,
+		900.0 * player._scale_mult,
+		Tunables.get_num("sidearm_damage") * _dive_mod("weapon_damage"),
+		0, player._scale_mult,
 		player.SIZE.x * 0.9, SIDEARM_MASS,
 		player.velocity + player.get_platform_velocity(), player)
 	# Fire-rate is a real, upgradable property: the GRACE quickness perk
 	# (player.fire_rate_mult) AND the F2 fire_rate_mult lever both shorten the
 	# interval between sidearm shots. A perked/levered player fires measurably
-	# faster than base (Player.sidearm_interval; proven by test).
+	# faster than base (Player.sidearm_interval; proven by test). Dive card Quick
+	# Hands shortens it further (its mult is < 1).
 	_shoot_cooldown = player.sidearm_interval(
-		SHOOT_COOLDOWN, Tunables.get_num("fire_rate_mult"))
+		SHOOT_COOLDOWN, Tunables.get_num("fire_rate_mult")) * _dive_mod("fire_rate")
 
 
 ## Slug masses (block-mass units): the sidearm spits pellets, turrets
@@ -3475,6 +3603,12 @@ func _spawn_shot(from: Vector2, toward: Vector2, speed: float, dmg: float,
 	# the nearest player-side ship). Null for unattributed sources.
 	if shooter != null and is_instance_valid(shooter):
 		s.shooter_id = shooter.get_instance_id()
+	# Dive card onHit forwarding: only a shell fired by the player or their ship
+	# during a live run carries the world back, so hit-procs fire on enemy hits.
+	# Enemy and neutral fire never gets it — the deck is yours alone.
+	if dive != null and dive.outcome == "" \
+			and (shooter == player or (shooter != null and shooter == local_ship)):
+		s.dive_world = self
 	# No per-shooter lifetime multiplier any more: `Shot.life` is 30 s for
 	# everyone (owner 2026-08-21). The enemy's old ×10 existed only to give
 	# bandits reach past their doubled eyesight; the shared 30 s covers that
@@ -3494,6 +3628,9 @@ func _spawn_shot(from: Vector2, toward: Vector2, speed: float, dmg: float,
 ## own infrastructure.
 func _fire_turrets(ship: Ship, aim: Vector2, speed_mult := 1.0) -> bool:
 	var fired := false
+	# Dive card Heavy Shells buffs YOUR ship's guns only — gated on local_ship so an
+	# enemy's turrets are never boosted by your deck. 1.0 outside a run.
+	var dmg_mult := _dive_mod("turret_damage") if ship == local_ship else 1.0
 	for cluster in ship._glyph_clusters:
 		if cluster["key"] != "T":
 			continue
@@ -3507,7 +3644,7 @@ func _fire_turrets(ship: Ship, aim: Vector2, speed_mult := 1.0) -> bool:
 		# The gun rides the ship: rotation is locked upright, so every point
 		# on the hull shares `linear_velocity` exactly — no ω×r term to add.
 		_spawn_shot(muzzle, aim, 700.0 * ship.scale_unit * speed_mult,
-			Tunables.get_num("turret_damage"),
+			Tunables.get_num("turret_damage") * dmg_mult,
 			ship.faction, ship.scale_unit, 0.0, SHELL_MASS,
 			ship.linear_velocity, ship)
 		fired = true
@@ -4737,7 +4874,11 @@ func _update_menders(delta: float) -> void:
 	_mender_clock = 0.0
 	for ship in fleet.ships():
 		if is_instance_valid(ship) and ship.menders_running:
-			ship.tick_menders(dt)
+			# Dive card Field Medic speeds YOUR ship's mending: tick_menders heals in
+			# proportion to its dt, so scaling dt scales the rate. Local ship only,
+			# 1.0 outside a run — ordinary mending is unchanged.
+			var mult := _dive_mod("hull_repair") if ship == local_ship else 1.0
+			ship.tick_menders(dt * mult)
 
 
 func _update_fires(delta: float) -> void:
@@ -6792,12 +6933,18 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		# panel) is open. 1–4 buy a level of a stat; 0 sells all salvage. Raw
 		# keys like H/J/F1/Tab, so no project.godot binding and no clash with the
 		# game's action map (nothing binds the number row).
+		# 1–3 also PICK a Dive card while a draft is up and the shop panel is closed
+		# (the picker and the shop share the number row; the shop wins when open, so
+		# an outpost's buy menu is never hijacked). 4/0 stay shop-only.
 		KEY_1:
-			_train_from_sheet(0)
+			if not _try_pick_card(1):
+				_train_from_sheet(0)
 		KEY_2:
-			_train_from_sheet(1)
+			if not _try_pick_card(2):
+				_train_from_sheet(1)
 		KEY_3:
-			_train_from_sheet(2)
+			if not _try_pick_card(3):
+				_train_from_sheet(2)
 		KEY_4:
 			_train_from_sheet(3)
 		KEY_0:

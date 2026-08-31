@@ -119,6 +119,35 @@ var _grace := ARRIVAL_GRACE   ## seconds until this depth's den comes for you
 var _seen := {1: true}        ## depths already arrived at (the surge arms once)
 var _leviathan_called := false
 
+# --- Cards (owner arc Q-L, 2026-08-31) --------------------------------------
+#
+# A run-scoped upgrade draft (DiveCards). Kills grant XP; a full bar owes a DRAFT;
+# a draft is a choice of three, and the picks make THIS run stronger. Drafts also
+# come at run-start (the opening hand) and from an outpost quartermaster on arrival
+# (the owner's "npcs can sometimes grant cards"). Held cards apply passive
+# multipliers to dials and PROCS to events — the world reads `modifier`/`procs_for`
+# and acts; this model just holds the deck and the bar.
+
+## Card ids the player is holding this run.
+var cards: Array = []
+## XP toward the next draft, and how many drafts have been earned (the bar's level).
+var xp := 0
+var xp_level := 0
+## Drafts OWED but not yet taken. The world offers a choice-of-three while > 0.
+var pending := 0
+## The three ids currently on offer ([] when no draft is being shown). The world
+## fills this via `offer` and consumes it via `take`.
+var draft: Array = []
+
+## XP for the NEXT draft grows with each one taken, so early cards come fast (the
+## run gets a build quickly) and later ones are earned. XP is the COINS a kill is
+## worth, so a deeper kill advances the bar faster — the same "down is richer"
+## curve the pot already rides.
+const XP_BASE := 60
+const XP_STEP := 40
+static func xp_for_level(level: int) -> int:
+	return XP_BASE + XP_STEP * maxi(0, level)
+
 
 func _init() -> void:
 	seed_v = randi()
@@ -529,14 +558,84 @@ func advance(delta: float, a: float, surge_period: float) -> Array:
 
 
 ## Credit a kill of `kind` at the current depth. Returns the coins added, so the
-## world can float the number over the corpse.
+## world can float the number over the corpse. The kill also feeds the CARD XP bar
+## (a kill's coin value is its XP), and every bar filled owes a draft.
 func credit_kill(kind: String) -> int:
 	if outcome != "":
 		return 0
 	var coins := coins_for(kind, depth)
 	pot += coins
 	kills += 1
+	_gain_xp(coins)
 	return coins
+
+
+## Add `amount` XP and owe a draft for each bar it fills. A single fat kill can
+## fill more than one bar, so this loops.
+func _gain_xp(amount: int) -> void:
+	if amount <= 0:
+		return
+	xp += amount
+	while xp >= xp_for_level(xp_level):
+		xp -= xp_for_level(xp_level)
+		xp_level += 1
+		pending += 1
+
+
+## Owe the player a draft that did not come from XP — the opening hand at run
+## start, or an outpost quartermaster on arrival (the owner's NPC grant).
+func add_draft(n := 1) -> void:
+	pending = maxi(0, pending + n)
+
+
+## Is a draft waiting to be taken? (A draft may still resolve to an empty offer if
+## every card is already held — `offer` handles that by draining the debt.)
+func draft_pending() -> bool:
+	return pending > 0
+
+
+## Fill the current offer if a draft is owed and none is showing. Returns the ids
+## on offer (possibly fewer than three near the end of the deck; empty if every
+## card is held — in which case the debt is simply drained, no picker). `rng` is
+## the world's, so a fixed seed offers a fixed hand.
+func offer(rng: RandomNumberGenerator) -> Array:
+	if pending <= 0:
+		draft = []
+		return draft
+	if draft.is_empty():
+		draft = DiveCards.draw_choices(rng, cards, 3)
+		if draft.is_empty():
+			# Nothing left to offer — do not strand a pending draft forever.
+			pending = 0
+	return draft
+
+
+## Take card `id` from the current offer: it must be one of the three showing.
+## Consumes one owed draft and clears the offer (the next pending draft, if any,
+## refills on the next `offer`). Returns false if the id is not on offer.
+func take(id: String) -> bool:
+	if not draft.has(id):
+		return false
+	cards.append(id)
+	draft = []
+	pending = maxi(0, pending - 1)
+	return true
+
+
+## Grant a card outright (a debug reveal, or a fixed reward) — bypasses the draft.
+func grant_card(id: String) -> void:
+	if DiveCards.is_known(id) and not cards.has(id):
+		cards.append(id)
+
+
+## The combined multiplier the held cards apply to dial `key` (1.0 when none do).
+func modifier(key: String) -> float:
+	return DiveCards.modifier(cards, key)
+
+
+## The proc effects the held cards fire on `event`, as [{effect, amount}, ...].
+func procs_for(event: String) -> Array:
+	return DiveCards.procs_for(cards, event)
 
 
 ## A death with a deck to wake up on. Burns part of the pot; the DEATH_LIMIT-th
@@ -599,7 +698,32 @@ func ledger() -> Dictionary:
 		"surges": surges,
 		"elapsed": elapsed,
 		"surge_in": surge_in(),
+		# Cards (Q-L): held names, the XP bar, and the current draft offer (each as
+		# {id, name, desc}) so the HUD paints without reaching into the catalog.
+		"cards": card_names(),
+		"xp": xp,
+		"xp_need": xp_for_level(xp_level),
+		"card_level": xp_level,
+		"draft": draft_view(),
 	}
+
+
+## The held cards' display names, in the order taken.
+func card_names() -> Array:
+	var out: Array = []
+	for id in cards:
+		out.append(DiveCards.name_of(String(id)))
+	return out
+
+
+## The current draft offer as painter-ready rows: [{id, name, desc}, ...], empty
+## when nothing is on offer.
+func draft_view() -> Array:
+	var out: Array = []
+	for id in draft:
+		out.append({"id": id, "name": DiveCards.name_of(String(id)),
+			"desc": DiveCards.desc_of(String(id))})
+	return out
 
 
 ## The run-over headline — the owner's "you traversed X vertical distance", said
