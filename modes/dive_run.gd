@@ -227,6 +227,56 @@ const DESCENT_BLEED := 20.0
 const DRIFT_FRACTION := 0.34
 
 
+## HOW HARD THE CORRIDOR LEANS, px/s² at scale 1 per shelf-width of trespass, and
+## the cap on that ramp.
+##
+## These were 260 and an inline 4.0 in `world.gd`, which made the corridor push
+## at 260 × 8 × 4 = **8,320 px/s² against a hull whose own props manage about
+## 1,000** — forty times the pilot's authority. Measured, holding `ship_right`
+## inside a run carried the ship **19,865 px to the LEFT** in five seconds, which
+## the owner filed as *"my propeller thrust seems way nerfed, even sideways."* It
+## was not the props. It was this, and it had quietly turned the corridor into the
+## RAIL it was explicitly chosen instead of (DECISIONS, "the Dive is a CORRIDOR,
+## not a rail").
+##
+## They live here now so the suite can hold them against a hull's real authority —
+## `world.gd` cannot be named in a test without dragging its `Net` autoload into
+## the compile graph. `HULL_LATERAL_ACCEL` is the measured figure that makes the
+## comparison meaningful rather than a vibe.
+const CORRIDOR_PUSH := 16.0
+const CORRIDOR_MAX_WIDTHS := 4.0
+## What a shipped hull's own props actually deliver sideways, px/s² at scale 1
+## (measured: ~1,000 px/s² at 8×). The corridor must stay a fraction of it.
+const HULL_LATERAL_ACCEL := 125.0
+
+
+## The corridor's push for a hull `over_widths` shelf-widths outside it.
+static func corridor_push(over_widths: float) -> float:
+	return CORRIDOR_PUSH * clampf(over_widths, 0.0, CORRIDOR_MAX_WIDTHS)
+
+
+## THE TOP OF THE LADDER IS THIN AIR (owner 2026-08-30: "now it's a little too
+## slow between layers 1 and 2, then 2 & 3?").
+##
+## One cap for the whole shaft made the shallow rungs a commute: they are the
+## emptiest part of a run — the garrison is smallest and there is nothing to dodge
+## — so the same speed that reads as tense at the floor reads as dead time at the
+## top. It also had no physical excuse, which is the tell. THIN AIR IS THE
+## EXCUSE, and it was already in the model: lift falls with air density, which is
+## why a hull sinks on a neutral stick up high in the first place. Thin air is
+## also less to push through.
+##
+## So the cap is `DESCENT_TOP_MULT` at depth 1 and 1.0 at the floor, straight
+## line between. The descent opens fast and thickens as you go — which is the
+## shape the mode wants anyway: the deep should feel like it is closing in.
+const DESCENT_TOP_MULT := 2.1
+static func descent_depth_mult(d: int) -> float:
+	if DEPTHS <= 1:
+		return 1.0
+	var t := float(clampi(d, 1, DEPTHS) - 1) / float(DEPTHS - 1)
+	return lerpf(DESCENT_TOP_MULT, 1.0, t)
+
+
 ## The cap that applies right now, in px/s, for a hull whose helm axis is `axis`
 ## (negative is DOWN — `Input.get_axis("ship_down", "ship_up")`).
 static func descent_cap(base: float, axis: float) -> float:

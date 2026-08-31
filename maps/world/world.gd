@@ -182,7 +182,24 @@ const DIVE_CAST_OFF := 70.0
 ## testable without pulling this file into a test's compile graph.
 ## How hard the corridor pushes back, px/s² at scale 1 per shelf-width of
 ## trespass. Firm enough to turn you, gentle enough that it reads as weather.
-const DIVE_CORRIDOR_PUSH := 260.0
+##
+## CUT 260 -> 16 (owner 2026-08-30: "my propeller thrust seems way nerfed, even
+## sideways"). It was not the props — it was this. At 260 the corridor pushed at
+## 260 × 8 × 4 = **8,320 px/s² against a hull whose own props manage about
+## 1,000**: forty times the pilot's authority. Measured, holding `ship_right`
+## inside a run carried the ship **19,865 px to the LEFT** over five seconds.
+## That is not weather leaning on you, it is a rail with the stick disconnected —
+## the exact thing the corridor was chosen INSTEAD of (DECISIONS, "the Dive is a
+## CORRIDOR, not a rail").
+##
+## 16 puts the ceiling at 512 px/s², about half what the props can do, so it
+## turns you if you drift and loses if you insist. `DIVE_CORRIDOR_MAX_WIDTHS`
+## caps the ramp so straying twice as far cannot make it unbeatable again.
+const DIVE_CORRIDOR_PUSH := 16.0
+## The trespass ramp is capped here, in shelf widths: past this the corridor does
+## not push any harder. A push that scales without limit is a wall wearing
+## weather's coat.
+const DIVE_CORRIDOR_MAX_WIDTHS := 4.0
 
 ## THE INTRO (TitleScreen): while the title page is up the camera drifts across
 ## the whale pod instead of following the body. `_title_anchor` is INF until the
@@ -1651,7 +1668,7 @@ func _dive_cull_the_wake(delta: float) -> void:
 func _dive_hold_the_descent(delta: float) -> void:
 	if dive == null or dive.outcome != "" or not is_instance_valid(local_ship):
 		return
-	var cap := Tunables.get_num("dive_descent_max") * float(world_scale)
+	var cap := Tunables.get_num("dive_descent_max") * float(world_scale) 		* DiveRun.descent_depth_mult(dive.depth)
 	if cap <= 0.0:
 		return
 	# Driving down is three times the drift. `thrust_input.y` is the helm axis:
@@ -1939,7 +1956,7 @@ func _hold_the_corridor(delta: float) -> void:
 		return
 	var widths := over / maxf(_dive_shelf_span().x, 1.0)
 	var push := -signf(local_ship.global_position.x - cx) \
-		* DIVE_CORRIDOR_PUSH * float(world_scale) * minf(widths, 4.0)
+		* DIVE_CORRIDOR_PUSH * float(world_scale) 		* minf(widths, DIVE_CORRIDOR_MAX_WIDTHS)
 	local_ship.apply_central_force(Vector2(push, 0.0) * local_ship.mass)
 	if player != null and is_instance_valid(player) and not player.is_piloting():
 		player.velocity.x += push * delta
