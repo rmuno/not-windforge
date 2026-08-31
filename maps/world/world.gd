@@ -169,7 +169,17 @@ const DIVE_CORRIDOR_WIDTHS := 4.0
 const DIVE_PICKET_AIR := 700.0
 ## How hard taking a helm shoves the hull out of its berth, px/s DOWNWARD at
 ## scale 1. See `_dive_thaw`.
-const DIVE_CAST_OFF := 260.0
+##
+## CUT 260 -> 70 (owner 2026-08-30: "it'd just be nice if it wasn't so FORCED to
+## descend so fast"). Measured, the old shove was not a nudge out of a berth, it
+## was the first push of a plunge: **2,099 px/s at the moment you took the helm
+## and 7,090 px/s one second later.** It only has to clear a deck three rows
+## thick; anything past that is the mode grabbing the stick.
+const DIVE_CAST_OFF := 70.0
+## Thick air: a run holds a committed hull to `dive_descent_max` (F2, px/s at
+## scale 1). The arithmetic — how hard the excess bleeds off, and what a NEUTRAL
+## stick costs — lives in `DiveRun` (DESCENT_BLEED / DRIFT_FRACTION), so it is
+## testable without pulling this file into a test's compile graph.
 ## How hard the corridor pushes back, px/s² at scale 1 per shelf-width of
 ## trespass. Firm enough to turn you, gentle enough that it reads as weather.
 const DIVE_CORRIDOR_PUSH := 260.0
@@ -1616,6 +1626,41 @@ func _dive_cull_the_wake(delta: float) -> void:
 	_dive_surged = kept
 
 
+## THE DEEP IS THICK (owner 2026-08-30: "it'd just be nice if it wasn't so FORCED
+## to descend so fast, then, on the ship during dive mode i guess. or it falls too
+## fast").
+##
+## They were right, and the numbers are worse than the complaint. Measured on the
+## shipped hull inside a run, holding the stick down in clear air:
+##
+##     t=1s  4,220 px/s     t=3s  6,499     t=5s  6,704 (terminal)
+##
+## A screen is about 4,200 px tall at the shipped zoom, so the hull was crossing
+## **more than one and a half screens every second** — nothing on it is legible,
+## nothing can be dodged, and the ladder's rungs go past as a flicker. Worse, with
+## the stick NEUTRAL it still sank at 2,389 px/s and rising: at altitude the air
+## is thin, lift is weak, and a hull that is buoyant at the surface simply falls.
+## That is the "FORCED" half of the report — you were not choosing to descend
+## that fast, the sky was choosing for you.
+##
+## So a run holds a hull to `dive_descent_max`. It is EASED, not clamped: the
+## excess over the cap bleeds off at `DiveRun.DESCENT_BLEED` per second, so pushing
+## down still accelerates you and the limit arrives as thick air rather than as a
+## wall. Only DOWNWARD and only inside a run — climbing is the extraction and the
+## other two modes keep their own physics, which is the standing owner ruling.
+func _dive_hold_the_descent(delta: float) -> void:
+	if dive == null or dive.outcome != "" or not is_instance_valid(local_ship):
+		return
+	var cap := Tunables.get_num("dive_descent_max") * float(world_scale)
+	if cap <= 0.0:
+		return
+	# Driving down is three times the drift. `thrust_input.y` is the helm axis:
+	# negative is DOWN (Input.get_axis("ship_down", "ship_up")).
+	cap = DiveRun.descent_cap(cap, local_ship.thrust_input.y)
+	local_ship.linear_velocity.y = DiveRun.bleed_descent(
+		local_ship.linear_velocity.y, cap, delta)
+
+
 ## SAY WHY THE SHIP WILL NOT GO DOWN. The ladder is a slalom of solid slabs, so
 ## holding the stick down from one column eventually rests you on a rung — which
 ## is the mode working, but it reads as *"stuck at depth 4 (no more falling)"*
@@ -1834,6 +1879,7 @@ func _tick_dive(delta: float) -> void:
 			and is_instance_valid(local_ship) \
 			and not local_ship.repair_cells.is_empty():
 		local_ship.menders_running = true
+	_dive_hold_the_descent(delta)
 	_dive_nudge_if_stuck(delta)
 	_dive_pursue(delta)
 	_dive_cull_the_wake(delta)

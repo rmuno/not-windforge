@@ -199,6 +199,55 @@ static func landing_offset(sv: int, d: int) -> float:
 	return x
 
 
+## HOW FAST A RUN LETS A HULL FALL (owner 2026-08-30: "it'd just be nice if it
+## wasn't so FORCED to descend so fast, then, on the ship during dive mode i
+## guess. or it falls too fast").
+##
+## Measured on the shipped hull, holding the stick down in clear air: 4,220 px/s
+## after one second, terminal 6,704. A screen is about 4,200 px tall at the
+## shipped zoom, so the hull crossed **more than a screen and a half every
+## second** — nothing legible, nothing dodgeable, the ladder a flicker. And with
+## the stick NEUTRAL it still sank at 2,389 px/s and rising, which is the FORCED
+## half: lift is a function of air density, high air is thin, and a hull that
+## floats at the surface simply falls. The stick had no meaning.
+##
+## Two numbers fix it, and they live here rather than in the world so the
+## arithmetic is testable without dragging `world.gd` — and its `Net` autoload —
+## into a test's compile graph (the trap `pause_menu.gd` and `title_screen.gd`
+## both carry scars from).
+##
+## `DESCENT_BLEED` is why the limit is EASED rather than clamped: the excess over
+## the cap bleeds off per second, so pushing down still accelerates and the limit
+## arrives as thick air, not a wall. **20, not 4** — an eased limit settles where
+## the bleed balances the hull's own acceleration (`settles_at` below), and at 4
+## that was a thousand px/s over the number, which made the cap decorative.
+const DESCENT_BLEED := 20.0
+## What the cap becomes with the stick NEUTRAL, as a fraction of the driven cap.
+## Letting go is a slow sink you can read; pushing down is three times that.
+const DRIFT_FRACTION := 0.34
+
+
+## The cap that applies right now, in px/s, for a hull whose helm axis is `axis`
+## (negative is DOWN — `Input.get_axis("ship_down", "ship_up")`).
+static func descent_cap(base: float, axis: float) -> float:
+	return base if axis <= -0.1 else base * DRIFT_FRACTION
+
+
+## One frame of the bleed: `vy` eased toward `cap`, never past it, never upward.
+static func bleed_descent(vy: float, cap: float, delta: float) -> float:
+	if cap <= 0.0 or vy <= cap:
+		return vy
+	return maxf(cap, vy - (vy - cap) * minf(1.0, DESCENT_BLEED * delta))
+
+
+## Where an eased cap actually SETTLES for a body accelerating downward at
+## `accel` px/s². This is the arithmetic the first cut got wrong, so it is a
+## function rather than a comment: a bleed that loses to gravity is a cap in
+## name only.
+static func settles_at(cap: float, accel: float) -> float:
+	return cap + accel / maxf(DESCENT_BLEED, 0.001)
+
+
 ## CAN THIS BODY TAKE THAT HELM? (owner 2026-08-30: *"could you compute the
 ## boundaries for 'getting on' such that it works above, below, to the sides, and
 ## by the corners? you're really just drawing a bounding square and making it 1-2
