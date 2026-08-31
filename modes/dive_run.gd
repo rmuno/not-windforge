@@ -66,11 +66,17 @@ static func rung_frac() -> float:
 	return (TOP_FRAC - FLOOR_FRAC) / float(maxi(DEPTHS - 1, 1))
 
 
-## The altitude fraction of the closed sky's underside for a run whose deepest
-## rung is `d`: slack rungs above that rung's altitude, never above the deck's
-## own air (the ceiling means nothing until you have left depth 1).
-static func ceiling_frac(d: int) -> float:
-	return minf(TOP_FRAC, depth_altitude(d) + rung_frac() * CEILING_SLACK_RUNGS)
+## The altitude fraction of the closed sky's underside for a run whose LOWEST
+## reached altitude is `low` — slack rungs above that, never above the deck's
+## own air. CONTINUOUS on purpose (owner 2026-08-31: "allow going up?"): the
+## first cut hung the ceiling off the deepest RUNG, and because `depth_of`
+## rounds at the midpoint between rungs, the ratchet clicked while you were
+## still half a rung ABOVE the next landing — right after the click you had a
+## quarter-rung of headroom, which read as "cannot go up at all". Off the
+## continuous low-water mark, the promised slack is the headroom you actually
+## have, at every moment.
+static func ceiling_at(low: float) -> float:
+	return minf(TOP_FRAC, low + rung_frac() * CEILING_SLACK_RUNGS)
 
 
 ## The downward push for a body `over_rungs` rungs above the ceiling, px/s² at
@@ -129,6 +135,9 @@ const DEPTH_COIN := 0.35
 
 var depth := 1          ## where you are right now (1..DEPTHS)
 var deepest := 1        ## the headline number: how far down you got
+## The LOWEST altitude fraction ever reached — the closing sky hangs off this
+## (ceiling_at), continuously, so climbing headroom never ratchets away.
+var low_frac := 1.0
 var pot := 0            ## coins carried and NOT yet banked — burns with the ship
 var banked := 0         ## what reached the permanent wallet (set when the run ends)
 var kills := 0
@@ -572,6 +581,7 @@ func advance(delta: float, a: float, surge_period: float) -> Array:
 		return []
 	var out: Array = []
 	elapsed += delta
+	low_frac = minf(low_frac, a)
 	depth = depth_of(a)
 	if depth > deepest:
 		deepest = depth
