@@ -1618,6 +1618,27 @@ func _dive_pursue(delta: float) -> void:
 			ship.linear_velocity.y + want * 2.0 * delta)
 
 
+## A SURGE PICKET NEVER SHRUGS (the second half of "born hunting", above). The
+## expedition's aggro model is hysteresis — engage at 5,600 px, lose interest at
+## 8,800 — which is right for an ambient bandit guarding its patch of sky and
+## wrong for a hunter the deep sent up after you: a run descending at full cap
+## crosses that whole envelope in about two seconds, so every fight ended by the
+## picket politely giving up. Re-provoking each tick keeps it hunting (provoked
+## bypasses BOTH the de-aggro range and the looks-crewed filter). The leash is
+## the cull (_dive_cull_the_wake, 1.5 rungs): distance still ENDS the chase — it
+## just no longer ends the wanting to. Hostiles only; wildlife manages itself.
+func _dive_keep_the_hunt() -> void:
+	if _dive_surged.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	for id in _dive_surged:
+		var ship := instance_from_id(id) as Ship
+		if ship == null or not is_instance_valid(ship) or ship.faction != 1:
+			continue
+		_enemy_aggro[id] = true
+		_enemy_provoked_at[id] = now
+
+
 ## THE RUN CLEANS UP AFTER ITSELF (owner 2026-08-30: *"FPS really drops once I'm
 ## toward the final level. Perhaps for the Dive mode we can just allocate
 ## downward and remove layers above, since they'd no longer matter?"*).
@@ -1913,6 +1934,7 @@ func _tick_dive(delta: float) -> void:
 	_dive_hold_the_descent(delta)
 	_dive_nudge_if_stuck(delta)
 	_dive_pursue(delta)
+	_dive_keep_the_hunt()
 	_dive_cull_the_wake(delta)
 	_hold_the_corridor(delta)
 	# Keep the card draft's offer filled while one is owed, so the HUD always has
@@ -2047,6 +2069,18 @@ func _dive_surge() -> void:
 			left = centre - half - air
 		born.global_position = ahead + across * centre 			+ vel * float(i % 2) * 500.0 * ws
 		_dive_surged.append(born.get_instance_id())
+		# BORN HUNTING (owner: "enemies aren't really aggressive"). A gunboat
+		# picket used to spawn ~4 s down your line — 28,800 px out at the surge
+		# lead's floor — with 5,600 px of eyesight (enemy_aggro_range 700 × 8),
+		# so it idled in its figure-eight while you slalomed past on screen. A
+		# thing the surge placed IN YOUR PATH has no business waiting to notice
+		# you: it aggros at birth, and _dive_keep_the_hunt re-provokes it every
+		# tick so no range ever talks it out of the chase. Wildlife needs
+		# neither: a kraken self-provokes and a basilisk engages by its own
+		# stand-off envelope.
+		if born.faction == 1:
+			_enemy_aggro[born.get_instance_id()] = true
+			_enemy_provoked_at[born.get_instance_id()] = Time.get_ticks_msec()
 	# The top of the ladder is gunboats and the bottom is krakens, so the line
 	# says which — "they come" reads the same whether it is a crewed vessel you
 	# can out-fly or something from the floor.
