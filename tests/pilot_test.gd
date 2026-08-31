@@ -318,6 +318,16 @@ func _test_navigation() -> void:
 
 func _test_step_off_with_f() -> void:
 	print("• stepping off with F")
+	# SETTLE FIRST (2026-08-31): the manoeuvre test ends on 90 frames of full
+	# reverse, and the four-pusher starter leaves that at ~-1,100 px/s where the
+	# old two-pusher hull crawled at ~-80 — dismounting onto a deck moving that
+	# fast is a different test than the one this asserts ("no sustained launch
+	# AFTER a calm dismount"). Brake with real input until the hull is near
+	# rest, the way a pilot would before stepping off.
+	Input.action_press("ship_right")
+	await _until(func() -> bool: return ship.linear_velocity.x > -2.0 * S, 240)
+	Input.action_release("ship_right")
+	await _frames(20)
 	await _tap("interact")
 	var off := await _until(func() -> bool: return not player.is_piloting(), 10)
 	_ok(off, "pressing E again ends piloting")
