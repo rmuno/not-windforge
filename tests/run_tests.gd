@@ -117,6 +117,7 @@ func _initialize() -> void:
 	await _test_blueprint_upscaling()
 	await _test_upscaled_props_keep_their_axis()
 	await _test_scale_unit_preserves_feel()
+	await _test_thrust_mult_scales_the_props()
 	await _test_components_die_as_a_whole()
 	await _test_shots_respect_factions()
 	await _test_crash_bite_scales_with_the_world()
@@ -6458,6 +6459,40 @@ func _test_scale_unit_preserves_feel() -> void:
 	var ratio := dx8 / dx1 if dx1 > 0.0 else 0.0
 	_check(ratio > 6.8 and ratio < 9.2,
 		"the 8× ship covers 8× the distance in the same time (ratio %.2f)" % ratio)
+
+
+## The Dive's "thrust" card dial (Trimmed Sails): `Ship.thrust_mult` scales the
+## propeller forces and nothing else. Two identical hulls under full throttle —
+## the boosted one covers measurably more ground, and the stock one (mult 1.0,
+## the default every ship outside a run keeps) is the unchanged baseline.
+func _test_thrust_mult_scales_the_props() -> void:
+	_t("Ship.thrust_mult scales propeller force (the Trimmed Sails card dial)")
+	var cells := {
+		Vector2i(0, 0): BlockDB.Type.HULL,
+		Vector2i(1, 0): BlockDB.Type.ENGINE,
+		Vector2i(2, 0): BlockDB.Type.PROPELLER,
+	}
+	var stock := _make_ship(cells)
+	stock.position = Vector2(0, -1000)
+	_check(is_equal_approx(stock.thrust_mult, 1.0), "a ship is born at mult 1.0 (stock)")
+	stock.thrust_input.x = 1.0
+	await _step(60)
+	var dx0 := stock.position.x
+	stock.queue_free()
+
+	var boosted := _make_ship(cells)
+	boosted.position = Vector2(0, -1000)
+	boosted.thrust_mult = 1.3
+	boosted.thrust_input.x = 1.0
+	await _step(60)
+	var dx1 := boosted.position.x
+	boosted.queue_free()
+	await process_frame
+
+	_check(dx0 > 10.0, "the stock ship moves under throttle (%.0f px)" % dx0)
+	var ratio := dx1 / dx0 if dx0 > 0.0 else 0.0
+	_check(ratio > 1.15 and ratio < 1.45,
+		"a 1.3x mult buys ~30%% more ground in the same time (ratio %.2f)" % ratio)
 
 
 ## Owner: named components (E, H, D, P, T…) are destroyed as a whole —

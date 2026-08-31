@@ -1026,6 +1026,10 @@ func begin_dive() -> void:
 ## is NOT shown — this is not an outcome, it is the run ceasing to exist.
 func end_dive() -> void:
 	_dive_strip_run_gear()
+	# Cards die with the run: a hull you keep flies STOCK after it (the thrust
+	# card was run-scoped, like everything the outposts sell).
+	if is_instance_valid(local_ship):
+		local_ship.thrust_mult = 1.0
 	dive = null
 	_dive_shipless = 0.0
 	_dive_pressing = 0.0
@@ -1931,6 +1935,11 @@ func _tick_dive(delta: float) -> void:
 			and is_instance_valid(local_ship) \
 			and not local_ship.repair_cells.is_empty():
 		local_ship.menders_running = true
+	# The "thrust" card dial (Trimmed Sails): stamped every tick like the assistant
+	# above, so a card taken mid-flight applies the same frame and a helm rebind
+	# never loses it. end_dive resets it — a hull that outlives the run flies stock.
+	if is_instance_valid(local_ship):
+		local_ship.thrust_mult = _dive_mod("thrust")
 	_dive_hold_the_descent(delta)
 	_dive_nudge_if_stuck(delta)
 	_dive_pursue(delta)
