@@ -257,6 +257,16 @@ func _build_spawn_tab() -> void:
 		func() -> void:
 			if world != null and world.has_method("end_dive"):
 				world.call("end_dive"))
+	# THE DIVE CARDS (Q-L): offer a draft, or pour in XP to trigger one, so the deck
+	# is playtestable without grinding kills. Both no-op outside a live run.
+	_action_button(box, "DIVE CARD: offer a draft (pick with 1/2/3)",
+		func() -> void:
+			if world != null and world.has_method("debug_grant_card_draft"):
+				world.call("debug_grant_card_draft"))
+	_action_button(box, "DIVE CARD: +100 run XP (fills the card bar)",
+		func() -> void:
+			if world != null and world.has_method("debug_grant_dive_xp"):
+				world.call("debug_grant_dive_xp", 100))
 
 
 func _build_player_tab() -> void:

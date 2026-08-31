@@ -75,6 +75,13 @@ var gravity := 980.0 * GRAVITY_FACTOR
 ## tracers stay visible on a big ship.
 var visual_scale := 1.0
 
+## DIVE CARD onHit forwarding (Q-L). Set to the world by `world._spawn_shot` ONLY
+## for a shell fired by the player or their ship during a live run; null otherwise.
+## When such a shell lands damage on an enemy, it calls `world._dive_on_hit(ship,
+## damage)` so hit-procs (Vampiric Rounds, …) fire. A plain shell carries no such
+## reference and does nothing extra — ordinary combat is untouched.
+var dive_world: Node = null
+
 ## The firing ship's own hull is NOT excluded (owner: a turret must never
 ## shoot through its own ship) — own infrastructure stops the shot
 ## harmlessly like any friendly hull. Rays that START inside a collider
@@ -200,6 +207,12 @@ func _physics_process(delta: float) -> void:
 				var cell := ship.nearest_solid_cell(
 					(hit["position"] as Vector2) + velocity.normalized() * Ship.CELL * 0.4)
 				ship.net_damage_cell(cell, damage)
+				# Dive card hit-procs (Vampiric Rounds, …): a player/ship shell that
+				# lands on an ENEMY forwards the event + its damage to the run. Only
+				# such shells carry `dive_world`; everything else does nothing extra.
+				if dive_world != null and is_instance_valid(dive_world) \
+						and dive_world.has_method("_dive_on_hit"):
+					dive_world.call("_dive_on_hit", ship, damage)
 		queue_free()
 		return
 	position = to
