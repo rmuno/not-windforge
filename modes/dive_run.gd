@@ -39,10 +39,44 @@ const DEPTHS := 8
 const TOP_FRAC := 0.86
 const FLOOR_FRAC := 0.10
 
-## Extraction line. Climbing back to depth 1's air is the escape; it is the same
-## altitude you started at, which is the point — the way home is the way you
-## came, and you have to fly all of it.
-const EXTRACT_FRAC := TOP_FRAC
+## THE SKY CLOSES BEHIND YOU (owner ruling 2026-08-31: "let's try the sky thing…
+## just a forced push downward without ability to traverse back up, similar to
+## ball pit"). A CEILING rides `CEILING_SLACK_RUNGS` above the altitude of the
+## DEEPEST rung you have reached; above it the air shoves you down, ramping with
+## the trespass — the corridor's exact idiom rotated 90°, except this one is
+## MEANT to win: the cap is far past any hull's climb authority, so a brief pop
+## at the line is possible and sustained climbing is not. Extraction therefore
+## no longer means climbing out — it is PASSAGE HOME at an outpost counter
+## (`go_home`, the "passage" stock row). The fiction is deliberately unexplained
+## (owner: "perhaps even just disregard").
+##
+## Gated on `deepest > 1` by the world, like the den's clock, so the launch deck
+## stays an unhurried place.
+const CEILING_SLACK_RUNGS := 0.75
+## px/s² at scale 1 per rung of trespass, and the ramp's cap in rungs. At the
+## cap this is 1,200 px/s² × scale — roughly TEN TIMES the props' authority
+## (HULL_LATERAL_ACCEL 125) — because unlike the corridor, "without ability to
+## traverse back up" is the ruling: this push is a rail on purpose.
+const CEILING_PUSH := 400.0
+const CEILING_MAX_RUNGS := 3.0
+
+
+## One rung's height as an altitude fraction — the ladder's spacing.
+static func rung_frac() -> float:
+	return (TOP_FRAC - FLOOR_FRAC) / float(maxi(DEPTHS - 1, 1))
+
+
+## The altitude fraction of the closed sky's underside for a run whose deepest
+## rung is `d`: slack rungs above that rung's altitude, never above the deck's
+## own air (the ceiling means nothing until you have left depth 1).
+static func ceiling_frac(d: int) -> float:
+	return minf(TOP_FRAC, depth_altitude(d) + rung_frac() * CEILING_SLACK_RUNGS)
+
+
+## The downward push for a body `over_rungs` rungs above the ceiling, px/s² at
+## scale 1.
+static func ceiling_push(over_rungs: float) -> float:
+	return CEILING_PUSH * clampf(over_rungs, 0.0, CEILING_MAX_RUNGS)
 
 ## The grace after arriving somewhere new before that depth's den notices you.
 ## This is the "calm" half of the beat — mine, build, patch gasbags, breathe.
@@ -78,6 +112,11 @@ const KIND_COIN := {
 	"kraken": 60,
 	"basilisk": 55,
 	"whale_city": 500,
+	# A gunboat picket, killed by breaking its INTEGRITY (v0.111.0 — vessels in
+	# a run die as units now). Before integrity, a destroyed vessel never paid:
+	# `_dive_credit_kill` only heard the creature-death signal, which is half of
+	# why the top rungs felt inconsequential.
+	"hulk": 35,
 }
 const BASE_COIN := 20
 
@@ -412,6 +451,13 @@ const STOCK := [
 		"label": "Hull patch — mend her where she stands"},
 	{"id": "balloon", "cost": 90,
 		"label": "Large balloon — more lift, tether it with Q"},
+	# EXTRACTION (the sky closes behind a run, so the way home is a berth on the
+	# quartermaster's balloon, not a climb). Free — the extraction premium is
+	# the pot's own arithmetic (`bank_value`), and charging a fee on top would
+	# tax the one row that ends the run. Last on purpose: the counter reads
+	# "spend it here, or take it home", in that order.
+	{"id": "passage", "cost": 0,
+		"label": "PASSAGE HOME — bank the pot, end the run"},
 ]
 
 
@@ -515,7 +561,9 @@ static func depth_label(d: int) -> String:
 ##   "depth"     — you reached a NEW deepest depth (announce it; arm the den)
 ##   "surge"     — this depth's den comes for you now (spawn the hunters)
 ##   "leviathan" — you have arrived at the floor; wake the boss (once)
-##   "escaped"   — you climbed back out alive; the pot is banked
+##
+## (There is no "escaped" event any more: the sky closes behind a run, so
+## extraction is `go_home` at an outpost counter, not an altitude.)
 ##
 ## Returns nothing at all once the run is over — a finished run is inert, so a
 ## world that keeps ticking it (and one does, for the ledger) costs nothing.
@@ -548,13 +596,23 @@ func advance(delta: float, a: float, surge_period: float) -> Array:
 		_grace = maxf(surge_period, 1.0)
 		surges += 1
 		out.append("surge")
-	# The escape. Only after you have actually been down — otherwise sitting at
-	# the start line would end the run before it began.
-	if a >= EXTRACT_FRAC and deepest > 1:
-		outcome = "escaped"
-		banked = bank_value(pot, deepest)
-		out.append("escaped")
 	return out
+
+
+## PASSAGE HOME — extraction, now that the sky closes behind a run. Bought at an
+## outpost counter (the "passage" stock row): banks the pot at the same
+## deepest-scaled premium the old climb-out paid — the premium always scaled
+## with how deep you GOT, never with the climb, so the economy is untouched;
+## only extraction's location moved from the top of the shaft to the landings.
+## Refused before you have ever left the deck (a run you never dived is not a
+## run you can be extracted from) and on a finished run. Returns whether the
+## run ended.
+func go_home() -> bool:
+	if outcome != "" or deepest <= 1:
+		return false
+	outcome = "escaped"
+	banked = bank_value(pot, deepest)
+	return true
 
 
 ## Credit a kill of `kind` at the current depth. Returns the coins added, so the

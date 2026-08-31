@@ -341,6 +341,23 @@ var ride_speed_mult := 1.0
 ## whale-brained creature, unchanged.
 var creature_kind := ""
 
+## HULL INTEGRITY — the Dive's shared-HP rule for VESSELS (owner 2026-08-31:
+## "the dives just still seem rather inconsequential… let's just make the entire
+## ship share HP? That way it can get destroyed on its own"). A creature has
+## always been ONE unit (`shared_health`); this gives an ARMED vessel the same
+## mortality WITHOUT giving up the per-block game the owner wants preserved:
+## blocks still break cell-by-cell exactly as before, and on top of that every
+## point of STRUCTURAL damage actually dealt (hp really removed from cells,
+## never a weapon's overkill number) drains this pool. The world watches for 0
+## and explodes the ship as a unit (world._dive_watch_integrity).
+##
+## `hull_integrity_max` 0 = UNARMED — the default, and every ship outside a
+## Dive run: expedition combat, severing, salvage and every existing test are
+## byte-identical. The world arms your hull on commit and a hostile picket at
+## spawn, and disarms on end_dive.
+var hull_integrity := 0.0
+var hull_integrity_max := 0.0
+
 ## The AUTHORED VARIETY id (the `.ship` basename, e.g. "whale_bowhead") for the
 ## creature-log bestiary — finer than `creature_kind`, which is only the coarse
 ## family. Set at spawn by the world (world._spawn_one_*) via
@@ -2822,16 +2839,25 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 	var members: Array = _component_members(cell)
 	var dead: Array[Vector2i] = []
 	var shade_moved := false
+	# Structural hp REALLY removed this hit — what an armed hull's integrity
+	# pool drains by. Capped at each cell's remaining hp on purpose: a 9999
+	# overkill on a 60 hp block costs the pool 60, so integrity measures the
+	# ship actually being destroyed, never a weapon's number. (A component's
+	# cells all take the hit, and all of them count — components are valuable.)
+	var structural := 0.0
 	for c in members:
 		if not blocks.has(c):
 			continue  # cluster map can be stale mid-batch
 		var hp_max := BlockDB.max_hp(blocks[c]["type"])
 		var was := shade_bucket(blocks[c]["hp"], hp_max)
+		structural += minf(amount, maxf(blocks[c]["hp"], 0.0))
 		blocks[c]["hp"] -= amount
 		if blocks[c]["hp"] <= 0.0:
 			dead.append(c)
 		elif shade_bucket(blocks[c]["hp"], hp_max) != was:
 			shade_moved = true
+	if hull_integrity_max > 0.0 and structural > 0.0:
+		hull_integrity = maxf(0.0, hull_integrity - structural)
 	damaged.emit(cell, amount)
 	if dead.is_empty():
 		if shade_moved:

@@ -105,17 +105,26 @@ func _draw_gauge(d: Dictionary) -> void:
 		draw_string(font, Vector2(x - 52.0 * s, y + fs * 1.4), "no ship",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _ALARM)
 		return
+	# HULL INTEGRITY (v0.111.0): the one number that ends the run now. Ink while
+	# whole, alarm under a third — the ship itself is also scorching (modulate),
+	# so this is the number under the picture.
+	var hull_frac := float(d.get("hull_frac", -1.0))
+	if hull_frac >= 0.0:
+		draw_string(font, Vector2(x - 52.0 * s, y + fs * 1.4),
+			"hull %d%%" % int(round(hull_frac * 100.0)),
+			HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
+			_ALARM if hull_frac < 0.34 else _INK)
 	# The den's clock. Only shown when it is close enough to mean something —
 	# a permanent countdown would be a nag, and the screen is meant to be calm.
 	var into := float(d.get("surge_in", 99.0))
 	if into <= 10.0:
-		draw_string(font, Vector2(x - 52.0 * s, y + fs * 1.4),
+		draw_string(font, Vector2(x - 52.0 * s, y + fs * 2.8),
 			"they come: %.0f" % maxf(into, 0.0),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _ALARM)
 
 	# THE CARD XP BAR + held count (Q-L), tucked under the coin/clock stack. The
 	# bar fills toward the next draft; the count says how strong this run has got.
-	var by := y + fs * 2.8
+	var by := y + fs * 4.2
 	var bw := 62.0 * s
 	var bx := x - 52.0 * s
 	var need := maxf(float(d.get("xp_need", 1)), 1.0)

@@ -1030,9 +1030,13 @@ func begin_dive() -> void:
 func end_dive() -> void:
 	_dive_strip_run_gear()
 	# Cards die with the run: a hull you keep flies STOCK after it (the thrust
-	# card was run-scoped, like everything the outposts sell).
+	# card was run-scoped, like everything the outposts sell). Integrity too —
+	# mortality is the RUN'S rule, so a kept hull is disarmed and un-scorched.
 	if is_instance_valid(local_ship):
 		local_ship.thrust_mult = 1.0
+		local_ship.hull_integrity_max = 0.0
+		local_ship.hull_integrity = 0.0
+		local_ship.modulate = Color.WHITE
 	dive = null
 	_dive_shipless = 0.0
 	_dive_pressing = 0.0
@@ -1486,6 +1490,16 @@ func try_buy_stock(index: int) -> bool:
 	if player == null or not is_instance_valid(player):
 		return false
 	var row: Dictionary = DiveRun.STOCK[index]
+	# PASSAGE HOME — extraction, since the sky closes behind a run (v0.111.0).
+	# Not a purchase: it ends the run "escaped" and banks the pot at the same
+	# deepest-scaled premium the old climb-out paid. Refused before you have
+	# ever left the deck (go_home's own gate).
+	if String(row["id"]) == "passage":
+		if not dive.go_home():
+			_notify("You have not been DOWN yet — there is nothing to go home from.")
+			return false
+		_dive_bank()
+		return true
 	var cost := int(row["cost"])
 	if not dive.spend(cost):
 		_notify("Not enough on you — %d coins short." % (cost - dive.pot))
@@ -1919,6 +1933,9 @@ func _tick_dive(delta: float) -> void:
 			_dive_thaw(local_ship)
 			_dive_open_doors()
 			_dive_post_the_assistant()
+			# HULL INTEGRITY (v0.111.0): the hull you commit to can DIE as a unit
+			# now. Armed here, disarmed by end_dive; pickets arm at spawn.
+			_dive_arm_integrity(local_ship, Tunables.get_num("dive_ship_integrity"))
 			_notify("She is yours. Lose her and the run ends with her.")
 	elif is_instance_valid(local_ship) and local_ship.has_helm():
 		# LOSING THE SHIP ENDS THE RUN (owner ruling). `local_ship` blinks null
@@ -1949,6 +1966,8 @@ func _tick_dive(delta: float) -> void:
 	_dive_keep_the_hunt()
 	_dive_cull_the_wake(delta)
 	_hold_the_corridor(delta)
+	_dive_hold_the_ceiling(delta)
+	_dive_watch_integrity()
 	# Keep the card draft's offer filled while one is owed, so the HUD always has
 	# three to paint and the number keys have something to pick.
 	dive.offer(_dive_rng)
@@ -1985,8 +2004,96 @@ func _tick_dive(delta: float) -> void:
 			"leviathan":
 				_notify("THE FLOOR. Something enormous is down here with you.")
 				_dive_wake_leviathan()
-			"escaped":
-				_dive_bank()
+			# (No "escaped" event any more: the sky closes behind a run, so
+			# extraction is the outpost counter's PASSAGE HOME row, which calls
+			# dive.go_home() + _dive_bank() directly — see try_buy_stock.)
+
+
+# --- The closing sky + hull integrity (owner rulings 2026-08-31) ------------
+
+## THE SKY CLOSES BEHIND YOU: above `DiveRun.ceiling_frac(deepest)` the air
+## shoves you down — the corridor rotated 90°, except this rail is WANTED
+## ("a forced push downward without ability to traverse back up, similar to
+## ball pit"). Applies to the hull and to a body on foot alike; gated on
+## `deepest > 1` so the launch deck stays an unhurried place, and painted only
+## by the shove itself for now (a haze pass is the art half, BACKLOG).
+func _dive_hold_the_ceiling(delta: float) -> void:
+	if dive == null or dive.deepest <= 1:
+		return
+	var ceiling_y := dive_altitude_y(DiveRun.ceiling_frac(dive.deepest))
+	var rung_px := absf(dive_altitude_y(DiveRun.depth_altitude(2))
+		- dive_altitude_y(DiveRun.depth_altitude(1)))
+	if rung_px <= 0.0:
+		return
+	if is_instance_valid(local_ship):
+		var over := (ceiling_y - local_ship.global_position.y) / rung_px
+		if over > 0.0:
+			local_ship.apply_central_force(Vector2(0.0,
+				DiveRun.ceiling_push(over) * Tunables.get_num("dive_ceiling_mult")
+					* float(world_scale)) * local_ship.mass)
+	if player != null and is_instance_valid(player) and not player.is_piloting():
+		var overp := (ceiling_y - player.global_position.y) / rung_px
+		if overp > 0.0:
+			player.velocity.y += DiveRun.ceiling_push(overp) 				* Tunables.get_num("dive_ceiling_mult") * float(world_scale) * delta
+
+
+## HULL INTEGRITY, armed: the vessel dies as a unit when the pool empties. The
+## pool rides `Ship.hull_integrity` (drained inside damage_cell by structural
+## hp actually destroyed); this arms it and stamps the tint baseline.
+func _dive_arm_integrity(ship: Ship, pool: float) -> void:
+	if ship == null or not is_instance_valid(ship) or pool <= 0.0:
+		return
+	ship.hull_integrity_max = pool
+	ship.hull_integrity = pool
+
+
+## The whole ship reads its wounds (owner: "just ensure the entire ship changes
+## color accordingly"): an armed vessel's node modulate lerps toward scorch as
+## the pool drains. `modulate` is one engine-side property over the skin's child
+## canvas items — never a repaint, the same discipline as the creature tint.
+const DIVE_SCORCH := Color(0.55, 0.28, 0.22)
+
+
+## Watch every armed vessel in the run: tint it by its pool, and EXPLODE it at
+## zero. Explosion: everyone aboard or beside it is hurt — the player included
+## ("can be avoided by jumping off before ship explodes") — a hostile picket
+## pays its kill, and the wreck is gone. Your own hull exploding leaves you
+## shipless mid-air, and the existing ship-loss grace then ends a committed run.
+func _dive_watch_integrity() -> void:
+	if fleet == null:
+		return
+	for ship in fleet.ships():
+		if not is_instance_valid(ship) or ship.hull_integrity_max <= 0.0:
+			continue
+		var frac := clampf(ship.hull_integrity / ship.hull_integrity_max, 0.0, 1.0)
+		ship.modulate = Color.WHITE.lerp(DIVE_SCORCH, 1.0 - frac)
+		if ship.hull_integrity <= 0.0:
+			_dive_explode_ship(ship)
+
+
+## The end of an armed hull: a blast that hurts every PERSON aboard or beside
+## it, then the ship is gone. The blast reach is the hull's own bounds grown by
+## a few cells — jump clear before she goes and you take nothing, which is the
+## owner's escape clause.
+func _dive_explode_ship(ship: Ship) -> void:
+	if ship == null or not is_instance_valid(ship):
+		return
+	var blast: Rect2 = ship.solid_bounds.grow(Ship.CELL * 4.0 * float(world_scale))
+	if player != null and is_instance_valid(player):
+		var aboard := player.piloting == ship or player.riding == ship 			or blast.has_point(ship.to_local(player.global_position))
+		if aboard:
+			player.take_damage(Tunables.get_num("dive_explosion_damage"))
+		if player.piloting == ship:
+			player.disembark()
+	var was_mine := ship == local_ship
+	if ship.faction == 1:
+		# A picket destroyed is a KILL — before integrity, a broken vessel never
+		# paid (only creature deaths did), which was half of "inconsequential".
+		_dive_credit_kill("hulk")
+	_notify("She blows apart!" if was_mine else "Their ship blows apart!")
+	if was_mine:
+		local_ship = null   # the ship-loss grace takes it from here
+	ship.queue_free()
 
 
 ## Half the width of the shaft a run holds you in, in world px.
@@ -2110,6 +2217,10 @@ func _dive_surge() -> void:
 		if born.faction == 1:
 			_enemy_aggro[born.get_instance_id()] = true
 			_enemy_provoked_at[born.get_instance_id()] = Time.get_ticks_msec()
+			# ...and MORTAL (v0.111.0): a hostile vessel in a run dies as a unit
+			# when its integrity breaks — which is also what makes it PAY as a
+			# kill. Creatures are skipped: they already are one unit.
+			_dive_arm_integrity(born, Tunables.get_num("dive_picket_integrity"))
 	# The top of the ladder is gunboats and the bottom is krakens, so the line
 	# says which — "they come" reads the same whether it is a crewed vessel you
 	# can out-fly or something from the floor.
@@ -2272,6 +2383,12 @@ func dive_status() -> Variant:
 	out["shipless"] = not dive.committed
 	out["depth_label"] = DiveRun.depth_label(dive.depth)
 	out["headline"] = DiveRun.outcome_line(out)
+	# Hull integrity (v0.111.0): the committed hull's pool as a fraction, or -1
+	# when no armed hull is flying (shipless, or pre-commit).
+	out["hull_frac"] = -1.0
+	if is_instance_valid(local_ship) and local_ship.hull_integrity_max > 0.0:
+		out["hull_frac"] = clampf(
+			local_ship.hull_integrity / local_ship.hull_integrity_max, 0.0, 1.0)
 	return out
 
 
