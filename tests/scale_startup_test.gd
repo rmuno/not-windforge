@@ -356,10 +356,12 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 					- pl.global_position.y)
 		if dx < 14000.0 and dy > 0.0 and dy < 12000.0:
 			seen += 1
-	# The numbers are the SCREEN, at the zoom the owner plays: about 6,500 px
-	# wide and 3,600 tall on foot. A berth centre inside 14,000 px is roughly two
-	# screens of walking, and a hull TOP inside 2,000 px below your feet is
-	# plainly in frame.
+	# The numbers were written against the pre-0.110.0 SCREEN (~6,500 px wide on
+	# foot); the 2026-08-31 flat 40% zoom-out widened the view to ~12,400 px, so
+	# these thresholds are now CONSERVATIVE — a berth inside 14,000 px is barely
+	# more than one screen of walking, and a hull top 2,000 px down is well in
+	# frame. Kept as-is on purpose: they still pin "visible from the deck", just
+	# with margin.
 	_ok(seen >= 2,
 		"at 8x, two hulls are berthed within sight and below (%d; nearest %.0f px)"
 			% [seen, nearest])

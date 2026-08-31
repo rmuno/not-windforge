@@ -49,6 +49,7 @@ func _initialize() -> void:
 	await _frames(4)
 	print("took the helm: %s   committed: %s" % [str(took),
 		str((world.get("dive") as Object).get("committed"))])
+	print("GEAR:   %s" % _gear(world.get("local_ship")))
 
 	# --- Shop, the way a player who found an outpost would -----------------
 	# Depths 6-8 are below Airspace.DEEP_TOP, so a run without a Lung dies at
@@ -84,6 +85,15 @@ func _initialize() -> void:
 	var steer := 0
 	var guard := 0
 	var beat := 0.0
+	# THE UNSTICK (2026-08-31, diagnosed by the gear line): the hull kept
+	# stalling on a landing slab WITH full thrust available — holding DOWN pins
+	# it to the slab and lateral thrust never breaks the pin, while the moment
+	# the climb phase released DOWN it came free at once. A person lets go of
+	# the stick and slides off; this pilot never did, so seven of the eight
+	# probe minutes measured a keyboard habit, not the game. Now: stuck for
+	# 3 s -> release DOWN (steer keeps running) until moving again, then dive on.
+	var stuck_t := 0.0
+	var unsticking := false
 	while guard < 60 * 60 * 8:    # 8 simulated minutes, hard stop
 		guard += 1
 		await world.get_tree().physics_frame
@@ -92,6 +102,19 @@ func _initialize() -> void:
 		if run == null or String(run.get("outcome")) != "":
 			break
 		var d := int(run.get("depth"))
+		var helm0 = world.get("local_ship")
+		var moving: bool = helm0 != null and is_instance_valid(helm0) \
+			and helm0.linear_velocity.length() > 60.0 * 8.0
+		if moving:
+			stuck_t = 0.0
+			if unsticking:
+				unsticking = false
+				Input.action_press("ship_down")
+		else:
+			stuck_t += STEP
+			if stuck_t > 3.0 and not unsticking:
+				unsticking = true
+				Input.action_release("ship_down")
 		# Steer toward the rung below, the way the edge marker points.
 		var helm = world.get("local_ship")
 		var want := 0
@@ -125,10 +148,11 @@ func _initialize() -> void:
 		if beat >= 30.0:
 			beat = 0.0
 			var hull2 = world.get("local_ship")
-			print("   t=%5.1f  depth %d  y %.0f  vy %.0f  alt %.3f" % [t, d,
+			print("   t=%5.1f  depth %d  y %.0f  vy %.0f  blocks %d  [%s]" % [t, d,
 				pl.global_position.y,
 				0.0 if hull2 == null or not is_instance_valid(hull2) else hull2.linear_velocity.y,
-				float(run.get("depth"))])
+				0 if hull2 == null or not is_instance_valid(hull2) else hull2.blocks.size(),
+				_gear(hull2)])
 		if d >= 8:
 			break
 	Input.action_release("ship_down")
@@ -142,6 +166,7 @@ func _initialize() -> void:
 	print("\nTHREAT: nearest hostile ever %.0f px | frames with one within 4k*8: %d"
 		% [closest, engaged])
 	print("HULL:   %.0f blocks -> %.0f (%.0f lost)" % [hp0, hp1, hp0 - hp1])
+	print("GEAR:   %s" % _gear(hull1))
 	print("\n--- the descent ---")
 	for l in log_lines:
 		print(l)
@@ -161,6 +186,7 @@ func _initialize() -> void:
 				break
 		Input.action_release("ship_up")
 		print("\nclimbed for %.0f s" % up)
+		print("GEAR:   %s" % _gear(world.get("local_ship")))
 	_report("at the end")
 	var fin = world.get("dive")
 	if fin != null:
@@ -171,6 +197,29 @@ func _initialize() -> void:
 func _frames(n: int) -> void:
 	for i in n:
 		await world.get_tree().physics_frame
+
+
+## WHAT CAN THIS HULL STILL DO — the line the stall diagnosis was missing. The
+## 2026-08-31 baseline ended with a hull that could neither descend nor CLIMB
+## (vy 0 through 480 s of held ship_up) after losing 547 blocks, and nothing in
+## the log said WHICH blocks: a wedge and a hull whose engines were shot off
+## print identically without this. Thrust totals are the authority that actually
+## moves a ship; the counts say what the pickets ate.
+func _gear(hull) -> String:
+	if hull == null or not is_instance_valid(hull):
+		return "no hull"
+	var props := 0
+	var engines := 0
+	var turrets := 0
+	for cell in hull.blocks:
+		match int(hull.blocks[cell]["type"]):
+			BlockDB.Type.PROPELLER: props += 1
+			BlockDB.Type.ENGINE: engines += 1
+			BlockDB.Type.TURRET: turrets += 1
+	return "thrust h=%.0f v=%.0f | props %d engines %d turrets %d | power %.0f vs draw %.0f" % [
+		hull.get("_total_hthrust"), hull.get("_total_vthrust"),
+		props, engines, turrets,
+		hull.power_supply(), hull.active_draw()]
 
 
 func _nearest_hull():

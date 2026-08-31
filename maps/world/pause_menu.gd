@@ -63,8 +63,19 @@ func open() -> void:
 		get_tree().paused = true
 
 
+## The process-frame this panel last CLOSED on. The world's Escape poll reads it:
+## `Input.is_action_just_pressed` ignores handled-input, so the press that closes
+## this panel (handled in _input, before _process runs) is still "just pressed"
+## when the world polls later THE SAME FRAME — and an unguarded poll reopened the
+## menu on the very keypress that closed it. To the player that is "escape will
+## not unpause" (owner, 2026-08-31, mid-dive — but it was every mode). The stamp
+## is the guard: the world never opens on the frame the panel closed.
+var closed_frame := -1
+
+
 func close() -> void:
 	visible = false
+	closed_frame = Engine.get_process_frames()
 	# Never leave the tree stopped behind a hidden panel. Unconditional on
 	# purpose: whatever paused it, closing this is the way back.
 	if is_inside_tree():
