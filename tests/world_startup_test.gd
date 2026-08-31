@@ -2876,6 +2876,25 @@ func _check_dive(world: Node, fleet) -> void:
 			"in a run it says the run is lost")
 		_ok(not PauseMenu._text(false).contains("LOST"),
 			"...and outside one it does not")
+
+		# THE SAME-FRAME REOPEN (owner 2026-08-31: "escape mid dive, then escape
+		# again will not unpause"). Input dispatch runs before _process, so the
+		# press that CLOSES the panel is still "just pressed" when the world's
+		# poll runs later that same frame — polling ignores handled-input — and
+		# the poll reopened the menu on the very keypress that closed it. The
+		# check drives BOTH halves in one frame, which is what the older check
+		# above (panel-only) structurally could not see.
+		menu.call("toggle")
+		_ok(menu.visible, "reopened for the same-frame-reopen test")
+		Input.action_press("quit_game")
+		menu._input(esc)                       # the panel closes on the press...
+		_ok(not menu.visible and int(menu.get("closed_frame")) == Engine.get_process_frames(),
+			"the panel closed and stamped its closing frame")
+		world.call("_process", 0.016)          # ...and the world's poll, same frame,
+		_ok(not menu.visible,                  # must NOT reopen it.
+			"the world's Escape poll does not reopen the menu on its closing frame")
+		_ok(not world.get_tree().paused, "...and the game is really unpaused")
+		Input.action_release("quit_game")
 	_ok(world.has_method("quit_to_title"), "the world can go back to the front door")
 
 	world.call("end_dive")

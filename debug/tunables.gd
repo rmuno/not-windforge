@@ -240,6 +240,13 @@ const _REGISTRY := [
 	{"id": "dive_surge_lead", "label": "Dive: surge arrives this many seconds ahead of you",
 		"group": "World", "kind": KIND_FLOAT, "default": 4.0, "min": 0.5,
 		"max": 15.0, "step": 0.5},   # world._dive_surge
+	# Ceiling on LIVE surge pickets (carcasses excluded): a surge tops the
+	# population up to this, never past. 9 ≈ two deep surges' worth — a real
+	# siege, bounded so a parked run cannot accumulate a fleet (the 13→58-ship
+	# baseline, 2026-08-31).
+	{"id": "dive_picket_cap", "label": "Dive: max live surge pickets at once",
+		"group": "World", "kind": KIND_INT, "default": 9, "min": 3,
+		"max": 30, "step": 1},   # world._dive_surge
 	# WHAT A CREATURE'S BODY DOES TO A VESSEL IT HITS (owner 2026-08-30: "whales
 	# aren't quite vicious or a threat - easy to avoid and overcome. they should
 	# do DAMAGE on collision: BOOM!"). A multiplier on the impact bite a VESSEL

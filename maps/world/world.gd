@@ -16,19 +16,22 @@ extends Node2D
 ## How much further the view pulls back at the helm (owner-tuned per scene).
 @export var pilot_zoom_out := 1.3
 
-## TIGHTENED 30% IN THE SHIPPED SCENE (owner 2026-08-30: "kindly increase default
-## and max zoom by a flat 30% on both foot and while on ship"). One number does
-## all four, which is why it is the number that moved: the helm view is
-## `camera_zoom / pilot_zoom_out` and the wheel is a multiplier on top, so
-## raising `camera_zoom` by 30% raises the on-foot default, the at-helm default,
-## AND both ends of the wheel's range by exactly 30% together. maps/world/world.tscn
-## 0.198 -> 0.2574; the legacy 1x scene keeps 0.9, because its distances are what
+## TIGHTENED 30%, THEN PULLED BACK 40% (owner 2026-08-31: "add another 40% FLAT
+## zoom-out to the player and player-on-ship default AND max zooms", after
+## 2026-08-30's flat 30% tighten). One number does all four, which is why it is
+## the number that moves each time: the helm view is `camera_zoom /
+## pilot_zoom_out` and the wheel is a multiplier on top, so scaling
+## `camera_zoom` moves the on-foot default, the at-helm default, AND both ends
+## of the wheel's range by the same flat factor. Same arithmetic as the 30%
+## round (+30% was ×1.3): −40% is ×0.6. maps/world/world.tscn 0.198 → 0.2574 →
+## **0.15444**; the legacy 1x scene keeps 0.9, because its distances are what
 ## the older suites' thresholds were written against.
 ##
-## Higher zoom = MORE MAGNIFIED = less world on screen: on foot the view goes
-## from ~9,700 px wide to ~7,500, and at the helm from ~16,750 to ~12,900. That
-## also cuts what streams, since `terrain.primary_range_px` is half the visible
-## extent at the live zoom.
+## Higher zoom = MORE MAGNIFIED = less world on screen. The 0.6 pass widens the
+## on-foot view from ~7,500 px to ~12,400 and the helm view from ~12,900 to
+## ~21,500 — notably wider than even the pre-tighten original. That also grows
+## what streams, since `terrain.primary_range_px` is half the visible extent at
+## the live zoom.
 
 ## Scroll-wheel zoom: a user multiplier on top of the scene defaults,
 ## clamped to ±50% of them (owner's first guess at the range). Left alone by the
@@ -2031,7 +2034,24 @@ func _hold_the_corridor(delta: float) -> void:
 func _dive_surge() -> void:
 	if dive == null or player == null or not is_instance_valid(player):
 		return
-	var n := DiveRun.surge_count(dive.depth)
+	# THE DEEP SENDS NO MORE THAN IT CAN USE (2026-08-31, the aggression
+	# baseline): a PARKED target's travel vector is straight down, so every surge
+	# stacked its pickets ~0.45 rungs below — inside the cull's 1.5-rung leash —
+	# and fourteen stationary minutes accumulated 13 -> 58 ships, which is
+	# exactly the deep-run FPS shape the owner has reported. A surge now TOPS UP
+	# the live picket population to `dive_picket_cap` and never past it: the
+	# pressure per surge is unchanged while you fight and move (the dead and the
+	# culled make room), and a siege on a parked hull holds at a bounded fleet
+	# instead of growing one. Carcasses do not count — a dead picket is loot.
+	var live := 0
+	for pid in _dive_surged:
+		var s2 := instance_from_id(pid) as Ship
+		if s2 != null and is_instance_valid(s2) and not s2.is_carcass():
+			live += 1
+	var n := mini(DiveRun.surge_count(dive.depth),
+		Tunables.get_int("dive_picket_cap") - live)
+	if n <= 0:
+		return
 	var kinds := DiveRun.surge_kinds(dive.depth)
 	var ws := float(world_scale)
 	# Your line: where you are actually going. A drifting or parked ship gets a
@@ -5574,8 +5594,17 @@ func _process(_delta: float) -> void:
 	# handled events, so this line ran on the same press and toggled it straight
 	# back open. Owner: *"hitting escape again mid-game does NOT unpause"*. It
 	# was closing and reopening in one frame.
+	#
+	# The visibility guard alone did NOT close that loop (owner 2026-08-31,
+	# "escape mid dive, then escape again will not unpause"): input dispatch
+	# runs BEFORE _process in the frame, so on the second press the panel had
+	# already closed itself and unpaused - `visible` read false, `just_pressed`
+	# read true, and this reopened the menu on the very keypress that closed
+	# it. The panel stamps the frame it closes on; that frame never reopens.
 	if Input.is_action_just_pressed("quit_game"):
-		if _pause_menu != null and is_instance_valid(_pause_menu) 				and not _pause_menu.visible:
+		if _pause_menu != null and is_instance_valid(_pause_menu) \
+				and not _pause_menu.visible \
+				and _pause_menu.closed_frame != Engine.get_process_frames():
 			_pause_menu.open()
 		return
 	# THE SESSION VERBS ARE NOT RUN VERBS (owner 2026-08-30: "the keybindings
