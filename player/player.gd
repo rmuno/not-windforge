@@ -34,6 +34,40 @@ var JUMP_VELOCITY := -380.0
 var GRAVITY := 980.0
 var MAX_FALL := 900.0
 
+## --- FALL DAMAGE (owner 2026-08-30: "I wanna say that there should be fall
+## damage, as with the Source") -------------------------------------------------
+##
+## The point of it is not realism, it is that FALLING IS THE FASTEST TRAVERSAL IN
+## THE GAME AND IT COSTS NOTHING (ROADMAP Q-I). Gravity gives a body 6,400 px/s
+## at 8x while walking gives 1,680 and a hull 3,900 — so the optimal line down is
+## always "let go", and every other pressure the Dive adds is decoration on top
+## of that arithmetic. This is the price.
+##
+## It is charged on the speed you ACTUALLY LAND AT, never on the peak of the
+## fall, and that is the whole design in one sentence: anything that slows you
+## before you arrive — a grapple line, a bag of air, a ledge clipped on the way —
+## is a way to survive a drop that would otherwise kill you. The owner asked for
+## exactly that ("you can break it if you're lucky enough to grapple a critter"),
+## and charging the peak would have deleted it.
+##
+## FREE BELOW `FALL_SAFE_SPEED`. The number is set against the two speeds that
+## bound it, not by feel: `JUMP_VELOCITY` is 380 and `MAX_FALL` is 800, so the
+## whole usable band is narrow and where the safe mark sits inside it decides
+## whether this is a mechanic or a coin flip. At 520 (h = v²/2g = 138 px at 1x)
+## a body falls about **twice its own jump height, or seven body-heights, for
+## free** — every hop, every step off a hull, every drop through a deck hatch —
+## and then has a real 520→800 band to be punished in.
+##
+## The first cut used 760, which the suite caught as **95% of terminal**: free
+## below, lethal within a whisker above, nothing legible in between. A threshold
+## that close to the ceiling is not a generous rule, it is an invisible cliff.
+##
+## Scaled with the body (see scale_body): these are speeds, and at 8x everything
+## about a fall is 8x, so an unscaled threshold would make every landing lethal.
+var FALL_SAFE_SPEED := 520.0
+## Damage at MAX_FALL, as a multiple of the body's whole health pool.
+const FALL_LETHAL_MULT := 1.15
+
 ## How close you must be to a helm block to use it.
 var HELM_REACH := 46.0
 
@@ -262,6 +296,7 @@ func scale_body(m: float) -> void:
 	GRAVITY *= m
 	MAX_FALL *= m
 	HELM_REACH *= m
+	FALL_SAFE_SPEED *= m
 	STEP_HEIGHT *= m
 	STEP_PROBE *= m
 	HOOK_SPEED *= m
@@ -558,10 +593,68 @@ func _physics_process(delta: float) -> void:
 		velocity *= maxf(0.0, 1.0 - ROPE_ATTRITION * delta)
 
 	var stride := velocity.x
+	# The speed we are about to ARRIVE at. Read before the solver, because
+	# move_and_slide zeroes it against the floor — after the call there is no
+	# landing left to measure.
+	var arriving := velocity.y
+	var was_airborne := not is_on_floor()
 	move_and_slide()
+
+	if was_airborne and is_on_floor():
+		_land_from(arriving)
 
 	if is_on_wall() and is_on_floor() and not is_zero_approx(dir):
 		_try_step_up(dir, stride)
+
+
+## THE BILL FOR A LANDING. `arriving` is the downward speed the body carried into
+## the floor, in px/s. Pure arithmetic lives in `fall_damage_for` so the curve is
+## testable without a scene, a floor or a frame.
+## FORGIVE THE NEXT LANDING. Anything that MOVES the body rather than flying it —
+## a respawn, a teleport, stepping on or off a helm — hands it a fall it never
+## chose, and the first version of this charged for exactly that: the startup
+## suite caught it by teleporting the body 1,500 px over a spawn site, whereupon
+## it landed at terminal velocity, died, respawned somewhere else, and the site
+## it was supposed to be waking never saw it.
+##
+## Worse than a broken test, that is a DEATH LOOP waiting in the real game: a
+## respawn that drops you far enough kills you, which respawns you, which drops
+## you. Every code path that relocates the body clears the bill for the landing
+## that relocation causes; a fall you actually flew into is untouched.
+func forgive_fall() -> void:
+	_fall_forgiven = true
+
+
+var _fall_forgiven := false
+
+
+func _land_from(arriving: float) -> void:
+	if _fall_forgiven:
+		_fall_forgiven = false
+		return
+	var hurt_by := fall_damage_for(arriving, FALL_SAFE_SPEED, MAX_FALL,
+		max_health, Tunables.get_num("fall_damage"))
+	if hurt_by > 0.0:
+		take_damage(hurt_by)
+
+
+## What a landing at `arriving` px/s costs a body with `pool` health.
+##
+## Zero at or below `safe`, then linear in the SPEED OVER the safe mark up to
+## `terminal`, reaching `FALL_LETHAL_MULT * pool` there. Linear rather than
+## quadratic on purpose: energy goes as v², which makes the last stretch before
+## terminal a cliff the player cannot read — a landing either tickles or deletes
+## you with nothing legible in between. Linear gives a middle where a bad drop
+## hurts enough to change what you do next and leaves you alive to do it.
+##
+## `dial` is F2 `fall_damage`: 0 turns it off entirely, 1 is shipped.
+static func fall_damage_for(arriving: float, safe: float, terminal: float,
+		pool: float, dial := 1.0) -> float:
+	if arriving <= safe or pool <= 0.0 or dial <= 0.0:
+		return 0.0
+	var span := maxf(terminal - safe, 1.0)
+	var over := clampf((arriving - safe) / span, 0.0, 1.0)
+	return pool * FALL_LETHAL_MULT * over * dial
 
 
 ## Drop-through discards collisions with exactly the platform bodies under

@@ -239,6 +239,13 @@ const _REGISTRY := [
 	{"id": "dive_assistant", "label": "Dive: the assistant mans the repair station",
 		"group": "World", "kind": KIND_BOOL, "default": true},
 		# world._dive_post_the_assistant — off = no station, no crew, X-wand only
+	# FALL DAMAGE (owner 2026-08-30, "as with the Source"). A multiplier on what
+	# a landing costs: 0 turns it off outright, 1 is shipped, 2 doubles it. The
+	# curve itself lives in Player.fall_damage_for — free below a generous safe
+	# speed, climbing to more than a full health pool at terminal velocity.
+	{"id": "fall_damage", "label": "Fall damage (0 = off, 1 = shipped)",
+		"group": "Player", "kind": KIND_FLOAT, "default": 1.0,
+		"min": 0.0, "max": 3.0, "step": 0.25},   # Player.fall_damage_for
 	# --- Ecology: the deep stirs (Q-C — whales keep the krakens down) --------
 	# Overhunt whales and nothing holds the deep in check; the meter rises per
 	# whale kill and DECAYS slowly (whales breeding back). The decay IS the

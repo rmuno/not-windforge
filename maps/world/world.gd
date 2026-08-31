@@ -1773,6 +1773,7 @@ func _dive_step_in(ship: Ship, cell: Vector2i) -> void:
 		return
 	player.global_position = ship.to_global(ship.local_pos_of(cell))
 	player.velocity = Vector2.ZERO
+	player.forgive_fall()   # the mode moved you, so the mode pays for the landing
 
 
 ## Stepping off the helm in THE DIVE puts you on TOP of the hull, above where
@@ -1794,6 +1795,7 @@ func _dive_step_out(ship: Ship) -> void:
 		b.position.y - Ship.CELL * float(world_scale) * 1.5)
 	player.global_position = ship.to_global(local)
 	player.velocity = Vector2.ZERO
+	player.forgive_fall()   # stepping off the helm is not a fall you chose
 
 
 ## One frame of the run. Reads the altitude, hands it to the model, and gives
@@ -6705,6 +6707,10 @@ func respawn_player() -> void:
 	# something a world away — the tether is drawn across the screen and the reel
 	# fights every step you take. Death is a reset; the rope is part of it.
 	player.release_grapple()
+	# ...and do not bill the drop this respawn is about to cause. A fresh body
+	# placed above ground did not choose that fall, and charging it is a DEATH
+	# LOOP: killed by the landing, respawned, dropped, killed again.
+	player.forgive_fall()
 	# Safety net: never strand the local player shipless — e.g., the core just ate
 	# their ship (owner: "say goodbye"). Single-player / host only; a fresh starter
 	# at base beats the "No ship — this is a bug" dead end. (No-op when they still
