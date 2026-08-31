@@ -1836,6 +1836,15 @@ func _check_spawn_sites(world: Node, fleet) -> void:
 	Tunables.set_value("site_release_seconds", 0.0)
 	Tunables.set_value("site_regen_seconds", 5.0)
 	var home: Vector2 = pl.global_position
+	# This test TELEPORTS the body 1,500 px up and waits — which, since fall
+	# damage landed, is a fall at terminal velocity onto rock. The body died,
+	# respawned by its ship, and the site it was supposed to be waking never saw
+	# it. The forgiveness `respawn_player` uses does not apply here because
+	# nothing respawned it; this hand moved it. So the LEVER goes off for this
+	# block: the subject is spawn sites, not falling, and a test should not be
+	# quietly measuring a second feature.
+	var fall_dial: float = Tunables.get_num("fall_damage")
+	Tunables.set_value("fall_damage", 0.0)
 	pl.global_position = (site["pos"] as Vector2) + Vector2(0.0, -1500.0)
 	for i in 260:
 		await world.get_tree().physics_frame
@@ -1941,6 +1950,7 @@ func _check_spawn_sites(world: Node, fleet) -> void:
 	# sweep every resident (the passes above kept releasing while we waited).
 	Tunables.set_value("spawn_sites_enabled", false)
 	pl.global_position = home
+	Tunables.set_value("fall_damage", fall_dial)   # the lever this block borrowed
 	Tunables.reset("site_release_seconds")
 	Tunables.reset("site_regen_seconds")
 	for ship in (fleet.call("ships") as Array):

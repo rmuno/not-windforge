@@ -53,6 +53,7 @@ func _initialize() -> void:
 	_test_creature_hit_flash()
 	_test_edge_marker_placement()
 	_test_backdrop_generation()
+	_test_fall_damage()
 	_test_backdrop_is_calm()
 	_test_dive_run()
 	await _test_sealed_pockets_cut_a_holed_body()
@@ -1657,6 +1658,97 @@ func _test_backdrop_generation() -> void:
 ## cut multiplied raw world pixels, so the on-foot zoom of 0.9 turned a nominal
 ## 0.5 into 0.56 and the helm's 0.69 turned it into 0.72, i.e. the backdrop
 ## sped UP when you pulled back. (2) The silhouettes must be haze, not ink.
+## FALL DAMAGE (owner 2026-08-30: "there should be fall damage, as with the
+## Source"). The point is not realism — it is that falling is the fastest
+## traversal in the game and costs nothing (ROADMAP Q-I), so this is the price.
+func _test_fall_damage() -> void:
+	var safe := 520.0
+	var terminal := 800.0
+	var pool := 100.0
+	# THE SAFE MARK MUST SIT WELL INSIDE THE BAND, not against its ceiling. The
+	# first cut put it at 760 against a terminal of 800 — free below, lethal a
+	# whisker above, nothing legible between. That is an invisible cliff, not a
+	# generous rule, and it is the kind of tuning only arithmetic catches.
+	var p := Player.new()
+	_check(p.FALL_SAFE_SPEED < p.MAX_FALL * 0.8,
+		"the safe landing speed leaves a real band to be hurt in (%.0f of %.0f)"
+			% [p.FALL_SAFE_SPEED, p.MAX_FALL])
+	_check(p.FALL_SAFE_SPEED > absf(p.JUMP_VELOCITY) * 1.15,
+		"...and still clears your own jump comfortably (%.0f vs %.0f)"
+			% [p.FALL_SAFE_SPEED, absf(p.JUMP_VELOCITY)])
+	p.free()
+	# ORDINARY PLATFORMING IS FREE, and generously so — if a routine hop files a
+	# bill the mechanic is a tax, not a stake.
+	_check(is_zero_approx(Player.fall_damage_for(0.0, safe, terminal, pool)),
+		"standing on the floor costs nothing")
+	_check(is_zero_approx(Player.fall_damage_for(safe, safe, terminal, pool)),
+		"landing exactly at the safe speed is still free")
+	_check(is_zero_approx(Player.fall_damage_for(380.0, safe, terminal, pool)),
+		"...and so is landing from your own jump (JUMP_VELOCITY 380)")
+	# Past it, it climbs — and terminal velocity is FATAL, which is what makes a
+	# shipless dive a gamble rather than a slide.
+	var mid := Player.fall_damage_for((safe + terminal) * 0.5, safe, terminal, pool)
+	_check(mid > 0.0 and mid < pool,
+		"a bad landing hurts but leaves you alive to change your mind (%.1f of %.0f)"
+			% [mid, pool])
+	_check(Player.fall_damage_for(terminal, safe, terminal, pool) > pool,
+		"terminal velocity onto rock is lethal")
+	_check(Player.fall_damage_for(terminal * 4.0, safe, terminal, pool)
+			== Player.fall_damage_for(terminal, safe, terminal, pool),
+		"...and cannot get worse than lethal (the curve is clamped)")
+	# Monotonic in between: a harder landing never costs less.
+	var prev := -1.0
+	for i in 12:
+		var v: float = safe + (terminal - safe) * float(i) / 11.0
+		var d := Player.fall_damage_for(v, safe, terminal, pool)
+		_check(d >= prev, "the cost never falls as the landing gets harder (%.0f px/s)" % v)
+		prev = d
+	# THE DIAL, per the F2 standing order.
+	_check(is_zero_approx(Player.fall_damage_for(terminal, safe, terminal, pool, 0.0)),
+		"fall_damage 0 turns it off outright")
+	_check(Player.fall_damage_for(terminal, safe, terminal, pool, 2.0)
+			> Player.fall_damage_for(terminal, safe, terminal, pool, 1.0),
+		"...and the dial scales it")
+	_check(Tunables.has("fall_damage"), "fall_damage is an F2 lever (standing order)")
+	# THE DEATH-LOOP GUARD. Anything that MOVES the body rather than flying it —
+	# a respawn, a teleport, stepping off a helm — hands it a fall it never
+	# chose. The startup suite found this the hard way: teleporting the body
+	# 1,500 px over a spawn site landed it at terminal velocity, killed it,
+	# respawned it elsewhere, and the site it was meant to be waking never saw
+	# it. In the real game that is a LOOP — killed by the landing, respawned,
+	# dropped, killed again — so every relocation clears the next bill, and only
+	# the next one.
+	var moved := Player.new()
+	moved.max_health = 100.0
+	moved.health = 100.0
+	moved.forgive_fall()
+	moved.call("_land_from", moved.MAX_FALL * 4.0)
+	_check(is_equal_approx(moved.health, 100.0),
+		"a relocated body is not billed for the drop the relocation caused")
+	moved.call("_land_from", moved.MAX_FALL * 4.0)
+	_check(moved.health < 100.0,
+		"...and the forgiveness is spent, so the NEXT landing is real")
+	moved.free()
+
+	# A DEAD BODY HAS NO POOL TO SPEND — no divide-by-nothing, no free damage.
+	_check(is_zero_approx(Player.fall_damage_for(terminal, safe, terminal, 0.0)),
+		"a body with no health pool takes no fall damage")
+
+	# THE THRESHOLD SCALES WITH THE BODY. Every speed in a fall is x8 at the
+	# shipped scale, so an unscaled safe speed would make every landing lethal —
+	# the same class of bug as the eightfold deck.
+	var big := Player.new()
+	var small_safe := big.FALL_SAFE_SPEED
+	big.scale_body(8.0)
+	_check(is_equal_approx(big.FALL_SAFE_SPEED, small_safe * 8.0),
+		"the safe landing speed scales with the body (%.0f -> %.0f)"
+			% [small_safe, big.FALL_SAFE_SPEED])
+	_check(is_zero_approx(Player.fall_damage_for(big.FALL_SAFE_SPEED * 0.9,
+			big.FALL_SAFE_SPEED, big.MAX_FALL, 100.0)),
+		"...so an 8x body still lands from an 8x hop for free")
+	big.free()
+
+
 func _test_backdrop_is_calm() -> void:
 	# THE MEMOISED FEATURES ARE THE SAME FEATURES. `cell_features` is pure in
 	# (seed, layer, cell) and its answer is fixed forever, but it was recomputed
