@@ -56,6 +56,7 @@ func _initialize() -> void:
 	_test_fall_damage()
 	_test_backdrop_is_calm()
 	_test_dive_run()
+	_test_dive_ring()
 	_test_dive_cards()
 	_test_creature_log()
 	await _test_hull_integrity()
@@ -2062,6 +2063,45 @@ func _test_dive_cards() -> void:
 	var led := run.ledger()
 	_check(led.has("cards") and led.has("xp") and led.has("draft") and led.has("xp_need"),
 		"the ledger carries cards / xp / draft for the HUD")
+
+
+## THE WIND RING (owner experiment 2026-08-31): the looping tile model. Pure —
+## wrap in both directions, the winds where the owner put them, the garrison
+## growing away from home, and a ring whose table can be resized without any
+## other code knowing.
+func _test_dive_ring() -> void:
+	_t("THE WIND RING: wrap, winds, and the garrison away from home")
+	var n := DiveRun.RING.size()
+	_check(n >= 3, "the ring has tiles (%d)" % n)
+	_check(DiveRun.zone_kind(0) == "up", "tile 0 — where you start — is the UPDRAFT")
+	_check(DiveRun.RING.has("down"), "somewhere out there the wind turns DOWN")
+	# Wrap: one full ring in either direction is home again.
+	_check(DiveRun.zone_index(0.0) == 0 and DiveRun.zone_index(float(n)) == 0
+			and DiveRun.zone_index(-float(n)) == 0,
+		"a full lap either way loops back to the centre")
+	_check(DiveRun.zone_index(0.4) == 0 and DiveRun.zone_index(-0.4) == 0,
+		"the centre tile is a TILE, not a line (nearest-tile rounding)")
+	_check(DiveRun.zone_index(-1.0) == n - 1,
+		"one tile left is the ring's last entry — the wrap is seamless")
+	# Winds: up at home, down at the far side, still in the rocks.
+	_check(DiveRun.zone_wind(0) < 0.0, "the home tile's wind pushes UP (-y)")
+	var has_down := false
+	for i in n:
+		if DiveRun.zone_kind(i) == "down":
+			has_down = true
+			_check(DiveRun.zone_wind(i) > 0.0, "the far tile's wind pushes DOWN (+y)")
+		elif DiveRun.zone_kind(i) == "rock":
+			_check(DiveRun.zone_wind(i) == 0.0, "the rocks have no wind lane")
+	_check(has_down, "the ring carries a downdraft")
+	# The garrison grows away from home; the picket cap still rules the total.
+	_check(DiveRun.zone_extra_pickets(0) == 0, "home adds no extra pickets")
+	for i in n:
+		if DiveRun.zone_kind(i) == "down":
+			_check(DiveRun.zone_extra_pickets(i) > DiveRun.zone_extra_pickets(1),
+				"the downdraft is the meanest garrison")
+	# Labels exist for every tile (the HUD prints them raw).
+	for i in n:
+		_check(not DiveRun.zone_label(i).is_empty(), "tile %d has a name" % i)
 
 
 func _test_dive_run() -> void:
