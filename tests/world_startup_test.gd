@@ -2687,6 +2687,11 @@ func _check_dive(world: Node, fleet) -> void:
 		await world.get_tree().physics_frame
 		_ok(run == null or run.committed, "...which COMMITS the run to that hull")
 		_ok(world.get("local_ship") == chosen, "...and it is now your ship")
+		# HULL INTEGRITY (v0.111.0): committing ARMS the shared pool — the hull
+		# can die as a unit now, which is the run's consequence.
+		_ok(chosen.hull_integrity_max > 0.0
+				and is_equal_approx(chosen.hull_integrity, chosen.hull_integrity_max),
+			"...and commitment arms her integrity pool (%.0f)" % chosen.hull_integrity_max)
 		pl.disembark()
 
 	# (The complement — that OUTSIDE a run a shipless respawn still rescues you —
@@ -2769,6 +2774,7 @@ func _check_dive(world: Node, fleet) -> void:
 	world.call("_dive_surge")
 	var born_hostiles := 0
 	var born_hunting := 0
+	var born_mortal := 0
 	var aggro_map: Dictionary = world.get("_enemy_aggro")
 	for sid in (world.get("_dive_surged") as Array):
 		if pre_surge.has(sid):
@@ -2779,10 +2785,15 @@ func _check_dive(world: Node, fleet) -> void:
 		born_hostiles += 1
 		if bool(aggro_map.get(sid, false)) and bool(world.call("_is_provoked", sid)):
 			born_hunting += 1
+		if picket.hull_integrity_max > 0.0:
+			born_mortal += 1
 	if born_hostiles > 0:
 		_ok(born_hunting == born_hostiles,
 			"a hostile surge picket is born aggro'd AND provoked (%d of %d)"
 				% [born_hunting, born_hostiles])
+		_ok(born_mortal == born_hostiles,
+			"...and born MORTAL — its integrity pool is armed (%d of %d)"
+				% [born_mortal, born_hostiles])
 		# The shrug is gone: strip one picket's aggro the way the de-aggro range
 		# would, tick the keeper, and the hunt is back on.
 		var victim := -1
@@ -2846,6 +2857,49 @@ func _check_dive(world: Node, fleet) -> void:
 	world.call("end_dive")
 	_ok((world.get("_dive_outposts") as Array).is_empty(),
 		"the quartermasters go with the run")
+
+	# --- THE CLOSING SKY + PASSAGE HOME (owner rulings 2026-08-31) ----------
+	# The sky closes behind a run: above the ceiling the air shoves you DOWN
+	# (checked on the on-foot body, whose velocity the world writes directly),
+	# and extraction is the counter's free PASSAGE HOME row, which banks the pot
+	# at the deepest-scaled premium into the real wallet.
+	world.call("begin_dive")
+	await _dive_take_a_hull(world, fleet)
+	var closing = world.get("dive")
+	if closing != null and pl != null and is_instance_valid(pl):
+		closing.deepest = 3
+		if pl.is_piloting():
+			pl.disembark()
+		# One rung ABOVE the closed sky's underside, standing still.
+		var rung_px: float = absf(float(world.call("dive_altitude_y", DiveRun.depth_altitude(2)))
+			- float(world.call("dive_altitude_y", DiveRun.depth_altitude(1))))
+		var was_at: Vector2 = pl.global_position
+		pl.global_position = Vector2(was_at.x,
+			float(world.call("dive_altitude_y", DiveRun.ceiling_frac(3))) - rung_px)
+		pl.velocity = Vector2.ZERO
+		world.call("_dive_hold_the_ceiling", 0.5)
+		_ok(pl.velocity.y > 0.0,
+			"above the closed sky, the air shoves a body DOWN (vy %.0f)" % pl.velocity.y)
+		# ...and below the ceiling it does not touch you.
+		pl.global_position = Vector2(was_at.x,
+			float(world.call("dive_altitude_y", DiveRun.depth_altitude(3))))
+		pl.velocity = Vector2.ZERO
+		world.call("_dive_hold_the_ceiling", 0.5)
+		_ok(is_zero_approx(pl.velocity.y),
+			"below the ceiling the sky leaves you alone")
+		pl.global_position = was_at
+		# PASSAGE HOME: the counter's last row ends the run escaped and banks.
+		world.call("_plant_outpost", pl.global_position)
+		closing.pot = 100
+		var wallet_before: int = pl.wallet.balance
+		var expect: int = DiveRun.bank_value(100, 3)
+		_ok(bool(world.call("try_buy_stock", DiveRun.STOCK.size() - 1)),
+			"the counter's PASSAGE HOME row extracts the run")
+		_ok(String(closing.outcome) == "escaped" and int(closing.banked) == expect,
+			"...as an escape, banked at the deepest premium (%d)" % int(closing.banked))
+		_ok(pl.wallet.balance == wallet_before + expect,
+			"...and the coins reached the permanent wallet")
+	world.call("end_dive")
 
 	# --- THE SESSION VERBS ARE NOT RUN VERBS (owner 2026-08-30) -------------
 	# "You can hit T to teleport way down (and your ship is still there!)"

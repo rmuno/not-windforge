@@ -247,6 +247,27 @@ const _REGISTRY := [
 	{"id": "dive_picket_cap", "label": "Dive: max live surge pickets at once",
 		"group": "World", "kind": KIND_INT, "default": 9, "min": 3,
 		"max": 30, "step": 1},   # world._dive_surge
+	# --- Hull integrity + the closing sky (owner rulings 2026-08-31) ---------
+	# A run's vessels die as UNITS when their integrity breaks (per-block damage
+	# unchanged; the pool drains by structural hp actually destroyed). First
+	# cuts, wanting the owner's drag: your hull ~3,000 (the probe's siege dealt
+	# roughly 100 hp/s of structure, so ~half a minute of undefended battering),
+	# a picket 600 (~15 s of focused starter fire — the 30-s ceiling's spirit).
+	{"id": "dive_ship_integrity", "label": "Dive: YOUR hull's integrity pool",
+		"group": "World", "kind": KIND_FLOAT, "default": 3000.0, "min": 200.0,
+		"max": 60000.0, "step": 100.0, "note": "next commit"},   # world._tick_dive commit branch
+	{"id": "dive_picket_integrity", "label": "Dive: a hostile picket's integrity pool",
+		"group": "World", "kind": KIND_FLOAT, "default": 600.0, "min": 50.0,
+		"max": 20000.0, "step": 50.0, "note": "next spawn"},     # world._dive_surge
+	{"id": "dive_explosion_damage", "label": "Dive: blast damage to anyone aboard a dying ship",
+		"group": "World", "kind": KIND_FLOAT, "default": 80.0, "min": 0.0,
+		"max": 500.0, "step": 5.0},                              # world._dive_explode_ship
+	# The closing sky's strength, a multiplier on DiveRun.CEILING_PUSH (400
+	# px/s²@1×/rung, capped at 3 rungs ≈ 10× the props). 1.0 = the shipped rail;
+	# 0 turns the ceiling off entirely for A/B play.
+	{"id": "dive_ceiling_mult", "label": "Dive: closing-sky push (0 = off, 1 = shipped)",
+		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,
+		"max": 4.0, "step": 0.1},                                # world._dive_hold_the_ceiling
 	# WHAT A CREATURE'S BODY DOES TO A VESSEL IT HITS (owner 2026-08-30: "whales
 	# aren't quite vicious or a threat - easy to avoid and overcome. they should
 	# do DAMAGE on collision: BOOM!"). A multiplier on the impact bite a VESSEL

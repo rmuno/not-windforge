@@ -58,6 +58,7 @@ func _initialize() -> void:
 	_test_dive_run()
 	_test_dive_cards()
 	_test_creature_log()
+	await _test_hull_integrity()
 	await _test_sealed_pockets_cut_a_holed_body()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
 	await _test_creature_skin_faces_its_motion()
@@ -1939,6 +1940,43 @@ func _test_creature_log() -> void:
 		"a met creature shows its name and bumps the count")
 
 
+## HULL INTEGRITY (v0.111.0): an ARMED vessel drains a shared pool by the
+## structural hp actually destroyed — never a weapon's overkill number — while
+## blocks still break per-cell exactly as before (the owner's "preserve the super
+## specific per block situation"). Unarmed (the default, and every ship outside a
+## Dive run) is byte-identical to the old game.
+func _test_hull_integrity() -> void:
+	_t("hull integrity: armed vessels die as units, per-block damage preserved")
+	var s := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.HULL,
+		Vector2i(1, 0): BlockDB.Type.HULL,
+		Vector2i(2, 0): BlockDB.Type.HULL,
+	}, true)
+	# UNARMED: the default — damage touches no pool.
+	s.damage_cell(Vector2i(0, 0), 10.0)
+	_check(s.hull_integrity == 0.0 and s.hull_integrity_max == 0.0,
+		"an unarmed vessel has no pool and never drains one")
+	# ARMED: the pool drains by exactly the hp removed from cells.
+	s.hull_integrity_max = 500.0
+	s.hull_integrity = 500.0
+	var hp_before: float = s.blocks[Vector2i(1, 0)]["hp"]
+	s.damage_cell(Vector2i(1, 0), 20.0)
+	_check(is_equal_approx(s.hull_integrity, 480.0),
+		"a 20-damage hit drains the pool by 20 (%.0f)" % s.hull_integrity)
+	_check(is_equal_approx(s.blocks[Vector2i(1, 0)]["hp"], hp_before - 20.0),
+		"...and the BLOCK still took its per-cell damage — preserved")
+	# OVERKILL: capped at the cell's remaining hp, so integrity measures the
+	# ship being destroyed, never the weapon's number.
+	var remaining: float = s.blocks[Vector2i(2, 0)]["hp"]
+	var pool_before := s.hull_integrity
+	s.damage_cell(Vector2i(2, 0), 9999.0)
+	_check(not s.blocks.has(Vector2i(2, 0)), "the overkilled block is destroyed per-cell")
+	_check(is_equal_approx(s.hull_integrity, pool_before - remaining),
+		"...but the pool drains only by the hp that existed (%.0f, not 9999)" % remaining)
+	s.queue_free()
+	await process_frame
+
+
 ## THE DIVE'S CARDS (Q-L) — the pure model: the catalog's declarative parity, the
 ## draft draw, and DiveRun's XP bar / draft / modifier / proc plumbing. No world,
 ## no nodes.
@@ -2066,9 +2104,11 @@ func _test_dive_run() -> void:
 	# --- A whole run: down to the floor, then back out alive ----------------
 	var run := DiveRun.new()
 	_check(run.outcome == "" and run.deepest == 1, "a fresh run starts at the top")
-	# Sitting at the start line must NOT count as an escape.
-	var early: Array = run.advance(1.0, DiveRun.depth_altitude(1), 45.0)
-	_check(not early.has("escaped"), "you cannot escape a run you never dived")
+	# Sitting at the start line must NOT count as an extraction: passage home is
+	# refused before you have ever left the deck.
+	run.advance(1.0, DiveRun.depth_altitude(1), 45.0)
+	_check(not run.go_home(), "you cannot go home from a run you never dived")
+	_check(run.outcome == "", "...and the refusal leaves the run alive")
 
 	var saw_depths := {}
 	var surge_events := 0
@@ -2081,7 +2121,6 @@ func _test_dive_run() -> void:
 					"depth": saw_depths[run.depth] = true
 					"surge": surge_events += 1
 					"leviathan": leviathan += 1
-					"escaped": _check(false, "escaped while descending?!")
 			if step == 0:
 				run.credit_kill("kraken")
 	_check(saw_depths.size() == DiveRun.DEPTHS - 1,
@@ -2092,13 +2131,50 @@ func _test_dive_run() -> void:
 	_check(run.pot > 0 and run.kills == DiveRun.DEPTHS - 1,
 		"kills paid into the pot (%d coins, %d kills)" % [run.pot, run.kills])
 
+	# THE SKY CLOSES BEHIND A RUN (v0.111.0): climbing out no longer exists, so
+	# reaching the surface altitude must NOT end a run any more...
+	run.advance(1.0, DiveRun.TOP_FRAC, 45.0)
+	_check(run.outcome == "", "the surface altitude no longer ends a run (the sky closed)")
+	# ...extraction is PASSAGE HOME at an outpost counter instead, at the same
+	# deepest-scaled premium the climb used to pay.
 	var carried := run.pot
-	var events: Array = run.advance(1.0, DiveRun.EXTRACT_FRAC, 45.0)
-	_check(events.has("escaped"), "climbing back to the surface ends the run")
+	_check(run.go_home(), "passage home extracts a run that has been down")
 	_check(run.outcome == "escaped", "...as an escape")
 	_check(run.banked == DiveRun.bank_value(carried, DiveRun.DEPTHS),
 		"the pot banked at the floor's premium (%d -> %d)" % [carried, run.banked])
 	_check(run.advance(1.0, 0.2, 45.0).is_empty(), "a finished run is inert")
+	_check(not run.go_home(), "...and cannot be extracted twice")
+
+	# --- The closing sky's arithmetic ---------------------------------------
+	_check(DiveRun.ceiling_frac(1) <= DiveRun.TOP_FRAC,
+		"the ceiling never rises above the deck's own air")
+	for d in range(2, DiveRun.DEPTHS + 1):
+		_check(DiveRun.ceiling_frac(d) < DiveRun.ceiling_frac(d - 1),
+			"the sky closes lower as you go deeper (depth %d)" % d)
+		_check(DiveRun.ceiling_frac(d) > DiveRun.depth_altitude(d),
+			"...but always leaves headroom over depth %d's own rung" % d)
+	_check(is_equal_approx(
+			DiveRun.ceiling_frac(3) - DiveRun.depth_altitude(3),
+			DiveRun.rung_frac() * DiveRun.CEILING_SLACK_RUNGS),
+		"the headroom is exactly the slack, in rungs")
+	_check(DiveRun.ceiling_push(0.0) == 0.0 and DiveRun.ceiling_push(-2.0) == 0.0,
+		"below the ceiling the sky does not push")
+	_check(DiveRun.ceiling_push(1.0) > 0.0
+		and DiveRun.ceiling_push(2.0) > DiveRun.ceiling_push(1.0),
+		"the push ramps with the trespass")
+	_check(is_equal_approx(DiveRun.ceiling_push(99.0),
+			DiveRun.CEILING_PUSH * DiveRun.CEILING_MAX_RUNGS),
+		"...and caps at the rail's full weight")
+	_check(DiveRun.CEILING_PUSH * DiveRun.CEILING_MAX_RUNGS
+		> DiveRun.HULL_LATERAL_ACCEL * 4.0,
+		"the capped rail beats any hull's authority — no traversing back up")
+
+	# --- The counter's last row is the way home ------------------------------
+	var last_row: Dictionary = DiveRun.STOCK[DiveRun.STOCK.size() - 1]
+	_check(String(last_row["id"]) == "passage" and int(last_row["cost"]) == 0,
+		"the outpost counter's last row is free passage home")
+	_check(int(DiveRun.KIND_COIN.get("hulk", 0)) > 0,
+		"a broken gunboat pays as a kill now (hulk is in the coin table)")
 
 	# --- Losing the ship burns the pot --------------------------------------
 	var doomed := DiveRun.new()
@@ -2307,13 +2383,16 @@ func _test_dive_run() -> void:
 			woke = true
 	_check(woke, "...and leaving the top rung starts the den's clock")
 	# Coming BACK to the top does not make it safe again — the way home is not
-	# a safe place, and by then `deepest` is long past 1.
+	# a safe place, and by then `deepest` is long past 1. (Fictionally you can
+	# no longer get here at all — the sky closes — but the model must still be
+	# hostile at every altitude, or a ceiling bug would reopen the safe camp.)
 	var home := false
 	for i in 200:
 		if fresh.advance(1.0, DiveRun.depth_altitude(1), 45.0).has("surge"):
 			home = true
-	_check(fresh.outcome == "escaped" or home,
-		"the dock is not safe once you have been down")
+	_check(home, "the dock is not safe once you have been down")
+	_check(fresh.outcome == "",
+		"...and reaching the top no longer ends a run (extraction is passage home)")
 
 	# Dying with no hull is its OWN ending, and says so.
 	var fell := DiveRun.new()
@@ -2634,9 +2713,12 @@ func _test_dive_run() -> void:
 	_check(not done.spend(1), "a finished run cannot shop")
 	for row in DiveRun.STOCK:
 		var r := row as Dictionary
-		_check(int(r["cost"]) > 0 and not String(r["label"]).is_empty(),
+		# Passage home (v0.111.0) is the one FREE row — extraction, not a
+		# purchase; every actual good still costs the pot something.
+		_check((int(r["cost"]) > 0 or String(r["id"]) == "passage")
+				and not String(r["label"]).is_empty(),
 			"stock row '%s' is priced and named" % r["id"])
-		_check(String(r["id"]) in ["lung", "patch", "balloon"],
+		_check(String(r["id"]) in ["lung", "patch", "balloon", "passage"],
 			"stock row '%s' is one the world knows how to hand over" % r["id"])
 
 
