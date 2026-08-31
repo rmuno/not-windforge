@@ -1658,6 +1658,38 @@ func _test_backdrop_generation() -> void:
 ## 0.5 into 0.56 and the helm's 0.69 turned it into 0.72, i.e. the backdrop
 ## sped UP when you pulled back. (2) The silhouettes must be haze, not ink.
 func _test_backdrop_is_calm() -> void:
+	# THE MEMOISED FEATURES ARE THE SAME FEATURES. `cell_features` is pure in
+	# (seed, layer, cell) and its answer is fixed forever, but it was recomputed
+	# for every lattice cell of every layer on EVERY frame — 107 calls and
+	# 0.475 ms per frame, each allocating an RNG, an array for the hash and a
+	# dictionary per feature. It is cached now, and a cache that changes the
+	# answer would change the sky, so both halves are pinned: the same cell twice
+	# is identical, and it matches the pure function it stands in for.
+	var bd := Backdrop.new()
+	for probe in [Vector2i(3, 1), Vector2i(-7, 4), Vector2i(0, 0)]:
+		var pure: Array = Backdrop.cell_features(4242, 1, probe, Backdrop.LATTICE[1],
+			float(Backdrop.LAYERS[1]), 4096.0)
+		var first: Array = bd.call("_features_for", 4242, 1, probe,
+			Backdrop.LATTICE[1], float(Backdrop.LAYERS[1]), 4096.0)
+		var again: Array = bd.call("_features_for", 4242, 1, probe,
+			Backdrop.LATTICE[1], float(Backdrop.LAYERS[1]), 4096.0)
+		_check(first.size() == pure.size() and again.size() == pure.size(),
+			"a cached lattice cell has the pure function's features (%d)" % pure.size())
+		for i in pure.size():
+			_check(String((first[i] as Dictionary)["kind"]) == String((pure[i] as Dictionary)["kind"])
+					and is_equal_approx(float((again[i] as Dictionary)["tone"]),
+						float((pure[i] as Dictionary)["tone"])),
+				"...identical on the second read, which is what a cache must be")
+	# A different WORLD must not inherit the old sky.
+	var other: Array = bd.call("_features_for", 999, 1, Vector2i(3, 1),
+		Backdrop.LATTICE[1], float(Backdrop.LAYERS[1]), 4096.0)
+	var other_pure: Array = Backdrop.cell_features(999, 1, Vector2i(3, 1),
+		Backdrop.LATTICE[1], float(Backdrop.LAYERS[1]), 4096.0)
+	_check(other.size() == other_pure.size(),
+		"a new seed drops the cache rather than serving the old world's sky")
+	bd.queue_free()
+
+
 	_t("the backdrop rides a small, zoom-invariant fraction of the world's speed")
 
 	# --- Speed: what the eye actually compares ------------------------------

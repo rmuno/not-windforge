@@ -16,8 +16,23 @@ extends Node2D
 ## How much further the view pulls back at the helm (owner-tuned per scene).
 @export var pilot_zoom_out := 1.3
 
+## TIGHTENED 30% IN THE SHIPPED SCENE (owner 2026-08-30: "kindly increase default
+## and max zoom by a flat 30% on both foot and while on ship"). One number does
+## all four, which is why it is the number that moved: the helm view is
+## `camera_zoom / pilot_zoom_out` and the wheel is a multiplier on top, so
+## raising `camera_zoom` by 30% raises the on-foot default, the at-helm default,
+## AND both ends of the wheel's range by exactly 30% together. maps/world/world.tscn
+## 0.198 -> 0.2574; the legacy 1x scene keeps 0.9, because its distances are what
+## the older suites' thresholds were written against.
+##
+## Higher zoom = MORE MAGNIFIED = less world on screen: on foot the view goes
+## from ~9,700 px wide to ~7,500, and at the helm from ~16,750 to ~12,900. That
+## also cuts what streams, since `terrain.primary_range_px` is half the visible
+## extent at the live zoom.
+
 ## Scroll-wheel zoom: a user multiplier on top of the scene defaults,
-## clamped to ±50% of them (owner's first guess at the range).
+## clamped to ±50% of them (owner's first guess at the range). Left alone by the
+## 30% pass on purpose — it is a RATIO, so the ends moved with `camera_zoom`.
 var _zoom_user := 1.0
 
 const SHIP_START := Vector2(0, -200)
@@ -171,6 +186,13 @@ const DIVE_CORRIDOR_PUSH := 260.0
 ## because the intro has no player and no HUD to leak.
 ##
 ## What the world does instead is READ the choice the intro made, once, at boot.
+## Is the world about to open as a RUN? A peek, not a take — `_apply_boot_mode`
+## remains the single consumer of the choice. This exists because the mode has to
+## be known BEFORE the world populates itself, and `take()` happens after.
+func _booting_the_dive() -> bool:
+	return GameMode.pending == GameMode.DIVE
+
+
 func _apply_boot_mode() -> void:
 	match GameMode.take():
 		GameMode.SANDBOX:
@@ -510,12 +532,32 @@ func _ready() -> void:
 	# Only a client that is still connecting has nothing yet.
 	if not Net.is_online():
 		_give_ship_to(1)
-		_spawn_enemy_hulk()
-		_spawn_whale()
-		_spawn_critters()
-		_spawn_kraken()
-		_spawn_boss()
-		_spawn_trainer()
+		# THE DIVE IS A STREAMLINED MODE, NOT THE WORLD WITH A LADDER IN IT
+		# (owner ruling 2026-08-30: "a dive is meant to be much quicker. the
+		# other modes should remain as they are but this one would be a super
+		# streamlined mode").
+		#
+		# A run used to open inside the FULLY POPULATED world — the whale pod,
+		# the critters, the kraken pod, the target hulk, the trainer, and the
+		# city-whale boss at its fixed lair: 11 ships and 79,532 blocks before
+		# the run added a thing, across a x4-wide world the dive uses about a
+		# tenth of. None of it is wanted. The mode brings its own threats (the
+		# surge ladder, garrisoned at every rung) and wakes its own floor
+		# resident at depth 8, and its shops are the outposts it plants on its
+		# own landings. The world's population was never the Dive's content —
+		# it was the substrate the mode was built on top of to get it playable
+		# (v0.89.0, "expanding no scope"), and this is the bill for that.
+		#
+		# `_booting_the_dive` PEEKS at the pending choice; `_apply_boot_mode`
+		# still TAKES it at the end of _ready, so there is exactly one consumer.
+		# The other two modes are untouched, which is the owner's other half.
+		if not _booting_the_dive():
+			_spawn_enemy_hulk()
+			_spawn_whale()
+			_spawn_critters()
+			_spawn_kraken()
+			_spawn_boss()
+			_spawn_trainer()
 
 	# You are a person, not a ship. Spawn standing on the deck, as the original
 	# does — see docs/ORIGINAL_PLAYTEST.md, "the opening sequence". Spawning
