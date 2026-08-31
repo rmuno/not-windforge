@@ -24,8 +24,9 @@ extends RefCounted
 ##   mods:  {dial_key: multiplier}          — multiplied into an existing number
 ##     dials wired today: "weapon_damage" (player sidearm), "turret_damage" (your
 ##     ship's guns), "fire_rate" (sidearm interval — <1 is FASTER), "hull_repair"
-##     (the Dive assistant's mend rate). STAGED (model supports, world not yet):
-##     "thrust", "grapple", "ride" — need ship/player surgery, next round.
+##     (the Dive assistant's mend rate), "thrust" (your hull's propeller force —
+##     `Ship.thrust_mult`, stamped on the local ship each dive tick, reset by
+##     end_dive). STAGED (model supports, world not yet): "grapple", "ride".
 ##   procs: [{on, effect, amount}]           — fired when the world emits `on`
 ##     events wired today: "kill" (a creature died to you), "hit" (your shot landed
 ##     on an enemy), "land" (you reached a new depth). STAGED: "attack", "hurt".
@@ -58,6 +59,9 @@ const CATALOG := [
 	{"id": "second_wind", "name": "Second Wind", "weight": 6,
 		"desc": "Reaching a new depth heals you 40 HP.",
 		"mods": {}, "procs": [{"on": "land", "effect": "heal", "amount": 40}]},
+	{"id": "trimmed_sails", "name": "Trimmed Sails", "weight": 8,
+		"desc": "Your ship's propellers push 30% harder.",
+		"mods": {"thrust": 1.30}, "procs": []},
 ]
 
 ## The events a proc may hook, and the effects the world knows how to apply. A card

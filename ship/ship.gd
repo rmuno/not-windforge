@@ -420,6 +420,14 @@ var last_attacker_id := 0
 ## the ship does not steer like a car. x = right(+)/left(−) via propellers,
 ## y = up(+)/down(−) via lift props. Both -1..1.
 var thrust_input := Vector2.ZERO
+## Run-scoped propeller multiplier — the Dive's "thrust" card dial (Trimmed
+## Sails). 1.0 always outside a run: the world stamps it on the LOCAL ship each
+## dive tick and resets it when the run ends, so ordinary flight, enemy hulls and
+## every existing thrust test see exactly the shipped force. Multiplies the
+## PROPELLER forces only (never lift, never buoyancy — a card about sails, not
+## physics), and it deliberately does NOT scale the power draw: the card is a
+## free upgrade, not a brownout trap.
+var thrust_mult := 1.0
 ## Gates the altitude hold only (rotation needs no assist — the upright
 ## rule is unconditional). False on wreckage: a dead hull does not trim.
 var assist_enabled := true
@@ -1998,10 +2006,12 @@ func _physics_process(delta: float) -> void:
 		* _total_lift * BlockDB.LIFT_PER_MASS * density * lift_factor * scale_unit)
 	if not is_zero_approx(v_input) and _total_vthrust > 0.0:
 		apply_central_force(Vector2.UP
-			* _total_vthrust * prop_norm * v_input * ratio * density * scale_unit)
+			* _total_vthrust * prop_norm * v_input * ratio * density * scale_unit
+			* thrust_mult)
 	if not is_zero_approx(thrust_input.x) and _total_hthrust > 0.0:
 		apply_central_force(facing
-			* _total_hthrust * prop_norm * thrust_input.x * ratio * density * scale_unit)
+			* _total_hthrust * prop_norm * thrust_input.x * ratio * density * scale_unit
+			* thrust_mult)
 
 
 ## The net UNSUPPORTED weight at the current altitude — the ship's weight minus
