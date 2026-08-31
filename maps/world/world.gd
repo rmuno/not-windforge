@@ -1976,7 +1976,13 @@ func _tick_dive(delta: float) -> void:
 	_dive_pursue(delta)
 	_dive_keep_the_hunt()
 	_dive_cull_the_wake(delta)
-	_hold_the_corridor(delta)
+	# THE WIND RING replaces the corridor while it is on: the corridor pushes
+	# you back to the centre line, and the ring's whole point is that LEAVING
+	# the centre is the game. Turning zones off (F2) brings the corridor back.
+	if Tunables.get_bool("dive_zones_enabled"):
+		_dive_hold_the_ring(delta)
+	else:
+		_hold_the_corridor(delta)
 	_dive_hold_the_ceiling(delta)
 	_dive_watch_integrity()
 	# Keep the card draft's offer filled while one is owed, so the HUD always has
@@ -2140,6 +2146,52 @@ func _hold_the_corridor(delta: float) -> void:
 		player.velocity.x += push * delta
 
 
+# --- THE WIND RING (owner experiment, 2026-08-31) ---------------------------
+
+## One ring tile's width in world px. Sized in shelf-widths (the corridor's own
+## yardstick) so it scales with the hulls; F2 `dive_zone_tile_widths`.
+func _dive_tile_w() -> float:
+	return maxf(Tunables.get_num("dive_zone_tile_widths") * _dive_shelf_span().x, 1.0)
+
+
+## Which ring tile the player is in right now (0 = the updraft you start in).
+func dive_zone() -> int:
+	if player == null or not is_instance_valid(player):
+		return 0
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	return DiveRun.zone_index((player.global_position.x - cx) / _dive_tile_w())
+
+
+## The ring: each tile's wind leans on hull and body, and crossing the ring's
+## outer edge arrives from the other side (the loop — hull, body and their
+## velocities all carry over; the camera is hard-locked to the player and
+## follows by itself). The ladder's landings stay near the centre column on
+## purpose in this first cut — the downdraft is a fast lane, not a home.
+func _dive_hold_the_ring(delta: float) -> void:
+	if player == null or not is_instance_valid(player):
+		return
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	var tile_w := _dive_tile_w()
+	var ring_w := tile_w * float(DiveRun.RING.size())
+	var half := ring_w * 0.5
+	# The loop first, so the wind below always reads the wrapped position.
+	var off: float = player.global_position.x - cx
+	if absf(off) > half:
+		var shift := -signf(off) * ring_w
+		player.global_position.x += shift
+		if is_instance_valid(local_ship):
+			local_ship.global_position.x += shift
+		_notify("...and around: the sky loops back on itself.")
+	# The tile's wind — a lean, not a rail (comparable to the props).
+	var wind: float = DiveRun.zone_wind(dive_zone()) * DiveRun.ZONE_WIND 		* Tunables.get_num("dive_zone_wind_mult") * float(world_scale)
+	if is_zero_approx(wind):
+		return
+	if is_instance_valid(local_ship):
+		local_ship.apply_central_force(Vector2(0.0, wind) * local_ship.mass)
+	if not player.is_piloting():
+		player.velocity.y += wind * delta
+
+
 ## A depth's den comes for you: hunters spawned AHEAD of you on your own line,
 ## as many as the ladder says, spread across it so you fly into a picket rather
 ## than a stack.
@@ -2167,7 +2219,11 @@ func _dive_surge() -> void:
 		var s2 := instance_from_id(pid) as Ship
 		if s2 != null and is_instance_valid(s2) and not s2.is_carcass():
 			live += 1
-	var n := mini(DiveRun.surge_count(dive.depth),
+	# The garrison grows away from home (the ring): rocks +1, downdraft +2.
+	var extra := 0
+	if Tunables.get_bool("dive_zones_enabled"):
+		extra = DiveRun.zone_extra_pickets(dive_zone())
+	var n := mini(DiveRun.surge_count(dive.depth) + extra,
 		Tunables.get_int("dive_picket_cap") - live)
 	if n <= 0:
 		return
@@ -2427,6 +2483,7 @@ func dive_status() -> Variant:
 	out["headline"] = DiveRun.outcome_line(out)
 	# Hull integrity (v0.111.0): the committed hull's pool as a fraction, or -1
 	# when no armed hull is flying (shipless, or pre-commit).
+	out["zone"] = DiveRun.zone_label(dive_zone()) 		if Tunables.get_bool("dive_zones_enabled") else ""
 	out["hull_frac"] = -1.0
 	if is_instance_valid(local_ship) and local_ship.hull_integrity_max > 0.0:
 		out["hull_frac"] = clampf(

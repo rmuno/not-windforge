@@ -2895,6 +2895,27 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(is_zero_approx(pl.velocity.y),
 			"below the ceiling the sky leaves you alone")
 		pl.global_position = was_at
+		# --- THE WIND RING (owner experiment 2026-08-31) --------------------
+		# Standing in the centre tile, the updraft leans a body UP; standing a
+		# lap away, the loop brings you home from the other side.
+		if bool(Tunables.get_bool("dive_zones_enabled")):
+			_ok(String(world.call("dive_status")["zone"]) == "UPDRAFT",
+				"the run starts in the UPDRAFT tile")
+			pl.velocity = Vector2.ZERO
+			world.call("_dive_hold_the_ring", 0.5)
+			_ok(pl.velocity.y < 0.0,
+				"the centre tile's wind pushes a body UP (vy %.0f)" % pl.velocity.y)
+			# The loop: step past the ring's edge and arrive from the other side.
+			var cx: float = (world.get("_world_rect") as Rect2).get_center().x
+			var tile_w := float(world.call("_dive_tile_w"))
+			var ring_w := tile_w * float(DiveRun.RING.size())
+			pl.velocity = Vector2.ZERO
+			pl.global_position = Vector2(cx + ring_w * 0.5 + tile_w * 0.2, was_at.y)
+			world.call("_dive_hold_the_ring", 0.016)
+			_ok(pl.global_position.x < cx,
+				"crossing the ring's edge loops you in from the other side (x-cx %.0f)"
+					% (pl.global_position.x - cx))
+			pl.global_position = was_at
 		# PASSAGE HOME: the counter's last row ends the run escaped and banks.
 		world.call("_plant_outpost", pl.global_position)
 		closing.pot = 100

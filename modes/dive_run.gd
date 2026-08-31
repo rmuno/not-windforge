@@ -814,3 +814,67 @@ static func outcome_line(l: Dictionary) -> String:
 			return "YOUR SHIP IS GONE. You reached %s. %d coins fell with it." % [
 				String(l.get("deepest_label", "")), int(l.get("pot", 0))]
 	return ""
+
+
+# --- THE WIND RING (owner experiment, 2026-08-31) ---------------------------
+#
+# "I want to be able to travel left/right and for the world to loop. We'd start
+# at the center which has wind pushing up. Going either side takes us to a bit
+# more of a rocky area which is just harder to traverse, as well as the usual
+# enemies. If you keep going, the wind instead will push DOWN … and if you keep
+# going in that direction, you'd just loop back to the center."
+#
+# The run's sky is a RING of tiles, wrapping. Tile 0 is the start — an UPDRAFT
+# that fights your descent, so the middle of the map is the slow, safe line.
+# The flanks are THE ROCKS: no wind help, more pickets. The far side is the
+# DOWNDRAFT — descent express, and the meanest garrison. Cross the ring's edge
+# and you arrive from the other side.
+#
+# EXPERIMENT SCOPE (deliberate, see BACKLOG): wind, loop, and per-zone garrison
+# ship now; per-tile terrain layouts ("a bit more rocky") are the follow-up if
+# the owner likes the shape. The ladder's landings stay near the centre column,
+# so the downdraft is fast but berthless — you ride it down, then come around.
+# The RING table is data: resizing to the owner's "3 or 5 per side" is an edit
+# here and nowhere else.
+const RING := ["up", "rock", "rock", "down", "rock", "rock"]
+## Wind acceleration at strength 1, px/s² at scale 1. Comparable to the props
+## (HULL_LATERAL_ACCEL 125): the updraft meaningfully slows a descent and the
+## downdraft meaningfully feeds one, but neither is a rail.
+const ZONE_WIND := 120.0
+
+
+## Which ring tile an offset of `x_off_tiles` tile-widths from the world centre
+## lands in. Nearest-tile, wrapped — so ±0.5 tiles is still the centre, and the
+## ring closes seamlessly in both directions.
+static func zone_index(x_off_tiles: float) -> int:
+	return posmod(roundi(x_off_tiles), RING.size())
+
+
+static func zone_kind(i: int) -> String:
+	return String(RING[posmod(i, RING.size())])
+
+
+## The tile's wind as a SIGNED vertical acceleration factor (+y is DOWN): the
+## updraft is negative, the downdraft positive, the rocks still.
+static func zone_wind(i: int) -> float:
+	match zone_kind(i):
+		"up": return -1.0
+		"down": return 1.0
+	return 0.0
+
+
+## Extra pickets a surge adds in this tile — the garrison grows away from home
+## ("just with maybe more enemies"). The picket cap still bounds the total.
+static func zone_extra_pickets(i: int) -> int:
+	match zone_kind(i):
+		"rock": return 1
+		"down": return 2
+	return 0
+
+
+## The tile's name for the HUD — where you are, in the sky's own words.
+static func zone_label(i: int) -> String:
+	match zone_kind(i):
+		"up": return "UPDRAFT"
+		"down": return "DOWNDRAFT"
+	return "THE ROCKS"
