@@ -358,6 +358,11 @@ var _lava_core: LavaCore = null
 
 func _ready() -> void:
 	_build_systems()
+	# The persistent creature log (save/profile.gd) — read once at boot, before the
+	# discovery system can tick, and written back only when a NEW creature is met.
+	# Separate from a session save: it is everything the player has ever met, which
+	# is what the title-screen bestiary reads.
+	creature_profile = Profile.load()
 	# Frame the whole generated world (IslandGen.WORLD_CELLS) in world px at this
 	# scale, then bound it with walls + a ceiling. cell_px = CELL × world_scale.
 	var cp := TerrainDB.CELL * world_scale
@@ -2823,6 +2828,10 @@ func _spawn_one_whale(path: String, pos: Vector2) -> Ship:
 	# Cosmetic per-variant tint gives the pod visible variety beyond silhouette
 	# (WhaleSpawn.tint_for; body_tint is documented cosmetic).
 	whale.body_tint = WhaleSpawn.tint_for(path)
+	# The bestiary variety tag, from the body plan itself. The boss overrides its
+	# creature_kind to whale_city post-spawn, but BOSS_PATH's basename is already
+	# "whale_city", so its variety needs no special-case.
+	whale.variety = CreatureLog.variety_from_path(path)
 	whale.rebuild()
 	return whale
 
@@ -2932,6 +2941,7 @@ func _spawn_one_critter(pos: Vector2) -> Ship:
 	critter.tame_level = 1            # the LOW taming bar (Beast Whisperer)
 	critter.ride_speed_mult = 1.6     # nimbler than a whale
 	critter.body_tint = Color(0.80, 0.90, 0.78)
+	critter.variety = "critter"       # the bestiary tag (its own single silhouette)
 	critter.rebuild()
 	return critter
 
@@ -3017,6 +3027,7 @@ func _spawn_one_kraken(path: String, pos: Vector2) -> Ship:
 	# gating on Master Trader + — Stats.taming_level() must reach it.
 	kraken.tame_level = 3
 	kraken.body_tint = Color(0.78, 0.82, 0.74)
+	kraken.variety = CreatureLog.variety_from_path(path)   # the bestiary tag
 	kraken.rebuild()
 	# Latch the sealed LOOT CAVITY now, while the body is whole. The map cannot be
 	# taken after a breach (the flood reaches the pocket then and it stops reading
@@ -3046,8 +3057,87 @@ func _spawn_one_basilisk(pos: Vector2) -> Ship:
 	# mount. It stays outside the whale (2) and critter (1) startup filters.
 	beast.tame_level = 3
 	beast.body_tint = Color(0.86, 0.72, 0.52)
+	beast.variety = "basilisk"        # the bestiary tag (its own single silhouette)
 	beast.rebuild()
 	return beast
+
+
+# --- The creature log (the title-screen bestiary, step 1 of the workshop) ---
+#
+# Discovery is PROXIMITY, run a few times a second over the awake fleet: fly near
+# a creature and you have "met" it. The world tags every creature with its variety
+# at spawn (Ship.variety, above); this reads that and records the first sighting to
+# the persistent profile. The MODEL (roster, set, encode) is CreatureLog; this is
+# only the world-side sensor + the persist/notify on a new find (world-decides).
+
+## The met-creatures profile, loaded in _ready. Never null after boot.
+var creature_profile: Profile = null
+## Throttle for the discovery sweep — the sweep is O(awake ships), cheap, but it
+## does not need every-frame resolution.
+var _creature_log_t := 999.0    # large so the first tick fires promptly
+const CREATURE_LOG_EVERY := 0.4
+
+
+## Proximity discovery: any tagged creature within `creature_log_range` (authored
+## at scale 1, ×world_scale like every other world distance) of the PLAYER is
+## logged. The player is the subject on foot and at the helm alike, so this reads
+## right whether you fly past a whale or are ridden into a kraken.
+func _tick_creature_log(delta: float) -> void:
+	if creature_profile == null or fleet == null:
+		return
+	if player == null or not is_instance_valid(player):
+		return
+	_creature_log_t += delta
+	if _creature_log_t < CREATURE_LOG_EVERY:
+		return
+	_creature_log_t = 0.0
+	var reach := Tunables.get_num("creature_log_range") * world_scale
+	var r2 := reach * reach
+	var here := player.global_position
+	for ship in fleet.ships():
+		if not is_instance_valid(ship) or ship.variety == "":
+			continue
+		if here.distance_squared_to(ship.global_position) <= r2:
+			_note_creature(ship.variety)
+
+
+## Record one variety as met. On a genuinely NEW discovery it persists the profile
+## (a small, rare write) and floats the same notice channel money/level-ups use, so
+## meeting a new creature reads as a reward. A repeat or an unknown id is a no-op.
+func _note_creature(variety: String) -> void:
+	if creature_profile == null:
+		return
+	if creature_profile.creatures.mark(variety):
+		creature_profile.save()
+		_notify("New creature: %s" % CreatureLog.name_of(variety))
+
+
+## {met, total} for the F2 Perf readout (and any future in-world panel). Reads the
+## live profile, so it moves as the player meets things.
+func creature_log_status() -> Dictionary:
+	if creature_profile == null:
+		return {"met": 0, "total": CreatureLog.total()}
+	return {"met": creature_profile.creatures.count(), "total": CreatureLog.total()}
+
+
+## F2 Spawn-tab cheats for playtesting the bestiary without hunting the whole
+## roster: reveal every variety, or wipe the log back to empty. Both persist so the
+## title screen reflects them immediately on a quit-to-title.
+func debug_reveal_creatures() -> void:
+	if creature_profile == null:
+		creature_profile = Profile.new()
+	for row in CreatureLog.ROSTER:
+		creature_profile.creatures.mark(String((row as Dictionary)["id"]))
+	creature_profile.save()
+	_notify("Bestiary revealed (%d creatures)" % CreatureLog.total())
+
+
+func debug_forget_creatures() -> void:
+	if creature_profile == null:
+		creature_profile = Profile.new()
+	creature_profile.creatures.discovered.clear()
+	creature_profile.save()
+	_notify("Bestiary forgotten")
 
 
 ## Plant the trainer station near spawn (rpg/trainer.gd). A world marker, not a
@@ -5117,6 +5207,7 @@ func _build_systems() -> void:
 		["suffocation", func(d: float) -> void: _update_suffocation(d)],
 		["lava", func(d: float) -> void: _update_lava_core(d)],
 		["dive", func(d: float) -> void: _tick_dive(d)],
+		["bestiary", func(d: float) -> void: _tick_creature_log(d)],
 	]
 
 

@@ -56,6 +56,7 @@ func _initialize() -> void:
 	_test_fall_damage()
 	_test_backdrop_is_calm()
 	_test_dive_run()
+	_test_creature_log()
 	await _test_sealed_pockets_cut_a_holed_body()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
 	await _test_creature_skin_faces_its_motion()
@@ -1857,6 +1858,85 @@ func _test_backdrop_is_calm() -> void:
 ## ten-minute run is driven here with a for-loop, no physics and no scene, so the
 ## SHAPE of the mode (ladder, beat, greed, verdicts) is pinned before a single
 ## kraken is spawned.
+## THE CREATURE LOG — the title-screen bestiary's pure model (modes/creature_log.gd)
+## and its persistence (save/profile.gd). No world, no disk: the roster, the
+## path→variety map, the discovered set's mark/count/encode, and the fact that
+## every SPAWN plan resolves to a roster row (so a new creature without a bestiary
+## entry reddens here, not silently vanishes from the log).
+func _test_creature_log() -> void:
+	_t("THE CREATURE LOG: roster, discovery, persistence, and spawn parity")
+
+	# --- The roster is well-formed ------------------------------------------
+	_check(CreatureLog.total() == CreatureLog.ROSTER.size() and CreatureLog.total() > 0,
+		"the roster is non-empty (%d varieties)" % CreatureLog.total())
+	var seen_ids := {}
+	var ok_rows := true
+	for row in CreatureLog.ROSTER:
+		var r := row as Dictionary
+		var id := String(r.get("id", ""))
+		if id == "" or seen_ids.has(id) or String(r.get("name", "")) == "" \
+				or not CreatureLog.KIND_ORDER.has(String(r.get("kind", ""))):
+			ok_rows = false
+		seen_ids[id] = true
+	_check(ok_rows, "every row has a unique id, a name, and a known kind")
+
+	# --- The path → variety id map, the single source of the tag ------------
+	_check(CreatureLog.variety_from_path("res://ships/whale_bowhead.ship") == "whale_bowhead",
+		"a .ship path becomes its basename")
+	_check(CreatureLog.variety_from_path("res://ships/whale.ship") == "whale",
+		"the reference whale maps to 'whale'")
+
+	# --- PARITY: every spawn plan resolves to a roster row ------------------
+	# The whale plans are a pure list (WhaleSpawn); the kraken plans live on World
+	# (which pulls the Net autoload — unsafe to name here), so those five ids are
+	# checked against the roster by literal. Either way a creature added without a
+	# bestiary row fails HERE, which is the whole point of the parity check.
+	for plan in WhaleSpawn.PLANS:
+		var id := CreatureLog.variety_from_path(String((plan as Dictionary)["path"]))
+		_check(CreatureLog.is_known_id(id), "whale plan '%s' has a bestiary row" % id)
+	for kid in ["kraken_c", "kraken_b", "kraken_urchin", "kraken_angler",
+			"kraken_nautilus", "basilisk", "critter", "whale_city"]:
+		_check(CreatureLog.is_known_id(kid), "spawn variety '%s' has a bestiary row" % kid)
+
+	# --- The discovered set: mark is new-once, idempotent, and guarded ------
+	var log := CreatureLog.new()
+	_check(log.count() == 0 and not log.has("whale"), "a fresh log has met nothing")
+	_check(log.mark("whale"), "meeting a whale for the first time is a NEW discovery")
+	_check(not log.mark("whale"), "meeting it again is not new")
+	_check(log.has("whale") and log.count() == 1, "the whale is now in the log")
+	_check(not log.mark("not_a_creature"), "an unknown id never marks")
+	_check(not log.mark(""), "an empty id never marks")
+	_check(log.count() == 1, "the failed marks left the count alone")
+
+	# --- Encode / decode round-trips through the profile shape --------------
+	log.mark("kraken_b")
+	var restored := CreatureLog.from_dict(log.to_dict())
+	_check(restored.has("whale") and restored.has("kraken_b") and restored.count() == 2,
+		"a log round-trips through to_dict/from_dict")
+	# A stale id in a saved dict (a creature since removed) is dropped, not counted.
+	var dirty := CreatureLog.from_dict({"whale": true, "gone_creature": true})
+	_check(dirty.count() == 1 and not dirty.has("gone_creature"),
+		"a since-removed creature in an old save is ignored")
+
+	# --- The persistent profile wrapper (pure half; no disk) ----------------
+	var prof := Profile.new()
+	prof.creatures.mark("basilisk")
+	var prof2 := Profile.from_dict(prof.to_dict())
+	_check(prof2.creatures.has("basilisk"), "the profile carries the log through a dict")
+	var wrong := Profile.from_dict({"format": 999, "creatures": {"whale": true}})
+	_check(wrong.creatures.count() == 0, "an unsupported profile format loads empty (the gate)")
+
+	# --- The bestiary page text (what the title renders) --------------------
+	var empty_text := CreatureLog.bestiary_text({})
+	_check(empty_text.contains("Met 0 of %d" % CreatureLog.total()),
+		"an empty log reads 'Met 0 of N'")
+	_check(not empty_text.contains("Blue Whale") and empty_text.contains("???"),
+		"an unmet creature is hidden behind ??? (no name spoiler)")
+	var one_text := CreatureLog.bestiary_text({"whale": true})
+	_check(one_text.contains("Met 1 of") and one_text.contains("Blue Whale"),
+		"a met creature shows its name and bumps the count")
+
+
 func _test_dive_run() -> void:
 	_t("THE DIVE: the ladder, the beat, the greed and the three verdicts")
 

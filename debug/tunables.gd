@@ -139,6 +139,10 @@ const _REGISTRY := [
 	{"id": "dormant_max_awake", "label": "Max bodies simulated at once (0 = no cap)",
 		"group": "World", "kind": KIND_INT, "default": 24, "min": 0, "max": 200,
 		"step": 1},  # world._update_dormancy — the nearest N stay in the sim; the rest sleep (owner 2026-08-26: prioritise the vicinity)
+	# --- Creature log / bestiary (the title-screen workshop, step 1) ---------
+	{"id": "creature_log_range", "label": "Bestiary sighting range (px @1x; how close = met)",
+		"group": "World", "kind": KIND_FLOAT, "default": 1500.0, "min": 200.0,
+		"max": 20000.0, "step": 100.0},   # world._tick_creature_log — ×world_scale, so ~12,000 px at 8x (roughly on-screen)
 	# --- Propeller wash on bodies (owner survey: props push and chop) --------
 	{"id": "wash_push_mult", "label": "Prop wash push on bodies (0 = off)",
 		"group": "Combat", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,

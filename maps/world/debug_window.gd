@@ -207,6 +207,17 @@ func _build_spawn_tab() -> void:
 	_action_button(box, "Spawn the CITY-WHALE BOSS (the Leviathan Arcology)",
 		func() -> void: _spawn("boss"))
 	_action_button(box, "Spawn whale CARCASS (corpse-airship bench)", func() -> void: _spawn("carcass"))
+	# The creature log / bestiary (title-screen workshop, step 1): reveal or wipe
+	# the met-creatures record so the title page is playtestable without hunting
+	# the whole roster first (standing order — a feature F2 cannot reach is invisible).
+	_action_button(box, "BESTIARY: reveal every creature (fills the title log)",
+		func() -> void:
+			if world != null and world.has_method("debug_reveal_creatures"):
+				world.call("debug_reveal_creatures"))
+	_action_button(box, "BESTIARY: forget all creatures (wipe the log)",
+		func() -> void:
+			if world != null and world.has_method("debug_forget_creatures"):
+				world.call("debug_forget_creatures"))
 	_action_button(box, "Spawn MY LOFT SHIP beside you (board it / grapple it)",
 		func() -> void: _spawn("loft"))
 	# Paste a .ship from the Blueprint Loft and fly it straight away — no file
@@ -450,6 +461,11 @@ Sites:    %-6d  charted, %d/%d residents out" % [
 			if world.has_method("_kraken_surge_pool") else 2
 		sites += "\nDeep:     %-6s  %d%% ascendant, kraken den fields %d" % [
 			bands[clampi(lvl, 0, 3)], roundi(asc * 100.0), den]
+	# CREATURE LOG (the title bestiary): how much of the roster has been met.
+	if world != null and world.has_method("creature_log_status"):
+		var cl: Dictionary = world.call("creature_log_status")
+		sites += "\nBestiary: %-6s  creatures met" % ("%d/%d" % [
+			int(cl.get("met", 0)), int(cl.get("total", 0))])
 
 	# Retained rect COMMANDS: every merged region draws a fill and a border,
 	# and the renderer replays both every frame forever. Terrain's regions are

@@ -341,6 +341,20 @@ var ride_speed_mult := 1.0
 ## whale-brained creature, unchanged.
 var creature_kind := ""
 
+## The AUTHORED VARIETY id (the `.ship` basename, e.g. "whale_bowhead") for the
+## creature-log bestiary — finer than `creature_kind`, which is only the coarse
+## family. Set at spawn by the world (world._spawn_one_*) via
+## CreatureLog.variety_from_path; "" for a vessel or an untagged body. Discovery
+## reads this to record which SILHOUETTE the player has met.
+##
+## SEAM (step 1): this is a LOCAL cosmetic-tier tag, set on the spawning peer only
+## — like the wound shade and the hit flash, it does NOT ride the wire payload or a
+## save. A replicated or loaded creature therefore carries no variety and will not
+## re-log; that is fine, because a creature you have already met is in the profile
+## forever, and fresh spawns are tagged. Promote it into the payload the day a
+## networked client must log its own sightings.
+var variety := ""
+
 ## --- Tethered lift balloons (carcass-as-airship, owner 2026-08-23) ------------
 ## Helium balloons bolted onto a body's cell by cable(s): EXTERNAL lift you attach
 ## to a corpse (which has none of its own) to fly it. Buoyancy alone only floats;

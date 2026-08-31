@@ -15,10 +15,16 @@ extends PanelContainer
 ## Any key that is not a listed choice falls through to EXPEDITION, so a player
 ## who mashes past the whole thing gets the unchanged game.
 
-enum Page { TITLE, MODES }
+enum Page { TITLE, MODES, BESTIARY }
 
 var world: Node2D
 var page: int = Page.TITLE
+
+## The met-creatures set (id -> true) the BESTIARY page renders. The intro loads it
+## from the persistent profile and hands it over before open() — this panel knows
+## nothing about disk or the world, exactly as it knows nothing about the modes.
+## Empty = a fresh player who has met nothing.
+var discovered := {}
 
 var _label: Label
 
@@ -28,6 +34,7 @@ static func _title_text() -> String:
 	"        N O T   W I N D F O R G E        ",
 	"",
 	"            [Enter]   PLAY            ",
+	"            [B]       BESTIARY        ",
 	"            [Q]       QUIT            ",
 	"",
 ])
@@ -71,9 +78,23 @@ func on_title_page() -> bool:
 	return page == Page.TITLE
 
 
+## The bestiary page body, from the shared pure model (CreatureLog) fed this
+## panel's discovered set. Instance method (not static like the other two) because
+## it depends on `discovered`; the model itself stays pure and suite-checkable.
+func _bestiary_text() -> String:
+	return CreatureLog.bestiary_text(discovered)
+
+
 func _repaint() -> void:
-	if _label != null:
-		_label.text = _title_text() if page == Page.TITLE else _modes_text()
+	if _label == null:
+		return
+	match page:
+		Page.MODES:
+			_label.text = _modes_text()
+		Page.BESTIARY:
+			_label.text = _bestiary_text()
+		_:
+			_label.text = _title_text()
 
 
 ## Keys are taken at the INPUT stage while visible, marked handled so they reach
@@ -93,6 +114,13 @@ func _input(event: InputEvent) -> void:
 		return
 	var keycode := (event as InputEventKey).keycode
 	_handled()
+	if page == Page.BESTIARY:
+		# A reference page, not a choice: ANY key returns to the front page (Esc is
+		# "back" as it is everywhere now). Nothing here tears the scene down, so the
+		# usual choose-last caution does not apply.
+		page = Page.TITLE
+		_repaint()
+		return
 	if page == Page.TITLE:
 		# QUIT IS A DOOR, NOT A REFLEX (owner 2026-08-30: "we can have a quit
 		# button there"). The title is the one place in the game where leaving is
@@ -100,6 +128,13 @@ func _input(event: InputEvent) -> void:
 		# is freed to mean "back", which is what it means everywhere else now.
 		if keycode == KEY_Q:
 			get_tree().quit()
+			return
+		# THE BESTIARY — the title-screen creature log (workshop, step 1). A side
+		# door off the front page, not one of the play modes, so it is handled here
+		# and does NOT fall through to choosing a game.
+		if keycode == KEY_B:
+			page = Page.BESTIARY
+			_repaint()
 			return
 		if keycode == KEY_ESCAPE:
 			return   # there is nothing behind the front page to go back to

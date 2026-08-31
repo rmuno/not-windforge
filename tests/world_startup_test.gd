@@ -316,6 +316,7 @@ func _initialize() -> void:
 	await _check_sandbox(world, fleet)
 	await _check_edge_markers(world, fleet)
 	await _check_backdrop(world, fleet)
+	await _check_creature_log(world, fleet)
 
 	await _check_hosting_after_offline_play(world, fleet)
 
@@ -438,6 +439,63 @@ func _check_boss(world: Node, fleet) -> void:
 	_ok(boss.global_position.y > rect.get_center().y,
 		"it lairs DEEP, out in the overworld (y=%.0f, mid=%.0f)"
 			% [boss.global_position.y, rect.get_center().y])
+
+
+## THE CREATURE LOG at scale in the real scene: a creature the player is standing
+## next to gets recorded, one far away does not, and the profile carries it. The
+## wiring (world._tick_creature_log → CreatureLog.mark → Profile) that the unit
+## suite drives by hand on the pure model. Distances are 0 (on it) vs 1e7 (nowhere
+## near), so the two verdicts hold at any world_scale and any lever value.
+func _check_creature_log(world: Node, fleet) -> void:
+	var prof = world.get("creature_profile")
+	_ok(prof != null, "the world loaded a creature profile at boot")
+	var player = world.get("player")
+	if prof == null or player == null or not is_instance_valid(player):
+		_ok(false, "creature log: no profile or player to test with")
+		return
+
+	world.call("debug_forget_creatures")
+	var status0: Dictionary = world.call("creature_log_status")
+	_ok(int(status0["met"]) == 0, "a forgotten log has met nothing")
+	_ok(int(status0["total"]) == CreatureLog.total(),
+		"the log's total is the whole roster (%d)" % int(status0["total"]))
+
+	# A FRESH, self-tagged creature to meet — spawned here rather than scavenged
+	# from the fleet, because by this late point earlier checks (the save/load
+	# round-trip especially) have respawned the pod from payloads, and variety is a
+	# LOCAL tag that does not ride a payload (the Ship.variety seam), so a survivor
+	# carries none. Spawned AT the player, so it is well within sighting range.
+	var here: Vector2 = player.global_position
+	var quarry: Ship = world.call("debug_spawn", "critter", here)
+	_ok(quarry != null and String(quarry.variety) == "critter",
+		"a freshly spawned critter is variety-tagged")
+	if quarry == null:
+		return
+
+	# POSITIVE: standing on it, one sweep records exactly its variety.
+	world.call("_tick_creature_log", 1.0)   # delta > CREATURE_LOG_EVERY, so it fires
+	_ok(prof.creatures.has("critter"),
+		"meeting a critter up close records it (%s)" % CreatureLog.name_of("critter"))
+	_ok(int((world.call("creature_log_status") as Dictionary)["met"]) == 1,
+		"exactly the one creature met is counted")
+
+	# NEGATIVE: forget, step a few sighting-ranges away, and a sweep logs nothing.
+	# A modest in-world move (not a teleport across the map), because a survivor
+	# whale nearby carries no variety anyway, so only OUR out-of-range critter could
+	# have logged — and it does not.
+	var reach: float = Tunables.get_num("creature_log_range") * float(world.get("world_scale"))
+	world.call("debug_forget_creatures")
+	player.global_position = here + Vector2(reach * 3.0, 0.0)
+	world.call("_tick_creature_log", 1.0)
+	_ok(int((world.call("creature_log_status") as Dictionary)["met"]) == 0,
+		"a creature out of sighting range is not logged")
+
+	# Leave the world as found (CODEMAP test rule): player home, test creature
+	# freed before the next check counts ships, log wiped.
+	player.global_position = here
+	quarry.queue_free()
+	await process_frame
+	world.call("debug_forget_creatures")
 
 
 ## The repair STATION at 8×, end to end in the real scene: the F2 debug adder

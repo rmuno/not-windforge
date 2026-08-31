@@ -126,6 +126,11 @@ func _ready() -> void:
 	var layer := CanvasLayer.new()
 	_title = TitleScreen.new()
 	_title.world = self             # duck-typed: it only calls choose_mode()
+	# The bestiary page reads the PERSISTENT profile (save/profile.gd), which the
+	# world writes as the player meets creatures. The title has no world and no
+	# loaded save, so it reads the profile directly here — read-only, so a fresh
+	# player simply sees an all-"???" log.
+	_title.discovered = Profile.load().creatures.discovered
 	layer.add_child(_title)
 	add_child(layer)
 	_title.open()
