@@ -105,6 +105,12 @@ func _draw_gauge(d: Dictionary) -> void:
 
 	draw_string(font, Vector2(x - 52.0 * s, y0 - 8.0 * s), "THE DIVE",
 		HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _DIM)
+	# Which ring tile you are flying (the wind's own name for it) — empty when
+	# the ring is off.
+	var zone := String(d.get("zone", ""))
+	if not zone.is_empty():
+		draw_string(font, Vector2(x - 52.0 * s, y0 - 8.0 * s - fs * 1.3), zone,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _DIM)
 	for i in rungs:
 		var d_i := i + 1
 		var r := Rect2(Vector2(x, y0 + float(i) * (h + gap)), Vector2(w, h))

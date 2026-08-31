@@ -274,6 +274,17 @@ const _REGISTRY := [
 	{"id": "dive_hull_friction", "label": "Dive: hull keel friction in a run (slippery = slides off slabs)",
 		"group": "World", "kind": KIND_FLOAT, "default": 0.1, "min": 0.0,
 		"max": 1.0, "step": 0.05, "note": "next commit"},        # world._tick_dive commit branch
+	# --- The wind ring (owner experiment 2026-08-31) -------------------------
+	# The run's sky loops: updraft at the centre, rocks on the flanks, downdraft
+	# on the far side. OFF restores the corridor exactly as it was.
+	{"id": "dive_zones_enabled", "label": "Dive: the WIND RING (loop, zone winds; off = corridor)",
+		"group": "World", "kind": KIND_BOOL, "default": true},   # world._tick_dive / _dive_hold_the_ring
+	{"id": "dive_zone_wind_mult", "label": "Dive: zone wind strength (1 = shipped)",
+		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,
+		"max": 4.0, "step": 0.1},                                # world._dive_hold_the_ring
+	{"id": "dive_zone_tile_widths", "label": "Dive: ring tile width (shelf-widths)",
+		"group": "World", "kind": KIND_FLOAT, "default": 12.0, "min": 3.0,
+		"max": 40.0, "step": 1.0},                               # world._dive_tile_w
 	# WHAT A CREATURE'S BODY DOES TO A VESSEL IT HITS (owner 2026-08-30: "whales
 	# aren't quite vicious or a threat - easy to avoid and overcome. they should
 	# do DAMAGE on collision: BOOM!"). A multiplier on the impact bite a VESSEL
