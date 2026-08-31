@@ -2146,17 +2146,30 @@ func _test_dive_run() -> void:
 	_check(not run.go_home(), "...and cannot be extracted twice")
 
 	# --- The closing sky's arithmetic ---------------------------------------
-	_check(DiveRun.ceiling_frac(1) <= DiveRun.TOP_FRAC,
+	_check(DiveRun.ceiling_at(DiveRun.depth_altitude(1)) <= DiveRun.TOP_FRAC,
 		"the ceiling never rises above the deck's own air")
 	for d in range(2, DiveRun.DEPTHS + 1):
-		_check(DiveRun.ceiling_frac(d) < DiveRun.ceiling_frac(d - 1),
+		_check(DiveRun.ceiling_at(DiveRun.depth_altitude(d))
+				< DiveRun.ceiling_at(DiveRun.depth_altitude(d - 1)),
 			"the sky closes lower as you go deeper (depth %d)" % d)
-		_check(DiveRun.ceiling_frac(d) > DiveRun.depth_altitude(d),
+		_check(DiveRun.ceiling_at(DiveRun.depth_altitude(d)) > DiveRun.depth_altitude(d),
 			"...but always leaves headroom over depth %d's own rung" % d)
 	_check(is_equal_approx(
-			DiveRun.ceiling_frac(3) - DiveRun.depth_altitude(3),
+			DiveRun.ceiling_at(DiveRun.depth_altitude(3)) - DiveRun.depth_altitude(3),
 			DiveRun.rung_frac() * DiveRun.CEILING_SLACK_RUNGS),
 		"the headroom is exactly the slack, in rungs")
+	# CONTINUOUS, not rung-ratcheted (owner: "allow going up?") — the ceiling
+	# tracks the LOW-WATER altitude itself, so between rungs the headroom is
+	# still the full slack rather than a quarter-rung after a midpoint click.
+	var between := DiveRun.depth_altitude(3) - DiveRun.rung_frac() * 0.5
+	_check(is_equal_approx(DiveRun.ceiling_at(between) - between,
+			DiveRun.rung_frac() * DiveRun.CEILING_SLACK_RUNGS),
+		"between rungs the headroom is STILL the full slack (no ratchet)")
+	var tracked := DiveRun.new()
+	tracked.advance(1.0, DiveRun.depth_altitude(3), 45.0)
+	tracked.advance(1.0, DiveRun.depth_altitude(2), 45.0)   # climbed back a rung
+	_check(is_equal_approx(tracked.low_frac, DiveRun.depth_altitude(3)),
+		"the run remembers its LOWEST altitude, not its current one")
 	_check(DiveRun.ceiling_push(0.0) == 0.0 and DiveRun.ceiling_push(-2.0) == 0.0,
 		"below the ceiling the sky does not push")
 	_check(DiveRun.ceiling_push(1.0) > 0.0

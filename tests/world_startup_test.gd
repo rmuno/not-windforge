@@ -2559,6 +2559,11 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(shaped, "dive_status carries the whole run in plain values")
 		_ok(int(d.get("depth", 0)) == 1 and String(d.get("outcome", "x")) == "",
 			"a fresh run is at depth 1 and unfinished")
+	# CARDS ARE KILLS-ONLY (owner 2026-08-31, reversing the opening hand): a
+	# fresh run owes NO draft and shows no picker — the first card is earned.
+	if run != null:
+		_ok(not bool(run.call("draft_pending")) and (run.get("draft") as Array).is_empty(),
+			"a fresh run owes no card draft (kills are the only road to one)")
 
 	# THE LAUNCH DECK (owner 2026-08-30). A run does not hand you a hull: it
 	# stands your BODY at the top of the ladder on a shelf it cut, parks the
@@ -2868,6 +2873,7 @@ func _check_dive(world: Node, fleet) -> void:
 	var closing = world.get("dive")
 	if closing != null and pl != null and is_instance_valid(pl):
 		closing.deepest = 3
+		closing.low_frac = DiveRun.depth_altitude(3)
 		if pl.is_piloting():
 			pl.disembark()
 		# One rung ABOVE the closed sky's underside, standing still.
@@ -2875,7 +2881,8 @@ func _check_dive(world: Node, fleet) -> void:
 			- float(world.call("dive_altitude_y", DiveRun.depth_altitude(1))))
 		var was_at: Vector2 = pl.global_position
 		pl.global_position = Vector2(was_at.x,
-			float(world.call("dive_altitude_y", DiveRun.ceiling_frac(3))) - rung_px)
+			float(world.call("dive_altitude_y",
+				DiveRun.ceiling_at(DiveRun.depth_altitude(3)))) - rung_px)
 		pl.velocity = Vector2.ZERO
 		world.call("_dive_hold_the_ceiling", 0.5)
 		_ok(pl.velocity.y > 0.0,

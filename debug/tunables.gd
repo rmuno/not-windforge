@@ -268,6 +268,12 @@ const _REGISTRY := [
 	{"id": "dive_ceiling_mult", "label": "Dive: closing-sky push (0 = off, 1 = shipped)",
 		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,
 		"max": 4.0, "step": 0.1},                                # world._dive_hold_the_ceiling
+	# A run's hull rides a near-frictionless keel (the slab pin: holding DOWN on
+	# a landing pinned the hull and sideways thrust lost to friction). 1.0 would
+	# restore the stock keel inside runs too.
+	{"id": "dive_hull_friction", "label": "Dive: hull keel friction in a run (slippery = slides off slabs)",
+		"group": "World", "kind": KIND_FLOAT, "default": 0.1, "min": 0.0,
+		"max": 1.0, "step": 0.05, "note": "next commit"},        # world._tick_dive commit branch
 	# WHAT A CREATURE'S BODY DOES TO A VESSEL IT HITS (owner 2026-08-30: "whales
 	# aren't quite vicious or a threat - easy to avoid and overcome. they should
 	# do DAMAGE on collision: BOOM!"). A multiplier on the impact bite a VESSEL
