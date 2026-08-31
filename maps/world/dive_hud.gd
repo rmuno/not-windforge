@@ -37,6 +37,32 @@ func _scale() -> int:
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# The draft PAUSES the world (owner: "getting a card should pause"), so this
+	# layer must keep processing while the tree is held — it is the one thing
+	# still listening for 1/2/3. Same rule as the pause menu.
+	process_mode = Node.PROCESS_MODE_ALWAYS
+
+
+## While a draft is up, 1/2/3 pick a card — HERE, because the world's own
+## number-key handler is pausable and the draft holds the tree. Routed through
+## world._try_pick_card, which refuses when the shop panel owns the number row;
+## a refused key is left unhandled so the shop still hears it.
+func _input(event: InputEvent) -> void:
+	if world == null or not world.has_method("_try_pick_card"):
+		return
+	if not (event is InputEventKey and event.pressed and not (event as InputEventKey).echo):
+		return
+	var idx := 0
+	match (event as InputEventKey).keycode:
+		KEY_1, KEY_KP_1: idx = 1
+		KEY_2, KEY_KP_2: idx = 2
+		KEY_3, KEY_KP_3: idx = 3
+	if idx == 0:
+		return
+	if bool(world.call("_try_pick_card", idx)):
+		var vp := get_viewport()
+		if vp != null:
+			vp.set_input_as_handled()
 
 
 func _process(_delta: float) -> void:
@@ -153,7 +179,9 @@ func _draw_draft(d: Dictionary) -> void:
 	var ch := 84.0 * s
 	# A dim banner so the choice reads as a deliberate pause.
 	draw_string(font, Vector2(view.x * 0.5 - 90.0 * s, top - 14.0 * s),
-		"CHOOSE A CARD", HORIZONTAL_ALIGNMENT_LEFT, -1, hs, _INK)
+		"CHOOSE A CARD!", HORIZONTAL_ALIGNMENT_LEFT, -1, hs, _INK)
+	draw_string(font, Vector2(view.x * 0.5 - 90.0 * s, top + 96.0 * s),
+		"(the world holds its breath)", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _DIM)
 	for i in cards.size():
 		var card := cards[i] as Dictionary
 		var cx := x0 + float(i) * (cw + gap)

@@ -1015,14 +1015,14 @@ func begin_dive() -> void:
 	# fixed sequence of hands (like the ladder), and distinct from the ladder seed.
 	_dive_rng = RandomNumberGenerator.new()
 	_dive_rng.seed = hash([dive.seed_v, "cards"])
-	# THE OPENING HAND (owner 2026-08-31: "draft-of-3 at start, to start"). Owed
-	# immediately, so the first thing a run offers on the launch deck is a choice
-	# of three — the build starts before the descent does.
-	dive.add_draft()
+	# NO OPENING HAND ANY MORE (owner 2026-08-31, reversing the draft-at-start:
+	# "Cards should only be acquired from defeating things, actually"). The XP
+	# bar — fed by kills alone — is now the only road to a draft; the deck you
+	# build is the record of what you beat. (Random world drops are a logged
+	# maybe, BACKLOG.)
 	_build_launch_deck()
 	_notify("THE LAUNCH DECK. Take a ship, or step off the edge with nothing. "
 		+ "Down is richer and worse; climb back to this air to bank what you carry.")
-	_notify("Choose your opening card — press 1, 2 or 3.")
 
 
 ## Abandon the run without a verdict (a reset, a load, a mode exit). The ledger
@@ -1037,6 +1037,7 @@ func end_dive() -> void:
 		local_ship.hull_integrity_max = 0.0
 		local_ship.hull_integrity = 0.0
 		local_ship.modulate = Color.WHITE
+		local_ship.physics_material_override = null   # the stock keel comes back
 	dive = null
 	_dive_shipless = 0.0
 	_dive_pressing = 0.0
@@ -1936,6 +1937,16 @@ func _tick_dive(delta: float) -> void:
 			# HULL INTEGRITY (v0.111.0): the hull you commit to can DIE as a unit
 			# now. Armed here, disarmed by end_dive; pickets arm at spawn.
 			_dive_arm_integrity(local_ship, Tunables.get_num("dive_ship_integrity"))
+			# A SLIPPERY KEEL IN A RUN (owner 2026-08-31: "allow the player's
+			# ship to move sideways? seems to be locked"). The probe diagnosed
+			# it: holding DOWN pins the hull to a landing slab and lateral
+			# thrust loses to friction (proportional to the pinning force). The
+			# rungs are waypoints, not moorings, so in a run the hull's keel is
+			# nearly frictionless - sideways thrust always slides you off a
+			# slab. end_dive restores the stock keel.
+			var slick := PhysicsMaterial.new()
+			slick.friction = Tunables.get_num("dive_hull_friction")
+			local_ship.physics_material_override = slick
 			_notify("She is yours. Lose her and the run ends with her.")
 	elif is_instance_valid(local_ship) and local_ship.has_helm():
 		# LOSING THE SHIP ENDS THE RUN (owner ruling). `local_ship` blinks null
@@ -1969,8 +1980,13 @@ func _tick_dive(delta: float) -> void:
 	_dive_hold_the_ceiling(delta)
 	_dive_watch_integrity()
 	# Keep the card draft's offer filled while one is owed, so the HUD always has
-	# three to paint and the number keys have something to pick.
+	# three to paint and the number keys have something to pick. The moment an
+	# offer APPEARS, the world holds its breath (owner: "getting a card should
+	# pause, with a text: choose a card!").
+	var had_offer := not dive.draft.is_empty()
 	dive.offer(_dive_rng)
+	if not had_offer and not dive.draft.is_empty():
+		_dive_pause_for_draft()
 	for ev in dive.advance(delta, _player_altitude_frac(),
 			Tunables.get_num("dive_surge_period")):
 		match String(ev):
@@ -1980,14 +1996,10 @@ func _tick_dive(delta: float) -> void:
 				_cut_landing(dive.depth)
 				_cut_landing(dive.depth + 1)
 				_notify("%s. The air is worse down here." % DiveRun.depth_label(dive.depth))
-				# CARDS ON LANDING (Q-L): reaching a new depth fires any "land"
-				# procs (Second Wind and the like), and an OUTPOST's quartermaster
-				# hands you a card — the owner's "npcs can sometimes grant cards",
-				# wired to the shops that already exist.
+				# Landing procs (Second Wind and the like) still fire — a card
+				# EFFECT on landing is fine; a card GRANT is kills-only now
+				# (owner 2026-08-31 — the quartermaster's card is gone).
 				_dive_apply_procs("land")
-				if DiveRun.is_outpost(dive.seed_v, dive.depth):
-					dive.add_draft()
-					_notify("The quartermaster offers you a card — press 1, 2 or 3.")
 				# EVERY RUNG IS GARRISONED (owner 2026-08-30: "does it sound
 				# alright to simply jump down, get a few things, and die having
 				# FULLY IGNORED the entire 8 levels?"). It did not, and a purely
@@ -2011,7 +2023,7 @@ func _tick_dive(delta: float) -> void:
 
 # --- The closing sky + hull integrity (owner rulings 2026-08-31) ------------
 
-## THE SKY CLOSES BEHIND YOU: above `DiveRun.ceiling_frac(deepest)` the air
+## THE SKY CLOSES BEHIND YOU: above `DiveRun.ceiling_at(low_frac)` the air
 ## shoves you down — the corridor rotated 90°, except this rail is WANTED
 ## ("a forced push downward without ability to traverse back up, similar to
 ## ball pit"). Applies to the hull and to a body on foot alike; gated on
@@ -2020,7 +2032,7 @@ func _tick_dive(delta: float) -> void:
 func _dive_hold_the_ceiling(delta: float) -> void:
 	if dive == null or dive.deepest <= 1:
 		return
-	var ceiling_y := dive_altitude_y(DiveRun.ceiling_frac(dive.deepest))
+	var ceiling_y := dive_altitude_y(DiveRun.ceiling_at(dive.low_frac))
 	var rung_px := absf(dive_altitude_y(DiveRun.depth_altitude(2))
 		- dive_altitude_y(DiveRun.depth_altitude(1)))
 	if rung_px <= 0.0:
@@ -2329,8 +2341,38 @@ func take_dive_card(index: int) -> bool:
 	var id := String(d[index - 1])
 	if dive.take(id):
 		_notify("Card: %s — %s" % [DiveCards.name_of(id), DiveCards.desc_of(id)])
+		# Another draft owed (a fat kill can fill two bars)? Refill NOW — the
+		# world is paused, so the tick cannot — and stay held; otherwise breathe.
+		dive.offer(_dive_rng)
+		if dive.draft.is_empty():
+			_dive_unpause_draft()
 		return true
 	return false
+
+
+## CHOOSE A CARD! (owner 2026-08-31: "getting a card should pause"). A draft can
+## be born mid-dogfight now that cards are kills-only, so the world stops while
+## you pick. Real single-player sessions only — the headless suites and online
+## must never stop the tree (the same gates quit_to_title uses). The DiveHud
+## runs PROCESS_MODE_ALWAYS so 1/2/3 still land while everything is held.
+var _dive_draft_paused := false
+
+
+func _dive_pause_for_draft() -> void:
+	if DisplayServer.get_name() == "headless" or Net.is_online():
+		return
+	_dive_draft_paused = true
+	get_tree().paused = true
+
+
+func _dive_unpause_draft() -> void:
+	if not _dive_draft_paused:
+		return
+	_dive_draft_paused = false
+	# Never yank the floor from under the Escape MENU if it is also holding the
+	# tree — closing that menu is its own unpause.
+	if _pause_menu == null or not is_instance_valid(_pause_menu) 			or not _pause_menu.visible:
+		get_tree().paused = false
 
 
 ## Is a card draft waiting to be picked right now? (Gates the number-key handler.)
@@ -5628,9 +5670,19 @@ func _input(event: InputEvent) -> void:
 	var keycode := (event as InputEventKey).keycode
 	# The run-over ledger eats the next key, whatever it is — the same "any key"
 	# idiom as the boot chooser, and it must not also fire that key's verb.
+	#
+	# HANDLED FIRST, DISMISS LAST (owner crash 2026-08-31: the null-viewport
+	# crash the title panel already died of once, v0.96.1). Dismissing the
+	# ledger CHANGES THE SCENE (back to the intro), so everything this node
+	# touches afterwards is a node on its way out — get_viewport() was null by
+	# the time the old order asked for it. Same rule as TitleScreen._input:
+	# mark handled first, tolerate a missing viewport, and let the teardown
+	# call be the last statement.
 	if dive_over():
+		var vp := get_viewport()
+		if vp != null:
+			vp.set_input_as_handled()
 		dismiss_dive_ledger()
-		get_viewport().set_input_as_handled()
 		return
 	if _save_panel != null and _save_panel.visible:
 		match keycode:
