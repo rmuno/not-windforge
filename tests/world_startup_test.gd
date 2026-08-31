@@ -2760,6 +2760,54 @@ func _check_dive(world: Node, fleet) -> void:
 				world.call("_handle_interact")
 				_ok(not (world.get("_nearby_helm") as Array).is_empty(),
 					"...and the helm still answers E from outside the hull")
+	# --- BORN HUNTING (owner: "enemies aren't really aggressive") -----------
+	# A surge picket spawns ~4 s down your line with 5,600 px of eyesight, so it
+	# used to idle while you slalomed past. Now a hostile picket is aggro'd +
+	# provoked AT BIRTH, and the hunt is re-stamped every tick so no de-aggro
+	# range ever talks it out of the chase (the cull is the leash).
+	var pre_surge: Array = (world.get("_dive_surged") as Array).duplicate()
+	world.call("_dive_surge")
+	var born_hostiles := 0
+	var born_hunting := 0
+	var aggro_map: Dictionary = world.get("_enemy_aggro")
+	for sid in (world.get("_dive_surged") as Array):
+		if pre_surge.has(sid):
+			continue
+		var picket := instance_from_id(sid) as Ship
+		if picket == null or not is_instance_valid(picket) or picket.faction != 1:
+			continue
+		born_hostiles += 1
+		if bool(aggro_map.get(sid, false)) and bool(world.call("_is_provoked", sid)):
+			born_hunting += 1
+	if born_hostiles > 0:
+		_ok(born_hunting == born_hostiles,
+			"a hostile surge picket is born aggro'd AND provoked (%d of %d)"
+				% [born_hunting, born_hostiles])
+		# The shrug is gone: strip one picket's aggro the way the de-aggro range
+		# would, tick the keeper, and the hunt is back on.
+		var victim := -1
+		for sid in (world.get("_dive_surged") as Array):
+			if not pre_surge.has(sid):
+				var picket2 := instance_from_id(sid) as Ship
+				if picket2 != null and is_instance_valid(picket2) and picket2.faction == 1:
+					victim = sid
+					break
+		if victim >= 0:
+			aggro_map[victim] = false
+			(world.get("_enemy_provoked_at") as Dictionary)[victim] = -1.0e12
+			world.call("_dive_keep_the_hunt")
+			_ok(bool(aggro_map.get(victim, false)) and bool(world.call("_is_provoked", victim)),
+				"...and a picket the range would shrug off is re-armed the same tick")
+	else:
+		_ok(false, "the surge spawned no hostile picket to check (depth 1 sends hulks)")
+	# Leave the fleet as found: free what this surge spawned (later checks count).
+	for sid in (world.get("_dive_surged") as Array):
+		if not pre_surge.has(sid):
+			var litter := instance_from_id(sid) as Ship
+			if litter != null and is_instance_valid(litter):
+				litter.queue_free()
+	await world.get_tree().physics_frame
+
 	# --- THE OUTPOST (owner 2026-08-30) -------------------------------------
 	# Three of the eight rungs trade. The counter must open off the pot, refuse
 	# what you cannot afford, and actually hand the goods over.
