@@ -34,6 +34,23 @@ var world: Node2D
 ## Each layer's accumulated scroll in screen px, and the camera position the last
 ## frame was drawn from. Integrated rather than derived, so a ZOOM CHANGE never
 ## moves the backdrop on its own — see `layer_step`.
+## MEMOISED FEATURES. `cell_features` is pure in (seed, layer, cell) and its
+## answer is fixed forever — but it was being recomputed for every lattice cell
+## of every layer on EVERY FRAME, and each call allocates a
+## `RandomNumberGenerator`, an array for the hash and a dictionary per feature.
+## Measured: 107 calls and 0.475 ms per frame, all of it garbage. A frame's worth
+## of cells is about a hundred entries, so the whole visible sky fits in the
+## cache and a quiet frame does lookups instead of allocations.
+##
+## Keyed by (layer, cell); the cache is dropped whole if the WORLD changes under
+## it (`_cache_key` = seed + map cell size), which is the only thing that can
+## make a remembered answer wrong.
+var _features := {}
+var _cache_key := ""
+## The visible sky is ~100 cells; this is room for a big window and some
+## scrolling slack before the whole thing is dropped and refilled.
+const FEATURE_CACHE_MAX := 3000
+
 var _scroll: Array[Vector2] = [Vector2.ZERO, Vector2.ZERO, Vector2.ZERO]
 var _last_cam := Vector2.ZERO
 var _primed := false
@@ -255,7 +272,7 @@ func _draw() -> void:
 		for cy in range(first.y, last.y + 1):
 			for cx in range(first.x, last.x + 1):
 				var cell := Vector2i(cx, cy)
-				for f in cell_features(seed_v, li, cell, lattice, factor, map_px):
+				for f in _features_for(seed_v, li, cell, lattice, factor, map_px):
 					var fd := f as Dictionary
 					var at := (Vector2(cell) + (fd["off"] as Vector2)) * lattice - scroll
 					var r := lattice * 0.32 * float(fd["size"]) * (0.55 + 0.45 * depth_t)
@@ -268,6 +285,24 @@ func _draw() -> void:
 							_draw_cloud(at, r, col)
 						"spires":
 							_draw_spire(at, r, col)
+
+
+## `cell_features`, remembered. Same answer, computed once per cell per world.
+func _features_for(seed_v: int, layer: int, cell: Vector2i, lattice_px: float,
+		factor: float, map_cell_px: float) -> Array:
+	var key := "%d:%f" % [seed_v, map_cell_px]
+	if key != _cache_key:
+		_cache_key = key
+		_features.clear()
+	elif _features.size() > FEATURE_CACHE_MAX:
+		_features.clear()   # scrolled far enough that the old window is dead
+	var ck := Vector3i(layer, cell.x, cell.y)
+	var hit: Variant = _features.get(ck)
+	if hit != null:
+		return hit as Array
+	var made := cell_features(seed_v, layer, cell, lattice_px, factor, map_cell_px)
+	_features[ck] = made
+	return made
 
 
 ## A distant floating crag: a rough hull with a flat top — an island silhouette.

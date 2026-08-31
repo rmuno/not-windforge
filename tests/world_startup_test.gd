@@ -324,7 +324,67 @@ func _initialize() -> void:
 	# later check would be counting a world this one had rearranged.
 	await _check_dive(world, fleet)
 
+	# ...and LAST OF ALL, a second, SEPARATE boot: the streamlined dive world.
+	# This one cannot share the world above, because the whole point of it is
+	# what the world does NOT build when the intro picked the Dive.
+	await _check_dive_boots_streamlined()
+
 	_finish()
+
+
+## THE DIVE IS A STREAMLINED MODE, NOT THE WORLD WITH A LADDER IN IT (owner
+## ruling 2026-08-30: "a dive is meant to be much quicker. the other modes should
+## remain as they are but this one would be a super streamlined mode").
+##
+## A run used to open inside the fully populated world — the pod, the critters,
+## the krakens, the target hulk, the trainer and the city-whale BOSS at its fixed
+## lair. Measured at 8x: 11 ships and 79,532 blocks before the run added a thing,
+## against 3 ships and 26,508 once this landed.
+##
+## Both halves are pinned, because "the other modes remain as they are" is half
+## the ruling: a DIVE boot builds no ecology, and an EXPEDITION boot still does.
+func _check_dive_boots_streamlined() -> void:
+	var packed: PackedScene = load("res://maps/scale_test/scale_test.tscn")
+	if packed == null:
+		_ok(false, "the dive-boot check can load a world")
+		return
+	GameMode.pending = GameMode.DIVE
+	var lean: Node = packed.instantiate()
+	root.add_child(lean)
+	for i in 10:
+		await process_frame
+	var lean_fleet = lean.get("fleet")
+	var wild := 0
+	var boss := 0
+	for ship in (lean_fleet.call("ships") as Array):
+		if not is_instance_valid(ship):
+			continue
+		if (ship as Ship).creature_kind != "":
+			wild += 1
+			if (ship as Ship).blocks.size() > 2000:
+				boss += 1
+	_ok(wild == 0, "a DIVE boot spawns no wildlife at all (%d)" % wild)
+	_ok(boss == 0, "...and never the city-whale boss (%d)" % boss)
+	_ok(GameMode.pending == GameMode.EXPEDITION,
+		"...and the world still TOOK the choice, so a reset cannot re-enter it")
+	lean.queue_free()
+	await process_frame
+
+	# The other modes are untouched — the second half of the owner's ruling, and
+	# the half a "streamline everything" mistake would quietly break.
+	GameMode.pending = GameMode.EXPEDITION
+	var full: Node = packed.instantiate()
+	root.add_child(full)
+	for i in 10:
+		await process_frame
+	var full_wild := 0
+	for ship in ((full.get("fleet")).call("ships") as Array):
+		if is_instance_valid(ship) and (ship as Ship).creature_kind != "":
+			full_wild += 1
+	_ok(full_wild > 0,
+		"...while an EXPEDITION boot still gets its whole ecology (%d)" % full_wild)
+	full.queue_free()
+	await process_frame
 
 
 ## The owner's Blueprint-Loft test ship spawns on demand (F2), upscaled so it is
