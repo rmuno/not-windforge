@@ -5563,14 +5563,21 @@ func _nearest_ship_of_faction(from: Ship, faction: int,
 
 
 ## The starter vessel is authored in res://ships/starter.ship — an editable
-## ASCII blueprint, the shared talking point for layout discussion. Design
-## rules (clear deck, doors both sides, hatch exit, near-neutral trim) are
-## documented in the file itself and in docs/DECISIONS.md. The real file
-## is native 8× (true component footprints, no upscale); the legacy 1×
-## test scene loads the frozen fixture instead.
+## ASCII blueprint, the shared talking point for layout discussion, AUTHORED
+## AT 1× and upscaled to the world's scale here, exactly like a Loft ship
+## (2026-08-31 — the native-8× experiment is retired: hand-authoring at 8×
+## granularity carried 64× the bulk mass on footprint-rated components, and
+## the measured result was 94 px/s of lateral speed — "impossible to move
+## sideways". Upscaling is the path that PRESERVES an authored ship's feel,
+## and it makes the file Loft-native as a bonus). At world_scale 1 the
+## upscale is the identity, so the legacy scene flies the same authoring.
 func _starter_cells() -> Dictionary:
 	if world_scale > 1:
-		return ShipLayout.load_cells("res://ships/starter.ship")
+		return ShipLayout.upscale_cells(
+			ShipLayout.load_cells("res://ships/starter.ship"), world_scale)
+	# The legacy 1× scene keeps the FROZEN fixture: the pilot suite's walk
+	# coordinates are a contract against that exact grid, and the authored file
+	# above is free to evolve without re-authoring the legacy walk.
 	return ShipLayout.load_cells("res://tests/fixtures/starter_1x.ship")
 
 

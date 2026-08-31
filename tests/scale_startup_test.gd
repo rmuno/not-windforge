@@ -370,6 +370,37 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 	_ok(top_gap < 2000.0,
 		"...with its deck visible below your feet, not off-screen (%.0f px down)"
 			% top_gap)
+	# THE STARTER CAN ACTUALLY FLY THE MODE (owner 2026-08-31: "can you use
+	# the default starter ship in dive mode in a test? It's impossible to move
+	# sideways"). Board the NON-Loft candidate — the starter — and hold full
+	# right for three real seconds: it must cover ground and must not brown-out
+	# doing it. The native-8× file measured 94 px/s peak here; the 1×-authored,
+	# upscaled, upgraded ship measures ~500.
+	var loft = world.get("_dive_loft")
+	var starter = null
+	for s2 in fleet.ships():
+		if not is_instance_valid(s2) or s2.faction != 0 or s2.creature_kind != "" 				or s2.is_carcass() or s2.is_nest or s2 == loft or not s2.has_helm():
+			continue
+		starter = s2
+		break
+	_ok(starter != null, "the starter is moored on the deck")
+	if starter != null and pl != null and is_instance_valid(pl):
+		pl.global_position = starter.to_global(starter.local_pos_of(starter.helm_cells[0]))
+		await world.get_tree().physics_frame
+		_ok(pl.board(starter, starter.helm_cells[0]), "boarded the starter at its helm")
+		await world.get_tree().physics_frame
+		var x0: float = starter.global_position.x
+		Input.action_press("ship_right")
+		for i in 240:
+			await world.get_tree().physics_frame
+		Input.action_release("ship_right")
+		var dx: float = starter.global_position.x - x0
+		_ok(dx > 800.0,
+			"four seconds of full right moves the starter (%.0f px)" % dx)
+		_ok(starter.power_supply() >= starter.active_draw() * 0.95,
+			"...without browning out (supply %.0f vs draw %.0f)"
+				% [starter.power_supply(), starter.active_draw()])
+		pl.disembark()
 	world.call("end_dive")
 	await world.get_tree().physics_frame
 

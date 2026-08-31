@@ -2373,7 +2373,7 @@ func _test_dive_run() -> void:
 	var cell_px := Ship.CELL * 8.0
 	var offs: Array = DiveDeck.berth_offsets(deck, cell_px)
 	var hulls := {
-		"res://ships/starter.ship": false,       # native 8×, never upscaled
+		"res://ships/starter.ship": true,        # authored 1×, upscaled at boot (2026-08-31)
 		"res://ships/loft_test.ship": true,      # authored 1×, upscaled on spawn
 	}
 	for path in hulls:
@@ -6504,17 +6504,19 @@ func _test_blueprint_upscaling() -> void:
 		"cells land at position × scale")
 	_check(ShipLayout.upscale_cells(cells, 1) == cells, "scale 1 is the identity")
 
-	# The REAL starter is authored native-8× (true component footprints,
-	# no upscale in its spawn path). Gate the file: near-neutral trim at
-	# scale is the load-bearing property everything else assumes.
-	var starter := ShipLayout.load_cells("res://ships/starter.ship")
+	# The REAL starter is AUTHORED 1× and upscaled at boot (2026-08-31 — the
+	# native-8× experiment retired: it measured 94 px/s of lateral speed).
+	# Gate the file THE WAY THE GAME SPAWNS IT: upscaled ×8, near-neutral trim,
+	# a helm aboard, and the granularity the upscale gives it.
+	var starter := ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/starter.ship"), 8)
 	var s := _make_ship(starter)
 	s.scale_unit = 8.0
 	var ratio := s.lift_ratio()
 	_check(ratio > 0.95 and ratio < 1.4,
-		"the native-8x starter keeps its capacity margin (ratio %.2f)" % ratio)
+		"the upscaled starter keeps its capacity margin (ratio %.2f)" % ratio)
 	_check(s.blocks.size() > 2000,
-		"and is authored at 8x granularity (%d cells)" % s.blocks.size())
+		"and upscales to 8x granularity (%d cells)" % s.blocks.size())
 	_check(s.has_helm(), "with its control panel aboard")
 	s.queue_free()
 	await process_frame

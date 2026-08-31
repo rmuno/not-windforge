@@ -282,8 +282,11 @@ const _REGISTRY := [
 	{"id": "dive_zone_wind_mult", "label": "Dive: zone wind strength (1 = shipped)",
 		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,
 		"max": 4.0, "step": 0.1},                                # world._dive_hold_the_ring
+	# 12 was authored blind and measured at 133 s per tile for the upgraded
+	# starter (509 px/s lateral) — a ring nobody would ever cross. 3 ≈ 33 s per
+	# tile: the flanks are a commitment, not a career.
 	{"id": "dive_zone_tile_widths", "label": "Dive: ring tile width (shelf-widths)",
-		"group": "World", "kind": KIND_FLOAT, "default": 12.0, "min": 3.0,
+		"group": "World", "kind": KIND_FLOAT, "default": 3.0, "min": 1.0,
 		"max": 40.0, "step": 1.0},                               # world._dive_tile_w
 	# WHAT A CREATURE'S BODY DOES TO A VESSEL IT HITS (owner 2026-08-30: "whales
 	# aren't quite vicious or a threat - easy to avoid and overcome. they should
