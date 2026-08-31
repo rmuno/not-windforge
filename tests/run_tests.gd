@@ -2354,6 +2354,42 @@ func _test_dive_run() -> void:
 	_check(is_equal_approx(DiveRun.bleed_descent(9000.0, 0.0, 0.016), 9000.0),
 		"a cap of 0 is the lever turned off, not a hull pinned at zero")
 
+	# THE CORRIDOR LEANS; IT MUST NEVER STEER. Owner 2026-08-30: "my propeller
+	# thrust seems way nerfed, even sideways" - and it was not the props. The
+	# corridor pushed at 8,320 px/s2 against a hull whose own props manage about
+	# 1,000, so holding `ship_right` inside a run carried the ship 19,865 px to
+	# the LEFT in five seconds. The corridor was chosen INSTEAD of a rail
+	# (DECISIONS); this arithmetic is what keeps it one.
+	_check(is_zero_approx(DiveRun.corridor_push(0.0)),
+		"inside the corridor nothing pushes at all")
+	_check(DiveRun.corridor_push(99.0) == DiveRun.corridor_push(DiveRun.CORRIDOR_MAX_WIDTHS),
+		"the ramp is capped, so straying further cannot make it unbeatable")
+	_check(DiveRun.corridor_push(99.0) < DiveRun.HULL_LATERAL_ACCEL * 0.75,
+		"...and at its hardest it is a FRACTION of what the props can do (%.0f vs %.0f)"
+			% [DiveRun.corridor_push(99.0), DiveRun.HULL_LATERAL_ACCEL])
+	_check(DiveRun.corridor_push(2.0) > DiveRun.corridor_push(1.0),
+		"straying further does lean harder, up to the cap")
+
+	# THE TOP OF THE LADDER IS THIN AIR (owner: "a little too slow between layers
+	# 1 and 2, then 2 & 3"). One cap for the whole shaft made the shallow rungs a
+	# commute - they are the emptiest part of a run.
+	_check(DiveRun.descent_depth_mult(1) > DiveRun.descent_depth_mult(DiveRun.DEPTHS),
+		"the shallow rungs fall faster than the deep ones")
+	_check(is_equal_approx(DiveRun.descent_depth_mult(DiveRun.DEPTHS), 1.0),
+		"...and the floor is the cap itself, undiluted")
+	var thickening := 999.0
+	for d in range(1, DiveRun.DEPTHS + 1):
+		var mult := DiveRun.descent_depth_mult(d)
+		_check(mult <= thickening + 0.0001,
+			"the deep only ever thickens (depth %d, x%.2f)" % [d, mult])
+		thickening = mult
+
+	# BOOM (owner: "they should do DAMAGE on collision"). The lever, and that its
+	# default actually means something.
+	_check(Tunables.get_num("creature_ram_damage") > 1.5,
+		"a creature's body hits a ship meaningfully harder than a scrape (x%.1f)"
+			% Tunables.get_num("creature_ram_damage"))
+
 	_check(DiveRun.stuck_hint(500.0).contains("starboard"),
 		"a landing to the right is called starboard")
 	_check(DiveRun.stuck_hint(-500.0).contains("port"),

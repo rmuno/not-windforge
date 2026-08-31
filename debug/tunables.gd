@@ -236,6 +236,14 @@ const _REGISTRY := [
 	{"id": "dive_surge_lead", "label": "Dive: surge arrives this many seconds ahead of you",
 		"group": "World", "kind": KIND_FLOAT, "default": 4.0, "min": 0.5,
 		"max": 15.0, "step": 0.5},   # world._dive_surge
+	# WHAT A CREATURE'S BODY DOES TO A VESSEL IT HITS (owner 2026-08-30: "whales
+	# aren't quite vicious or a threat - easy to avoid and overcome. they should
+	# do DAMAGE on collision: BOOM!"). A multiplier on the impact bite a VESSEL
+	# takes from a creature only - creature-on-creature keeps the ecology's own
+	# factors, or a pod would kill itself in a scrum. 1 restores the old scratch.
+	{"id": "creature_ram_damage", "label": "A creature's body hits a ship this much harder",
+		"group": "World", "kind": KIND_FLOAT, "default": 4.0,
+		"min": 1.0, "max": 12.0, "step": 0.5},   # Ship._apply_pending_impacts
 	# HOW FAST A RUN LETS A HULL FALL, px/s at scale 1 (x8 in the shipped world).
 	# The owner's "it falls too fast": measured terminal was 6,704 px/s against a
 	# screen 4,200 px tall — more than a screen and a half every second. 300 puts

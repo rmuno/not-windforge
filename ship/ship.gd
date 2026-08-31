@@ -2241,6 +2241,10 @@ func _integrate_forces(state: PhysicsDirectBodyState2D) -> void:
 				"impulse": episode_momentum,
 				"normal": state.get_contact_local_normal(ship_best),
 				"immune": _is_ram_immune(state.get_contact_local_normal(ship_best)),
+				# WHO hit us. A creature's body striking a vessel is a different
+				# event from two hulls scraping, and the owner wants it to read
+				# that way - see `creature_ram_damage`.
+				"creature": ship_other.creature_kind != "",
 			})
 	_was_touching_ship = touching_ship
 
@@ -2324,6 +2328,20 @@ func _process(delta: float) -> void:
 		var available: float = (impact["impulse"] \
 				- Tunables.get_num("impact_damage_threshold") * _unit3()) \
 			* Tunables.get_num("impact_damage_scale") / unit2
+		# BOOM (owner 2026-08-30: "whales aren't quite vicious or a threat - easy
+		# to avoid and overcome. they should do DAMAGE on collision: BOOM!").
+		#
+		# A whale hitting a hull was billed by the same arithmetic as a hull
+		# scraping a cliff, and momentum alone did not carry it: a body GLIDES
+		# rather than charges, so the closing speed is modest and the bite came
+		# out as a scratch. The creature is not gentle - it is enormous, and
+		# being hit by it should read as an EVENT.
+		#
+		# Only a VESSEL pays this. A creature struck by another creature is the
+		# ecology's business and keeps its own factors; doubling it there would
+		# have a whale pod killing itself in a scrum.
+		if bool(impact.get("creature", false)) and shared_health_max <= 0.0:
+			available *= Tunables.get_num("creature_ram_damage")
 		# A LIVING creature is one flexing body, not a rigid grid, so the
 		# inward walk below has nothing to spend itself on: damage_cell banks
 		# everything in the shared pool and breaks no block, so the walk
