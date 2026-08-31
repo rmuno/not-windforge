@@ -236,6 +236,14 @@ const _REGISTRY := [
 	{"id": "dive_surge_lead", "label": "Dive: surge arrives this many seconds ahead of you",
 		"group": "World", "kind": KIND_FLOAT, "default": 4.0, "min": 0.5,
 		"max": 15.0, "step": 0.5},   # world._dive_surge
+	# HOW FAST A RUN LETS A HULL FALL, px/s at scale 1 (x8 in the shipped world).
+	# The owner's "it falls too fast": measured terminal was 6,704 px/s against a
+	# screen 4,200 px tall — more than a screen and a half every second. 300 puts
+	# it at 2,400 px/s, about a screen every 1.7 s, which is a descent you can
+	# read. 0 turns the hold off and gives back the old plunge.
+	{"id": "dive_descent_max", "label": "Dive: fastest a hull may fall (px/s at 1x, 0 = off)",
+		"group": "World", "kind": KIND_FLOAT, "default": 300.0,
+		"min": 0.0, "max": 900.0, "step": 25.0},   # world._dive_hold_the_descent
 	{"id": "dive_assistant", "label": "Dive: the assistant mans the repair station",
 		"group": "World", "kind": KIND_BOOL, "default": true},
 		# world._dive_post_the_assistant — off = no station, no crew, X-wand only

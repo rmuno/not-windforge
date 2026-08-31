@@ -2320,6 +2320,40 @@ func _test_dive_run() -> void:
 	_check(not DiveRun.helm_in_reach(Rect2(), Vector2.ZERO, m),
 		"a hull with no bounds offers no helm")
 
+	# HOW FAST A RUN LETS A HULL FALL (owner 2026-08-30: "it falls too fast").
+	# Measured before the fix: 6,704 px/s terminal against a screen 4,200 px tall
+	# — more than a screen and a half every second — and a NEUTRAL stick still
+	# sinking at 2,389, so the stick meant nothing.
+	var base := Tunables.get_num("dive_descent_max") * 8.0
+	_check(base > 0.0, "the descent cap is a live F2 lever (%.0f px/s at 8x)" % base)
+	_check(DiveRun.descent_cap(base, -1.0) == base,
+		"driving down gets the full cap")
+	_check(DiveRun.descent_cap(base, 0.0) < base * 0.5,
+		"...and letting go is a much slower drift (%.0f vs %.0f)"
+			% [DiveRun.descent_cap(base, 0.0), base])
+	_check(DiveRun.descent_cap(base, 1.0) == DiveRun.descent_cap(base, 0.0),
+		"...climbing is not a descent, so it reads as the drift cap")
+	# THE BLEED MUST ACTUALLY BEAT GRAVITY. An eased cap settles where the bleed
+	# balances the hull's own downward acceleration, and the first cut (bleed 4)
+	# settled a THOUSAND px/s over the number — a cap in name only. 4,200 px/s²
+	# is the measured acceleration of the shipped hull driving down at 8x.
+	var settle := DiveRun.settles_at(base, 4200.0)
+	_check(settle < base * 1.25,
+		"the eased cap settles near the number, not far over it (%.0f vs %.0f)"
+			% [settle, base])
+	# ...and the bleed itself: downward only, never past the cap, never upward.
+	_check(is_equal_approx(DiveRun.bleed_descent(base * 0.5, base, 0.016), base * 0.5),
+		"a hull under the cap is left alone")
+	_check(is_equal_approx(DiveRun.bleed_descent(-3000.0, base, 0.016), -3000.0),
+		"...and a CLIMBING hull is never touched (the climb is the extraction)")
+	var bled := DiveRun.bleed_descent(base * 3.0, base, 0.016)
+	_check(bled < base * 3.0 and bled > base,
+		"a hull over the cap eases toward it rather than snapping (%.0f)" % bled)
+	_check(DiveRun.bleed_descent(base * 3.0, base, 10.0) == base,
+		"...and a long frame lands exactly on the cap, never under it")
+	_check(is_equal_approx(DiveRun.bleed_descent(9000.0, 0.0, 0.016), 9000.0),
+		"a cap of 0 is the lever turned off, not a hull pinned at zero")
+
 	_check(DiveRun.stuck_hint(500.0).contains("starboard"),
 		"a landing to the right is called starboard")
 	_check(DiveRun.stuck_hint(-500.0).contains("port"),
