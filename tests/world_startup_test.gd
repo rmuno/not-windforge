@@ -1165,8 +1165,11 @@ func _check_unified_controls(world: Node) -> void:
 	var kinds := {}
 	for e in palette:
 		kinds[e["kind"]] = int(kinds.get(e["kind"], 0)) + 1
-	_ok(int(kinds.get("block", 0)) == BlockDB.type_count() - 1,
-		"the palette lists every ship block except the open door (%d)"
+	# − 2: the open door (runtime state, never built) and the strut (left the
+	# player-facing palette 2026-09-01 — the type survives for authored nests).
+	# At 1× the propeller has no rotated twin, so nothing cancels the door here.
+	_ok(int(kinds.get("block", 0)) == BlockDB.type_count() - 2,
+		"the palette lists every ship block except the open door and the strut (%d)"
 			% int(kinds.get("block", 0)))
 	_ok(int(kinds.get("terrain", 0)) == 1, "the carried stone is one terrain entry")
 	_ok(int(kinds.get("balloon", 0)) == 3,
