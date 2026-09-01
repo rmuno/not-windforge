@@ -371,10 +371,18 @@ func dismount() -> void:
 	velocity = Vector2.ZERO
 
 
+## A DIVE CARD's multiplier on these legs (Light Boots, Sea Legs). Stamped on the
+## body by `world._tick_dive` every tick — the same idiom `Ship.thrust_mult` uses
+## for the propeller card, and for the same reason: a card taken mid-run applies
+## the same frame, and nothing outside a run ever writes it. `world.end_dive`
+## puts it back to 1.0, so ordinary play is byte-identical.
+var run_speed_mult := 1.0
+
 ## Effective walk speed: the base feel times the GRACE move-speed perk (1.0 with
-## no perk, so an un-invested character walks exactly as before).
+## no perk, so an un-invested character walks exactly as before), times the run's
+## card multiplier (1.0 outside a Dive).
 func _move_speed() -> float:
-	return SPEED * (stats.move_speed_mult() if stats != null else 1.0)
+	return SPEED * (stats.move_speed_mult() if stats != null else 1.0) * run_speed_mult
 
 
 ## Can the player start an AIR jump right now? Only when the double-jump perk

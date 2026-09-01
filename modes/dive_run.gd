@@ -780,13 +780,19 @@ func card_names() -> Array:
 	return out
 
 
-## The current draft offer as painter-ready rows: [{id, name, desc}, ...], empty
-## when nothing is on offer.
+## The current draft offer as painter-ready rows, empty when nothing is on offer:
+## [{id, name, desc, rarity, rarity_label, color}, ...]. The RARITY travels as
+## plain data + a finished Colour so the picker never reaches into the catalog to
+## work out what colour a card is (world-decides/layer-paints).
 func draft_view() -> Array:
 	var out: Array = []
 	for id in draft:
-		out.append({"id": id, "name": DiveCards.name_of(String(id)),
-			"desc": DiveCards.desc_of(String(id))})
+		var cid := String(id)
+		var tier := DiveCards.rarity_of(cid)
+		out.append({"id": cid, "name": DiveCards.name_of(cid),
+			"desc": DiveCards.desc_of(cid),
+			"rarity": tier, "rarity_label": DiveCards.rarity_label(tier),
+			"color": DiveCards.rarity_color(tier)})
 	return out
 
 

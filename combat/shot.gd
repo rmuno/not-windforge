@@ -212,7 +212,11 @@ func _physics_process(delta: float) -> void:
 				# such shells carry `dive_world`; everything else does nothing extra.
 				if dive_world != null and is_instance_valid(dive_world) \
 						and dive_world.has_method("_dive_on_hit"):
-					dive_world.call("_dive_on_hit", ship, damage)
+					# WHERE it landed travels too: Cluster Shells detonates at the
+					# impact point, not at the struck hull's origin (which on a long
+					# vessel is a long way from the plating you actually hit).
+					dive_world.call("_dive_on_hit", ship, damage,
+						hit["position"] as Vector2)
 		queue_free()
 		return
 	position = to

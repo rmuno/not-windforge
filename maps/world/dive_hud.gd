@@ -192,11 +192,28 @@ func _draw_draft(d: Dictionary) -> void:
 		var card := cards[i] as Dictionary
 		var cx := x0 + float(i) * (cw + gap)
 		var box := Rect2(Vector2(cx, top), Vector2(cw, ch))
+		# RARITY IS THE COLOUR (owner 2026-09-01: white common, blue rarer, purple
+		# epic, orange legendary). The world hands the finished Colour down in the
+		# draft row — this layer never asks the catalog what tier a card is.
+		var tint := card.get("color", _COIN) as Color
 		draw_rect(box, Color(0.05, 0.07, 0.11, 0.92))
-		draw_rect(box, Color(_DIM, 0.7), false, 1.0 * s)
+		# A rarer card wears a thicker, brighter frame, so the spicy one is visible
+		# before you have read a single word of it.
+		var rare := String(card.get("rarity", "common")) != "common"
+		draw_rect(box, Color(tint, 0.85 if rare else 0.55), false,
+			(2.0 if rare else 1.0) * s)
 		draw_string(font, Vector2(cx + 10.0 * s, top + fs * 1.4),
 			"[%d]  %s" % [i + 1, String(card.get("name", ""))],
-			HORIZONTAL_ALIGNMENT_LEFT, -1, hs, _COIN)
+			HORIZONTAL_ALIGNMENT_LEFT, -1, hs, tint)
+		# The tier, named, right-aligned on the title line — the word and the
+		# colour say the same thing, which is what makes it readable when it is
+		# also the only colour on screen.
+		var tier_label := String(card.get("rarity_label", ""))
+		if not tier_label.is_empty():
+			draw_string(font, Vector2(cx + cw - 10.0 * s
+					- font.get_string_size(tier_label, HORIZONTAL_ALIGNMENT_LEFT,
+						-1, fs).x, top + fs * 1.4),
+				tier_label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(tint, 0.75))
 		# The description wraps inside the card width.
 		draw_multiline_string(font, Vector2(cx + 10.0 * s, top + fs * 3.0),
 			String(card.get("desc", "")), HORIZONTAL_ALIGNMENT_LEFT,

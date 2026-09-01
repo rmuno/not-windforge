@@ -63,6 +63,7 @@ func _initialize() -> void:
 	_test_dive_floating_chunks()
 	await _test_map_room_screen()
 	_test_dive_cards()
+	_test_dive_blast()
 	_test_creature_log()
 	await _test_hull_integrity()
 	await _test_sealed_pockets_cut_a_holed_body()
@@ -2009,6 +2010,98 @@ func _test_dive_cards() -> void:
 				ok = false   # a proc on an event/effect the world cannot apply
 	_check(ok, "every card has a unique id/name and stays in the DIAL/EVENT/EFFECT vocabulary")
 
+	# --- RARITY (owner 2026-09-01) is data, closed, and on every row ----------
+	# "White -> normal & common, green or blue -> rarer/better, purple -> spicy
+	# epic, orange -> legendary." A tier outside the set would silently draw at
+	# the common rate and paint the common colour, which is exactly the kind of
+	# quiet wrong the closed vocabulary exists to catch.
+	var tiers := {}
+	var rarity_ok := true
+	for c in DiveCards.CATALOG:
+		var cd := c as Dictionary
+		var tier := String(cd.get("rarity", ""))
+		if not DiveCards.RARITIES.has(tier):
+			rarity_ok = false
+		tiers[tier] = int(tiers.get(tier, 0)) + 1
+	_check(rarity_ok, "every card names a rarity inside the closed RARITIES set")
+	_check(tiers.size() == DiveCards.RARITIES.size(),
+		"all four tiers are actually stocked (%d)" % tiers.size())
+	# "I don't want a bazillion cards" — the deck stays a hand you can hold.
+	_check(DiveCards.CATALOG.size() >= 16 and DiveCards.CATALOG.size() <= 20,
+		"the deck stays small and meaningful (%d cards)" % DiveCards.CATALOG.size())
+	# Every tier has its own colour and its own name; a duplicate would make the
+	# picker's whole colour language a lie.
+	var colours := {}
+	for tier in DiveCards.RARITIES:
+		colours[DiveCards.rarity_color(String(tier))] = true
+	_check(colours.size() == DiveCards.RARITIES.size(),
+		"each tier paints a DISTINCT colour")
+	_check(DiveCards.color_of("honed_edge") == DiveCards.RARITY_COLOR["common"]
+			and DiveCards.color_of("cluster_shells") == DiveCards.RARITY_COLOR["legendary"],
+		"a card's colour follows its tier")
+	# Rarity must strictly ORDER the draw weight, or "rarer" means nothing.
+	var descending := true
+	for i in range(1, DiveCards.RARITIES.size()):
+		if int(DiveCards.RARITY_WEIGHT[DiveCards.RARITIES[i]]) \
+				>= int(DiveCards.RARITY_WEIGHT[DiveCards.RARITIES[i - 1]]):
+			descending = false
+	_check(descending, "each tier is strictly rarer than the one below it")
+	# ...and a card's own weight still biases WITHIN its tier (that is why the
+	# tier is a multiplier and not a replacement).
+	_check(DiveCards.draw_weight(DiveCards.by_id("honed_edge"))
+			> DiveCards.draw_weight(DiveCards.by_id("field_medic")),
+		"a heavy common still outdraws a light one inside the same tier")
+	_check(DiveCards.draw_weight(DiveCards.by_id("pickpocket"))
+			> DiveCards.draw_weight(DiveCards.by_id("cluster_shells")),
+		"...and the lightest common still outdraws the heaviest legendary")
+
+	# --- The weighting is not merely declared, it is MEASURED -----------------
+	# 3,000 single-card draws off a seeded rng. Commons must dominate and
+	# legendaries must be a rare thrill; anything else and the tiers are decoration.
+	var wrng := RandomNumberGenerator.new()
+	wrng.seed = 909
+	var drawn := {}
+	var trials := 3000
+	for i in trials:
+		var one := DiveCards.draw_choices(wrng, [], 1)
+		if one.is_empty():
+			continue
+		drawn[DiveCards.rarity_of(String(one[0]))] = \
+			int(drawn.get(DiveCards.rarity_of(String(one[0])), 0)) + 1
+	var n_common := int(drawn.get("common", 0))
+	var n_unc := int(drawn.get("uncommon", 0))
+	var n_epic := int(drawn.get("epic", 0))
+	var n_leg := int(drawn.get("legendary", 0))
+	_check(n_common > n_unc and n_unc > n_epic and n_epic > n_leg,
+		"draws come out ordered by tier over %d trials (%d/%d/%d/%d)"
+			% [trials, n_common, n_unc, n_epic, n_leg])
+	_check(n_common > trials / 2,
+		"commons are the bulk of what you are offered (%d of %d)" % [n_common, trials])
+	_check(n_leg * 10 < n_common,
+		"a legendary is an event, not a Tuesday (%d vs %d commons)" % [n_leg, n_common])
+
+	# --- The two new wirings this round added --------------------------------
+	_check(DiveCards.DIALS.has("move_speed"),
+		"the move_speed dial (the owner's +10%% legs) is in the vocabulary")
+	_check(DiveCards.EFFECTS.has("explode"),
+		"the explode effect (the owner's legendary) is in the vocabulary")
+	_check(is_equal_approx(DiveCards.modifier(["light_boots"], "move_speed"), 1.10),
+		"Light Boots multiplies move_speed 1.10")
+	_check(is_equal_approx(DiveCards.modifier([], "move_speed"), 1.0),
+		"...and no cards means 1.0, so ordinary play walks exactly as before")
+	# The synergies the deck was built around must actually compose.
+	_check(is_equal_approx(DiveCards.modifier(["light_boots", "sea_legs"], "move_speed"),
+			1.10 * 1.25),
+		"two leg cards stack multiplicatively (the ballpit rule)")
+	_check(DiveCards.modifier(["trimmed_sails", "full_sail"], "thrust") > 2.2,
+		"Trimmed Sails + Full Sail is a genuinely different ship (%.2fx)"
+			% DiveCards.modifier(["trimmed_sails", "full_sail"], "thrust"))
+	_check(DiveCards.procs_for(["kings_ransom"], "kill").size() == 1
+			and DiveCards.procs_for(["kings_ransom"], "hit").size() == 1,
+		"one card may carry two procs on two different events")
+	_check(DiveCards.procs_for(["cluster_shells", "sanguine_tide"], "hit").size() == 2,
+		"a fire-rate build stacks every hit-proc it holds")
+
 	# --- The draft draws distinct, unheld, and drains cleanly -----------------
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 12345
@@ -2069,11 +2162,80 @@ func _test_dive_cards() -> void:
 	for c in DiveCards.CATALOG:
 		_check(codex.contains(String((c as Dictionary)["name"])),
 			"the codex lists '%s'" % (c as Dictionary)["name"])
+	# ...and it is GROUPED by tier now, so the page reads as the deck's ladder.
+	var headed := true
+	for tier in DiveCards.RARITIES:
+		if not codex.contains(DiveCards.rarity_label(String(tier))):
+			headed = false
+	_check(headed, "the codex heads a section for every rarity tier")
 
 	# The ledger carries the card state for the HUD.
 	var led := run.ledger()
 	_check(led.has("cards") and led.has("xp") and led.has("draft") and led.has("xp_need"),
 		"the ledger carries cards / xp / draft for the HUD")
+
+	# THE PAINTER GETS RARITY AS PLAIN DATA (world-decides/layer-paints): the
+	# picker must never ask the catalog what colour a card is.
+	var r3 := DiveRun.new()
+	r3.draft = ["honed_edge", "cluster_shells"]
+	var view := r3.draft_view()
+	_check(view.size() == 2 and (view[0] as Dictionary).has("rarity")
+			and (view[0] as Dictionary).has("rarity_label")
+			and (view[0] as Dictionary).has("color"),
+		"a draft row carries rarity, its label and a finished Colour")
+	_check(String((view[1] as Dictionary)["rarity"]) == "legendary"
+			and (view[1] as Dictionary)["color"] == DiveCards.RARITY_COLOR["legendary"],
+		"...and the legendary on offer comes through orange")
+
+
+## THE BLAST — the "explode" effect's geometry (owner's legendary, 2026-09-01).
+## Pure, and it has to be: the world half cannot be named in a test (its `Net`
+## autoload poisons the compile graph), so this is where the shape of a detonation
+## is actually pinned. The world-level proof that a second hull really takes the
+## damage lives in world_startup_test.gd.
+func _test_dive_blast() -> void:
+	_t("THE BLAST: what an exploding shell catches, and what it leaves alone")
+
+	# rect_distance measures to the PLATING, not to the origin — a long vessel
+	# whose centre is far away is still caught by the end you shot at.
+	var hull := Rect2(Vector2(-400.0, -100.0), Vector2(800.0, 200.0))
+	_check(is_zero_approx(DiveCards.rect_distance(hull, Vector2(300.0, 0.0))),
+		"a point inside the plating is at distance zero")
+	_check(is_equal_approx(DiveCards.rect_distance(hull, Vector2(500.0, 0.0)), 100.0),
+		"a point off the bow measures to the bow (100)")
+	_check(is_equal_approx(DiveCards.rect_distance(hull, Vector2(400.0, 130.0)), 30.0),
+		"...and a point off the corner measures to the corner")
+
+	# blast_catches: hostiles inside the radius, everything else untouched.
+	var rows := [
+		{"dist": 0.0, "hostile": true},      # 0 — the struck body itself
+		{"dist": 900.0, "hostile": true},    # 1 — a neighbour in the blast
+		{"dist": 2400.0, "hostile": true},   # 2 — out of reach
+		{"dist": 10.0, "hostile": false},    # 3 — your own hull, right on top of it
+	]
+	var caught := DiveCards.blast_catches(rows, 1000.0)
+	_check(caught.has(0), "the STRUCK body takes the blast too (the owner's ask)")
+	_check(caught.has(1), "so does an enemy inside the radius")
+	_check(not caught.has(2), "an enemy outside the radius is spared")
+	_check(not caught.has(3), "and your own hull is never caught in your own card")
+	_check(caught.size() == 2, "exactly the two enemies in range (%d)" % caught.size())
+	# On the rim is IN — a flat blast with a fuzzy edge would be untestable and
+	# would read as a lie at exactly the distance players learn to judge.
+	_check(DiveCards.blast_catches([{"dist": 1000.0, "hostile": true}], 1000.0).size() == 1,
+		"a body exactly on the rim is inside it")
+	_check(DiveCards.blast_catches(rows, 0.0).size() == 1,
+		"a zero-radius blast still catches what it hit and nothing else")
+	# The shipped radius is a real, readable distance at the shipped 8x world.
+	_check(DiveCards.BLAST_RADIUS_PX * 8.0 > 1000.0
+			and DiveCards.BLAST_RADIUS_PX * 8.0 < 3000.0,
+		"the shipped blast reads at 8x (%.0f px)" % (DiveCards.BLAST_RADIUS_PX * 8.0))
+	# ...and the card that fires it is exactly one row of data, in vocabulary.
+	var boom := DiveCards.by_id("cluster_shells")
+	_check(not boom.is_empty()
+			and DiveCards.procs_for(["cluster_shells"], "hit").size() == 1
+			and String((DiveCards.procs_for(["cluster_shells"], "hit")[0]
+				as Dictionary)["effect"]) == "explode",
+		"Cluster Shells is one legendary row that procs `explode` on a hit")
 
 
 ## THE WIND RING (owner experiment 2026-08-31): the looping tile model. Pure —
