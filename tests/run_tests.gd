@@ -56,6 +56,7 @@ func _initialize() -> void:
 	_test_fall_damage()
 	_test_backdrop_is_calm()
 	_test_dive_run()
+	_test_ship_serialize()
 	_test_dive_ring()
 	_test_dive_cards()
 	_test_creature_log()
@@ -2108,6 +2109,58 @@ func _test_dive_ring() -> void:
 	# Labels exist for every tile (the HUD prints them raw).
 	for i in n:
 		_check(not DiveRun.zone_label(i).is_empty(), "tile %d has a name" % i)
+
+
+## THE SHIPYARD'S ROUND-TRIP (owner arc: the in-game ship builder). serialize
+## is the half the game never had — the Loft could export, the game could only
+## read. Pinned: every authored glyph type survives text and back, coordinates
+## survive exactly (origin arithmetic), the scale header reads back, and parse
+## skips the scale line rather than eating it as a grid row.
+func _test_ship_serialize() -> void:
+	_t("ShipLayout.serialize: the .ship round-trip the shipyard exports")
+	var cells := {
+		Vector2i(-2, -1): BlockDB.Type.GASBAG,
+		Vector2i(-1, -1): BlockDB.Type.GASBAG,
+		Vector2i(-2, 0): BlockDB.Type.HULL,
+		Vector2i(-1, 0): BlockDB.Type.ENGINE,
+		Vector2i(0, 0): BlockDB.Type.HELM,
+		Vector2i(1, 0): BlockDB.Type.DOOR_CLOSED,
+		Vector2i(2, 0): BlockDB.Type.TURRET,
+		Vector2i(-2, 1): BlockDB.Type.BALLAST,
+		Vector2i(-1, 1): BlockDB.Type.PLATFORM,
+		Vector2i(0, 1): BlockDB.Type.STRUT,
+		Vector2i(1, 1): BlockDB.Type.PROPELLER,
+		Vector2i(2, 1): BlockDB.Type.BLUBBER,
+		Vector2i(3, 1): BlockDB.Type.MEAT,
+		Vector2i(4, 1): BlockDB.Type.SHELL,
+	}
+	var text := ShipLayout.serialize(cells)
+	var back := ShipLayout.parse(text)
+	_check(back.size() == cells.size(),
+		"every cell survives the round-trip (%d of %d)" % [back.size(), cells.size()])
+	var same := true
+	for cell in cells:
+		if int(back.get(cell, -1)) != int(cells[cell]):
+			same = false
+	_check(same, "...at the same coordinates with the same types")
+	_check(ShipLayout.file_scale(text) == 1, "an unscaled export reads scale 1")
+
+	# The scale header: written for a world-granularity grid, read back, and
+	# never eaten as a grid row by parse.
+	var scaled := ShipLayout.serialize(cells, 8)
+	_check(ShipLayout.file_scale(scaled) == 8, "a scale-8 export says so")
+	var back8 := ShipLayout.parse(scaled)
+	_check(back8.size() == cells.size(),
+		"...and parse skips the scale line instead of eating it (%d cells)" % back8.size())
+
+	# An OPEN door serializes as the authored CLOSED one — the open state is
+	# never authored, so the round-trip normalises it.
+	var doors := {Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.DOOR}
+	var dback := ShipLayout.parse(ShipLayout.serialize(doors))
+	_check(int(dback.get(Vector2i(1, 0), -1)) == BlockDB.Type.DOOR_CLOSED,
+		"an open door exports as an authored (closed) door")
+
+	_check(ShipLayout.serialize({}) == "", "an empty grid exports nothing")
 
 
 func _test_dive_run() -> void:

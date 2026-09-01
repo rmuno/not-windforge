@@ -289,6 +289,10 @@ func _build_player_tab() -> void:
 			if world != null: world.call("debug_grant_balloons", 3))
 	_action_button(box, "Max all stats", func() -> void:
 		if world != null: world.call("debug_max_stats"))
+	_action_button(box, "EXPORT your ship as .ship (user://ships + clipboard)",
+		func() -> void:
+			if world != null and world.has_method("export_ship"):
+				world.call("export_ship"))
 	_action_button(box, "Bolt a REPAIR STATION onto your ship (E runs it)",
 		func() -> void:
 			if world != null: world.call("debug_add_mender"))

@@ -82,6 +82,8 @@ func _repaint() -> void:
 				func() -> void: _go(Page.BESTIARY))
 			_button("CARDS — the run's whole deck",
 				func() -> void: _go(Page.CARDS))
+			_button("SHIP BUILDER — calm sky, free build, export .ship",
+				func() -> void: _choose(GameMode.BUILDER))
 			_button("back", func() -> void: _go(Page.TITLE))
 		Page.BESTIARY:
 			_label(CreatureLog.bestiary_text(discovered), 13)
