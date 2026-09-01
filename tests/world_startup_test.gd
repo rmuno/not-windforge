@@ -2804,6 +2804,22 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(born_mortal == born_hostiles,
 			"...and born MORTAL — its integrity pool is armed (%d of %d)"
 				% [born_mortal, born_hostiles])
+		# ...AND NEVER PUT TO SLEEP (v0.118.0): pickets spawn beyond the
+		# dormancy range, and a dormant brain fires nothing — the scorecard
+		# caught gunboats firing ZERO shells across 21 surges. A live run's
+		# surge picket is exempt however far away it is.
+		Tunables.set_value("dormancy_enabled", true)
+		world.call("_update_dormancy", 60.0)
+		var slept := 0
+		for sid in (world.get("_dive_surged") as Array):
+			if pre_surge.has(sid):
+				continue
+			var pk := instance_from_id(sid) as Ship
+			if pk != null and is_instance_valid(pk) and pk.faction == 1 and pk.dormant:
+				slept += 1
+		_ok(slept == 0,
+			"a live run's surge picket is never put to sleep by dormancy (%d slept)" % slept)
+		Tunables.set_value("dormancy_enabled", false)
 		# The shrug is gone: strip one picket's aggro the way the de-aggro range
 		# would, tick the keeper, and the hunt is back on.
 		var victim := -1
