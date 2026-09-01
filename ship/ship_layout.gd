@@ -102,18 +102,73 @@ const GLYPHS := {
 }
 
 
+## Shift a grid so its bounding-box CENTRE sits at cell (0,0) — the canonical
+## authored form. Every hand-authored file centres its grid on the origin
+## (`origin 6 5` and friends), and the WORLD assumes it: ground is prepared,
+## berths sized and spacing measured around the SHIP NODE, which sits at the
+## grid's (0,0). The drafting table's canvas keeps cells at (0..width) instead,
+## and the owner's third export proved what that does uncentred: the hull spawned
+## ~2,800 px from its own node, half off the prepared floor, and fell away from
+## the freshly-berthed pilot. Integer shift; empty grids pass through.
+static func recentre(cells: Dictionary) -> Dictionary:
+	if cells.is_empty():
+		return cells
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for cell in cells:
+		var c: Vector2i = cell
+		lo = Vector2i(mini(lo.x, c.x), mini(lo.y, c.y))
+		hi = Vector2i(maxi(hi.x, c.x), maxi(hi.y, c.y))
+	var shift := Vector2i((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)
+	if shift == Vector2i.ZERO:
+		return cells
+	var out := {}
+	for cell in cells:
+		out[(cell as Vector2i) - shift] = cells[cell]
+	return out
+
+
+## How far off-centre (in grid cells, either axis) a parsed blueprint may sit
+## before the LOADER recentres it. Already-saved uncentred exports (the owner's
+## drafts predate the centred serializer below) must load right TODAY; but the
+## stock authored files sit within a cell of centre by convention and are left
+## byte-identical — the 1x pilot fixture's walk contract is written in exact
+## ship-relative coordinates.
+const RECENTRE_THRESHOLD := 4
+
+
+## Recentre a parsed grid only when it is WILDLY off-origin (past the threshold
+## on either axis) — the load-time safety net under `recentre`'s export-time fix.
+static func recentre_if_askew(cells: Dictionary) -> Dictionary:
+	if cells.is_empty():
+		return cells
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for cell in cells:
+		var c: Vector2i = cell
+		lo = Vector2i(mini(lo.x, c.x), mini(lo.y, c.y))
+		hi = Vector2i(maxi(hi.x, c.x), maxi(hi.y, c.y))
+	var centre := Vector2i((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)
+	if absi(centre.x) <= RECENTRE_THRESHOLD and absi(centre.y) <= RECENTRE_THRESHOLD:
+		return cells
+	return recentre(cells)
+
+
 ## The missing half of the round-trip (the Loft always had it; the game did
-## not): {Vector2i: type} -> the .ship ASCII `parse` reads back verbatim.
-## `scale` records the grid's granularity (a ship exported from the 8x world is
-## an 8x-granularity grid); 1 writes no line, matching every authored file.
-## A type with no glyph (a machine bundle interior, say) serializes as empty —
+## not): {Vector2i: type} -> the .ship ASCII `parse` reads back. CANONICAL, not
+## verbatim: the grid is RECENTRED first (see `recentre` — an export must be a
+## well-formed authored file, and authored files centre on the origin), so
+## `parse(serialize(x)) == recentre(x)`. `scale` records the grid's granularity
+## (a ship exported from the 8x world is an 8x-granularity grid); 1 writes no
+## line, matching every authored file. A type with no glyph serializes as empty —
 ## honest loss, printed nowhere better.
 static func serialize(cells: Dictionary, scale := 1) -> String:
 	if cells.is_empty():
 		return ""
+	var centred := recentre(cells)
 	var lo := Vector2i(1 << 30, 1 << 30)
 	var hi := Vector2i(-(1 << 30), -(1 << 30))
-	for cell in cells:
+	for cell in centred:
 		var c: Vector2i = cell
 		lo = Vector2i(mini(lo.x, c.x), mini(lo.y, c.y))
 		hi = Vector2i(maxi(hi.x, c.x), maxi(hi.y, c.y))
@@ -127,7 +182,7 @@ static func serialize(cells: Dictionary, scale := 1) -> String:
 		var row := ""
 		for c in range(lo.x, hi.x + 1):
 			var cell := Vector2i(c, r)
-			row += String(GLYPHS.get(cells.get(cell, -1), "."))
+			row += String(GLYPHS.get(centred.get(cell, -1), "."))
 		lines.append(row)
 	return "\n".join(lines) + "\n"
 
