@@ -267,8 +267,12 @@ const _REGISTRY := [
 	# Prop thrust multiplies by air density and the run starts in THIN air
 	# (altitude 0.86) — measured, the props were strangled ~10x at the deck. The
 	# run floors the density the PROPS feel (never the lift). 0 = off.
+	# 0.8 was a 16x overshoot (deck air MEASURES ~0.05): the starter hit
+	# 3,260 px/s in ONE SECOND and obliterated itself on the deck wall. 0.15 is
+	# ~3x the deck's real air — brisk (~1,700 px/s terminal), survivable, and
+	# past the shallow rungs the REAL density overtakes the floor anyway.
 	{"id": "dive_thrust_density_floor", "label": "Dive: min air density the props feel (0 = off)",
-		"group": "World", "kind": KIND_FLOAT, "default": 0.8, "min": 0.0,
+		"group": "World", "kind": KIND_FLOAT, "default": 0.15, "min": 0.0,
 		"max": 1.0, "step": 0.05},                               # Ship.thrust_density_floor
 	# The closing sky's strength, a multiplier on DiveRun.CEILING_PUSH (400
 	# px/s²@1×/rung, capped at 3 rungs ≈ 10× the props). 1.0 = the shipped rail;

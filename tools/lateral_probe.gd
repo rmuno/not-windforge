@@ -49,14 +49,24 @@ func _initialize() -> void:
 	var t := 0.0
 	var x0: float = starter.global_position.x
 	var peak := 0.0
+	var last_x := x0
 	while t < 8.0:
 		await world.get_tree().physics_frame
 		t += STEP
+		# The hull can DIE mid-burn now (integrity + a wall) — a freed ref must
+		# end the measurement loudly, never crash-loop the probe.
+		if not is_instance_valid(starter):
+			print("  !! the starter was DESTROYED at t=%.1f (last x %.0f) — the burn ended in a wall" % [t, last_x - x0])
+			break
+		last_x = starter.global_position.x
 		peak = maxf(peak, absf(starter.linear_velocity.x))
 		if int(t * 60.0) % 60 == 0:
 			print("  t=%.0f  vx=%.0f  dx=%.0f" % [t, starter.linear_velocity.x,
 				starter.global_position.x - x0])
 	Input.action_release("ship_right")
+	if not is_instance_valid(starter):
+		print("RESULT: destroyed mid-burn — see above")
+		return quit()
 	var dx: float = starter.global_position.x - x0
 	print("RESULT: 8 s of full right = %.0f px, peak vx %.0f px/s" % [dx, peak])
 	var tile_w: float = world.call("_dive_tile_w")
