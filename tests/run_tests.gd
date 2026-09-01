@@ -60,6 +60,8 @@ func _initialize() -> void:
 	_test_ship_edit()
 	await _test_ship_editor_screen()
 	_test_dive_ring()
+	_test_dive_floating_chunks()
+	await _test_map_room_screen()
 	_test_dive_cards()
 	_test_creature_log()
 	await _test_hull_integrity()
@@ -2111,6 +2113,228 @@ func _test_dive_ring() -> void:
 	# Labels exist for every tile (the HUD prints them raw).
 	for i in n:
 		_check(not DiveRun.zone_label(i).is_empty(), "tile %d has a name" % i)
+
+	# --- THE OWNER'S OWN LAYOUT (2026-09-01) --------------------------------
+	#     V . . . . . ^ . . . . . V
+	# Thirteen symbols, TWELVE tiles: the two V's are one tile, the seam.
+	_check(n == 12, "the ring is the owner's twelve tiles (%d)" % n)
+	_check(DiveRun.zone_kind(6) == "down",
+		"the DOWNDRAFT is opposite the start, at index 6")
+	var rocks := 0
+	for i in n:
+		if DiveRun.zone_kind(i) == "rock":
+			rocks += 1
+	_check(rocks == 10, "...with five intermediate tiles to either side (%d)" % rocks)
+	# The wrap still works at the new size — the arithmetic is posmod, but a
+	# table whose size nobody re-checked is exactly how a ring stops closing.
+	_check(DiveRun.zone_index(12.0) == 0 and DiveRun.zone_index(-12.0) == 0,
+		"a twelve-tile lap either way is still home")
+	_check(DiveRun.zone_index(6.0) == 6 and DiveRun.zone_index(-6.0) == 6,
+		"BOTH edges of the world are the same downdraft tile — the seam")
+	_check(DiveRun.zone_index(7.0) == 7 and DiveRun.zone_index(-7.0) == 5,
+		"...and past it you are already coming back the other way")
+	# zone_offset is the inverse, taking the short way round.
+	_check(is_equal_approx(DiveRun.zone_offset(0), 0.0),
+		"the updraft sits at the centre")
+	_check(is_equal_approx(DiveRun.zone_offset(6), 6.0),
+		"the seam sits at the ring's edge (+6 tiles)")
+	_check(is_equal_approx(DiveRun.zone_offset(11), -1.0),
+		"the table's last tile is one step to PORT, not eleven to starboard")
+	for i in n:
+		_check(DiveRun.zone_index(DiveRun.zone_offset(i)) == i,
+			"tile %d's centre reads back as tile %d" % [i, i])
+
+	# --- ring_overview: the ring unrolled for the MAP ROOM -------------------
+	var over := DiveRun.ring_overview(4242)
+	_check(over.size() == n + 1,
+		"the overview has a column per tile PLUS the repeated seam (%d)" % over.size())
+	var first_col := over[0] as Dictionary
+	var last_col := over[over.size() - 1] as Dictionary
+	_check(int(first_col["tile"]) == int(last_col["tile"])
+			and bool(first_col["seam"]) and bool(last_col["seam"]),
+		"both ends are the SAME tile, marked as the seam — the loop, made visible")
+	_check(bool((over[over.size() / 2] as Dictionary)["start"]),
+		"the updraft you start in is the middle column")
+	for c in over:
+		var col := c as Dictionary
+		_check(not String(col["label"]).is_empty()
+				and DiveRun.RING.has(String(col["kind"]))
+				and int(col["extra_pickets"]) >= 0,
+			"the column at %+.0f is a real tile (%s)"
+				% [float(col["offset"]), String(col["label"])])
+
+
+## THE ROCKS HAVE ROCKS IN THEM (owner 2026-09-01, on the ring's intermediate
+## tiles: "perhaps with just more chunks of floating land"). The world stamps
+## these lazily as you enter a tile and the MAP ROOM draws the same rows, so the
+## MODEL is the only place either can be wrong. Pinned: only the rock tiles grow
+## them, they stay inside their own tile, and they hang in the ladder's air —
+## never above the launch deck, never in the lava.
+func _test_dive_floating_chunks() -> void:
+	_t("THE ROCKS: floating land in the ring's intermediate tiles")
+	var sv := 918273
+	# The wind tiles are left clear: the updraft is the start line and the
+	# downdraft is a fast lane, and neither wants furniture in it.
+	for d in range(1, DiveRun.DEPTHS + 1):
+		_check(DiveRun.tile_chunks(sv, 0, d).is_empty(),
+			"the updraft grows nothing at depth %d" % d)
+		_check(DiveRun.tile_chunks(sv, 6, d).is_empty(),
+			"the downdraft grows nothing at depth %d" % d)
+	_check(DiveRun.tile_chunks(sv, 1, 1).is_empty(),
+		"...and depth 1 — the launch deck's own air — is left alone everywhere")
+	_check(DiveRun.tile_chunks(sv, 1, DiveRun.DEPTHS + 1).is_empty(),
+		"...as is anything off the bottom of the ladder")
+
+	# EVERY SLAB, COUNTED RATHER THAN NARRATED. There are a few hundred of them
+	# across the ring, and one `_check` each would bury the suite's own output in
+	# a thousand lines of "ok" — so the loop tallies the violations and the
+	# assertions below name the worst one it found.
+	var total := 0
+	var bad_count := 0
+	var outside := 0
+	var worst_x := 0.0
+	var off_ladder := 0
+	var worst_alt := 1.0
+	var mislabelled := 0
+	for tile in DiveRun.RING.size():
+		if DiveRun.zone_kind(tile) != "rock":
+			continue
+		for d in range(2, DiveRun.DEPTHS + 1):
+			var rows := DiveRun.tile_chunks(sv, tile, d)
+			if rows.size() < DiveRun.CHUNK_MIN or rows.size() > DiveRun.CHUNK_MAX:
+				bad_count += 1
+			for r in rows:
+				var row := r as Dictionary
+				total += 1
+				# INSIDE ITS OWN TILE: a slab that crossed into the neighbour
+				# would be terrain the wind model says belongs to somewhere else.
+				var reach: float = absf(float(row["x"])) + float(row["w"]) * 0.5
+				worst_x = maxf(worst_x, reach)
+				if reach >= 0.5:
+					outside += 1
+				# IN THE LADDER'S AIR: under the deck, over the lava.
+				var alt := float(row["alt"])
+				worst_alt = minf(worst_alt, alt)
+				if alt >= DiveRun.depth_altitude(1) or alt <= DiveRun.FLOOR_FRAC:
+					off_ladder += 1
+				if int(row["tile"]) != tile or int(row["depth"]) != d:
+					mislabelled += 1
+	_check(total > 0, "the flanks are furnished (%d slabs over the whole ring)" % total)
+	_check(bad_count == 0,
+		"every rock tile grows %d..%d slabs per depth (%d out of range)"
+			% [DiveRun.CHUNK_MIN, DiveRun.CHUNK_MAX, bad_count])
+	_check(outside == 0,
+		"every slab stays inside its own tile (worst reach %.2f of 0.50, %d over)"
+			% [worst_x, outside])
+	_check(off_ladder == 0,
+		"every slab hangs in the ladder's air (lowest %.3f vs floor %.2f, %d adrift)"
+			% [worst_alt, DiveRun.FLOOR_FRAC, off_ladder])
+	_check(mislabelled == 0,
+		"every slab knows which tile and depth it belongs to (%d confused)"
+			% mislabelled)
+	# Deterministic in the seed, and different between seeds — the same contract
+	# the ladder's own slalom keeps.
+	_check(DiveRun.chunk_count(sv, 1) == DiveRun.chunk_count(sv, 1),
+		"a tile's rock is a pure function of the seed")
+	var differs := false
+	for tile in DiveRun.RING.size():
+		if DiveRun.chunk_count(sv, tile) != DiveRun.chunk_count(sv + 1, tile):
+			differs = true
+	_check(differs, "...and another seed furnishes the flanks differently")
+
+
+## THE MAP ROOM (owner 2026-09-01: "this way I can look at the full Dive mode
+## map, for example, and SEE the entire thing there"). The screen is a VIEWER
+## over pure model functions, so the whole chart is assertable with no world,
+## no run and no renderer — which is the point of building it that way.
+func _test_map_room_screen() -> void:
+	_t("THE MAP ROOM screen boots and charts the whole dive")
+	var packed: PackedScene = load("res://maps/maproom/map_room.tscn")
+	_check(packed != null, "res://maps/maproom/map_room.tscn exists")
+	if packed == null:
+		return
+	var screen := packed.instantiate()
+	# A FIXED specimen sky, set before _ready (which only rolls one when it finds
+	# none): the chart's row and slab counts are functions of the seed, so a
+	# random one here would make the suite's own check count wander run to run.
+	screen.set("seed_v", 20260901)
+	root.add_child(screen)
+	await process_frame
+	var seed_v: int = int(screen.get("seed_v"))
+	_check(seed_v == 20260901, "the screen charts the seed it was given (%d)" % seed_v)
+
+	var m: Dictionary = screen.call("model")
+	var columns := m["columns"] as Array
+	var rows := m["rows"] as Array
+	_check(columns.size() == DiveRun.RING.size() + 1,
+		"it draws the whole ring, seam repeated (%d columns)" % columns.size())
+	_check(rows.size() == DiveRun.DEPTHS,
+		"...and every rung of the ladder (%d rows)" % rows.size())
+	# The rungs descend, they carry a real band colour, and the deep ones are
+	# past the air line — the chart's whole reason to exist.
+	var unbreathable := 0
+	for i in rows.size():
+		var row := rows[i] as Dictionary
+		_check(int(row["depth"]) == i + 1, "row %d is depth %d" % [i, i + 1])
+		if i > 0:
+			_check(float(row["alt"]) < float((rows[i - 1] as Dictionary)["alt"]),
+				"...and hangs below the one above it")
+		_check((row["color"] as Color).a > 0.0, "...painted in its band's own colour")
+		if not bool(row["breathable"]):
+			unbreathable += 1
+		# Landings live on the chart's own axis, and inside the corridor the run
+		# holds them in — a landing drawn off the ring would be a landing the
+		# chart invented.
+		_check(absf(float(row["landing_x"]))
+				<= DiveRun.LADDER_SPREAD / float(screen.call("tile_widths")) + 0.001,
+			"...its landing sits at %+.2f tiles, inside the corridor"
+				% float(row["landing_x"]))
+	_check(unbreathable > 0, "the deep rungs are marked as unbreathable (%d)" % unbreathable)
+	var posts := 0
+	for r in rows:
+		if bool((r as Dictionary)["outpost"]):
+			posts += 1
+	_check(posts == DiveRun.OUTPOST_PAIRS.size(),
+		"the run's shops are on the chart (%d)" % posts)
+
+	# Every slab the flanks grow is somewhere a reader can see it.
+	var x_min := float(m["x_min"])
+	var x_max := float(m["x_max"])
+	# Counted, not narrated — there are a few hundred (see _test_dive_floating_chunks).
+	var off_chart := 0
+	var off_span := 0
+	for k in m["chunks"] as Array:
+		var ch := k as Dictionary
+		if float(ch["x"]) <= x_min or float(ch["x"]) >= x_max:
+			off_chart += 1
+		if float(ch["alt"]) > DiveRun.TOP_FRAC or float(ch["alt"]) < DiveRun.FLOOR_FRAC:
+			off_span += 1
+	_check(not (m["chunks"] as Array).is_empty(),
+		"the flanks' floating rock is drawn (%d slabs)" % (m["chunks"] as Array).size())
+	_check(off_chart == 0,
+		"every slab falls between the chart's edges (%d off it)" % off_chart)
+	_check(off_span == 0,
+		"...and at an altitude the chart spans (%d outside)" % off_span)
+
+	# AND IT REALLY PAINTS. `model()` passing proves the numbers; only a redraw
+	# proves the drawing — a bad index or a null font in `_draw_chart` would
+	# otherwise be a crash nobody meets until the owner opens the room.
+	var canvas := screen.get("_canvas") as Control
+	_check(canvas != null, "the chart has a canvas to paint on")
+	if canvas != null:
+		canvas.size = Vector2(900, 600)
+		canvas.queue_redraw()
+		await process_frame
+		await process_frame
+		_check(int(screen.get("draws")) > 0,
+			"...and the whole chart really painted (%d draws)" % int(screen.get("draws")))
+
+	# Rerolling is a new sky and nothing else — no world was ever involved.
+	screen.call("reroll")
+	_check(int(screen.get("seed_v")) != seed_v, "reroll draws a different sky")
+	await process_frame
+	screen.queue_free()
+	await process_frame
 
 
 ## THE SHIPYARD'S ROUND-TRIP (owner arc: the in-game ship builder). serialize

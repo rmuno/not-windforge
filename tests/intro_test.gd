@@ -205,10 +205,46 @@ func _initialize() -> void:
 		_ok(is_instance_valid(panel), "...and the panel survives choosing")
 	GameMode.pending = GameMode.EXPEDITION
 
+	# --- WHICH SCENE EACH DOOR OPENS ----------------------------------------
+	# The routing is a TABLE now (GameMode.scene_for) rather than a chain of
+	# special cases inside choose_mode, which is the only reason it can be
+	# asserted at all: a headless suite cannot change scenes to find out.
+	_ok(GameMode.scene_for(GameMode.DIVE) == "res://maps/dive/dive.tscn",
+		"THE DIVE opens its OWN scene, not the expedition's world with a flag")
+	_ok(GameMode.scene_for(GameMode.EXPEDITION) == "res://maps/world/world.tscn"
+			and GameMode.scene_for(GameMode.SANDBOX) == "res://maps/world/world.tscn",
+		"...while the expedition and the sandbox share the world scene")
+	_ok(GameMode.scene_for(GameMode.MAPROOM) == "res://maps/maproom/map_room.tscn",
+		"the MAP ROOM is a screen off the workshop door")
+	_ok(GameMode.scene_for(GameMode.BUILDER) == "res://maps/editor/ship_editor.tscn",
+		"...as the drafting table already was")
+	_ok(FileAccess.file_exists("res://maps/dive/dive.tscn")
+			and FileAccess.file_exists("res://maps/maproom/map_room.tscn"),
+		"...and both of those scenes are really on disk")
+	_ok(GameMode.is_known(GameMode.MAPROOM) and GameMode.is_screen(GameMode.MAPROOM)
+			and GameMode.is_screen(GameMode.BUILDER),
+		"the screens are known doors, and known to be screens")
+	_ok(not GameMode.is_screen(GameMode.DIVE)
+			and not GameMode.is_screen(GameMode.EXPEDITION),
+		"...and the worlds are not, so they still carry a pending choice")
+
 	# A panel with no owner must complain, not crash and not silently do nothing.
 	var orphan := TitleScreen.new()
 	root.add_child(orphan)
 	orphan.open()
+
+	# THE WORKSHOP'S DOORS ARE REALLY THERE. A routing table nothing links to is
+	# a room with no door, which is how a shipped tool stays invisible.
+	orphan.call("_go", TitleScreen.Page.WORKSHOP)
+	var doors: Array = []
+	for node in _walk(orphan):
+		if node is Button:
+			doors.append((node as Button).text.strip_edges())
+	_ok(doors.has("MAP ROOM"), "the WORKSHOP page offers the MAP ROOM (%s)"
+		% ", ".join(PackedStringArray(doors)))
+	_ok(doors.has("SHIP BUILDER") and doors.has("BESTIARY"),
+		"...alongside the rooms that were already there")
+	orphan.call("_go", TitleScreen.Page.TITLE)
 	# A STRAY KEY DOES NOTHING (owner 2026-08-31: "no need to force 'any key'
 	# to do things") — only the quiet conventions act.
 	var stray := InputEventKey.new()

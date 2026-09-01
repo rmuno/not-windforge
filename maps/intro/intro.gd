@@ -312,15 +312,14 @@ func backdrop_status() -> Variant:
 func choose_mode(mode: String) -> void:
 	if not GameMode.is_known(mode):
 		mode = GameMode.EXPEDITION
-	# THE DRAFTING TABLE is a SCREEN, not a world (owner 2026-09-01: "the midair
-	# shipyard is ridiculous"): BUILDER opens the editor scene directly, and no
-	# GameMode.pending is left behind for a world nobody is booting.
-	if mode == GameMode.BUILDER:
-		var eerr := get_tree().change_scene_to_file("res://maps/editor/ship_editor.tscn")
-		if eerr != OK:
-			push_error("Intro: could not open the drafting table (%d)" % eerr)
-		return
-	GameMode.pending = mode
-	var err := get_tree().change_scene_to_file("res://maps/world/world.tscn")
+	# WHICH SCENE A DOOR OPENS is a TABLE now (`GameMode.scene_for`) rather than a
+	# chain of special cases here — the drafting table and the MAP ROOM are
+	# SCREENS with no world in them, and the Dive has its own world scene
+	# (maps/dive/dive.tscn). A screen leaves no GameMode.pending behind: there is
+	# no world booting to consume it, and a stale one follows the player into
+	# whatever they open next.
+	if not GameMode.is_screen(mode):
+		GameMode.pending = mode
+	var err := get_tree().change_scene_to_file(GameMode.scene_for(mode))
 	if err != OK:
-		push_error("Intro: could not open the world (%d)" % err)
+		push_error("Intro: could not open '%s' (%d)" % [mode, err])

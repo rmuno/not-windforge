@@ -16,6 +16,25 @@ extends Node2D
 ## How much further the view pulls back at the helm (owner-tuned per scene).
 @export var pilot_zoom_out := 1.3
 
+## THE DIVE HAS ITS OWN SCENE (owner 2026-09-01: "we just keep reusing the same
+## world with the same awkward configs and it's a mess … I'm also wondering why
+## this isn't its own scene, it might even make more sense that way in godot
+## too").
+##
+## In Godot a scene IS configuration, so `maps/dive/dive.tscn` is this exact
+## script with three decisions already made, and this flag is what makes them:
+##
+##   1. The world boots STRAIGHT INTO A RUN — no `GameMode.pending` handshake,
+##      because a scene whose whole purpose is the Dive does not need to be told.
+##   2. It rolls a FRESH WORLD SEED every boot (a run's sky should not be the
+##      same sky twice; the expedition's fixed, shareable seed is untouched).
+##   3. Its world is only as wide as the WIND RING (`_dive_native_world_px`),
+##      instead of the expedition's ×4 span the dive used about an eighth of.
+##
+## `world.tscn` leaves this false, so every existing flow — including F2's
+## "START A DIVE" inside an expedition — behaves exactly as it did.
+@export var dive_native := false
+
 ## TIGHTENED 30%, THEN PULLED BACK 40% (owner 2026-08-31: "add another 40% FLAT
 ## zoom-out to the player and player-on-ship default AND max zooms", after
 ## 2026-08-30's flat 30% tighten). One number does all four, which is why it is
@@ -222,8 +241,10 @@ const DIVE_CORRIDOR_MAX_WIDTHS := 4.0
 ## Is the world about to open as a RUN? A peek, not a take — `_apply_boot_mode`
 ## remains the single consumer of the choice. This exists because the mode has to
 ## be known BEFORE the world populates itself, and `take()` happens after.
+## A DIVE-NATIVE SCENE IS ALWAYS BOOTING THE DIVE — it does not ask, because it
+## has nothing else it could be.
 func _booting_the_dive() -> bool:
-	return GameMode.pending == GameMode.DIVE
+	return dive_native or GameMode.pending == GameMode.DIVE
 
 
 ## Modes that want the QUIET boot — no pod, no krakens, no hulk, no trainer, no
@@ -233,11 +254,23 @@ func _booting_the_dive() -> bool:
 ## own scene (maps/editor/), which never boots a world at all. `export_ship`
 ## (F2) stays: exporting what you built to a hull mid-expedition is still a verb.
 func _booting_quiet() -> bool:
-	return GameMode.pending == GameMode.DIVE
+	return _booting_the_dive()
 
 
+## Open in whatever the boot decided, EXACTLY ONCE.
+##
+## `take()` runs unconditionally — even for a dive-native scene, which does not
+## need the pending choice but must still CLEAR it, or a stale "dive" would
+## follow the player into the next expedition they open. Then, if the scene is
+## the Dive's own, the run starts because the scene says so and the match is
+## skipped entirely: that is what stops a dive.tscn boot with DIVE pending from
+## calling `begin_dive` twice.
 func _apply_boot_mode() -> void:
-	match GameMode.take():
+	var chosen := GameMode.take()
+	if dive_native:
+		begin_dive()
+		return
+	match chosen:
 		GameMode.SANDBOX:
 			debug_sandbox_loadout()
 		GameMode.DIVE:
@@ -379,11 +412,22 @@ func _ready() -> void:
 	# Separate from a session save: it is everything the player has ever met, which
 	# is what the title-screen bestiary reads.
 	creature_profile = Profile.load()
+	# A FRESH SKY EVERY RUN. The expedition's seed is a fixed, shareable number
+	# (`world_seed`'s default) and stays one; a run is a run, so the dive's own
+	# scene rolls a new world before a single chunk is generated. The RUN's own
+	# seed (`DiveRun.seed_v` — where the landings and outposts come from) is
+	# separate and still rolled per run in `DiveRun._init`.
+	if dive_native:
+		world_seed = randi()
 	# Frame the whole generated world (IslandGen.WORLD_CELLS) in world px at this
 	# scale, then bound it with walls + a ceiling. cell_px = CELL × world_scale.
+	# ...unless this is the DIVE'S OWN SCENE, whose world is the ring and nothing
+	# more (see _dive_native_world_px).
 	var cp := TerrainDB.CELL * world_scale
 	var wr := IslandGen.WORLD_CELLS
 	var wpx := Rect2(Vector2(wr.position) * cp, Vector2(wr.size) * cp)
+	if dive_native:
+		wpx = _dive_native_world_px()
 	_world_rect = wpx   # kept for the on-foot altitude read (deep-air gate)
 	var t := 4.0 * cp   # wall thickness (a few cells)
 	_terrain_rects = [
@@ -1022,6 +1066,7 @@ func begin_dive() -> void:
 	_dive_shipless = 0.0
 	_dive_went_shipless = false
 	_dive_landings.clear()
+	_dive_chunks_cut = {}
 	_dive_shelf = Vector2.ZERO
 	_dive_deck_cells = {}
 	_dive_berth_taken = {}
@@ -1069,6 +1114,7 @@ func end_dive() -> void:
 			post.queue_free()
 	_dive_outposts.clear()
 	_dive_landings.clear()
+	_dive_chunks_cut = {}
 	_dive_shelf = Vector2.ZERO
 	# The unchosen candidate goes with the run — unless you took it, in which
 	# case it is your ship now and stays.
@@ -2188,8 +2234,79 @@ func _hold_the_corridor(delta: float) -> void:
 
 ## One ring tile's width in world px. Sized in shelf-widths (the corridor's own
 ## yardstick) so it scales with the hulls; F2 `dive_zone_tile_widths`.
+##
+## IN THE DIVE'S OWN SCENE IT IS THE AUTHORED SHELF, NOT THE MEASURED ONE, and
+## that is the whole "one number" rule: the world's WIDTH is decided in `_ready`,
+## long before a hull exists to measure, so a tile that later shrank to fit the
+## narrowest candidate would put the wrap line somewhere the walls were never
+## built for — and a ring that changed size with whichever hull you took is a
+## ring the MAP ROOM could not draw. An F2 dive inside an EXPEDITION is in the
+## expedition's own wide world, so there the tile keeps riding the live shelf
+## exactly as it did.
 func _dive_tile_w() -> float:
+	if dive_native:
+		return dive_nominal_tile_w()
 	return maxf(Tunables.get_num("dive_zone_tile_widths") * _dive_shelf_span().x, 1.0)
+
+
+## The ring tile as AUTHORED: `dive_zone_tile_widths` of the launch shelf's own
+## constant width, at this world's scale. Needs no fleet, so `_ready` can ask it.
+func dive_nominal_tile_w() -> float:
+	return maxf(LAUNCH_SHELF_PX.x * float(world_scale)
+		* Tunables.get_num("dive_zone_tile_widths"), 1.0)
+
+
+## THE RING'S CIRCUMFERENCE, live — the ONE number the wrap teleport uses, so
+## "cross the edge, arrive from the other side" and "how wide is this world" can
+## never drift apart.
+func dive_ring_width() -> float:
+	return _dive_tile_w() * float(DiveRun.RING.size())
+
+
+## The same circumference from the AUTHORED tile — what `_ready` can ask for
+## before there is a fleet. In a dive-native world this IS `dive_ring_width()`,
+## by construction.
+func dive_nominal_ring_width() -> float:
+	return dive_nominal_tile_w() * float(DiveRun.RING.size())
+
+
+## Air kept outside the wrap line, as a fraction of the ring. Modest on purpose:
+## the walls have to be OUT of the loop's way (a hull that clipped one mid-wrap
+## would stop dead against a wall the ring says is not there), and everything
+## past them is sky nobody will ever reach — but a run crosses the seam at a few
+## thousand px/s and the wrap fires on the frame after, so a fraction of a tile
+## is all the clearance the loop can ever need.
+const DIVE_WORLD_MARGIN := 1.08
+
+
+## THE DIVE'S WORLD IS THE RING (owner 2026-09-01: "I think we need different
+## maps to at least distinguish between dive mode and the other two").
+##
+## Same HEIGHT as the expedition — the ladder, the bands and the lava floor are
+## all altitude fractions of it, and shortening it would move the whole mode —
+## but only as WIDE as the loop plus a margin, centred where the expedition's
+## world is centred (x = 0), so the run's centre line does not move either.
+##
+## The lever `dive_zone_tile_widths` is read ONCE, here, at boot: turn it up in
+## F2 mid-run and the ring grows past the walls that were built for it. That is
+## a dev lever doing what a dev lever does, and it is why the number is read from
+## one place rather than two.
+func _dive_native_world_px() -> Rect2:
+	var cp := TerrainDB.CELL * world_scale
+	var wr := IslandGen.WORLD_CELLS
+	var full := Rect2(Vector2(wr.position) * cp, Vector2(wr.size) * cp)
+	var width := minf(dive_nominal_ring_width() * DIVE_WORLD_MARGIN, full.size.x)
+	return Rect2(Vector2(full.get_center().x - width * 0.5, full.position.y),
+		Vector2(width, full.size.y))
+
+
+## The world rect the TAB MAP frames (maps/world/map_view.gd). The world decides,
+## the layer paints: the map used to derive the extent itself from
+## IslandGen.WORLD_CELLS, which is right for an expedition and a lie in the
+## dive's narrow world — the whole run would have drawn into a sliver down the
+## middle. Identical arithmetic for every non-dive scene, so nothing moves there.
+func map_world_rect() -> Rect2:
+	return _world_rect
 
 
 ## Which ring tile the player is in right now (0 = the updraft you start in).
@@ -2209,8 +2326,7 @@ func _dive_hold_the_ring(delta: float) -> void:
 	if player == null or not is_instance_valid(player):
 		return
 	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
-	var tile_w := _dive_tile_w()
-	var ring_w := tile_w * float(DiveRun.RING.size())
+	var ring_w := dive_ring_width()
 	var half := ring_w * 0.5
 	# The loop first, so the wind below always reads the wrapped position.
 	var off: float = player.global_position.x - cx
@@ -2220,14 +2336,63 @@ func _dive_hold_the_ring(delta: float) -> void:
 		if is_instance_valid(local_ship):
 			local_ship.global_position.x += shift
 		_notify("...and around: the sky loops back on itself.")
+	var here := dive_zone()
+	# THE ROCKS HAVE ROCKS IN THEM: the tile you are standing in grows its
+	# floating slabs the first time you and this depth meet in it — the same
+	# lazy idiom the ladder's landings are cut with, and for the same reason
+	# (a rung generated ahead of time is a rung the island field paints over).
+	if dive != null:
+		_dive_cut_chunks(here, dive.depth)
 	# The tile's wind — a lean, not a rail (comparable to the props).
-	var wind: float = DiveRun.zone_wind(dive_zone()) * DiveRun.ZONE_WIND 		* Tunables.get_num("dive_zone_wind_mult") * float(world_scale)
+	var wind: float = DiveRun.zone_wind(here) * DiveRun.ZONE_WIND 		* Tunables.get_num("dive_zone_wind_mult") * float(world_scale)
 	if is_zero_approx(wind):
 		return
 	if is_instance_valid(local_ship):
 		local_ship.apply_central_force(Vector2(0.0, wind) * local_ship.mass)
 	if not player.is_piloting():
 		player.velocity.y += wind * delta
+
+
+## Which (tile, depth) pairs have already grown their floating rock. Cleared with
+## the run; the key is a plain string so a loaded save can never half-match one.
+var _dive_chunks_cut := {}
+
+
+## Stamp one rock tile's floating slabs at one depth (`DiveRun.tile_chunks` is
+## the model; this only places what it says). Generate the neighbourhood FIRST
+## and stamp second — a region that has already been generated is never
+## repainted, which is the same ordering `_cut_landing` needs and for the same
+## reason (DECISIONS 2026-08-30).
+##
+## These are TERRAIN, not landings: nothing is registered in `_dive_landings`, no
+## outpost is planted, and the ladder does not know they exist. They are content
+## to dodge, which is what makes the flanks "harder to traverse".
+func _dive_cut_chunks(tile: int, d: int) -> void:
+	if dive == null or terrain == null:
+		return
+	var key := "%d:%d" % [tile, d]
+	if _dive_chunks_cut.has(key):
+		return
+	_dive_chunks_cut[key] = true          # marked even when empty: ask once
+	var rows := DiveRun.tile_chunks(dive.seed_v, tile, d)
+	if rows.is_empty():
+		return
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	var tile_w := _dive_tile_w()
+	var tile_x := cx + DiveRun.zone_offset(tile) * tile_w
+	var centres: Array = []
+	var slabs: Array = []
+	for row in rows:
+		var r := row as Dictionary
+		var size := Vector2(float(r["w"]), float(r["h"])) * tile_w
+		var mid := Vector2(tile_x + float(r["x"]) * tile_w,
+			dive_altitude_y(float(r["alt"])))
+		centres.append(mid)
+		slabs.append(Rect2(mid - size * 0.5, size))
+	IslandGen.ensure_generated(terrain, world_seed, centres, tile_w * 0.5, 64)
+	for slab in slabs:
+		_stone((slab as Rect2).position, (slab as Rect2).size)
+	terrain.flush_rebuilds()
 
 
 ## A depth's den comes for you: hunters spawned AHEAD of you on your own line,

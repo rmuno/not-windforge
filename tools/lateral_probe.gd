@@ -70,7 +70,7 @@ func _initialize() -> void:
 	var dx: float = starter.global_position.x - x0
 	print("RESULT: 8 s of full right = %.0f px, peak vx %.0f px/s" % [dx, peak])
 	var tile_w: float = world.call("_dive_tile_w")
-	var ring_w: float = tile_w * 6.0
+	var ring_w: float = world.call("dive_ring_width")
 	var rect: Rect2 = world.get("_world_rect")
 	print("RING:   tile %.0f px | ring %.0f px | world width %.0f px" % [
 		tile_w, ring_w, rect.size.x])

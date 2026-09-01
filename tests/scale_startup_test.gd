@@ -211,7 +211,188 @@ func _initialize() -> void:
 	# so every check above it would otherwise be counting a world it rearranged.
 	await _check_dive_deck_at_8x(world)
 
+	# ...and LAST OF ALL, a SECOND, SEPARATE boot: the Dive's own scene. It
+	# cannot share the world above, because the whole point of it is the world
+	# that world is NOT.
+	world.queue_free()
+	await process_frame
+	await _check_dive_scene_boots()
+
 	_finish()
+
+
+## THE DIVE'S OWN SCENE (owner 2026-09-01: "we just keep reusing the same world
+## with the same awkward configs and it's a mess … I'm also wondering why this
+## isn't its own scene").
+##
+## `maps/dive/dive.tscn` is the same `world.gd` with `dive_native = true`, and
+## this is the contract that flag buys: a world that opens straight into a run,
+## rolls its own sky, and is only as wide as the WIND RING instead of the
+## expedition's ×4 span. Here rather than in the 1× suite because every number
+## below is a SCREEN-SCALE distance, and the legacy scene cannot see those
+## (CODEMAP: geometry that matters at 8× belongs in a scale-aware suite).
+func _check_dive_scene_boots() -> void:
+	var packed: PackedScene = load("res://maps/dive/dive.tscn")
+	_ok(packed != null, "res://maps/dive/dive.tscn loads")
+	if packed == null:
+		return
+	# NOTHING PENDING. A dive-native scene is the mode; it must not need to be
+	# told, which is the difference between "its own scene" and "the same world
+	# with a flag passed to it".
+	GameMode.pending = GameMode.EXPEDITION
+	var w: Node = packed.instantiate()
+	root.add_child(w)
+	for i in 20:
+		await process_frame
+
+	_ok(bool(w.get("dive_native")), "the scene declares itself the Dive's own")
+	_ok(w.get("world_scale") == 8, "...at the shipped 8×")
+	_ok(w.get("dive") != null,
+		"it boots STRAIGHT into a run, with no GameMode.pending handshake")
+	var fleet = w.get("fleet")
+	if fleet == null:
+		_ok(false, "the dive scene built a Fleet")
+		w.queue_free()
+		return
+
+	# THE STREAMLINED BOOT, still: the mode brings its own threats.
+	var wild := 0
+	var hostile := 0
+	var candidates := 0
+	var blocks := 0
+	for s in (fleet.call("ships") as Array):
+		if not is_instance_valid(s):
+			continue
+		var ship := s as Ship
+		blocks += ship.blocks.size()
+		if ship.creature_kind != "":
+			wild += 1
+		if ship.faction == 1:
+			hostile += 1
+		if ship.faction == 0 and not ship.is_nest and ship.creature_kind == "" \
+				and not ship.is_carcass() and ship.has_helm():
+			candidates += 1
+	_ok(wild == 0, "no wildlife at boot (%d)" % wild)
+	_ok(hostile == 0, "...and no hostile ecology either (%d)" % hostile)
+	_ok(candidates >= 2,
+		"...but the launch deck's candidates are moored (%d hulls, %d blocks)"
+			% [candidates, blocks])
+	_ok(w.get("_dive_deck") != null and is_instance_valid(w.get("_dive_deck")),
+		"the deck itself is raised")
+	var pl = w.get("player")
+	_ok(pl != null and is_instance_valid(pl), "and a body is standing on it")
+
+	# THE NARROW WORLD. The ring's circumference and the world's width come from
+	# ONE number (`world.dive_nominal_tile_w`), so the wrap can never land
+	# outside the walls that were built for it.
+	var rect: Rect2 = w.get("_world_rect")
+	var ring_w: float = w.call("dive_ring_width")
+	var margin: float = rect.size.x / maxf(ring_w, 1.0)
+	_ok(is_equal_approx(ring_w, float(w.call("dive_nominal_ring_width"))),
+		"the live ring IS the ring the world was built for (%.0f px)" % ring_w)
+	_ok(margin > 1.0 and margin < 1.25,
+		"the world is the ring plus a modest margin (×%.3f — %.0f px wide, ring %.0f)"
+			% [margin, rect.size.x, ring_w])
+	_ok(rect.size.x > ring_w, "...so the wrap line sits INSIDE the walls")
+	# ...and it is genuinely narrower than the expedition's, which is the win.
+	var full_w := float(IslandGen.WORLD_CELLS.size.x) * TerrainDB.CELL * 8.0
+	_ok(rect.size.x < full_w * 0.7,
+		"...and far narrower than an expedition's %.0f px (%.0f)" % [full_w, rect.size.x])
+	_ok(is_equal_approx(rect.size.y,
+			float(IslandGen.WORLD_CELLS.size.y) * TerrainDB.CELL * 8.0),
+		"the HEIGHT is untouched — the ladder and the bands are fractions of it")
+	_ok(is_zero_approx(rect.get_center().x),
+		"and it is still centred on the run's centre line")
+
+	# A FRESH SKY EVERY RUN: the dive's own scene rolls a seed, the expedition's
+	# fixed one is left alone.
+	_ok(int(w.get("world_seed")) != IslandGen.DEFAULT_SEED,
+		"the dive rolled its own world seed (%d)" % int(w.get("world_seed")))
+
+	# THE BANDS SURVIVE THE NARROWING. They are altitude fractions of the world
+	# rect, so a narrower world must paint exactly the same sky — depth 1 in
+	# breathable air, the floor below the line, and the backdrop reading a band.
+	var top_a: float = DiveRun.depth_altitude(1)
+	var floor_a: float = DiveRun.depth_altitude(DiveRun.DEPTHS)
+	_ok(Airspace.band_at_frac(top_a) == Airspace.Band.TOP,
+		"depth 1 is still in the TOP band")
+	_ok(Airspace.is_unbreathable_frac(floor_a),
+		"...and the floor's air still kills you")
+	if pl != null and is_instance_valid(pl):
+		var stood: Vector2 = pl.global_position
+		pl.global_position = Vector2(stood.x, float(w.call("dive_altitude_y", floor_a)))
+		await w.get_tree().physics_frame
+		_ok(absf(float(w.call("_player_altitude_frac")) - floor_a) < 0.02,
+			"the narrow world reads the floor's altitude back correctly (%.3f)"
+				% float(w.call("_player_altitude_frac")))
+		var deep_sky: Array = Backdrop.band_palette(floor_a)
+		var high_sky: Array = Backdrop.band_palette(top_a)
+		_ok((deep_sky[0] as Color) != (high_sky[0] as Color),
+			"...and the backdrop still paints two different skies over it")
+		pl.global_position = stood
+		await w.get_tree().physics_frame
+
+	# THE ROCKS HAVE ROCKS IN THEM: walk into a flank tile and its floating land
+	# is cut, as terrain, where the model said it would be.
+	var run = w.get("dive")
+	var cx: float = rect.get_center().x
+	var tile_w: float = w.call("_dive_tile_w")
+	var terrain = w.get("terrain")
+	if pl != null and is_instance_valid(pl) and run != null and terrain != null:
+		var tile := 2   # a rock tile, five tiles short of the seam
+		var depth := 3
+		run.set("depth", depth)
+		pl.global_position = Vector2(cx + DiveRun.zone_offset(tile) * tile_w,
+			float(w.call("dive_altitude_y", DiveRun.depth_altitude(depth))))
+		_ok(int(w.call("dive_zone")) == tile,
+			"standing a few tiles out puts you in rock tile %d" % tile)
+		w.call("_dive_hold_the_ring", 0.016)
+		var rows: Array = DiveRun.tile_chunks(int(run.get("seed_v")), tile, depth)
+		_ok(not rows.is_empty(), "the model furnishes it (%d slabs)" % rows.size())
+		var solid := 0
+		for r in rows:
+			var row := r as Dictionary
+			var at := Vector2(cx + (DiveRun.zone_offset(tile) + float(row["x"])) * tile_w,
+				float(w.call("dive_altitude_y", float(row["alt"]))))
+			if terrain.call("is_solid", terrain.call("world_to_cell", at)):
+				solid += 1
+		_ok(solid == rows.size(),
+			"...and every one of them is REAL STONE in the world (%d/%d)"
+				% [solid, rows.size()])
+		# Asked once: a tile already grown is never re-stamped (it would fight
+		# the player's own digging).
+		w.call("_dive_hold_the_ring", 0.016)
+		_ok((w.get("_dive_chunks_cut") as Dictionary).size() >= 1,
+			"a grown tile is remembered, so it is never cut twice")
+
+	# THE RUN'S OWN CONTRACTS still hold in the narrow world: the loop closes,
+	# and a surge is born hostile and mortal.
+	if pl != null and is_instance_valid(pl):
+		pl.velocity = Vector2.ZERO
+		pl.global_position = Vector2(cx + ring_w * 0.5 + tile_w * 0.2,
+			pl.global_position.y)
+		w.call("_dive_hold_the_ring", 0.016)
+		_ok(pl.global_position.x < cx,
+			"crossing the seam still arrives from the other side (x-cx %.0f)"
+				% (pl.global_position.x - cx))
+		_ok(rect.has_point(Vector2(pl.global_position.x, rect.get_center().y)),
+			"...and lands INSIDE the world, not through a wall")
+		pl.global_position = Vector2(cx, pl.global_position.y)
+	w.call("_dive_surge")
+	var born := 0
+	var armed := 0
+	for sid in (w.get("_dive_surged") as Array):
+		var picket := instance_from_id(sid) as Ship
+		if picket == null or not is_instance_valid(picket) or picket.faction != 1:
+			continue
+		born += 1
+		if picket.hull_integrity_max > 0.0:
+			armed += 1
+	_ok(born > 0, "a surge still garrisons the narrow world (%d pickets)" % born)
+	_ok(armed == born, "...and every picket is born mortal (%d of %d)" % [armed, born])
+
+	w.queue_free()
+	await process_frame
 
 
 ## MACHINES PLACE AS BUNDLES at 8× (owner 2026-08-25: "an engine will never

@@ -43,6 +43,16 @@ func toggle() -> void:
 # --- World → map screen mapping -------------------------------------------
 
 func _world_px_rect() -> Rect2:
+	# THE WORLD DECIDES ITS OWN EXTENT (2026-09-01). Deriving it here from
+	# IslandGen.WORLD_CELLS is right for an expedition and a LIE in the Dive's
+	# own scene, whose world is only as wide as the wind ring — the whole run
+	# would have drawn into a sliver down the middle of a map of somewhere else.
+	# The arithmetic below is what a non-dive world returns anyway, so nothing
+	# moves for the modes that already worked.
+	if world != null and is_instance_valid(world) and world.has_method("map_world_rect"):
+		var given: Rect2 = world.call("map_world_rect")
+		if given.size.x > 0.0 and given.size.y > 0.0:
+			return given
 	var cp := 16.0
 	var wr := IslandGen.WORLD_CELLS
 	if terrain != null:
