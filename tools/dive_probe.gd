@@ -22,6 +22,25 @@ var world: Node
 var fleet
 var pl
 
+# Combat scorecard tallies (Q-O). `_seen_shots` tracks Shot instance ids so a
+# shell is counted once at birth; faction 1 = hostile fire.
+var hits_taken := 0
+var damage_taken := 0.0
+var _seen_shots := {}
+var enemy_shots := 0
+
+
+## Count NEW hostile shells this frame. The shots group is small (live shells
+## only), so the per-frame scan is cheap.
+func _count_enemy_fire() -> void:
+	for node in world.get_tree().get_nodes_in_group("shots"):
+		var id := node.get_instance_id()
+		if _seen_shots.has(id):
+			continue
+		_seen_shots[id] = true
+		if int(node.get("faction")) == 1:
+			enemy_shots += 1
+
 
 func _initialize() -> void:
 	var packed: PackedScene = load("res://maps/world/world.tscn")
@@ -50,6 +69,14 @@ func _initialize() -> void:
 	print("took the helm: %s   committed: %s" % [str(took),
 		str((world.get("dive") as Object).get("committed"))])
 	print("GEAR:   %s" % _gear(world.get("local_ship")))
+	# THE COMBAT SCORECARD (Q-O, measure first): every hit that lands on OUR
+	# hull, counted and summed off the ship's own damaged signal — the number
+	# enemy-shell-speed tuning has to answer to.
+	var hull_now = world.get("local_ship")
+	if hull_now != null and is_instance_valid(hull_now):
+		hull_now.damaged.connect(func(_cell: Vector2i, amount: float) -> void:
+			hits_taken += 1
+			damage_taken += amount)
 
 	# --- Shop, the way a player who found an outpost would -----------------
 	# Depths 6-8 are below Airspace.DEEP_TOP, so a run without a Lung dies at
@@ -135,6 +162,7 @@ func _initialize() -> void:
 					int(run.get("kills")), int(run.get("surges"))])
 			last_depth = d
 			depth_started = t
+		_count_enemy_fire()
 		# THREAT: did anything actually reach us? A surge that never closes is
 		# a spawn count, not a fight.
 		for sh in fleet.ships():
@@ -165,6 +193,19 @@ func _initialize() -> void:
 		hp1 = float(hull1.blocks.size())
 	print("\nTHREAT: nearest hostile ever %.0f px | frames with one within 4k*8: %d"
 		% [closest, engaged])
+	# THE COMBAT SCORECARD (Q-O): what the fight actually did, in numbers.
+	var run3 = world.get("dive")
+	var surges_n := 1
+	if run3 != null:
+		surges_n = maxi(int(run3.get("surges")), 1)
+	var hull3 = world.get("local_ship")
+	var integ := "unarmed"
+	if hull3 != null and is_instance_valid(hull3) and hull3.hull_integrity_max > 0.0:
+		integ = "%.0f/%.0f" % [hull3.hull_integrity, hull3.hull_integrity_max]
+	print("COMBAT: enemy shells fired %d | hits on us %d (%.0f%% of shells) | damage %.0f (%.0f per surge) | integrity %s"
+		% [enemy_shots, hits_taken,
+			(100.0 * float(hits_taken) / float(maxi(enemy_shots, 1))),
+			damage_taken, damage_taken / float(surges_n), integ])
 	print("HULL:   %.0f blocks -> %.0f (%.0f lost)" % [hp0, hp1, hp0 - hp1])
 	print("GEAR:   %s" % _gear(hull1))
 	print("\n--- the descent ---")
