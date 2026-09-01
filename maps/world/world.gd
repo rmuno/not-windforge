@@ -6154,8 +6154,16 @@ func _nearest_ship_of_faction(from: Ship, faction: int,
 ## upscale is the identity, so the legacy scene flies the same authoring.
 func _starter_cells() -> Dictionary:
 	if world_scale > 1:
+		# `recentre_if_askew`: a blueprint whose grid sits wildly off the origin
+		# (the owner's pre-fix drafting-table exports carried the CANVAS's
+		# coordinates) spawns its hull far from its own node — half off the
+		# prepared floor, outside every origin-anchored assumption. Exports are
+		# centred at serialize-time now; this is the loader's net under files
+		# already saved. Stock authored files sit near centre and pass through
+		# byte-identical.
 		return ShipLayout.upscale_cells(
-			ShipLayout.load_cells("res://ships/starter.ship"), world_scale)
+			ShipLayout.recentre_if_askew(
+				ShipLayout.load_cells("res://ships/starter.ship")), world_scale)
 	# The legacy 1× scene keeps the FROZEN fixture: the pilot suite's walk
 	# coordinates are a contract against that exact grid, and the authored file
 	# above is free to evolve without re-authoring the legacy walk.

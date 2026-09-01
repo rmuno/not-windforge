@@ -2729,12 +2729,43 @@ func _test_ship_serialize() -> void:
 	var back := ShipLayout.parse(text)
 	_check(back.size() == cells.size(),
 		"every cell survives the round-trip (%d of %d)" % [back.size(), cells.size()])
+	# CANONICAL, not verbatim (v0.129.0): serialize recentres the grid first —
+	# an export must be a well-formed AUTHORED file, and authored files centre
+	# on the origin. The owner's canvas-coordinate exports spawned their hull
+	# ~2,800 px from the ship node, half off the prepared floor.
+	var canon := ShipLayout.recentre(cells)
 	var same := true
-	for cell in cells:
-		if int(back.get(cell, -1)) != int(cells[cell]):
+	for cell in canon:
+		if int(back.get(cell, -1)) != int(canon[cell]):
 			same = false
-	_check(same, "...at the same coordinates with the same types")
+	_check(same, "...at the CENTRED coordinates with the same types")
 	_check(ShipLayout.file_scale(text) == 1, "an unscaled export reads scale 1")
+
+	# recentre: the centre lands on (0,0), it is (near-)idempotent, and the
+	# loader's net only fires past the threshold.
+	var far := {}
+	for cell in cells:
+		far[(cell as Vector2i) + Vector2i(20, 12)] = cells[cell]
+	var pulled := ShipLayout.recentre(far)
+	var plo := Vector2i(1 << 30, 1 << 30)
+	var phi := Vector2i(-(1 << 30), -(1 << 30))
+	for cell in pulled:
+		var c: Vector2i = cell
+		plo = Vector2i(mini(plo.x, c.x), mini(plo.y, c.y))
+		phi = Vector2i(maxi(phi.x, c.x), maxi(phi.y, c.y))
+	_check(absi(plo.x + phi.x) <= 1 and absi(plo.y + phi.y) <= 1,
+		"recentre puts the bounding box astride the origin")
+	_check(ShipLayout.recentre(pulled) == pulled, "recentring a centred grid is a no-op")
+	_check(ShipLayout.recentre_if_askew(far) == pulled,
+		"a wildly off-origin grid gets pulled home by the loader's net")
+	_check(ShipLayout.recentre_if_askew(pulled) == pulled,
+		"...and a near-centred one passes through byte-identical")
+	# The owner's real pre-fix export (canvas coordinates, origin -18 -10) is the
+	# regression fixture: askew enough to trip the net.
+	var draft := ShipLayout.load_cells("res://ships/drafts/starter_owner_draft_2.ship")
+	if not draft.is_empty():
+		_check(ShipLayout.recentre_if_askew(draft) != draft,
+			"the owner's canvas-coordinate draft gets recentred on load")
 
 	# The scale header: written for a world-granularity grid, read back, and
 	# never eaten as a grid row by parse.
