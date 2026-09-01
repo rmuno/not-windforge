@@ -96,6 +96,7 @@ func _repaint() -> void:
 			_list_button("BESTIARY", func() -> void: _go(Page.BESTIARY))
 			_list_button("CARD CODEX", func() -> void: _go(Page.CARDS))
 			_list_button("SHIP BUILDER", func() -> void: _choose(GameMode.BUILDER))
+			_list_button("MAP ROOM", func() -> void: _choose(GameMode.MAPROOM))
 			_list_button("back", func() -> void: _go(Page.TITLE))
 		Page.BESTIARY:
 			_label(CreatureLog.bestiary_text(discovered), 13)

@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="Not Windforge"
-config/version="0.124.0"
+config/version="0.125.0"
 run/main_scene="res://maps/intro/intro.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 

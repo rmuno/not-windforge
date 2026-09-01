@@ -826,13 +826,25 @@ static func outcome_line(l: Dictionary) -> String:
 # DOWNDRAFT — descent express, and the meanest garrison. Cross the ring's edge
 # and you arrive from the other side.
 #
-# EXPERIMENT SCOPE (deliberate, see BACKLOG): wind, loop, and per-zone garrison
-# ship now; per-tile terrain layouts ("a bit more rocky") are the follow-up if
-# the owner likes the shape. The ladder's landings stay near the centre column,
-# so the downdraft is fast but berthless — you ride it down, then come around.
-# The RING table is data: resizing to the owner's "3 or 5 per side" is an edit
-# here and nowhere else.
-const RING := ["up", "rock", "rock", "down", "rock", "rock"]
+# THE OWNER'S OWN DRAWING (2026-09-01), and the ring is now exactly it:
+#
+#     V . . . . . ^ . . . . . V
+#
+# `^` is the UPDRAFT you start in, at the CENTRE. Five intermediate tiles run
+# out to either flank. `V` is the DOWNDRAFT — and the two `V`s in the sketch are
+# ONE TILE, the ring's SEAM, drawn at both ends because that is where the world
+# "loops onto the world for both edges". Thirteen symbols, twelve tiles.
+#
+# Which makes the table below read straight off the sketch: index 0 is `^`,
+# 1-5 and 7-11 are the dots, and index 6 is the `V` that sits at ±6 tile widths
+# — i.e. astride the wrap, half of it on each edge (see `zone_offset`).
+#
+# The ladder's landings stay near the centre column, so the downdraft is fast
+# but berthless — you ride it down, then come around. The RING table is data:
+# resizing it is an edit here and nowhere else (the wrap, the HUD, the world's
+# width and the MAP ROOM all read `RING.size()`).
+const RING := ["up", "rock", "rock", "rock", "rock", "rock",
+	"down", "rock", "rock", "rock", "rock", "rock"]
 ## Wind acceleration at strength 1, px/s² at scale 1. Comparable to the props
 ## (HULL_LATERAL_ACCEL 125): the updraft meaningfully slows a descent and the
 ## downdraft meaningfully feeds one, but neither is a rail.
@@ -877,3 +889,105 @@ static func zone_label(i: int) -> String:
 		"up": return "UPDRAFT"
 		"down": return "DOWNDRAFT"
 	return "THE ROCKS"
+
+
+## Where tile `i`'s CENTRE sits, as a signed offset in tile widths from the
+## ring's centre — the inverse of `zone_index`, taking the SHORT way round so
+## the second half of the table lies to PORT rather than miles out to starboard.
+##
+## At RING.size() 12 that puts the seam tile (index 6) at exactly ±6, which is
+## the wrap line itself: half of the downdraft hangs off each edge of the world,
+## which is what makes the owner's `V … ^ … V` sketch literally true.
+static func zone_offset(i: int) -> float:
+	var n := RING.size()
+	var t := posmod(i, n)
+	return float(t - n) if t > n / 2 else float(t)
+
+
+## THE RING, UNROLLED FOR A VIEWER (the MAP ROOM's spine).
+##
+## RING.size() + 1 columns, left to right, in the sketch's own order: the seam
+## tile is emitted TWICE — once at each end — so a reader can see that the two
+## edges are the same place. Everything is a plain value; nothing here needs a
+## world, which is what lets the map room draw the whole dive with no dive.
+static func ring_overview(sv: int) -> Array:
+	var out: Array = []
+	var n := RING.size()
+	var half := n / 2
+	for col in range(-half, half + 1):
+		var tile := posmod(col, n)
+		out.append({
+			"tile": tile,
+			"offset": float(col),
+			"kind": zone_kind(tile),
+			"label": zone_label(tile),
+			"wind": zone_wind(tile),
+			"extra_pickets": zone_extra_pickets(tile),
+			"start": tile == 0,
+			# The seam is the column drawn at both ends — the loop, made visible.
+			"seam": absi(col) == half,
+			"chunks": chunk_count(sv, tile),
+		})
+	return out
+
+
+# --- THE ROCKS HAVE ROCKS IN THEM ------------------------------------------
+#
+# Owner, on the intermediate tiles: "perhaps with just more chunks of floating
+# land". So every ROCK tile grows a handful of small floating slabs at each
+# depth — content to dodge on the way down, and the reason the flanks are
+# "harder to traverse" rather than merely windless.
+#
+# Pure, and deliberately so: the world stamps these lazily as you enter a tile,
+# and the MAP ROOM draws the very same rows without a world in sight. Positions
+# are in TILE-RELATIVE units (x in tile widths from the tile's own centre,
+# altitude as an Airspace fraction), so nothing here knows about world_scale.
+
+## How many slabs a rock tile grows at one depth, and how far out they may sit.
+## Conservative on purpose: this is a slalom, not a wall.
+const CHUNK_MIN := 2
+const CHUNK_MAX := 4
+## Half-width of the band a chunk may sit in, in TILE widths. Under 0.5 so a
+## chunk never crosses into the neighbouring tile.
+const CHUNK_SPAN := 0.34
+## A chunk's own width, in tile widths, and how flat it is.
+const CHUNK_W_MIN := 0.06
+const CHUNK_W_MAX := 0.14
+const CHUNK_ASPECT := 0.30
+## How far a chunk drifts off its depth's rung, in rungs (±half of this).
+const CHUNK_ALT_JITTER := 0.5
+## Air kept clear at both ends of the ladder: no chunk above the launch deck's
+## own altitude, none inside the lava. Altitude fractions.
+const CHUNK_DECK_CLEAR := 0.02
+const CHUNK_FLOOR_CLEAR := 0.02
+
+
+## The floating slabs of rock tile `tile` at depth `d`. Empty for the updraft,
+## the downdraft, depth 1 (the launch deck's own air is left alone) and any
+## depth off the ladder.
+static func tile_chunks(sv: int, tile: int, d: int) -> Array:
+	var out: Array = []
+	if zone_kind(tile) != "rock" or d < 2 or d > DEPTHS:
+		return out
+	var t := posmod(tile, RING.size())
+	var span := CHUNK_MAX - CHUNK_MIN + 1
+	var n := CHUNK_MIN + absi(hash([sv, "chunkn", t, d])) % span
+	for k in n:
+		var r := absi(hash([sv, "chunk", t, d, k]))
+		var x := (float(r % 1000) / 1000.0 * 2.0 - 1.0) * CHUNK_SPAN
+		var drift := (float((r >> 10) % 1000) / 1000.0 - 0.5) * CHUNK_ALT_JITTER * rung_frac()
+		var alt := clampf(depth_altitude(d) + drift,
+			FLOOR_FRAC + CHUNK_FLOOR_CLEAR, depth_altitude(1) - CHUNK_DECK_CLEAR)
+		var w := CHUNK_W_MIN + float((r >> 20) % 1000) / 1000.0 * (CHUNK_W_MAX - CHUNK_W_MIN)
+		out.append({"tile": t, "depth": d, "x": x, "alt": alt,
+			"w": w, "h": w * CHUNK_ASPECT})
+	return out
+
+
+## How many slabs a tile carries over the whole ladder — the map room's per-tile
+## readout, and a cheap way for a test to prove a rock tile is not empty.
+static func chunk_count(sv: int, tile: int) -> int:
+	var n := 0
+	for d in range(2, DEPTHS + 1):
+		n += tile_chunks(sv, tile, d).size()
+	return n
