@@ -207,10 +207,21 @@ func _initialize() -> void:
 	var orphan := TitleScreen.new()
 	root.add_child(orphan)
 	orphan.open()
+	# A STRAY KEY DOES NOTHING (owner 2026-08-31: "no need to force 'any key'
+	# to do things") — only the quiet conventions act.
+	var stray := InputEventKey.new()
+	stray.keycode = KEY_X
+	stray.pressed = true
+	orphan._input(stray)
+	_ok(bool(orphan.call("on_title_page")),
+		"a stray key on the title does nothing at all")
+	var go := InputEventKey.new()
+	go.keycode = KEY_ENTER
+	go.pressed = true
+	orphan._input(go)           # title page -> modes (Enter, the one way in)
 	var key := InputEventKey.new()
 	key.keycode = KEY_1
 	key.pressed = true
-	orphan._input(key)          # title page -> modes
 	orphan._input(key)          # modes -> choose, with nobody to tell
 	_ok(is_instance_valid(orphan), "a panel with no owner does not take the game down")
 	_ok(orphan.visible, "...and stays up rather than vanishing into nothing")
