@@ -330,9 +330,10 @@ func _initialize() -> void:
 	# what the world does NOT build when the intro picked the Dive.
 	await _check_dive_boots_streamlined()
 
-	# ...and a third: THE SHIPYARD (builder mode) — the same quiet boot with
-	# the workbench loadout applied.
-	await _check_builder_boots()
+	# (The third boot here — THE SHIPYARD, builder mode — was retired with the
+	# mode itself (owner 2026-09-01: "the midair shipyard is ridiculous"). The
+	# ship builder is now the DRAFTING TABLE, its own scene with no world to
+	# boot; `_test_ship_editor_screen` in run_tests covers it.)
 
 	_finish()
 
@@ -348,53 +349,6 @@ func _initialize() -> void:
 ##
 ## Both halves are pinned, because "the other modes remain as they are" is half
 ## the ruling: a DIVE boot builds no ecology, and an EXPEDITION boot still does.
-## THE SHIPYARD BOOT (owner arc: the in-game ship builder): picking BUILDER
-## opens the quiet world (no wildlife, no hostile, no trainer) with the sandbox
-## loadout applied — free materials, open gates — and EXPORT round-trips the
-## ship you stand on.
-func _check_builder_boots() -> void:
-	var packed: PackedScene = load("res://maps/scale_test/scale_test.tscn")
-	if packed == null:
-		_ok(false, "the builder-boot check can load a world")
-		return
-	GameMode.pending = GameMode.BUILDER
-	var world: Node = packed.instantiate()
-	root.add_child(world)
-	for i in 30:
-		await process_frame
-	var fleet = world.get("fleet")
-	var wild := 0
-	var hostile := 0
-	for sh in fleet.ships():
-		if not is_instance_valid(sh):
-			continue
-		if sh.faction == 2:
-			wild += 1
-		elif sh.faction == 1:
-			hostile += 1
-	_ok(wild == 0 and hostile == 0,
-		"a SHIPYARD boot is calm sky — no wildlife, no hostiles (%d/%d)" % [wild, hostile])
-	var pl = world.get("player")
-	_ok(pl != null and is_instance_valid(pl) and pl.wallet.balance >= 5000,
-		"...with the workbench loadout applied (wallet %d)"
-			% (0 if pl == null else pl.wallet.balance))
-	# EXPORT: the live grid round-trips through the .ship text.
-	var ship = world.get("local_ship")
-	if ship != null and is_instance_valid(ship):
-		var text: String = world.call("export_ship")
-		_ok(not text.is_empty(), "export_ship writes and returns the .ship text")
-		var back: Dictionary = ShipLayout.parse(text)
-		_ok(back.size() == ship.blocks.size(),
-			"...and it parses back to the ship you stand on (%d of %d cells)"
-				% [back.size(), ship.blocks.size()])
-		var ws := int(world.get("world_scale"))
-		_ok(ShipLayout.file_scale(text) == ws or ws == 1,
-			"...carrying its grid scale (%d)" % ShipLayout.file_scale(text))
-	world.queue_free()
-	await process_frame
-	GameMode.pending = GameMode.EXPEDITION
-
-
 func _check_dive_boots_streamlined() -> void:
 	var packed: PackedScene = load("res://maps/scale_test/scale_test.tscn")
 	if packed == null:

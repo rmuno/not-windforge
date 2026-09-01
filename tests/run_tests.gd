@@ -57,6 +57,8 @@ func _initialize() -> void:
 	_test_backdrop_is_calm()
 	_test_dive_run()
 	_test_ship_serialize()
+	_test_ship_edit()
+	await _test_ship_editor_screen()
 	_test_dive_ring()
 	_test_dive_cards()
 	_test_creature_log()
@@ -2161,6 +2163,140 @@ func _test_ship_serialize() -> void:
 		"an open door exports as an authored (closed) door")
 
 	_check(ShipLayout.serialize({}) == "", "an empty grid exports nothing")
+
+
+## THE DRAFTING TABLE'S MODEL (Q-Q): painting, mirroring, undo, the 1×-only
+## round-trip, and the FYI stats — which must mirror the game's own arithmetic
+## (mass, trim, the prop-mounting axis rule) because an FYI panel that lies is
+## worse than none.
+func _test_ship_edit() -> void:
+	_t("ShipEdit: the drafting table's grid, stats and round-trip")
+	var e := ShipEdit.new()
+
+	# --- Painting, bounds, the eraser ---------------------------------------
+	_check(e.paint(Vector2i(4, 4), BlockDB.Type.HULL), "painting an empty cell lands")
+	_check(not e.paint(Vector2i(4, 4), BlockDB.Type.HULL), "repainting the same type is a no-op")
+	_check(not e.paint(Vector2i(-1, 0), BlockDB.Type.HULL), "the sheet has edges")
+	_check(e.paint(Vector2i(4, 4), -1) and e.cells.is_empty(), "the eraser erases")
+
+	# --- Mirror-X: both twins land, centred on the sheet --------------------
+	e.mirror_x = true
+	e.paint(Vector2i(4, 6), BlockDB.Type.HULL)
+	_check(e.cells.has(Vector2i(e.width - 5, 6)),
+		"mirror-X paints the twin at width-1-x")
+	e.mirror_x = false
+
+	# --- Undo is per stroke -------------------------------------------------
+	e.begin_stroke()
+	e.paint(Vector2i(10, 10), BlockDB.Type.GASBAG)
+	e.paint(Vector2i(11, 10), BlockDB.Type.GASBAG)
+	var before := e.cells.size()
+	_check(e.undo() and e.cells.size() == before - 2,
+		"undo rolls back the whole stroke, not one cell")
+
+	# --- Stats model the SHIPPED (8×) upscale, not the sheet ----------------
+	# (The first cut did 1× arithmetic and printed trim 2.02 for a starter that
+	# boots at 1.08 — footprint normalisation shifts machine mass at 8×, and an
+	# FYI panel that lies is worse than none.)
+	e.cells = {}
+	# A pusher: prop side-mounted against hull -> HORIZONTAL by the mounting rule.
+	e.cells[Vector2i(0, 0)] = BlockDB.Type.HULL
+	e.cells[Vector2i(1, 0)] = BlockDB.Type.PROPELLER
+	# A lift prop: hung UNDER hull with clear sides -> VERTICAL.
+	e.cells[Vector2i(5, 0)] = BlockDB.Type.HULL
+	e.cells[Vector2i(5, 1)] = BlockDB.Type.PROPELLER
+	e.cells[Vector2i(3, 0)] = BlockDB.Type.ENGINE
+	var s := e.stats()
+	_check(float(s["hthrust"]) > 0.0 and float(s["vthrust"]) > 0.0,
+		"the mounting rule splits the axes on the upscale too")
+	_check(is_equal_approx(float(s["hthrust"]), float(s["vthrust"])),
+		"...and two identical props pull identical force (h %.0f v %.0f)"
+			% [float(s["hthrust"]), float(s["vthrust"])])
+	_check(float(s["trim"]) < 1.0, "no gasbags: she sinks, and the panel says so")
+	_check(not bool(s["has_helm"]), "...and that nobody can fly her")
+	_check(e.stats_text().contains("sinks"), "the panel text prints the verdict")
+	# FYI, not validation: the sinking, helmless design is still exportable.
+	_check(not e.to_text().is_empty(), "a 'bad' design still exports — FYI, never a gate")
+	# Bulk mass is the plain ×64 (fp_norm 1 for hull): the upscale arithmetic pin.
+	var bulk := ShipEdit.new()
+	bulk.cells = {Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HULL}
+	_check(is_equal_approx(float(bulk.stats()["mass"]), 2.0 * 64.0 * 10.0),
+		"bulk mass is authored × 64 × the table (%.0f)" % float(bulk.stats()["mass"]))
+
+	# --- The 1×-only round-trip ---------------------------------------------
+	var text := e.to_text()
+	var back := ShipLayout.parse(text)
+	_check(back.size() == e.cells.size(), "to_text parses back cell-for-cell")
+	_check(ShipLayout.file_scale(text) == 1, "the table writes authored scale-1 files")
+	var e2 := ShipEdit.new()
+	_check(e2.from_text(text) and e2.cells.size() == e.cells.size(),
+		"from_text loads what to_text wrote")
+	_check(not e2.from_text(ShipLayout.serialize(e.cells, 8)),
+		"an UPSCALED export is refused — the eightfold family stays dead")
+
+	# --- The repair station round-trips (R joined the format this round) ----
+	var rr := ShipLayout.parse(ShipLayout.serialize({Vector2i(0, 0): BlockDB.Type.REPAIR}))
+	_check(int(rr.get(Vector2i(0, 0), -1)) == BlockDB.Type.REPAIR,
+		"a repair station has a glyph and survives the round-trip")
+
+	# --- The starter itself fits on the table -------------------------------
+	var e3 := ShipEdit.new()
+	var f := FileAccess.open("res://ships/starter.ship", FileAccess.READ)
+	_check(f != null and e3.from_text(f.get_as_text()),
+		"the authored starter loads onto the sheet")
+	var starter_cells := ShipLayout.load_cells("res://ships/starter.ship")
+	_check(e3.cells.size() == starter_cells.size(),
+		"...cell-for-cell (%d of %d)" % [e3.cells.size(), starter_cells.size()])
+	var s3 := e3.stats()
+	_check(float(s3["trim"]) >= 1.0 and bool(s3["has_helm"]),
+		"...and the panel reads her right: floats, flyable (trim %.2f)" % float(s3["trim"]))
+	# PARITY: the panel's shipped numbers vs a REAL Ship built from the same
+	# upscale — the ground truth the panel claims to describe. scale_unit is set
+	# BEFORE rebuild (mass normalisation bakes at rebuild).
+	var real := Ship.new()
+	real.scale_unit = 8.0
+	real.gravity_scale = 0.0
+	var up8 := ShipLayout.upscale_cells(e3.cells, 8)
+	for cell in up8:
+		var t: int = up8[cell]
+		real.blocks[cell] = {"type": t, "hp": BlockDB.max_hp(t)}
+	root.add_child(real)
+	real.rebuild()
+	_check(absf(float(s3["mass"]) - real.mass) < 1.0,
+		"the panel's mass IS the boot ship's mass (%.0f vs %.0f)"
+			% [float(s3["mass"]), real.mass])
+	var real_trim: float = real._total_lift / real.mass
+	_check(absf(float(s3["trim"]) - real_trim) < 0.01,
+		"...and its trim (%.3f vs %.3f)" % [float(s3["trim"]), real_trim])
+	real.queue_free()
+
+
+## THE DRAFTING TABLE'S SCREEN: the scene the WORKSHOP door opens. Instantiated
+## headless — it must build, load the starter onto the sheet, take a paint, and
+## export. (The world-boot Shipyard this replaces had its own startup check;
+## this is that coverage's new home.)
+func _test_ship_editor_screen() -> void:
+	_t("the drafting table screen boots, loads the starter, paints and exports")
+	var packed: PackedScene = load("res://maps/editor/ship_editor.tscn")
+	_check(packed != null, "res://maps/editor/ship_editor.tscn exists")
+	if packed == null:
+		return
+	var screen := packed.instantiate()
+	root.add_child(screen)
+	await process_frame
+	var edit: Object = screen.get("edit")
+	_check(edit != null and not (edit.get("cells") as Dictionary).is_empty(),
+		"the screen opens with the starter on the table (%d cells)"
+			% (edit.get("cells") as Dictionary).size())
+	# A paint through the model changes the sheet and the export follows it.
+	var n0: int = (edit.get("cells") as Dictionary).size()
+	edit.call("begin_stroke")
+	edit.call("paint", Vector2i(1, 1), BlockDB.Type.HULL)
+	_check((edit.get("cells") as Dictionary).size() == n0 + 1, "a paint lands on the sheet")
+	var text := String(edit.call("to_text"))
+	_check(ShipLayout.parse(text).size() == n0 + 1, "and the export carries it")
+	screen.queue_free()
+	await process_frame
 
 
 func _test_dive_run() -> void:

@@ -35,6 +35,11 @@ const CHARS := {
 	"K": BlockDB.Type.SHELL,
 	"-": BlockDB.Type.PLATFORM,
 	"|": BlockDB.Type.STRUT,
+	# Repair station (joined the format 2026-09-01, with the drafting table):
+	# the Dive bolts one on when a blueprint lacks it, so an AUTHORED one is
+	# strictly better information — and a glyphless type could not round-trip
+	# through the editor at all.
+	"R": BlockDB.Type.REPAIR,
 }
 
 
@@ -93,6 +98,7 @@ const GLYPHS := {
 	BlockDB.Type.SHELL: "K",
 	BlockDB.Type.PLATFORM: "-",
 	BlockDB.Type.STRUT: "|",
+	BlockDB.Type.REPAIR: "R",
 }
 
 

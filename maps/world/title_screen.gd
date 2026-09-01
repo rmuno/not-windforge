@@ -82,7 +82,7 @@ func _repaint() -> void:
 				func() -> void: _go(Page.BESTIARY))
 			_button("CARDS — the run's whole deck",
 				func() -> void: _go(Page.CARDS))
-			_button("SHIP BUILDER — calm sky, free build, export .ship",
+			_button("SHIP BUILDER — the drafting table: paint her, read her stats, make her the default",
 				func() -> void: _choose(GameMode.BUILDER))
 			_button("back", func() -> void: _go(Page.TITLE))
 		Page.BESTIARY:

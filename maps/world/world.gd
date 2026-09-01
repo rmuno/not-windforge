@@ -227,10 +227,13 @@ func _booting_the_dive() -> bool:
 
 
 ## Modes that want the QUIET boot — no pod, no krakens, no hulk, no trainer, no
-## boss. The Dive brings its own threats; the SHIPYARD wants an empty sky and a
-## workbench.
+## boss. Only the Dive today (it brings its own threats). The mid-air SHIPYARD
+## briefly shared this gate (v0.120.0) and is GONE (owner 2026-09-01: "the
+## midair shipyard is ridiculous") — the ship builder is the DRAFTING TABLE, its
+## own scene (maps/editor/), which never boots a world at all. `export_ship`
+## (F2) stays: exporting what you built to a hull mid-expedition is still a verb.
 func _booting_quiet() -> bool:
-	return GameMode.pending == GameMode.DIVE or GameMode.pending == GameMode.BUILDER
+	return GameMode.pending == GameMode.DIVE
 
 
 func _apply_boot_mode() -> void:
@@ -239,14 +242,6 @@ func _apply_boot_mode() -> void:
 			debug_sandbox_loadout()
 		GameMode.DIVE:
 			begin_dive()
-		GameMode.BUILDER:
-			# THE SHIPYARD (owner: the in-game ship builder). The expedition's
-			# own build verbs ARE the editor — B palette, place, dig — so the
-			# mode is just calm sky + open gates + free materials, and the
-			# EXPORT verb (F2) that writes what you built as a .ship file.
-			debug_sandbox_loadout()
-			_notify("THE SHIPYARD. Build on her freely — F2 exports her as a .ship "
-				+ "(saved under user://ships and copied to the clipboard).")
 		_:
 			pass   # expedition: the world is already the world
 ## The edge POI markers (maps/world/edge_markers.gd): a pointing triangle with an
