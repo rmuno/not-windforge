@@ -226,12 +226,27 @@ func _booting_the_dive() -> bool:
 	return GameMode.pending == GameMode.DIVE
 
 
+## Modes that want the QUIET boot — no pod, no krakens, no hulk, no trainer, no
+## boss. The Dive brings its own threats; the SHIPYARD wants an empty sky and a
+## workbench.
+func _booting_quiet() -> bool:
+	return GameMode.pending == GameMode.DIVE or GameMode.pending == GameMode.BUILDER
+
+
 func _apply_boot_mode() -> void:
 	match GameMode.take():
 		GameMode.SANDBOX:
 			debug_sandbox_loadout()
 		GameMode.DIVE:
 			begin_dive()
+		GameMode.BUILDER:
+			# THE SHIPYARD (owner: the in-game ship builder). The expedition's
+			# own build verbs ARE the editor — B palette, place, dig — so the
+			# mode is just calm sky + open gates + free materials, and the
+			# EXPORT verb (F2) that writes what you built as a .ship file.
+			debug_sandbox_loadout()
+			_notify("THE SHIPYARD. Build on her freely — F2 exports her as a .ship "
+				+ "(saved under user://ships and copied to the clipboard).")
 		_:
 			pass   # expedition: the world is already the world
 ## The edge POI markers (maps/world/edge_markers.gd): a pointing triangle with an
@@ -589,7 +604,7 @@ func _ready() -> void:
 		# `_booting_the_dive` PEEKS at the pending choice; `_apply_boot_mode`
 		# still TAKES it at the end of _ready, so there is exactly one consumer.
 		# The other two modes are untouched, which is the owner's other half.
-		if not _booting_the_dive():
+		if not _booting_quiet():
 			_spawn_enemy_hulk()
 			_spawn_whale()
 			_spawn_critters()
@@ -3302,8 +3317,18 @@ func debug_spawn_text(text: String, at: Vector2) -> Ship:
 	var cells := ShipLayout.parse(text)
 	if cells.is_empty():
 		return null
+	# SCALE-AWARE (2026-09-01, the shipyard round-trip): an exported file
+	# carries its grid's granularity in a `scale` header. A hand-authored 1x
+	# file upscales exactly as before; an export from THIS world's scale spawns
+	# raw (upscaling it again would be the eightfold-bug family); anything that
+	# does not divide is refused out loud.
+	var fs := ShipLayout.file_scale(text)
+	if world_scale % fs != 0:
+		_notify("that .ship is scale %d — this world is %d, and %d does not divide it"
+			% [fs, world_scale, fs])
+		return null
 	return fleet.spawn_ship_from_cells(
-		ShipLayout.upscale_cells(cells, world_scale),
+		ShipLayout.upscale_cells(cells, world_scale / fs),
 		at, 0, 0.0, float(world_scale), 0)
 
 
@@ -3648,6 +3673,32 @@ func _spawn_whale_at(at: Vector2) -> Ship:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 	return _spawn_one_whale(WhaleSpawn.pick_plan(rng), at)
+
+
+## EXPORT YOUR SHIP (the shipyard's other half): the live grid, serialized as
+## the .ship ASCII the game and the Loft both read, written to user://ships/
+## and put on the clipboard. Returns the text ("" with a notify when there is
+## no ship). Works in ANY mode — the shipyard is where it belongs, but a ship
+## worth keeping can appear anywhere.
+func export_ship() -> String:
+	if not is_instance_valid(local_ship) or local_ship.blocks.is_empty():
+		_notify("no ship under you to export")
+		return ""
+	var types := {}
+	for cell in local_ship.blocks:
+		types[cell] = int(local_ship.blocks[cell]["type"])
+	var text := ShipLayout.serialize(types, world_scale)
+	if not DirAccess.dir_exists_absolute("user://ships"):
+		DirAccess.make_dir_recursive_absolute("user://ships")
+	var path := "user://ships/built_%d.ship" % int(Time.get_unix_time_from_system())
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f != null:
+		f.store_string(text)
+		f.close()
+	DisplayServer.clipboard_set(text)
+	_notify("exported: %s (%d blocks) — and on the clipboard for the Loft"
+		% [path, types.size()])
+	return text
 
 
 ## Grant the local player money (debug Player tab).

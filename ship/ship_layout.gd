@@ -53,6 +53,9 @@ static func parse(text: String) -> Dictionary:
 		# never contains a space (empty is '.'), so hash-space is unambiguous.
 		if line == "#" or line.begins_with("# "):
 			continue
+		if line.begins_with("scale"):
+			# Grid granularity metadata (see file_scale) — not a grid row.
+			continue
 		if line.begins_with("origin"):
 			var parts := line.split(" ", false)
 			if parts.size() >= 3:
@@ -69,6 +72,71 @@ static func parse(text: String) -> Dictionary:
 			if CHARS.has(ch):
 				cells[Vector2i(c - origin.x, r - origin.y)] = CHARS[ch]
 	return cells
+
+
+## One canonical glyph per authored type — the reverse of CHARS, for
+## `serialize`. Propellers write "P" (the axis derives from mounting, so the
+## directional variants are drawing sugar); an OPEN door serializes as the
+## authored CLOSED one (the open state is never authored).
+const GLYPHS := {
+	BlockDB.Type.HULL: "#",
+	BlockDB.Type.GASBAG: "G",
+	BlockDB.Type.ENGINE: "E",
+	BlockDB.Type.PROPELLER: "P",
+	BlockDB.Type.HELM: "H",
+	BlockDB.Type.BALLAST: "B",
+	BlockDB.Type.TURRET: "T",
+	BlockDB.Type.DOOR_CLOSED: "D",
+	BlockDB.Type.DOOR: "D",
+	BlockDB.Type.BLUBBER: "W",
+	BlockDB.Type.MEAT: "M",
+	BlockDB.Type.SHELL: "K",
+	BlockDB.Type.PLATFORM: "-",
+	BlockDB.Type.STRUT: "|",
+}
+
+
+## The missing half of the round-trip (the Loft always had it; the game did
+## not): {Vector2i: type} -> the .ship ASCII `parse` reads back verbatim.
+## `scale` records the grid's granularity (a ship exported from the 8x world is
+## an 8x-granularity grid); 1 writes no line, matching every authored file.
+## A type with no glyph (a machine bundle interior, say) serializes as empty —
+## honest loss, printed nowhere better.
+static func serialize(cells: Dictionary, scale := 1) -> String:
+	if cells.is_empty():
+		return ""
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for cell in cells:
+		var c: Vector2i = cell
+		lo = Vector2i(mini(lo.x, c.x), mini(lo.y, c.y))
+		hi = Vector2i(maxi(hi.x, c.x), maxi(hi.y, c.y))
+	var lines: Array[String] = []
+	lines.append("# exported from the game (workshop shipyard)")
+	if scale > 1:
+		lines.append("scale %d" % scale)
+	lines.append("origin %d %d" % [-lo.x, -lo.y])
+	lines.append("")
+	for r in range(lo.y, hi.y + 1):
+		var row := ""
+		for c in range(lo.x, hi.x + 1):
+			var cell := Vector2i(c, r)
+			row += String(GLYPHS.get(cells.get(cell, -1), "."))
+		lines.append(row)
+	return "\n".join(lines) + "\n"
+
+
+## The `scale N` header of an exported file (1 when absent — every hand-authored
+## file). Spawn paths use it so an 8x-granularity export is never upscaled x8
+## again (the eightfold-bug family).
+static func file_scale(text: String) -> int:
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges()
+		if line.begins_with("scale"):
+			var parts := line.split(" ", false)
+			if parts.size() >= 2:
+				return maxi(1, int(parts[1]))
+	return 1
 
 
 static func load_cells(path: String) -> Dictionary:

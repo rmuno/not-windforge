@@ -17,6 +17,10 @@ extends RefCounted
 const EXPEDITION := "expedition"
 const SANDBOX := "sandbox"
 const DIVE := "dive"
+## THE SHIPYARD (owner arc: the in-game ship builder, 2026-09-01): a quiet boot
+## — no ecology, sandbox loadout — where your ship is the canvas and the F2
+## EXPORT writes the .ship file the Loft and the game both speak.
+const BUILDER := "builder"
 
 ## What the next world should open as. Cleared by the world once it has applied
 ## it, so a later reset or reload does not silently re-enter a mode.
@@ -24,7 +28,7 @@ static var pending := EXPEDITION
 
 
 static func is_known(name: String) -> bool:
-	return name in [EXPEDITION, SANDBOX, DIVE]
+	return name in [EXPEDITION, SANDBOX, DIVE, BUILDER]
 
 
 ## Take the pending choice, leaving EXPEDITION behind. One reader, once.
