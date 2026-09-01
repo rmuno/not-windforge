@@ -191,5 +191,4 @@ static func bestiary_text(discovered_set: Dictionary) -> String:
 			else:
 				lines.append("    · ???  ")
 		lines.append("")
-	lines.append("  [Esc / any key]  BACK  ")
 	return "\n".join(lines)
