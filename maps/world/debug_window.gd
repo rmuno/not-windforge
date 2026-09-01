@@ -249,6 +249,16 @@ func _build_spawn_tab() -> void:
 		func() -> void:
 			if world != null and world.has_method("begin_dive"):
 				world.call("begin_dive"))
+	# THE 1x DIVE EXPERIMENT (owner 2026-09-01: "way too much lag... Let me try
+	# the 1x mode in dive"). The same dive-native boot at world_scale 1 — a
+	# 64th of the blocks per ship — so the owner can FEEL whether block volume
+	# is the frame's cost. Known trade from the earlier probe: the starter's
+	# authority comes from the 8x scale pipeline, so 1x flies slow relative to
+	# its world. A diagnostic door, not (yet) a mode.
+	_action_button(box, "TRY THE 1x DIVE (lag experiment — 1/64th the blocks)",
+		func() -> void:
+			if world != null:
+				world.get_tree().change_scene_to_file("res://maps/dive/dive_1x.tscn"))
 	_action_button(box, "Plant a Dive OUTPOST beside you (K trades at it)",
 		func() -> void:
 			if world != null and world.has_method("_plant_outpost"):
