@@ -17,9 +17,10 @@ extends RefCounted
 const EXPEDITION := "expedition"
 const SANDBOX := "sandbox"
 const DIVE := "dive"
-## THE SHIPYARD (owner arc: the in-game ship builder, 2026-09-01): a quiet boot
-## — no ecology, sandbox loadout — where your ship is the canvas and the F2
-## EXPORT writes the .ship file the Loft and the game both speak.
+## THE DRAFTING TABLE (owner arc Q-Q): the native ship builder. NOT a world
+## boot — the intro routes this straight to maps/editor/ship_editor.tscn (the
+## mid-air Shipyard world-mode was retired 2026-09-01: "the midair shipyard is
+## ridiculous"), so `pending` never carries it and the world never sees it.
 const BUILDER := "builder"
 
 ## What the next world should open as. Cleared by the world once it has applied
