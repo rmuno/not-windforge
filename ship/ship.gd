@@ -445,6 +445,14 @@ var thrust_input := Vector2.ZERO
 ## physics), and it deliberately does NOT scale the power draw: the card is a
 ## free upgrade, not a brownout trap.
 var thrust_mult := 1.0
+## Run-scoped FLOOR on the air density the propellers feel (the Dive's second
+## dial, 0 = off = everywhere outside a run). Prop thrust multiplies by air
+## density, and the Dive STARTS at altitude 0.86 — air thin enough to strangle
+## the props roughly tenfold, which read as "sideways movement is extremely
+## clumsy / the ship is basically unmovable" (owner 2026-08-31). In a run the
+## world floors the density the props feel (never the lift — buoyancy stays the
+## mode's own physics); outside a run nothing changes.
+var thrust_density_floor := 0.0
 ## Gates the altitude hold only (rotation needs no assist — the upright
 ## rule is unconditional). False on wreckage: a dead hull does not trim.
 var assist_enabled := true
@@ -2021,13 +2029,14 @@ func _physics_process(delta: float) -> void:
 	# revisit — per-block application is what made handling emergent.)
 	apply_central_force(Vector2.UP
 		* _total_lift * BlockDB.LIFT_PER_MASS * density * lift_factor * scale_unit)
+	var prop_density := maxf(density, thrust_density_floor)
 	if not is_zero_approx(v_input) and _total_vthrust > 0.0:
 		apply_central_force(Vector2.UP
-			* _total_vthrust * prop_norm * v_input * ratio * density * scale_unit
+			* _total_vthrust * prop_norm * v_input * ratio * prop_density * scale_unit
 			* thrust_mult)
 	if not is_zero_approx(thrust_input.x) and _total_hthrust > 0.0:
 		apply_central_force(facing
-			* _total_hthrust * prop_norm * thrust_input.x * ratio * density * scale_unit
+			* _total_hthrust * prop_norm * thrust_input.x * ratio * prop_density * scale_unit
 			* thrust_mult)
 
 

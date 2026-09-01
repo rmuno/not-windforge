@@ -2697,6 +2697,11 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(chosen.hull_integrity_max > 0.0
 				and is_equal_approx(chosen.hull_integrity, chosen.hull_integrity_max),
 			"...and commitment arms her integrity pool (%.0f)" % chosen.hull_integrity_max)
+		# THE THIN-AIR FIX (v0.115.0): the run floors the density the props feel
+		# — stamped every tick, so it is on the hull by now.
+		_ok(is_equal_approx(chosen.thrust_density_floor,
+				Tunables.get_num("dive_thrust_density_floor")),
+			"...and floors the prop-felt air density (%.2f)" % chosen.thrust_density_floor)
 		pl.disembark()
 
 	# (The complement — that OUTSIDE a run a shipless respawn still rescues you —
@@ -2916,7 +2921,19 @@ func _check_dive(world: Node, fleet) -> void:
 				"crossing the ring's edge loops you in from the other side (x-cx %.0f)"
 					% (pl.global_position.x - cx))
 			pl.global_position = was_at
-		# PASSAGE HOME: the counter's last row ends the run escaped and banks.
+		# THE SHIP IS NOT YOUR LIFE (v0.115.0, owner): destroying the committed
+		# hull must NOT end the run — it goes SHIPLESS, and the body plays on.
+		var hull3 = world.get("local_ship")
+		if hull3 != null and is_instance_valid(hull3):
+			hull3.queue_free()
+			for i in 120:
+				await world.get_tree().physics_frame
+			_ok(String(closing.outcome) == "",
+				"losing the hull does NOT end a committed run any more")
+			_ok(bool(world.get("_dive_went_shipless")),
+				"...the run knows it went shipless")
+		# PASSAGE HOME: the counter's last row ends the run escaped and banks —
+		# and it works ON FOOT, which is what a shipless survivor needs.
 		world.call("_plant_outpost", pl.global_position)
 		closing.pot = 100
 		var wallet_before: int = pl.wallet.balance

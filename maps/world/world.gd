@@ -115,6 +115,9 @@ var _dive_hud: DiveHud
 ## How long the local ship has been gone. Losing it ends the run, but
 ## `local_ship` blinks null for a frame during a rebind, so the verdict waits.
 var _dive_shipless := 0.0
+## Latched when a committed run's hull is lost, so the shipless notice fires
+## once rather than every tick after the grace.
+var _dive_went_shipless := false
 ## Seconds the committed hull has spent pressing DOWN into something solid, and
 ## the cooldown on saying so. See `_dive_nudge_if_stuck`.
 var _dive_pressing := 0.0
@@ -1007,6 +1010,7 @@ func begin_dive() -> void:
 		return
 	dive = DiveRun.new()
 	_dive_shipless = 0.0
+	_dive_went_shipless = false
 	_dive_landings.clear()
 	_dive_shelf = Vector2.ZERO
 	_dive_deck_cells = {}
@@ -1034,6 +1038,7 @@ func end_dive() -> void:
 	# mortality is the RUN'S rule, so a kept hull is disarmed and un-scorched.
 	if is_instance_valid(local_ship):
 		local_ship.thrust_mult = 1.0
+		local_ship.thrust_density_floor = 0.0
 		local_ship.hull_integrity_max = 0.0
 		local_ship.hull_integrity = 0.0
 		local_ship.modulate = Color.WHITE
@@ -1947,18 +1952,22 @@ func _tick_dive(delta: float) -> void:
 			var slick := PhysicsMaterial.new()
 			slick.friction = Tunables.get_num("dive_hull_friction")
 			local_ship.physics_material_override = slick
-			_notify("She is yours. Lose her and the run ends with her.")
+			_notify("She is yours.")
 	elif is_instance_valid(local_ship) and local_ship.has_helm():
-		# LOSING THE SHIP ENDS THE RUN (owner ruling). `local_ship` blinks null
-		# for a frame whenever the binding is refreshed, so the verdict waits out
-		# a grace — a run ended by a rebind would be the cruellest bug here.
+		# THE SHIP IS NOT YOUR LIFE (owner 2026-08-31, revising the v0.89.0
+		# ship-loss ending: "the ship seems to be 'it', and if it dies so does
+		# the player — shouldn't happen"). Losing the hull no longer ends a
+		# committed run: it makes the run SHIPLESS — the already-legal state a
+		# never-boarded run plays in — and the BODY's own rules take over
+		# (three lives, fall damage, the floor, passage home on foot). The
+		# grace still absorbs the one-frame local_ship blink a rebind causes.
 		_dive_shipless = 0.0
+		_dive_went_shipless = false
 	else:
 		_dive_shipless += delta
-		if _dive_shipless >= DIVE_SHIPLESS_GRACE:
-			dive.lose()
-			_notify(DiveRun.outcome_line(dive.ledger()))
-			return
+		if _dive_shipless >= DIVE_SHIPLESS_GRACE and not _dive_went_shipless:
+			_dive_went_shipless = true
+			_notify("She is gone. You are the run now — your body, your pot, your legs.")
 	# The assistant never downs tools: if the station stopped (a rebuild, a stray
 	# E, a repaired hull), they start it again. That is what "automatically mans
 	# the repair spot" means — you should never have to think about it again.
@@ -1971,6 +1980,9 @@ func _tick_dive(delta: float) -> void:
 	# never loses it. end_dive resets it — a hull that outlives the run flies stock.
 	if is_instance_valid(local_ship):
 		local_ship.thrust_mult = _dive_mod("thrust")
+		# The thin-air fix (see Ship.thrust_density_floor): the run floors the
+		# density the props feel, so the hull answers the stick at every rung.
+		local_ship.thrust_density_floor = Tunables.get_num("dive_thrust_density_floor")
 	_dive_hold_the_descent(delta)
 	_dive_nudge_if_stuck(delta)
 	_dive_pursue(delta)
