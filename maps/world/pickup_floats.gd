@@ -14,7 +14,7 @@ extends RefCounted
 ## How long a pickup float lives (rise + fade), in seconds. Short — it is a
 ## confirmation, not a message to read... except that `world._notify` reuses this
 ## class for its one-line messages, so it is also the only thing that shows a
-## run's "SHE IS YOURS" or a new depth.
+## run's "IT IS YOURS" or a new depth.
 ##
 ## CALMED 2026-08-30 (owner: *"text flies off too fast when getting money or
 ## going a new level. Maybe 25% slower and less height"*) — a quarter longer,

@@ -2704,7 +2704,7 @@ func _check_dive(world: Node, fleet) -> void:
 		# can die as a unit now, which is the run's consequence.
 		_ok(chosen.hull_integrity_max > 0.0
 				and is_equal_approx(chosen.hull_integrity, chosen.hull_integrity_max),
-			"...and commitment arms her integrity pool (%.0f)" % chosen.hull_integrity_max)
+			"...and commitment arms its integrity pool (%.0f)" % chosen.hull_integrity_max)
 		# THE THIN-AIR FIX (v0.115.0): the run floors the density the props feel
 		# — stamped every tick, so it is on the hull by now.
 		_ok(is_equal_approx(chosen.thrust_density_floor,
