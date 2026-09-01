@@ -6870,6 +6870,11 @@ func _build_palette() -> Array:
 	for t in BlockDB.type_count():
 		if t == BlockDB.Type.DOOR:
 			continue  # doors are placed CLOSED; open is runtime state, never built
+		if t == BlockDB.Type.STRUT:
+			# Off the player-facing surface (owner 2026-09-01, with the drafting
+			# table's palette): the TYPE stays — nests/hulk/deck author it and it
+			# rides the save format — but nobody hand-places pass-through lattice.
+			continue
 		out.append({"kind": "block", "id": t})
 		# A machine whose bundle is a true rectangle mounts either way (the
 		# source's propeller): one more palette entry, rotated — the cycle

@@ -300,9 +300,18 @@ func _check_machine_bundles(world: Node, local) -> void:
 			blocks_listed += 1
 			if int(e["id"]) == BlockDB.Type.PROPELLER:
 				rots += 1
-	_ok(rots == 2 and blocks_listed == BlockDB.type_count(),
-		"the 8× palette offers both propeller mountings (%d block entries)"
+	# type_count() − 1: the STRUT left the player-facing palette (owner
+	# 2026-09-01) — the type survives for the authored nests/hulk/deck, but
+	# neither B nor the drafting table offers it. (DOOR-open out, rotated
+	# propeller in: those two still cancel.)
+	_ok(rots == 2 and blocks_listed == BlockDB.type_count() - 1,
+		"the 8× palette offers both propeller mountings and no strut (%d block entries)"
 			% blocks_listed)
+	var strut_listed := false
+	for e2 in world._build_palette():
+		if e2["kind"] == "block" and int(e2["id"]) == BlockDB.Type.STRUT:
+			strut_listed = true
+	_ok(not strut_listed, "the strut is not offered by the build palette")
 	world.select_build("block", BlockDB.Type.PROPELLER, true)
 	_ok(world.build_selection_label() == "build: Propeller 2×6",
 		"the rotated propeller reads 2×6 (%s)" % world.build_selection_label())

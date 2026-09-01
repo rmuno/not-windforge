@@ -44,12 +44,19 @@ var mirror_x := false
 ## what can be authored is exactly what can be saved. (The REPAIR station joins
 ## the format this round: the Dive bolts one on when a blueprint lacks it, and
 ## an authored one is strictly better information.)
+##
+## NO STRUT (owner 2026-09-01: "do we need the 'strut' part? i think it can be
+## simplified to just not have it"): the strut stays a TYPE — the nests, the
+## hulk and the launch deck are authored with it, its pass-through behaviour is
+## test-pinned, and the block enum is append-only because it rides the wire/save
+## format — but it leaves the player-facing surface. A loaded blueprint that
+## carries one still edits and round-trips fine; nobody can paint a new one.
 static func palette() -> Array:
 	return [
 		BlockDB.Type.HULL, BlockDB.Type.GASBAG, BlockDB.Type.ENGINE,
 		BlockDB.Type.PROPELLER, BlockDB.Type.HELM, BlockDB.Type.BALLAST,
 		BlockDB.Type.TURRET, BlockDB.Type.DOOR_CLOSED, BlockDB.Type.REPAIR,
-		BlockDB.Type.PLATFORM, BlockDB.Type.STRUT, BlockDB.Type.BLUBBER,
+		BlockDB.Type.PLATFORM, BlockDB.Type.BLUBBER,
 		BlockDB.Type.MEAT, BlockDB.Type.SHELL,
 	]
 

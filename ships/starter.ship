@@ -19,7 +19,7 @@
 #   .  empty        #  hull         G  gasbag (lift, free)
 #   E  engine       H  helm         B  ballast
 #   W  blubber      D  door (spawns closed; F opens/closes)
-#   -  platform (S+jump drops through)   |  strut (no collision)
+#   -  platform (S+jump drops through)
 #   ^ v < > P V  propeller — ONE component, axis comes from mounting:
 #                 side neighbour = horizontal, above/below = vertical
 #
@@ -30,7 +30,8 @@
 # pushers at bow AND stern PLUS a low pair port and starboard (the
 # 2026-08-31 upgrade — four horizontal pushers and six engines, so the
 # hull can actually cross the wind ring and never brown-outs at full
-# burn); lift props hung beneath; turrets slung on struts.
+# burn); lift props hung beneath; turrets slung from the hull (the last
+# strut retired 2026-09-01 with the type's exit from the palette).
 #
 # 'origin COL ROW' names which character is ship cell (0,0).
 
@@ -41,7 +42,7 @@ GGGGGGGGGGGG
 ..#....####.
 ..D....D..#.
 ..D....D.H#>
->####--####|
+>####--#####
 >#EEE..EEE#T
 T####--####>
 ...^....^...
