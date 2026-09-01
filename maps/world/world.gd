@@ -1022,8 +1022,11 @@ func edge_marker_targets() -> Array:
 			var kind := _edge_marker_kind(ship)
 			if kind == "":
 				continue
+			# `id`: a stable key so the painter can FADE a marker in on first
+			# sight (the owner's "their markers [pop] all of a sudden").
 			out.append({"pos": at, "kind": kind, "dist": sqrt(d2),
-				"color": edge_marker_color(ship, kind)})
+				"color": edge_marker_color(ship, kind),
+				"id": ship.get_instance_id()})
 
 	# The DOCK MASTER. The source pointed an anchor at the port NPC; the nearest
 	# thing this world has to a port is the trainer station, so that is what the
@@ -1730,12 +1733,12 @@ func _dive_pursue(delta: float) -> void:
 		return
 	if not is_instance_valid(player) or _dive_surged.is_empty():
 		return
-	# How fast the thing they are chasing is actually going down.
+	# How fast the thing they are chasing is actually moving vertically.
 	var mine := player.velocity.y
 	if is_instance_valid(local_ship) and player.is_piloting():
 		mine = local_ship.linear_velocity.y
-	if mine <= 0.0:
-		return   # climbing or hovering: nothing to keep up WITH
+	if absf(mine) < 1.0:
+		return   # hovering: nothing to keep up WITH
 	var want := mine * DIVE_PURSUIT_MATCH
 	var reach := absf(dive_altitude_y(DiveRun.depth_altitude(2))
 		- dive_altitude_y(DiveRun.depth_altitude(1))) * DIVE_PURSUIT_RUNGS
@@ -1744,16 +1747,31 @@ func _dive_pursue(delta: float) -> void:
 		var ship := instance_from_id(id) as Ship
 		if ship == null or not is_instance_valid(ship) or ship.freeze:
 			continue
-		if at.y <= ship.global_position.y:
-			continue   # you are level with it or above it - no chase downward
+		# THE CHASE IS SYMMETRIC NOW (owner 2026-09-01: "Enemies shouldn't be
+		# forced to only fall down, they should be able to keep up with the
+		# player vertically"). The original floor was downward-only, which sent
+		# every pursuer into the slalom of slabs below with no way back up —
+		# they died to the terrain in droves and paid the player free XP for
+		# it. A picket now matches your vertical speed toward you in EITHER
+		# direction: diving after you when you are below, climbing after you
+		# when you are above — still never faster than 0.92 of you, so turning
+		# still sheds them.
+		if mine > 0.0 and at.y <= ship.global_position.y:
+			continue   # you are diving but it is already below you
+		if mine < 0.0 and at.y >= ship.global_position.y:
+			continue   # you are climbing but it is already above you
 		if ship.global_position.distance_to(at) > reach:
 			continue
-		if ship.linear_velocity.y >= want:
-			continue   # already falling at least as fast
-		# Ease toward the matched speed rather than snapping to it, so a picket
-		# accelerates into the dive the way a body would.
-		ship.linear_velocity.y = minf(want,
-			ship.linear_velocity.y + want * 2.0 * delta)
+		if mine > 0.0:
+			if ship.linear_velocity.y >= want:
+				continue   # already falling at least as fast
+			ship.linear_velocity.y = minf(want,
+				ship.linear_velocity.y + want * 2.0 * delta)
+		else:
+			if ship.linear_velocity.y <= want:
+				continue   # already climbing at least as fast
+			ship.linear_velocity.y = maxf(want,
+				ship.linear_velocity.y + want * 2.0 * delta)
 
 
 ## A SURGE PICKET NEVER SHRUGS (the second half of "born hunting", above). The
@@ -2232,7 +2250,11 @@ func _dive_watch_integrity() -> void:
 		if not is_instance_valid(ship) or ship.hull_integrity_max <= 0.0:
 			continue
 		var frac := clampf(ship.hull_integrity / ship.hull_integrity_max, 0.0, 1.0)
-		ship.modulate = Color.WHITE.lerp(DIVE_SCORCH, 1.0 - frac)
+		# rgb only — the spawn fade owns the alpha (a full assignment here
+		# snapped freshly-materialized pickets to opaque, the pop in miniature).
+		var scorch := Color.WHITE.lerp(DIVE_SCORCH, 1.0 - frac)
+		scorch.a = ship.modulate.a
+		ship.modulate = scorch
 		if ship.hull_integrity <= 0.0:
 			_dive_explode_ship(ship)
 
@@ -2255,7 +2277,15 @@ func _dive_explode_ship(ship: Ship) -> void:
 	if ship.faction == 1:
 		# A picket destroyed is a KILL — before integrity, a broken vessel never
 		# paid (only creature deaths did), which was half of "inconsequential".
-		_dive_credit_kill("hulk")
+		# ...but only a kill that was YOURS (owner 2026-09-01: "I keep getting
+		# so many random levels from enemies dying to themselves"). The symmetric
+		# chase helps them not crash, and this stops paying for it when they do:
+		# `last_attacker_id` is stamped by shots (and travels with the Cluster
+		# Shells blast), so a terrain suicide — which stamps nothing — is worth
+		# nothing. An enemy killed by a provoked WHALE credits nobody either;
+		# turning the sky's neutral third party is its own reward.
+		if _dive_kill_is_yours(ship.last_attacker_id):
+			_dive_credit_kill("hulk")
 	_notify("Your ship blows apart!" if was_mine else "Their ship blows apart!")
 	if was_mine:
 		local_ship = null   # the ship-loss grace takes it from here
@@ -2649,6 +2679,14 @@ func _dive_spawn_picket(kind: String, at: Vector2) -> Ship:
 		_enemy_aggro[born.get_instance_id()] = true
 		_enemy_provoked_at[born.get_instance_id()] = Time.get_ticks_msec()
 		_dive_arm_integrity(born, Tunables.get_num("dive_picket_integrity"))
+	# FADE IN, never pop (owner 2026-09-01, twice): even a spawn born properly
+	# past everyone's horizon can catch the corner of an eye as a materialize.
+	# A second of alpha makes every arrival an approach. Alpha only — the
+	# integrity scorch owns the rgb (and preserves alpha, see
+	# _dive_watch_integrity), so the two compose.
+	born.modulate.a = 0.0
+	var tw := born.create_tween()
+	tw.tween_property(born, "modulate:a", 1.0, 1.0)
 	return born
 
 
@@ -2668,8 +2706,14 @@ func _dive_spawn_picket(kind: String, at: Vector2) -> Ship:
 ## picket is genuinely off-screen and visibly flies in; the ceiling keeps it from
 ## being so far that the surge reads as nothing happening. Ratios, not pixels, so
 ## the next zoom pass carries them.
-const DIVE_SURGE_HORIZON_MARGIN := 1.15
-const DIVE_SURGE_HORIZON_MAX := 1.6
+## 1.15/1.6 shipped first and the owner still saw the pop ("enemies still hella
+## pop in"): at max zoom-out the bubble is 16,432 px, so a 1.15 floor put the
+## spawn ~2,400 px past the frame's corner — HALF A SECOND of closing speed from
+## visible, which the eye reads as materializing. Two full bubbles of margin is
+## ~16 s of picket flight: far enough that arrival is an approach, near enough
+## that a surge still lands as pressure.
+const DIVE_SURGE_HORIZON_MARGIN := 2.2
+const DIVE_SURGE_HORIZON_MAX := 3.0
 func _dive_surge() -> void:
 	if dive == null or player == null or not is_instance_valid(player):
 		return
@@ -2793,6 +2837,18 @@ func _dive_bank() -> void:
 ## place the ecology hears about a death, so anything with a brain counts.
 ## WHO killed it is not asked — a networked/attributed kill is the same seam
 ## harvesting already has (BACKLOG).
+## Was this `last_attacker_id` the player's hand — the body itself or the hull
+## it is flying? Instance ids, stamped by Shot at the hit (and carried through
+## the Cluster Shells blast). 0 — a terrain crash, a self-death — is nobody's.
+func _dive_kill_is_yours(attacker_id: int) -> bool:
+	if attacker_id == 0:
+		return false
+	if player != null and is_instance_valid(player) \
+			and attacker_id == player.get_instance_id():
+		return true
+	return is_instance_valid(local_ship) and attacker_id == local_ship.get_instance_id()
+
+
 func _dive_credit_kill(kind: String) -> void:
 	if dive == null or dive.outcome != "":
 		return
@@ -2964,6 +3020,13 @@ var _dive_draft_paused := false
 func _dive_pause_for_draft() -> void:
 	if DisplayServer.get_name() == "headless" or Net.is_online():
 		return
+	# The map is CLOSED first (owner 2026-09-01: "if you have the map open
+	# while leveling up you're pretty much stuck and can't see the cards") —
+	# the held tree cannot hear Tab, so an open map over a paused draft was a
+	# deadlock: cards invisible, map unclosable. The draft is the one thing on
+	# screen while the world holds its breath.
+	if _map_view != null and is_instance_valid(_map_view):
+		_map_view.visible = false
 	_dive_draft_paused = true
 	get_tree().paused = true
 
@@ -3637,9 +3700,16 @@ func _stream_terrain() -> void:
 	gen_foci.append_array(primary)
 	gen_foci.append_array(secondary)
 	gen_foci.append_array(_gen_lead_points())
+	# The radius is floored at the MAX-ZOOM view width (owner 2026-09-01:
+	# "terrain just pops in. it doesn't seem to consider the max zoom + one more
+	# screen in every direction"): the live-view-derived range shrinks with the
+	# camera, so wheeling out overtook generation and land appeared in frame.
+	# max_view_width_px is a whole extra screen past the max-zoom frame's edge,
+	# derived from the live camera constants like every other pop-in bound.
 	IslandGen.ensure_generated(terrain, world_seed, gen_foci,
-		(terrain.primary_range_px if terrain.primary_range_px > 0.0
-			else terrain.chunk_px() * terrain.subdiv * 2.0) * GEN_LOOKAHEAD)
+		maxf((terrain.primary_range_px if terrain.primary_range_px > 0.0
+			else terrain.chunk_px() * terrain.subdiv * 2.0) * GEN_LOOKAHEAD,
+			max_view_width_px()))
 	terrain.update_streaming(primary, secondary)
 
 

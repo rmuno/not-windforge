@@ -85,18 +85,37 @@ static func place(target: Vector2, view: Vector2, margin: float) -> Dictionary:
 	return {"on_screen": false, "pos": centre + d * k, "dir": d.normalized()}
 
 
+## How long a NEW marker takes to fade up from nothing, seconds. A marker that
+## snaps on at full strength reads as a thing materializing (owner 2026-09-01:
+## "their markers [pop in] all of a sudden"); a short ramp reads as a sighting.
+const FADE_IN := 0.5
+## First-seen times, keyed by the target's `id` (a ship's instance id) or, for
+## the id-less static rows (dock, sites), kind+rounded position. Painter-local
+## visual state, like PickupFloats' timers — never gameplay.
+var _first_seen := {}
+
+
 func _draw() -> void:
 	if world == null or not world.has_method("edge_marker_targets"):
 		return
 	var targets: Array = world.call("edge_marker_targets")
 	if targets.is_empty():
+		_first_seen.clear()
 		return
 	var xf := get_viewport().get_canvas_transform()
 	var view := size
 	var s := _scale()
 	var margin := MARGIN * s
+	var now := Time.get_ticks_msec()
+	var seen_now := {}
 	for t in targets:
 		var m := t as Dictionary
+		var key: Variant = m.get("id",
+			"%s:%d:%d" % [String(m["kind"]),
+				int((m["pos"] as Vector2).x / 4000.0), int((m["pos"] as Vector2).y / 4000.0)])
+		seen_now[key] = true
+		if not _first_seen.has(key):
+			_first_seen[key] = now
 		var spot := place(xf * (m["pos"] as Vector2), view, margin)
 		if bool(spot["on_screen"]):
 			continue
@@ -104,8 +123,15 @@ func _draw() -> void:
 		# Nearer reads brighter: the alpha IS the distance cue, so no marker
 		# needs a number beside it.
 		col.a = lerpf(0.42, 1.0, clampf(float(m.get("near", 1.0)), 0.0, 1.0))
+		# ...times the fade-in ramp for a marker in its first half-second.
+		col.a *= clampf(float(now - _first_seen[key]) / (FADE_IN * 1000.0), 0.0, 1.0)
 		_draw_marker(spot["pos"] as Vector2, spot["dir"] as Vector2,
 			String(m["kind"]), col, s)
+	# Forget targets that left the set, so a returning one fades in again and
+	# the dictionary never grows past the live marker count.
+	for key in _first_seen.keys():
+		if not seen_now.has(key):
+			_first_seen.erase(key)
 
 
 ## One marker: the bearing triangle, then the upright icon at its middle.
