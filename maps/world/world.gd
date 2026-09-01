@@ -1565,7 +1565,7 @@ func _park_candidate(ship: Ship, at: Vector2) -> void:
 func _dive_thaw(ship: Ship) -> void:
 	if ship == null or not is_instance_valid(ship) or ship.is_nest:
 		return
-	# SHE CASTS OFF DOWNWARD (owner 2026-08-30: "getting on the dive ship jumps
+	# THE SHIP CASTS OFF DOWNWARD (owner 2026-08-30: "getting on the dive ship jumps
 	# the ship UP through the platform, then you start falling like a rock").
 	#
 	# That was the shipped behaviour working as built and reading as a bug. A
@@ -1978,7 +1978,7 @@ func _tick_dive(delta: float) -> void:
 					if cand == _dive_loft:
 						_dive_loft = null
 					cand.queue_free()
-			_notify("She is yours.")
+			_notify("It is yours.")
 	elif is_instance_valid(local_ship) and local_ship.has_helm():
 		# THE SHIP IS NOT YOUR LIFE (owner 2026-08-31, revising the v0.89.0
 		# ship-loss ending: "the ship seems to be 'it', and if it dies so does
@@ -1993,7 +1993,7 @@ func _tick_dive(delta: float) -> void:
 		_dive_shipless += delta
 		if _dive_shipless >= DIVE_SHIPLESS_GRACE and not _dive_went_shipless:
 			_dive_went_shipless = true
-			_notify("She is gone. You are the run now — your body, your pot, your legs.")
+			_notify("It is gone. You are the run now — your body, your pot, your legs.")
 	# The assistant never downs tools: if the station stopped (a rebuild, a stray
 	# E, a repaired hull), they start it again. That is what "automatically mans
 	# the repair spot" means — you should never have to think about it again.
@@ -2129,7 +2129,7 @@ func _dive_watch_integrity() -> void:
 
 ## The end of an armed hull: a blast that hurts every PERSON aboard or beside
 ## it, then the ship is gone. The blast reach is the hull's own bounds grown by
-## a few cells — jump clear before she goes and you take nothing, which is the
+## a few cells — jump clear before it goes and you take nothing, which is the
 ## owner's escape clause.
 func _dive_explode_ship(ship: Ship) -> void:
 	if ship == null or not is_instance_valid(ship):
@@ -2146,7 +2146,7 @@ func _dive_explode_ship(ship: Ship) -> void:
 		# A picket destroyed is a KILL — before integrity, a broken vessel never
 		# paid (only creature deaths did), which was half of "inconsequential".
 		_dive_credit_kill("hulk")
-	_notify("She blows apart!" if was_mine else "Their ship blows apart!")
+	_notify("Your ship blows apart!" if was_mine else "Their ship blows apart!")
 	if was_mine:
 		local_ship = null   # the ship-loss grace takes it from here
 	ship.queue_free()

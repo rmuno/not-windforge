@@ -452,7 +452,7 @@ const STOCK := [
 	{"id": "lung", "cost": 220,
 		"label": "Aether Lung — breathe below the line"},
 	{"id": "patch", "cost": 120,
-		"label": "Hull patch — mend her where she stands"},
+		"label": "Hull patch — mend it where it stands"},
 	{"id": "balloon", "cost": 90,
 		"label": "Large balloon — more lift, tether it with Q"},
 	# EXTRACTION (the sky closes behind a run, so the way home is a berth on the

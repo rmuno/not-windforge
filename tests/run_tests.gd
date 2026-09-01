@@ -2212,8 +2212,8 @@ func _test_ship_edit() -> void:
 	_check(is_equal_approx(float(s["hthrust"]), float(s["vthrust"])),
 		"...and two identical props pull identical force (h %.0f v %.0f)"
 			% [float(s["hthrust"]), float(s["vthrust"])])
-	_check(float(s["trim"]) < 1.0, "no gasbags: she sinks, and the panel says so")
-	_check(not bool(s["has_helm"]), "...and that nobody can fly her")
+	_check(float(s["trim"]) < 1.0, "no gasbags: it sinks, and the panel says so")
+	_check(not bool(s["has_helm"]), "...and that nobody can fly it")
 	_check(e.stats_text().contains("sinks"), "the panel text prints the verdict")
 	# FYI, not validation: the sinking, helmless design is still exportable.
 	_check(not e.to_text().is_empty(), "a 'bad' design still exports — FYI, never a gate")
@@ -2249,7 +2249,7 @@ func _test_ship_edit() -> void:
 		"...cell-for-cell (%d of %d)" % [e3.cells.size(), starter_cells.size()])
 	var s3 := e3.stats()
 	_check(float(s3["trim"]) >= 1.0 and bool(s3["has_helm"]),
-		"...and the panel reads her right: floats, flyable (trim %.2f)" % float(s3["trim"]))
+		"...and the panel reads it right: floats, flyable (trim %.2f)" % float(s3["trim"]))
 	# PARITY: the panel's shipped numbers vs a REAL Ship built from the same
 	# upscale — the ground truth the panel claims to describe. scale_unit is set
 	# BEFORE rebuild (mass normalisation bakes at rebuild).

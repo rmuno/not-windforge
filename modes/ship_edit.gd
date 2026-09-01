@@ -303,7 +303,7 @@ func stats_text() -> String:
 	lines.append("blocks   %d  (%d flown at 8x)" % [int(s["blocks"]), int(s["shipped_blocks"])])
 	lines.append("mass     %.0f" % float(s["mass"]))
 	lines.append("trim     %.2f  %s" % [float(s["trim"]),
-		"(floats)" if float(s["trim"]) >= 1.0 else "(sinks — props must hold her)"])
+		"(floats)" if float(s["trim"]) >= 1.0 else "(sinks — props must hold it)"])
 	lines.append("")
 	lines.append("pushers  %d  (~%.0f px/s² sideways)"
 		% [int(s["pushers"]), float(s["accel_h"])])
@@ -316,7 +316,7 @@ func stats_text() -> String:
 			"(ok)" if ratio >= 1.0 else "(BROWNOUT at %d%%)" % int(round(ratio * 100.0))])
 	if not bool(s["has_helm"]):
 		lines.append("")
-		lines.append("no helm — nobody can fly her")
+		lines.append("no helm — nobody can fly it")
 	lines.append("")
 	var counts: Dictionary = s["counts"]
 	var names: Array = counts.keys()

@@ -119,7 +119,7 @@ func _build_side() -> Control:
 	col.custom_minimum_size.x = 300
 	col.add_theme_constant_override("separation", 6)
 	var title := Label.new()
-	title.text = "SHE WOULD FLY LIKE THIS"
+	title.text = "IT WOULD FLY LIKE THIS"
 	title.add_theme_color_override("font_color", _COIN)
 	col.add_child(title)
 	_stats = Label.new()
@@ -294,7 +294,7 @@ func _overwrite_starter() -> void:
 		return
 	f.store_string(text)
 	f.close()
-	_say("ships/starter.ship OVERWRITTEN — she is the default now (next boot flies her)")
+	_say("ships/starter.ship OVERWRITTEN — it is the default now (next boot flies it)")
 
 
 func _say(msg: String) -> void:
