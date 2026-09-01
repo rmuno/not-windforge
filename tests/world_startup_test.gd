@@ -2874,10 +2874,13 @@ func _check_dive(world: Node, fleet) -> void:
 				_ok(not (world.get("_nearby_helm") as Array).is_empty(),
 					"...and the helm still answers E from outside the hull")
 	# --- BORN HUNTING (owner: "enemies aren't really aggressive") -----------
-	# A surge picket spawns ~4 s down your line with 5,600 px of eyesight, so it
-	# used to idle while you slalomed past. Now a hostile picket is aggro'd +
-	# provoked AT BIRTH, and the hunt is re-stamped every tick so no de-aggro
-	# range ever talks it out of the chase (the cull is the leash).
+	# A surge picket is born just beyond the visible horizon (v0.128.0 — it used
+	# to be clamped ON SCREEN, which was the pop the owner reported) and has only
+	# 5,600 px of eyesight at 8×, so left alone it would idle out there while you
+	# slalomed past. A hostile picket is therefore aggro'd + provoked AT BIRTH,
+	# and the hunt is re-stamped every tick so no de-aggro range ever talks it out
+	# of the chase (the cull is the leash). The spawn distances themselves are
+	# screen-scale, so they are pinned in `tests/scale_startup_test.gd`.
 	var pre_surge: Array = (world.get("_dive_surged") as Array).duplicate()
 	world.call("_dive_surge")
 	var born_hostiles := 0

@@ -32,9 +32,15 @@ const _POST := Color(0.45, 0.90, 0.72)
 const _SEAM := Color(0.95, 0.55, 0.40)
 const _START := Color(0.55, 0.80, 1.0)
 const _DANGER := Color(0.95, 0.40, 0.35)
+## The garrison's own colour — the chart's foe ink, kept distinct from the
+## unbreathable line's red so a dot is never mistaken for the air gate.
+const _FOE := Color(0.90, 0.33, 0.50)
 
 ## Half a tile of air at each end, so the seam columns are not clipped in half.
 const CHART_PAD_TILES := 0.5
+## One pregenerated picket's dot, in screen px. Small on purpose: there are a
+## couple of hundred of them and the ladder has to stay the thing you read.
+const GARRISON_DOT_PX := 2.0
 
 ## The seed the chart is drawn for. A REAL RUN ROLLS ITS OWN (DiveRun._init), so
 ## this is a specimen, not a promise — the screen says so in as many words.
@@ -98,6 +104,15 @@ func _build_side() -> Control:
 		+ "  ▬ floating rock\n"
 		+ "  the red line is where the\n"
 		+ "  air stops being breathable.")
+	col.add_child(HSeparator.new())
+	_title_row(col, "  THE GARRISON", _FOE, 13)
+	_note(col, "  • one picket, standing where\n"
+		+ "    the seed put it. They are\n"
+		+ "    already there — a run only\n"
+		+ "    gives them bodies once you\n"
+		+ "    are two screens away.\n"
+		+ "  the flanks are worse than home,\n"
+		+ "  and the downdraft is worst.")
 	col.add_child(HSeparator.new())
 	_seed_label = Label.new()
 	_seed_label.add_theme_font_size_override("font_size", 12)
@@ -223,12 +238,33 @@ func model() -> Dictionary:
 					"h": float(row["h"]),
 				})
 
+	# WHO IS ALREADY OUT THERE (owner 2026-09-01: the garrison is pregenerated
+	# per seed now, so the chart can finally answer "where will they be" instead
+	# of "where might something appear"). The very same pure rows the world
+	# materializes from — `DiveRun.tile_garrison` — on the same axis as
+	# everything else. The seam column is emitted twice, so its pickets are drawn
+	# at both edges, which is right: it is one tile seen from both sides.
+	var garrison: Array = []
+	for c2 in columns:
+		var col2 := c2 as Dictionary
+		for d2 in range(2, DiveRun.DEPTHS + 1):
+			for g in DiveRun.tile_garrison(seed_v, int(col2["tile"]), d2):
+				var grow := g as Dictionary
+				garrison.append({
+					"tile": int(col2["tile"]),
+					"depth": d2,
+					"kind": String(grow["kind"]),
+					"x": float(col2["offset"]) + float(grow["x"]),
+					"alt": float(grow["alt"]),
+				})
+
 	var half := float(DiveRun.RING.size()) * 0.5
 	return {
 		"seed": seed_v,
 		"columns": columns,
 		"rows": rows,
 		"chunks": chunks,
+		"garrison": garrison,
 		# The x axis, in tile widths: the ring plus half a tile of air at each end.
 		"x_min": -half - CHART_PAD_TILES,
 		"x_max": half + CHART_PAD_TILES,
@@ -307,6 +343,16 @@ func _draw_chart() -> void:
 		var at := Vector2(_tile_x(float(ch["x"]), area, x_min, tile_px) - w * 0.5,
 			_alt_y(float(ch["alt"]), area) - h * 0.5)
 		_canvas.draw_rect(Rect2(at, Vector2(w, h)), _ROCK)
+
+	# --- the garrison: who is standing in that sky before you get there -----
+	# Drawn UNDER the rung lines and the landings, so the ladder still reads
+	# first: this is the answer to "how bad is it over there", not the chart's
+	# subject. Small hostile dots, one per pregenerated picket.
+	for g in m["garrison"] as Array:
+		var pk := g as Dictionary
+		_canvas.draw_circle(
+			Vector2(_tile_x(float(pk["x"]), area, x_min, tile_px),
+				_alt_y(float(pk["alt"]), area)), GARRISON_DOT_PX, _FOE)
 
 	# --- the ladder: a rung line, its landing, its shop ----------------------
 	for r in rows:

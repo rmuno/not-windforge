@@ -391,8 +391,272 @@ func _check_dive_scene_boots() -> void:
 	_ok(born > 0, "a surge still garrisons the narrow world (%d pickets)" % born)
 	_ok(armed == born, "...and every picket is born mortal (%d of %d)" % [armed, born])
 
+	await _check_dive_garrison_materializes(w, pl, run, cx)
+
 	w.queue_free()
 	await process_frame
+
+
+## THE PREGENERATED GARRISON, AT THE SCALE THE OWNER PLAYS (owner 2026-09-01:
+## "I don't really like how enemies just suddenly APPEAR ... only spawn things as
+## the player is close enough, perhaps 2 screens away: this would necessarily
+## have to be computed based on whatever the ship's MAX ZOOM is. note that we've
+## changed the max zoom").
+##
+## Every number here is a SCREEN-SCALE distance, so this is the only suite that
+## can see any of it. Four things are pinned, and each of them is a bug that has
+## either shipped once or is one arithmetic slip away:
+##
+##   1. the view's own arithmetic, computed the OTHER way round from the same
+##      three constants — so a future zoom pass cannot move the camera and leave
+##      the spawn distances behind;
+##   2. near entries get bodies, far ones stay pending, and NOTHING is born
+##      inside a frame (the pop the owner reported);
+##   3. a materialized picket 40,000 px out is still AWAKE — the v0.118.0
+##      sleeping-hunters trap, which cost a whole version and would come straight
+##      back the moment the garrison stopped going through `_dive_spawn_picket`;
+##   4. the wake cull does not un-mark what it freed: a cleared sky stays
+##      cleared, and the surge itself is born beyond the horizon now.
+func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
+	if pl == null or not is_instance_valid(pl) or run == null:
+		_ok(false, "a body and a run to garrison around")
+		return
+
+	# --- 1. THE VIEW, MEASURED BOTH WAYS -----------------------------------
+	# The helm view is `camera_zoom / pilot_zoom_out`; the wheel's far end is a
+	# flat multiplier on top. Computed here from the scene's own exported
+	# numbers and the script's own constants, so this reddens if the two halves
+	# ever stop being the same product.
+	var consts: Dictionary = (w.get_script() as GDScript).get_script_constant_map()
+	var zmin := float(consts["ZOOM_USER_MIN"])
+	var vp: Vector2 = w.call("_viewport_px")
+	var cz := float(w.get("camera_zoom"))
+	var pz := float(w.get("pilot_zoom_out"))
+	var helm_w := vp.x / (cz / pz)
+	var maxw := float(w.call("max_view_width_px"))
+	_ok(maxw >= helm_w - 1.0,
+		"the widest possible view is at least the helm's (%.0f px vs %.0f)"
+			% [maxw, helm_w])
+	_ok(is_equal_approx(maxw, helm_w / zmin),
+		"...and it IS the helm view wound all the way out (×%.2f)" % (1.0 / zmin))
+	_ok(is_equal_approx(float(w.call("min_camera_zoom")), cz * zmin / pz),
+		"the smallest reachable zoom is the same product read backwards (%.5f)"
+			% float(w.call("min_camera_zoom")))
+	var horizon := float(w.call("max_view_horizon_px"))
+	_ok(horizon > maxw * 0.5 and horizon < maxw,
+		"the no-pop bubble is the frame's far CORNER, not its edge (%.0f px)" % horizon)
+	var reach := float(w.call("dive_materialize_px"))
+	_ok(is_equal_approx(reach, Tunables.get_num("dive_spawn_screens") * maxw),
+		"the materialize radius is %.2f of those screens (%.0f px)"
+			% [Tunables.get_num("dive_spawn_screens"), reach])
+	_ok(reach > horizon * 2.0,
+		"...comfortably outside the bubble, so two screens is never a pop-in")
+
+	# --- 2. BODIES ONLY WHEN YOU ARE NEAR ----------------------------------
+	# Clear the surge's litter first: the picket cap is one budget over both, and
+	# a spent cap would make "nothing materialized" pass for the wrong reason.
+	var surged: Array = w.get("_dive_surged")
+	for sid in surged.duplicate():
+		var s3 := instance_from_id(sid) as Ship
+		if s3 != null and is_instance_valid(s3):
+			s3.queue_free()
+	surged.clear()
+
+	# From here on nothing awaits until the assertions are made: the world is
+	# LIVE, its own `_tick_dive` re-reads the altitude every frame, and a yield
+	# in the middle would let the run advance out from under the check.
+	var depth := 3
+	pl.velocity = Vector2.ZERO
+	pl.global_position = Vector2(cx,
+		float(w.call("dive_altitude_y", DiveRun.depth_altitude(depth))))
+	run.set("depth", depth)
+
+	# THE DOCK IS SAFE UNTIL YOU HAVE BEEN DOWN, so a run that has never left the
+	# top rung wakes nothing at all — the same gate the den's clock rides, and
+	# the reason the dive scene's boot above finds an empty sky.
+	run.set("deepest", 1)
+	var marked_at_deck: int = (run.get("garrison_spawned") as Dictionary).size()
+	w.call("_dive_materialize_garrison", 10.0)
+	_ok((run.get("garrison_spawned") as Dictionary).size() == marked_at_deck
+			and (w.get("_dive_surged") as Array).is_empty(),
+		"a run that has never left the deck wakes nothing (%d marks, %d bodies)"
+			% [marked_at_deck, (w.get("_dive_surged") as Array).size()])
+
+	run.set("deepest", depth)
+	var marked_before: Dictionary = (run.get("garrison_spawned") as Dictionary).duplicate()
+	w.call("_dive_materialize_garrison", 10.0)
+	var marks: Dictionary = run.get("garrison_spawned")
+	_ok(marks.size() > marked_before.size(),
+		"...and once you HAVE been down, the garrison around you wakes (%d entries)"
+			% (marks.size() - marked_before.size()))
+	_ok(int(w.get("_dive_materialized")) == marks.size(),
+		"one mark per body handed out, and no body without a mark (%d / %d)"
+			% [int(w.get("_dive_materialized")), marks.size()])
+	_ok(int(w.get("_dive_held_in_view")) >= 0,
+		"...and the run counts what it held back for being too close (%d)"
+			% int(w.get("_dive_held_in_view")))
+
+	# Where the model says every entry of this run stands, keyed. Used three
+	# times below, so it is built once.
+	var sv: int = int(run.get("seed_v"))
+	var places := {}
+	for tile in DiveRun.RING.size():
+		for d2 in range(2, DiveRun.DEPTHS + 1):
+			for g in DiveRun.tile_garrison(sv, tile, d2):
+				var grow := g as Dictionary
+				places[String(grow["key"])] = w.call("dive_garrison_pos",
+					grow, pl.global_position)
+
+	var far_marked := 0
+	var pending := 0
+	for key in places:
+		if marked_before.has(key):
+			continue   # marked on an earlier pass, from somewhere else
+		var d3: float = (places[key] as Vector2).distance_to(pl.global_position)
+		if not marks.has(key):
+			pending += 1
+			continue
+		if d3 > reach:
+			far_marked += 1
+	_ok(far_marked == 0,
+		"nothing beyond %.0f px was given a body (%d strays)" % [reach, far_marked])
+	_ok(pending > 0,
+		"...and the rest of the sky is still waiting to be flown at (%d pending)"
+			% pending)
+
+	# NOTHING WAS BORN ON SCREEN. The bubble is the max-zoom frame's far corner;
+	# the live frame is tighter still, and both are asserted because the live one
+	# is what the owner actually sees.
+	var live_half := float(w.call("view_half_width_px"))
+	var inside_bubble := 0
+	var inside_frame := 0
+	var too_far := 0
+	var lit: Array = w.get("_dive_surged")
+	for sid2 in lit:
+		var pk := instance_from_id(sid2) as Ship
+		if pk == null or not is_instance_valid(pk):
+			continue
+		var d4: float = pk.global_position.distance_to(pl.global_position)
+		if d4 <= horizon:
+			inside_bubble += 1
+		if d4 <= live_half:
+			inside_frame += 1
+		if d4 > reach:
+			too_far += 1
+	_ok(inside_frame == 0,
+		"no picket was born inside the live frame (half-width %.0f px, %d inside)"
+			% [live_half, inside_frame])
+	_ok(inside_bubble == 0,
+		"...nor inside a MAX-zoom one (%.0f px, %d inside)" % [horizon, inside_bubble])
+	_ok(too_far == 0, "...and none of them beyond the radius either (%d)" % too_far)
+	_ok(lit.size() <= Tunables.get_int("dive_picket_cap"),
+		"the picket cap still bounds the live population (%d of %d)"
+			% [lit.size(), Tunables.get_int("dive_picket_cap")])
+	_ok(lit.size() < Tunables.get_int("dive_picket_cap"),
+		"...with room left for the den's pulse (garrison share %.2f)"
+			% Tunables.get_num("dive_garrison_share"))
+
+	# --- 3. THE SLEEPING-HUNTERS TRAP (v0.118.0, do NOT let it back in) -----
+	# A materialized picket is tens of thousands of px out — far outside the
+	# 12,000 px dormancy range — so without the `_dive_surged` exemption it is put
+	# to sleep on the next scan and its brain never runs. That bug ate a whole
+	# version and fired ZERO shells across a 21-surge run.
+	var was_dorm := Tunables.get_bool("dormancy_enabled")
+	Tunables.set_value("dormancy_enabled", true)
+	w.call("_update_dormancy", 60.0)
+	var slept := 0
+	var unexempt := 0
+	var frozen := 0
+	var hunting := 0
+	var hostiles := 0
+	var farthest := 0.0
+	var aggro: Dictionary = w.get("_enemy_aggro")
+	for sid3 in (w.get("_dive_surged") as Array):
+		var pk2 := instance_from_id(sid3) as Ship
+		if pk2 == null or not is_instance_valid(pk2):
+			continue
+		farthest = maxf(farthest, pk2.global_position.distance_to(pl.global_position))
+		if pk2.dormant:
+			slept += 1
+		if not Dormancy.is_exempt(pk2, w):
+			unexempt += 1
+		if pk2.process_mode == Node.PROCESS_MODE_DISABLED:
+			frozen += 1
+		if pk2.faction == 1:
+			hostiles += 1
+			if bool(aggro.get(sid3, false)) and bool(w.call("_is_provoked", sid3)):
+				hunting += 1
+	_ok(slept == 0,
+		"a materialized picket %.0f px out is NEVER put to sleep (%d slept)"
+			% [farthest, slept])
+	_ok(unexempt == 0, "...every one of them is dormancy-exempt (%d were not)" % unexempt)
+	_ok(frozen == 0,
+		"...and its brain is actually running — nothing left the process tree (%d did)"
+			% frozen)
+	_ok(hostiles > 0 and hunting == hostiles,
+		"...and a crewed one is born hunting, like a surge picket (%d of %d)"
+			% [hunting, hostiles])
+	Tunables.set_value("dormancy_enabled", was_dorm)
+
+	# --- 4a. THE SURGE IS BORN BEYOND THE HORIZON --------------------------
+	# It used to be clamped to 1,800..5,600 px, which is INSIDE the helm view —
+	# the pop the owner reported. The floor is the max-zoom frame's far corner
+	# plus a margin now, so a surge flies in from the edge instead of appearing.
+	var pre: Array = (w.get("_dive_surged") as Array).duplicate()
+	w.call("_dive_surge")
+	var surge_min := INF
+	var surge_max := 0.0
+	var surge_born := 0
+	for sid4 in (w.get("_dive_surged") as Array):
+		if pre.has(sid4):
+			continue
+		var pk3 := instance_from_id(sid4) as Ship
+		if pk3 == null or not is_instance_valid(pk3):
+			continue
+		surge_born += 1
+		var d5: float = pk3.global_position.distance_to(pl.global_position)
+		surge_min = minf(surge_min, d5)
+		surge_max = maxf(surge_max, d5)
+	if surge_born > 0:
+		_ok(surge_min > live_half,
+			"a surge picket is born past the live horizon (nearest %.0f px vs %.0f)"
+				% [surge_min, live_half])
+		_ok(surge_min >= horizon,
+			"...past a MAX-zoom one too (%.0f px vs %.0f)" % [surge_min, horizon])
+		_ok(surge_max < horizon * 4.0,
+			"...but near enough to actually arrive (farthest %.0f px)" % surge_max)
+	else:
+		_ok(true, "the cap was full, so this surge added nothing (correct)")
+
+	# --- 4b. A CLEARED SKY STAYS CLEARED -----------------------------------
+	# The wake cull frees a picket you left behind. That entry must NOT come back
+	# the next time you fly through: it is spent, for the rest of the run.
+	var was_marked: Dictionary = (run.get("garrison_spawned") as Dictionary).duplicate()
+	for sid5 in (w.get("_dive_surged") as Array):
+		var pk4 := instance_from_id(sid5) as Ship
+		if pk4 != null and is_instance_valid(pk4):
+			pk4.global_position = pl.global_position + Vector2(0.0, 400000.0)
+	w.call("_dive_cull_the_wake", 2.0)
+	_ok((w.get("_dive_surged") as Array).is_empty(),
+		"the wake cull clears what the run left behind (%d left)"
+			% (w.get("_dive_surged") as Array).size())
+	var unmarked := 0
+	for key2 in was_marked:
+		if not bool(run.call("garrison_is_spawned", String(key2))):
+			unmarked += 1
+	_ok(unmarked == 0,
+		"...without un-marking a single entry it freed (%d forgotten)" % unmarked)
+	w.call("_dive_materialize_garrison", 10.0)
+	var ghosts := 0
+	for sid6 in (w.get("_dive_surged") as Array):
+		var pk5 := instance_from_id(sid6) as Ship
+		if pk5 == null or not is_instance_valid(pk5):
+			continue
+		for key3 in was_marked:
+			if pk5.global_position.distance_to(places[key3] as Vector2) < 1.0:
+				ghosts += 1
+	_ok(ghosts == 0,
+		"...so nothing you already cleared is ever reborn there (%d ghosts)" % ghosts)
 
 
 ## MACHINES PLACE AS BUNDLES at 8× (owner 2026-08-25: "an engine will never

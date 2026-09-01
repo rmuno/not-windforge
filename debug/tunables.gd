@@ -246,7 +246,25 @@ const _REGISTRY := [
 	# baseline, 2026-08-31).
 	{"id": "dive_picket_cap", "label": "Dive: max live surge pickets at once",
 		"group": "World", "kind": KIND_INT, "default": 9, "min": 3,
-		"max": 30, "step": 1},   # world._dive_surge
+		"max": 30, "step": 1},   # world._dive_surge / _dive_materialize_garrison
+	# THE PREGENERATED GARRISON (owner 2026-09-01: "I don't really like how
+	# enemies just suddenly APPEAR ... only spawn things as the player is close
+	# enough, perhaps 2 screens away"). A run's standing population is decided
+	# with its seed (DiveRun.tile_garrison) and gets BODIES this many screens of
+	# MAX ZOOM-OUT away, measured to the NEAREST player. Screens, never pixels:
+	# the width is derived from the live zoom constants (world.max_view_width_px),
+	# so the next zoom pass moves this with it instead of leaving it stale.
+	{"id": "dive_spawn_screens", "label": "Dive: garrison wakes this many max-zoom screens out",
+		"group": "World", "kind": KIND_FLOAT, "default": 2.0, "min": 0.5,
+		"max": 8.0, "step": 0.25},   # world.dive_materialize_px
+	# ...and how much of the picket cap the STANDING garrison may fill. The cap is
+	# one FPS bound over every picket a run has out; without a share the residents
+	# would fill it and the den's pulse would quietly stop landing. 1.0 gives the
+	# garrison the whole cap; 0 turns the garrison off (the pre-0.128.0
+	# surge-only sky, for A/B play).
+	{"id": "dive_garrison_share", "label": "Dive: share of the picket cap the standing garrison may fill",
+		"group": "World", "kind": KIND_FLOAT, "default": 0.7, "min": 0.0,
+		"max": 1.0, "step": 0.05},   # world._dive_garrison_budget
 	# --- Hull integrity + the closing sky (owner rulings 2026-08-31) ---------
 	# A run's vessels die as UNITS when their integrity breaks (per-block damage
 	# unchanged; the pool drains by structural hp actually destroyed). First
