@@ -1017,7 +1017,13 @@ func edge_marker_targets() -> Array:
 				continue
 			var at := ship.to_global(ship.solid_bounds.get_center())
 			var d2 := focus.distance_squared_to(at)
-			if d2 > range2:
+			# THE BOSS WEARS ITS CROWN AT ANY RANGE IN A RUN (owner 2026-09-01:
+			# "make sure it has a boss indicator") — the range gate is for
+			# ambient clutter, and the floor's resident is the run's
+			# destination, like the next landing's marker before it.
+			var boss_in_run := dive != null and dive.outcome == "" \
+				and ship.creature_kind == "whale_city"
+			if d2 > range2 and not boss_in_run:
 				continue
 			var kind := _edge_marker_kind(ship)
 			if kind == "":
@@ -1833,6 +1839,13 @@ func _dive_cull_the_wake(delta: float) -> void:
 		var ship := instance_from_id(id) as Ship
 		if ship == null or not is_instance_valid(ship):
 			continue   # already dead by other means; drop the id
+		# The LEVIATHAN is never litter: it is in the books for the dormancy
+		# exemption and the crown marker, not for the wake — culling the
+		# floor's resident because you climbed a couple of rungs would delete
+		# the run's whole destination.
+		if ship.creature_kind == "whale_city":
+			kept.append(id)
+			continue
 		if DiveRun.nearest_distance(ship.global_position, foci) < far:
 			kept.append(id)
 			continue
@@ -2818,8 +2831,17 @@ func _dive_surge() -> void:
 func _dive_wake_leviathan() -> void:
 	if player == null or not is_instance_valid(player):
 		return
-	_spawn_boss_at(player.global_position
+	var boss := _spawn_boss_at(player.global_position
 		+ Vector2(3400.0 * float(world_scale), 0.0))
+	# THE FLOOR'S RESIDENT JOINS THE RUN'S BOOKS (owner 2026-09-01: "I don't
+	# see the leviathan near the bottom level"): outside `_dive_surged` it was
+	# one dormancy scan from sleeping where it stood — the sleeping-hunters
+	# trap, boss edition — and it had no always-on marker, so an off-screen
+	# spawn was indistinguishable from no spawn at all. Listed, it stays awake
+	# and hunting; the edge markers give it the crown at ANY range in a run.
+	if boss != null and is_instance_valid(boss):
+		_dive_surged.append(boss.get_instance_id())
+		_notify("Something vast stirs at the floor.")
 
 
 ## The escape landed: move the banked coins into the permanent wallet. THIS is
@@ -5972,7 +5994,24 @@ func _update_lava_core(delta: float) -> void:
 			and not player.is_piloting() and not player.is_riding() \
 			and LavaCore.is_in_core(_world_rect, frac, player.global_position.y):
 		_notify("the core swallows you")
-		respawn_player()
+		_lava_takes_the_player()
+
+
+## What the core does to the PLAYER it caught. In a LIVE RUN it kills — one
+## life, the deep took you — because the old respawn anchored to the launch
+## deck, which handed a rider who dipped a tamed creature into the lava a free
+## teleport to the TOP of a one-way descent (owner 2026-09-01: "if i'm on a
+## creature and hit the lava, i get teleported all the way back up. bugs,
+## bugs, bugs!!"). Outside a run the expedition keeps its old
+## die-and-respawn-at-base, which is a real cost there.
+func _lava_takes_the_player() -> void:
+	if dive != null and dive.outcome == "" and player != null \
+			and is_instance_valid(player):
+		if player.is_riding():
+			player.dismount()
+		player.take_damage(player.max_health * 10.0)
+		return
+	respawn_player()
 
 
 ## Consume `ship` in the lava: a rider goes down with it (killed → respawn, which
@@ -5990,7 +6029,7 @@ func _consume_in_lava(ship: Ship) -> void:
 	_whale_ais.erase(ship.get_instance_id())
 	if rider:
 		_notify("your ship sinks into the core — say goodbye")
-		respawn_player()   # disembarks/dismounts (ship still valid), re-ships, heals
+		_lava_takes_the_player()   # a run: death; expedition: the old respawn
 	ship.destroyed.emit()
 	ship.queue_free()
 
