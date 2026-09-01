@@ -215,7 +215,6 @@ func _draw_ledger(d: Dictionary) -> void:
 		"",
 		"reached      %s" % String(d.get("deepest_label", "")),
 		"kills        %d" % int(d.get("kills", 0)),
-		"went down    %d" % int(d.get("deaths", 0)),
 		"attacks      %d" % int(d.get("surges", 0)),
 		"time         %s" % _mmss(float(d.get("elapsed", 0.0))),
 		"banked       %d coins" % int(d.get("banked", 0)),

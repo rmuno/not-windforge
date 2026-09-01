@@ -21,7 +21,7 @@ extends PanelContainer
 ## It knows nothing about the world or the modes: it calls `choose_mode(name)`
 ## on whatever owns it, and the intro decides what that means.
 
-enum Page { TITLE, MODES, WORKSHOP, BESTIARY }
+enum Page { TITLE, MODES, WORKSHOP, BESTIARY, CARDS }
 
 var world: Node2D
 var page: int = Page.TITLE
@@ -80,9 +80,14 @@ func _repaint() -> void:
 			_label("everything you have gathered, in one place", 11)
 			_button("BESTIARY — the creatures you have met",
 				func() -> void: _go(Page.BESTIARY))
+			_button("CARDS — the run's whole deck",
+				func() -> void: _go(Page.CARDS))
 			_button("back", func() -> void: _go(Page.TITLE))
 		Page.BESTIARY:
 			_label(CreatureLog.bestiary_text(discovered), 13)
+			_button("back", func() -> void: _go(Page.WORKSHOP))
+		Page.CARDS:
+			_label(DiveCards.codex_text(), 13)
 			_button("back", func() -> void: _go(Page.WORKSHOP))
 		_:
 			_label("\n  N O T   W I N D F O R G E  \n", 17)
@@ -145,6 +150,10 @@ func _input(event: InputEvent) -> void:
 				_handled()
 				_go(Page.TITLE)
 		Page.BESTIARY:
+			if keycode == KEY_ESCAPE:
+				_handled()
+				_go(Page.WORKSHOP)
+		Page.CARDS:
 			if keycode == KEY_ESCAPE:
 				_handled()
 				_go(Page.WORKSHOP)

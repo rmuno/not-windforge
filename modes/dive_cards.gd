@@ -74,6 +74,27 @@ const DIALS := ["weapon_damage", "turret_damage", "fire_rate", "hull_repair",
 	"thrust", "grapple", "ride"]
 
 
+## THE CARD CODEX — the whole deck as a page for the title's WORKSHOP (owner
+## 2026-08-31: "the workshop should have a card viewer perhaps as with
+## bestiary"). Unlike the bestiary there is nothing to hide: the deck is the
+## run's toolbox, and knowing it is strategy, not a spoiler.
+static func codex_text() -> String:
+	var lines: Array = [
+		"",
+		"  T H E   C A R D S  ",
+		"",
+		"  %d cards. A draft of three at the start line;" % CATALOG.size(),
+		"  after that, only kills fill the bar.  ",
+		"",
+	]
+	for c in CATALOG:
+		var cd := c as Dictionary
+		lines.append("  %s" % String(cd["name"]))
+		lines.append("      %s" % String(cd["desc"]))
+	lines.append("")
+	return "\n".join(lines)
+
+
 static func by_id(id: String) -> Dictionary:
 	for c in CATALOG:
 		if String((c as Dictionary)["id"]) == id:

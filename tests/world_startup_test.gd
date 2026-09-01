@@ -2559,11 +2559,11 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(shaped, "dive_status carries the whole run in plain values")
 		_ok(int(d.get("depth", 0)) == 1 and String(d.get("outcome", "x")) == "",
 			"a fresh run is at depth 1 and unfinished")
-	# CARDS ARE KILLS-ONLY (owner 2026-08-31, reversing the opening hand): a
-	# fresh run owes NO draft and shows no picker — the first card is earned.
+	# THE OPENING HAND (owner): a fresh run owes exactly its starting draft of
+	# three; after that, kills are the only road to a card.
 	if run != null:
-		_ok(not bool(run.call("draft_pending")) and (run.get("draft") as Array).is_empty(),
-			"a fresh run owes no card draft (kills are the only road to one)")
+		_ok(bool(run.call("draft_pending")),
+			"a fresh run owes its opening hand (a draft of three)")
 
 	# THE LAUNCH DECK (owner 2026-08-30). A run does not hand you a hull: it
 	# stands your BODY at the top of the ladder on a shelf it cut, parks the
@@ -2702,6 +2702,17 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(is_equal_approx(chosen.thrust_density_floor,
 				Tunables.get_num("dive_thrust_density_floor")),
 			"...and floors the prop-felt air density (%.2f)" % chosen.thrust_density_floor)
+		# THE OTHERS CAST OFF (owner): committing removes the unchosen
+		# candidates — one deferred-free frame later, none remain.
+		await world.get_tree().physics_frame
+		var leftover := 0
+		for cand in fleet.ships():
+			if is_instance_valid(cand) and cand != chosen and cand.faction == 0 \
+					and cand.freeze and not cand.is_nest and cand.creature_kind == "" \
+					and cand.pilot_peer == 0:
+				leftover += 1
+		_ok(leftover == 0,
+			"choosing a ship makes the other candidates disappear (%d left)" % leftover)
 		pl.disembark()
 
 	# (The complement — that OUTSIDE a run a shipless respawn still rescues you —
