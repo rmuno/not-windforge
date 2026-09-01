@@ -2753,6 +2753,85 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(mend.menders_running, "the assistant starts it again if it stops")
 	world.call("end_dive")
 
+	# --- THE CARDS REACH THE WORLD (owner 2026-09-01, rarities + synergies) --
+	# Two wirings the unit suite structurally cannot see, because both of them
+	# only exist once there are real bodies: the `move_speed` dial has to reach
+	# the LEGS, and Cluster Shells' blast has to reach a SECOND hull.
+	world.call("begin_dive")
+	await _dive_take_a_hull(world, fleet)
+	var carded = world.get("dive")
+	if carded != null and pl != null and is_instance_valid(pl):
+		var stock_walk: float = pl.call("_move_speed")
+		_ok(is_equal_approx(pl.run_speed_mult, 1.0),
+			"a run with no leg card leaves your walk untouched (%.2fx)" % pl.run_speed_mult)
+		carded.grant_card("light_boots")
+		world.call("_tick_dive", 0.016)
+		_ok(pl.run_speed_mult > 1.0,
+			"the move_speed card is stamped on the body each tick (%.2fx)" % pl.run_speed_mult)
+		_ok(float(pl.call("_move_speed")) > stock_walk,
+			"...and the body really walks faster (%.0f -> %.0f px/s)"
+				% [stock_walk, float(pl.call("_move_speed"))])
+
+		# THE BLAST. Two hulks side by side, a shell into the first, and the
+		# SECOND one has to lose plating — that is the whole legendary.
+		carded.grant_card("cluster_shells")
+		var where: Vector2 = pl.global_position + Vector2(0.0, -6000.0 * float(world.get("world_scale")))
+		var boom_a = world.call("debug_spawn", "hulk", where)
+		var boom_b = world.call("debug_spawn", "hulk", where + Vector2(1.0e5, 0.0))
+		await world.get_tree().physics_frame
+		if boom_a != null and is_instance_valid(boom_a) and boom_b != null \
+				and is_instance_valid(boom_b) and boom_a.solid_bounds.size.x > 0.0:
+			# Park B off A's starboard beam with a clear gap, so they do not
+			# overlap (a collision would damage them both and prove nothing) but
+			# sit comfortably inside one blast radius.
+			# The gap is a FRACTION OF THE BLAST, never a raw pixel count: the
+			# radius scales with the world (220 px at 1x, 1,760 at the shipped 8x),
+			# so a hard-coded 600 px sat inside the blast on one scene and outside
+			# it on the other — the eightfold-error family, in a test.
+			var reach: float = DiveCards.BLAST_RADIUS_PX * float(world.get("world_scale"))
+			var beam: float = boom_a.solid_bounds.size.x
+			boom_a.global_position = where
+			boom_b.global_position = where + Vector2(beam + reach * 0.3, 0.0)
+			boom_a.linear_velocity = Vector2.ZERO
+			boom_b.linear_velocity = Vector2.ZERO
+			var a_before: int = boom_a.blocks.size()
+			var b_before: int = boom_b.blocks.size()
+			# Detonate on A's starboard plating — exactly where a shell would land.
+			var impact: Vector2 = boom_a.to_global(Vector2(
+				boom_a.solid_bounds.end.x, boom_a.solid_bounds.get_center().y))
+			world.call("_dive_on_hit", boom_a, 20000.0, impact)
+			_ok(boom_a.blocks.size() < a_before,
+				"an exploding shell hurts the hull it struck (%d -> %d blocks)"
+					% [a_before, boom_a.blocks.size()])
+			_ok(boom_b.blocks.size() < b_before,
+				"...AND the enemy beside it, which is the whole card (%d -> %d blocks)"
+					% [b_before, boom_b.blocks.size()])
+			# Your own hull is never caught in your own blast.
+			var mine = world.get("local_ship")
+			if mine != null and is_instance_valid(mine):
+				var mine_before: int = mine.blocks.size()
+				world.call("_dive_blast", mine.global_position, 20000.0)
+				_ok(mine.blocks.size() == mine_before,
+					"a blast on your own deck never touches your own ship")
+			# ...and out of range is out of range.
+			boom_b.global_position = where + Vector2(4.0e5, 0.0)
+			var far_before: int = boom_b.blocks.size()
+			world.call("_dive_on_hit", boom_a, 20000.0, impact)
+			_ok(boom_b.blocks.size() == far_before,
+				"an enemy outside the radius is spared (%d blocks)" % far_before)
+		else:
+			_ok(false, "the blast check could spawn two hulks to blow up")
+		# Leave the fleet as found — every later check counts the ships it finds.
+		if boom_a != null and is_instance_valid(boom_a):
+			boom_a.queue_free()
+		if boom_b != null and is_instance_valid(boom_b):
+			boom_b.queue_free()
+		await world.get_tree().physics_frame
+	world.call("end_dive")
+	if pl != null and is_instance_valid(pl):
+		_ok(is_equal_approx(pl.run_speed_mult, 1.0),
+			"ending the run puts your legs back to stock (%.2fx)" % pl.run_speed_mult)
+
 	# --- THE DIVE HAS NO INTERIORS (owner 2026-08-30) -----------------------
 	# Three things have to be true together, or "leaving the ship still has you
 	# open the doors to actually leave" comes straight back.

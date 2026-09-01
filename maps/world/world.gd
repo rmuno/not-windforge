@@ -1053,6 +1053,9 @@ func end_dive() -> void:
 		local_ship.hull_integrity = 0.0
 		local_ship.modulate = Color.WHITE
 		local_ship.physics_material_override = null   # the stock keel comes back
+	# ...and so do your legs: the move_speed card dial is run-scoped like the rest.
+	if is_instance_valid(player):
+		player.run_speed_mult = 1.0
 	dive = null
 	_dive_shipless = 0.0
 	_dive_pressing = 0.0
@@ -2009,6 +2012,11 @@ func _tick_dive(delta: float) -> void:
 		# The thin-air fix (see Ship.thrust_density_floor): the run floors the
 		# density the props feel, so the hull answers the stick at every rung.
 		local_ship.thrust_density_floor = Tunables.get_num("dive_thrust_density_floor")
+	# The "move_speed" card dial (Light Boots, Sea Legs) — the LEGS' twin of the
+	# thrust stamp above, and stamped for exactly the same reasons. It matters most
+	# on a shipless run, where your legs are the only engine you have left.
+	if is_instance_valid(player):
+		player.run_speed_mult = _dive_mod("move_speed")
 	_dive_hold_the_descent(delta)
 	_dive_nudge_if_stuck(delta)
 	_dive_pursue(delta)
@@ -2398,7 +2406,7 @@ func _dive_mod(key: String) -> float:
 
 
 ## Apply every held card's proc for `event`. `damage` carries the hit size for
-## lifesteal; it is 0 for kill/land events, where lifesteal is simply inert.
+## lifesteal and the blast; it is 0 for kill/land events, where both are inert.
 func _dive_apply_procs(event: String, damage := 0.0) -> void:
 	if dive == null or dive.outcome != "":
 		return
@@ -2413,12 +2421,88 @@ func _dive_apply_procs(event: String, damage := 0.0) -> void:
 				_dive_heal_player(float(pd.get("amount", 0.0)))
 			"lifesteal":
 				_dive_heal_player(damage * float(pd.get("amount", 0.0)))
+			"explode":
+				# Cluster Shells. Only a hit carries a place to go off at, so on any
+				# other event `_dive_hit_at` is unset and the blast is a no-op.
+				if damage > 0.0 and _dive_hit_at != Vector2.INF:
+					_dive_blast(_dive_hit_at, damage * float(pd.get("amount", 0.0)))
+
+
+## WHERE the shell that is currently firing hit-procs landed, and WHO fired it.
+## Set for the duration of one `_dive_on_hit` and cleared after, so the proc
+## interpreter's signature stays the small `(event, damage)` every other event
+## uses — only the blast needs a location, and only a hit ever has one.
+## `Vector2.INF` is "nowhere", because Vector2.ZERO is a real world position.
+var _dive_hit_at := Vector2.INF
+var _dive_hit_by := 0
 
 
 ## A card's "hit" procs, fired by a player/ship shell landing on an enemy (Shot
-## forwards this with the damage it dealt). Vampiric Rounds lives here.
-func _dive_on_hit(_target: Object, damage: float) -> void:
+## forwards this with the damage it dealt and where it landed). Vampiric Rounds
+## and Cluster Shells both live here.
+func _dive_on_hit(target: Object, damage: float, at := Vector2.INF) -> void:
+	var struck := target as Ship
+	if at == Vector2.INF and struck != null and is_instance_valid(struck):
+		at = struck.global_position
+	_dive_hit_at = at
+	# Attribution travels with the blast: Shot stamps `last_attacker_id` on the
+	# body it struck a moment before the damage lands, so reusing it means a
+	# creature caught in the blast provokes at whoever pulled the trigger rather
+	# than at nobody (the whale-retaliation wiring reads exactly this field).
+	_dive_hit_by = struck.last_attacker_id if struck != null and is_instance_valid(struck) else 0
 	_dive_apply_procs("hit", damage)
+	_dive_hit_at = Vector2.INF
+	_dive_hit_by = 0
+
+
+## THE BLAST — the "explode" effect's world half (owner's legendary, 2026-09-01).
+## `hurt` damage to EVERY enemy body whose plating comes within the blast radius
+## of `at`, the struck one included. No new damage system: the geometry is
+## `DiveCards.rect_distance` / `blast_catches` (pure, tested), and the damage goes
+## through `Ship.net_damage_cell`, the same door a shell uses.
+##
+## Wildlife counts as an enemy here (`faction != 0`) — a kraken is what you are
+## shooting at down deep — but a TAMED ally and a carcass never do: blowing up
+## your own tamed whale with your own card would be a betrayal, not a build.
+##
+## Returns how many bodies it caught, which is what the suite asserts on.
+func _dive_blast(at: Vector2, hurt: float) -> int:
+	if hurt <= 0.0 or at == Vector2.INF or fleet == null:
+		return 0
+	var radius := DiveCards.BLAST_RADIUS_PX * float(world_scale)
+	# Rows first (plain data), then the pure catcher, then the damage — the same
+	# world-decides split every other layer of this file uses.
+	var bodies: Array = []
+	var rows: Array = []
+	for s in fleet.ships():
+		var ship := s as Ship
+		if ship == null or not is_instance_valid(ship):
+			continue
+		var hostile := ship.faction != 0 and not ship.is_tamed_ally() \
+			and not ship.is_carcass() and ship.solid_bounds.size != Vector2.ZERO
+		var local := ship.to_local(at)
+		bodies.append(ship)
+		rows.append({"hostile": hostile,
+			"dist": DiveCards.rect_distance(ship.solid_bounds, local)})
+	var caught := 0
+	for i in DiveCards.blast_catches(rows, radius):
+		var victim := bodies[i] as Ship
+		if victim == null or not is_instance_valid(victim):
+			continue
+		if _dive_hit_by != 0:
+			victim.last_attacker_id = _dive_hit_by
+		# Aim the blast at the plating NEAREST the detonation rather than at `at`
+		# itself: a hull twelve hundred pixels away has no block under the blast
+		# centre, and nearest_solid_cell only searches a few rings out.
+		var b := victim.solid_bounds
+		var local := victim.to_local(at)
+		var near := Vector2(
+			clampf(local.x, b.position.x, b.end.x),
+			clampf(local.y, b.position.y, b.end.y))
+		victim.net_damage_cell(
+			victim.nearest_solid_cell(victim.to_global(near)), hurt)
+		caught += 1
+	return caught
 
 
 ## Heal the player up to their pool — the sink for heal/lifesteal procs.
