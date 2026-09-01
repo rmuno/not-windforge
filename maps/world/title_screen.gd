@@ -36,6 +36,12 @@ var _rows: VBoxContainer
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
+	# The preset is applied while the panel is EMPTY, so its offsets are ~zero
+	# and the panel's top-left sat at the screen's centre — every page then hung
+	# down-right (the owner's screenshotted "awkward"). Growing BOTH ways from
+	# the centre anchor keeps the panel centred at whatever size a page needs.
+	grow_horizontal = Control.GROW_DIRECTION_BOTH
+	grow_vertical = Control.GROW_DIRECTION_BOTH
 	_rows = VBoxContainer.new()
 	_rows.add_theme_constant_override("separation", 8)
 	add_child(_rows)
@@ -60,6 +66,13 @@ func on_title_page() -> bool:
 
 ## Rebuild the page as labels + buttons. Buttons over key-lists on purpose (the
 ## owner's ruling above); the handful of quiet keys live in _input.
+##
+## STANDARDIZED (owner 2026-09-01: "Text within the menus should be more
+## standardized. There's TMI everywhere and text is centered instead of left
+## aligned, so in a list it looks really awkward"): the TITLE stays centred (it
+## is a title, not a list); every LIST is left-aligned terse rows; the three
+## modes are CARDS — the name with a tiny description under it — with THE DIVE
+## first (owner's order, and the keys follow the cards: 1 = the Dive now).
 func _repaint() -> void:
 	if _rows == null:
 		return
@@ -68,29 +81,28 @@ func _repaint() -> void:
 	match page:
 		Page.MODES:
 			_label("  CHOOSE YOUR GAME  ", 15)
-			_button("EXPEDITION — the full game",
-				func() -> void: _choose(GameMode.EXPEDITION))
-			_button("SANDBOX — kitted out, no suffocation",
-				func() -> void: _choose(GameMode.SANDBOX))
-			_button("THE DIVE — eight depths down, bank what you carry",
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 10)
+			_rows.add_child(row)
+			_mode_card(row, "1", "THE DIVE", "a run. eight depths, one life",
 				func() -> void: _choose(GameMode.DIVE))
-			_button("back", func() -> void: _go(Page.TITLE))
+			_mode_card(row, "2", "EXPEDITION", "the full open game",
+				func() -> void: _choose(GameMode.EXPEDITION))
+			_mode_card(row, "3", "SANDBOX", "kitted out, free build",
+				func() -> void: _choose(GameMode.SANDBOX))
+			_list_button("back", func() -> void: _go(Page.TITLE))
 		Page.WORKSHOP:
 			_label("  THE WORKSHOP  ", 15)
-			_label("everything you have gathered, in one place", 11)
-			_button("BESTIARY — the creatures you have met",
-				func() -> void: _go(Page.BESTIARY))
-			_button("CARDS — the run's whole deck",
-				func() -> void: _go(Page.CARDS))
-			_button("SHIP BUILDER — the drafting table: paint her, read her stats, make her the default",
-				func() -> void: _choose(GameMode.BUILDER))
-			_button("back", func() -> void: _go(Page.TITLE))
+			_list_button("BESTIARY", func() -> void: _go(Page.BESTIARY))
+			_list_button("CARD CODEX", func() -> void: _go(Page.CARDS))
+			_list_button("SHIP BUILDER", func() -> void: _choose(GameMode.BUILDER))
+			_list_button("back", func() -> void: _go(Page.TITLE))
 		Page.BESTIARY:
 			_label(CreatureLog.bestiary_text(discovered), 13)
-			_button("back", func() -> void: _go(Page.WORKSHOP))
+			_list_button("back", func() -> void: _go(Page.WORKSHOP))
 		Page.CARDS:
 			_label(DiveCards.codex_text(), 13)
-			_button("back", func() -> void: _go(Page.WORKSHOP))
+			_list_button("back", func() -> void: _go(Page.WORKSHOP))
 		_:
 			_label("\n  N O T   W I N D F O R G E  \n", 17)
 			_button("PLAY", func() -> void: _go(Page.MODES))
@@ -106,11 +118,63 @@ func _label(text: String, size: int) -> void:
 	_rows.add_child(l)
 
 
+## A centred action — the TITLE page only; everywhere else is a list.
 func _button(text: String, cb: Callable) -> void:
 	var b := Button.new()
 	b.text = text
 	b.pressed.connect(cb)
 	_rows.add_child(b)
+
+
+## A list row: left-aligned, terse, no dash-explainers. The standard for every
+## page that lists things (centred rows in a list were the owner's "awkward").
+func _list_button(text: String, cb: Callable) -> void:
+	var b := Button.new()
+	b.text = "  " + text
+	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	b.pressed.connect(cb)
+	_rows.add_child(b)
+
+
+## One MODE CARD: the number chip, the name, a tiny description — clickable
+## anywhere on the card. A real PanelContainer rather than a multiline Button
+## so the three lines carry their own sizes and colours.
+func _mode_card(row: Container, chip: String, mode_name: String, desc: String,
+		cb: Callable) -> void:
+	var card := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.05, 0.07, 0.11, 0.92)
+	style.border_color = Color(0.55, 0.62, 0.74, 0.7)
+	style.set_border_width_all(1)
+	style.set_content_margin_all(14)
+	card.add_theme_stylebox_override("panel", style)
+	card.custom_minimum_size = Vector2(180, 96)
+	card.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	card.add_child(col)
+	var c := Label.new()
+	c.text = "[%s]" % chip
+	c.add_theme_font_size_override("font_size", 10)
+	c.add_theme_color_override("font_color", Color(0.55, 0.62, 0.74))
+	col.add_child(c)
+	var n := Label.new()
+	n.text = mode_name
+	n.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	n.add_theme_font_size_override("font_size", 16)
+	n.add_theme_color_override("font_color", Color(0.95, 0.83, 0.42))
+	col.add_child(n)
+	var d := Label.new()
+	d.text = desc
+	d.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	d.add_theme_font_size_override("font_size", 11)
+	d.add_theme_color_override("font_color", Color(0.55, 0.62, 0.74))
+	col.add_child(d)
+	card.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and (event as InputEventMouseButton).pressed \
+				and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			cb.call())
+	row.add_child(card)
 
 
 func _go(to: int) -> void:
@@ -134,19 +198,21 @@ func _input(event: InputEvent) -> void:
 				_handled()
 				_go(Page.MODES)
 		Page.MODES:
+			# The keys follow the CARDS' order — the Dive is first (owner
+			# 2026-09-01), so 1 is the Dive now.
 			match keycode:
 				KEY_ESCAPE:
 					_handled()
 					_go(Page.TITLE)
 				KEY_1, KEY_KP_1:
 					_handled()
-					_choose(GameMode.EXPEDITION)
+					_choose(GameMode.DIVE)
 				KEY_2, KEY_KP_2:
 					_handled()
-					_choose(GameMode.SANDBOX)
+					_choose(GameMode.EXPEDITION)
 				KEY_3, KEY_KP_3:
 					_handled()
-					_choose(GameMode.DIVE)
+					_choose(GameMode.SANDBOX)
 		Page.WORKSHOP:
 			if keycode == KEY_ESCAPE:
 				_handled()

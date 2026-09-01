@@ -195,11 +195,13 @@ func _initialize() -> void:
 		_ok(GameMode.pending == GameMode.EXPEDITION,
 			"...so the title's own keypress cannot have picked a mode")
 		GameMode.pending = GameMode.EXPEDITION
-		var three := InputEventKey.new()
-		three.keycode = KEY_3
-		three.pressed = true
-		panel._input(three)
-		_ok(GameMode.pending == GameMode.DIVE, "[3] chooses the Dive")
+		# The Dive moved to the FRONT of the doors (owner 2026-09-01), so the
+		# first key is the Dive now.
+		var one := InputEventKey.new()
+		one.keycode = KEY_1
+		one.pressed = true
+		panel._input(one)
+		_ok(GameMode.pending == GameMode.DIVE, "[1] chooses the Dive (first door)")
 		_ok(is_instance_valid(panel), "...and the panel survives choosing")
 	GameMode.pending = GameMode.EXPEDITION
 
