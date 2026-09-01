@@ -1019,11 +1019,11 @@ func begin_dive() -> void:
 	# fixed sequence of hands (like the ladder), and distinct from the ladder seed.
 	_dive_rng = RandomNumberGenerator.new()
 	_dive_rng.seed = hash([dive.seed_v, "cards"])
-	# NO OPENING HAND ANY MORE (owner 2026-08-31, reversing the draft-at-start:
-	# "Cards should only be acquired from defeating things, actually"). The XP
-	# bar — fed by kills alone — is now the only road to a draft; the deck you
-	# build is the record of what you beat. (Random world drops are a logged
-	# maybe, BACKLOG.)
+	# THE OPENING HAND (owner, twice over: "draft-of-3 at start, to start" and,
+	# after it briefly vanished in the kills-only sweep, "what happened to the
+	# starting 3 cards?"). One draft owed at the start line; after it, kills are
+	# the only road to a card (the threshold/quartermaster grants stay gone).
+	dive.add_draft()
 	_build_launch_deck()
 	_notify("THE LAUNCH DECK. Take a ship, or step off the edge with nothing. "
 		+ "Down is richer and worse; climb back to this air to bank what you carry.")
@@ -1579,9 +1579,14 @@ func _dive_thaw(ship: Ship) -> void:
 ## with a hull under you there is a deck to wake up on, so death is a respawn and
 ## the run goes on. With none, there is nowhere to put you back.
 func _dive_perish() -> bool:
-	if dive == null or dive.outcome != "" or dive.committed:
+	if dive == null or dive.outcome != "":
 		return false
-	dive.lose(true)
+	if dive.committed:
+		# One life: a committed run's pilot falling out of the world is as dead
+		# as one shot at the helm. The body is the loss either way.
+		dive.perish_aboard()
+	else:
+		dive.lose(true)
 	_notify(DiveRun.outcome_line(dive.ledger()))
 	return true
 
@@ -1952,6 +1957,17 @@ func _tick_dive(delta: float) -> void:
 			var slick := PhysicsMaterial.new()
 			slick.friction = Tunables.get_num("dive_hull_friction")
 			local_ship.physics_material_override = slick
+			# THE OTHERS CAST OFF (owner 2026-08-31: "once you choose a ship at
+			# the beginning, the other one should disappear"). Choosing is the
+			# decision; the unchosen candidates leave with it.
+			for cand in fleet.ships():
+				if not is_instance_valid(cand) or cand == local_ship:
+					continue
+				if cand.faction == 0 and cand.freeze and not cand.is_nest \
+						and cand.creature_kind == "" and cand.pilot_peer == 0:
+					if cand == _dive_loft:
+						_dive_loft = null
+					cand.queue_free()
 			_notify("She is yours.")
 	elif is_instance_valid(local_ship) and local_ship.has_helm():
 		# THE SHIP IS NOT YOUR LIFE (owner 2026-08-31, revising the v0.89.0
@@ -2249,8 +2265,14 @@ func _dive_surge() -> void:
 		speed = local_ship.linear_velocity.length()
 		if speed > 200.0 * ws:
 			vel = local_ship.linear_velocity / speed
-	var lead := maxf(Tunables.get_num("dive_surge_lead") * maxf(speed, 900.0 * ws),
-		1800.0 * ws)
+	# THE LEAD MUST FIT THE SCREEN (owner 2026-08-31: "there are ZERO enemies
+	# at the beginning of the game down to depth 3 or 4"). The old floor put a
+	# picket >=28,800 px down your line — TWO-PLUS SCREENS below the helm view
+	# (~12,000 px tall) — so every arrival garrison spawned invisible and
+	# trailed the descent forever. Capped at ~5,600 px the picket is born ON
+	# SCREEN, ahead of you, and the fight exists.
+	var lead := clampf(Tunables.get_num("dive_surge_lead") * maxf(speed, 225.0 * ws),
+		225.0 * ws, 700.0 * ws)
 	var ahead := player.global_position + vel * lead
 	var across := Vector2(-vel.y, vel.x)
 	# SPACE THEM BY WHAT THEY ACTUALLY ARE (owner 2026-08-30: "some enemies are
@@ -5469,15 +5491,13 @@ func _on_player_died(dead: Player) -> void:
 		return
 	if _dive_perish():
 		return
-	# Dying with a deck under you costs part of the pot, and the third one ends
-	# the run — without the cap, unbreathable air at depth 6 is a place you die
-	# in forever (the headless playtest found exactly that).
+	# ONE LIFE (owner 2026-08-31: "just do 100 hp for the player" — the
+	# three-deaths respawn loop is gone). Dying anywhere in a live run ends it;
+	# the body staying down IS the run-over screen.
 	if dive != null and dive.outcome == "" and dive.committed:
-		if dive.perish_aboard():
-			_notify(DiveRun.outcome_line(dive.ledger()))
-			return
-		_notify("You went down. %d of %d — and it cost you coin."
-			% [dive.deaths, DiveRun.DEATH_LIMIT])
+		dive.perish_aboard()
+		_notify(DiveRun.outcome_line(dive.ledger()))
+		return
 	respawn_player()
 
 

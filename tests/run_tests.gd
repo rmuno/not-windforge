@@ -2059,6 +2059,12 @@ func _test_dive_cards() -> void:
 	r2.offer(rng)
 	_check(not r2.draft_pending(), "an offer with nothing left to give drains the debt, never strands it")
 
+	# The codex names every card (the workshop viewer draws it raw).
+	var codex := DiveCards.codex_text()
+	for c in DiveCards.CATALOG:
+		_check(codex.contains(String((c as Dictionary)["name"])),
+			"the codex lists '%s'" % (c as Dictionary)["name"])
+
 	# The ledger carries the card state for the HUD.
 	var led := run.ledger()
 	_check(led.has("cards") and led.has("xp") and led.has("draft") and led.has("xp_need"),
@@ -2456,23 +2462,20 @@ func _test_dive_run() -> void:
 	_check(DiveRun.outcome_line(fell.ledger()).contains("No ship"),
 		"...and the ledger says you had no ship, not that you lost one")
 
-	# DYING ABOARD is a countdown, not a loop. The playtest drove a run into the
-	# unbreathable air at depth 6, where the pilot suffocated, respawned on the
-	# deck still in unbreathable air, and died there forever.
+	# ONE LIFE (owner 2026-08-31: "just do 100 hp for the player"). Dying in a
+	# committed run ends it on the spot — no respawn loop, no countdown, no
+	# pot haircuts along the way.
 	var worn := DiveRun.new()
 	worn.commit()
 	worn.advance(1.0, DiveRun.depth_altitude(6), 45.0)
 	worn.credit_kill("kraken")
 	worn.credit_kill("kraken")
 	var full := worn.pot
-	_check(not worn.perish_aboard(), "the first death aboard does not end the run")
-	_check(worn.pot < full and worn.pot > 0, "...but it costs coin (%d -> %d)"
-		% [full, worn.pot])
-	_check(not worn.perish_aboard(), "nor the second")
-	_check(worn.perish_aboard(), "the third death ends it")
-	_check(worn.outcome == "lost" and worn.banked == 0 and worn.deaths == DiveRun.DEATH_LIMIT,
-		"...as a loss, banking nothing, after %d deaths" % worn.deaths)
-	_check(DiveRun.outcome_line(worn.ledger()).contains("WORE YOU DOWN"),
+	_check(worn.perish_aboard(), "ONE death aboard ends the run")
+	_check(worn.outcome == "lost" and worn.banked == 0,
+		"...as a loss, banking nothing")
+	_check(worn.pot == full, "...and no pot haircut games on the way out (%d)" % worn.pot)
+	_check(DiveRun.outcome_line(worn.ledger()).contains("TOOK YOU"),
 		"...and the ledger says what actually happened")
 	# The air gate that made the cap necessary is REAL: the rung the playtest
 	# stalled on is below Airspace's unbreathable line, and the one above is not.

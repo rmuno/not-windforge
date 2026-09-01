@@ -88,17 +88,12 @@ static func ceiling_push(over_rungs: float) -> float:
 ## This is the "calm" half of the beat — mine, build, patch gasbags, breathe.
 const ARRIVAL_GRACE := 30.0
 
-## DYING ABOARD. The owner ruled that dying on foot respawns you on the deck
-## "at a cost"; this is the cost, and the cap that stops it being a loop.
-##
-## The cap is not decoration. The headless playtest (tools/dive_probe.gd) drove a
-## run to depth 6, where the air is already unbreathable (Airspace.DEEP_TOP is
-## 0.34 and that rung sits at 0.317) — the pilot suffocated, respawned on the
-## deck still in unbreathable air, and the run stalled there dying forever. With
-## a cap the air gate becomes a countdown you can feel instead of a wall you
-## bounce off, and the way past it is the kit an outpost sells.
-const DEATH_LIMIT := 3
-const DEATH_POT_LOSS := 0.35
+## DYING. One pool, one life (owner 2026-08-31: "where did the 3 lives come
+## from? just do 100 hp for the player"). The old three-deaths-with-a-pot-cut
+## respawn loop is gone: your GRIT pool is the whole story, and when it empties
+## in a run, the run is over. (The lives cap once existed to stop an infinite
+## suffocate-respawn loop at the air gate; with death final, that loop cannot
+## exist at all.)
 
 ## Extraction premium: banking pays the pot times 1 + this × how far down you
 ## got (0 at depth 1, the full bonus at the floor). So a wise retreat from depth
@@ -709,19 +704,17 @@ func procs_for(event: String) -> Array:
 	return DiveCards.procs_for(cards, event)
 
 
-## A death with a deck to wake up on. Burns part of the pot; the DEATH_LIMIT-th
-## one ends the run. Returns true when it did.
+## The player died with the run live. One life (owner ruling): the run ends
+## here, whatever was aboard or banked-to-be. Returns true (it always ends now;
+## the bool survives for call-site stability).
 func perish_aboard() -> bool:
 	if outcome != "":
 		return true
 	deaths += 1
-	pot = maxi(0, int(round(float(pot) * (1.0 - DEATH_POT_LOSS))))
-	if deaths >= DEATH_LIMIT:
-		outcome = "lost"
-		lost_how = "worn"
-		banked = 0
-		return true
-	return false
+	outcome = "lost"
+	lost_how = "worn"
+	banked = 0
+	return true
 
 
 ## You took this hull; from here, losing it is the ending.
@@ -812,7 +805,7 @@ static func outcome_line(l: Dictionary) -> String:
 					return "YOU FELL. No ship, %s reached, %d coins gone with you." % [
 						String(l.get("deepest_label", "")), int(l.get("pot", 0))]
 				"worn":
-					return "THE DEEP WORE YOU DOWN at %s. %d coins left aboard." % [
+					return "THE DEEP TOOK YOU at %s. %d coins died with you." % [
 						String(l.get("deepest_label", "")), int(l.get("pot", 0))]
 			return "YOUR SHIP IS GONE. You reached %s. %d coins fell with it." % [
 				String(l.get("deepest_label", "")), int(l.get("pot", 0))]
