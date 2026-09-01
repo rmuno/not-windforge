@@ -49,6 +49,17 @@ static func is_exempt(ship: Ship, world: Node) -> bool:
 		var pl := p as Node
 		if pl.get("piloting") == ship or pl.get("riding") == ship:
 			return true
+	# A SURGE PICKET NEVER SLEEPS while its run lives (2026-08-31, found by the
+	# combat scorecard: pickets spawn ~4 s down your line — BEYOND the 12,000 px
+	# dormancy range — so they were born, put to sleep on the next scan, and
+	# fired ZERO shells across a 21-surge run. Born-hunting armed their brains;
+	# this is the layer that switched the brains off). The cap on how many can
+	# exist is the picket cap + the cull, both already bounded, so exempting
+	# them cannot fill the sky.
+	if world.get("dive") != null:
+		var surged: Variant = world.get("_dive_surged")
+		if surged is Array and (surged as Array).has(ship.get_instance_id()):
+			return true
 	# In multiplayer every crew member counts, not just the local body.
 	var crew: Variant = world.get("crew")
 	if crew != null and is_instance_valid(crew):
