@@ -395,8 +395,13 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 			await world.get_tree().physics_frame
 		Input.action_release("ship_right")
 		var dx: float = starter.global_position.x - x0
-		_ok(dx > 800.0,
-			"four seconds of full right moves the starter (%.0f px)" % dx)
+		# 800 -> 4000 (owner 2026-09-01, "extremely slow in every way"): the root
+		# was dive_thrust_density_floor strangling the props in the thin start air
+		# (0.15). Raised to 0.40, the same hull covers ~9,500 px here (peak
+		# ~4,000 px/s, a ring tile in ~4 s). This bound GUARDS the floor — drop it
+		# back toward 0.15 and this reddens instead of the owner finding out in play.
+		_ok(dx > 4000.0,
+			"four seconds of full right moves the starter briskly (%.0f px)" % dx)
 		_ok(starter.power_supply() >= starter.active_draw() * 0.95,
 			"...without browning out (supply %.0f vs draw %.0f)"
 				% [starter.power_supply(), starter.active_draw()])
