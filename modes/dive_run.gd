@@ -933,6 +933,9 @@ static func ring_overview(sv: int) -> Array:
 			# The seam is the column drawn at both ends — the loop, made visible.
 			"seam": absi(col) == half,
 			"chunks": chunk_count(sv, tile),
+			# ...and who is already standing in it, before you ever fly there
+			# (the pregenerated garrison, below).
+			"pickets": tile_picket_count(tile),
 		})
 	return out
 
@@ -997,3 +1000,206 @@ static func chunk_count(sv: int, tile: int) -> int:
 	for d in range(2, DEPTHS + 1):
 		n += tile_chunks(sv, tile, d).size()
 	return n
+
+
+# --- THE PREGENERATED GARRISON (owner 2026-09-01) ---------------------------
+#
+# "I don't really like how enemies just suddenly APPEAR. Again, perhaps we
+# should pregenerate per seed, and only spawn things as the player is close
+# enough, perhaps 2 screens away: (this would necessarily have to be computed
+# based on whatever the ship's MAX ZOOM is)."
+#
+# So a run's STANDING POPULATION is decided the moment its seed is rolled, not
+# the moment you arrive. Every ring tile at every rung below the launch deck
+# carries a fixed roster of pickets at fixed places, and the world only gives
+# them BODIES when a player comes within two screens of MAX ZOOM-OUT
+# (`world.dive_materialize_px`). They are already there; you fly up on them.
+#
+# The tables are the ones the owner already tuned — `surge_count` for how many a
+# depth is worth and `zone_extra_pickets` for how much meaner the flanks and the
+# downdraft are — so the difficulty shape of the ring survives this change
+# whole. The den's PULSE is untouched too (`world._dive_surge`): the garrison is
+# the sky's residents, the surge is the pressure wave on top of them.
+#
+# Pure, and deliberately so — exactly like `tile_chunks`. The world materializes
+# these rows and the MAP ROOM draws the very same rows with no world in sight,
+# so "where will they be" is answerable without diving.
+#
+# DEPTH 1 IS EMPTY, for the same reason `tile_chunks` leaves it alone and the
+# den's clock does not run there: the launch deck is an unhurried place while
+# you choose a hull (`advance` returns early while `deepest <= 1`). A garrison
+# standing around the deck would delete that.
+
+## Half the band, in TILE widths, that a tile's pickets are spread across. Under
+## 0.5 so a picket never stands in the neighbouring tile.
+const GARRISON_X_SPAN := 0.42
+## The smallest gap between two pickets of one tile, in tile widths. At the 8×
+## ring's 33,600 px tile that is ~3,400 px — a couple of gunboat lengths, which
+## is what stops the owner's "their ships are literally stuck to each other".
+## Slots narrower than this (a very crowded depth) fall back to the slot width,
+## which `garrison_min_sep` reports so a test can hold the real invariant.
+const GARRISON_MIN_SEP := 0.10
+## How far a picket hangs off its depth's rung, in rungs (±half of this). Under
+## 1 so a picket always belongs to the rung it was rolled for.
+const GARRISON_ALT_JITTER := 0.7
+## Air kept clear at both ends of the ladder: nothing above the launch deck's own
+## altitude, nothing in the lava. Altitude fractions.
+const GARRISON_DECK_CLEAR := 0.02
+const GARRISON_FLOOR_CLEAR := 0.02
+
+
+## How many pickets tile `tile` keeps at depth `d`. The owner's own two tables,
+## added: the depth says how many, the ring says how much worse than home.
+static func garrison_count(tile: int, d: int) -> int:
+	if d < 2 or d > DEPTHS:
+		return 0
+	return maxi(0, surge_count(d) + zone_extra_pickets(tile))
+
+
+## What a tile carries over the whole ladder — the map room's per-tile readout,
+## and the twin of `chunk_count`. Independent of the seed: the seed decides
+## WHERE they stand, the tables decide HOW MANY.
+static func tile_picket_count(tile: int) -> int:
+	var n := 0
+	for d in range(2, DEPTHS + 1):
+		n += garrison_count(tile, d)
+	return n
+
+
+## The GUARANTEED smallest gap between two of a tile's `n` pickets, in tile
+## widths. `GARRISON_MIN_SEP` when the slots are wide enough to hold it, the slot
+## width otherwise — stated as a function rather than a constant so the suite can
+## pin the invariant that actually holds instead of the one we hoped for.
+static func garrison_min_sep(n: int) -> float:
+	if n <= 1:
+		return 0.0
+	return minf(GARRISON_MIN_SEP, 2.0 * GARRISON_X_SPAN / float(n))
+
+
+## A stable name for one garrison entry. The run marks these SPAWNED (see
+## `mark_garrison_spawned`), so the key has to survive being written down.
+static func garrison_key(tile: int, d: int, k: int) -> String:
+	return "%d:%d:%d" % [posmod(tile, RING.size()), d, k]
+
+
+## WHO STANDS IN TILE `tile` AT DEPTH `d`, as [{key, tile, depth, index, kind,
+## x, alt}]. `x` is in TILE widths from that tile's own centre and `alt` is an
+## Airspace fraction, so nothing here knows about `world_scale` — the same
+## contract `tile_chunks` keeps.
+##
+## SPACED BY CONSTRUCTION. The band is cut into `n` equal slots and a picket
+## jitters inside its own slot by at most half the slack, so two of them can
+## never be closer than `garrison_min_sep(n)` however the hash falls. The world's
+## spawn path may still nudge a body by its real `solid_bounds` — this only has
+## to stop the MODEL stacking them.
+static func tile_garrison(sv: int, tile: int, d: int) -> Array:
+	var out: Array = []
+	var t := posmod(tile, RING.size())
+	var n := garrison_count(t, d)
+	if n <= 0:
+		return out
+	var kinds := surge_kinds(d)
+	var slot := 2.0 * GARRISON_X_SPAN / float(n)
+	var jitter := maxf(0.0, (slot - garrison_min_sep(n)) * 0.5)
+	var ceiling := depth_altitude(1) - GARRISON_DECK_CLEAR
+	for k in n:
+		var r := absi(hash([sv, "garrison", d, t, k]))
+		var mid := -GARRISON_X_SPAN + slot * (float(k) + 0.5)
+		var x := mid + (float(r % 1000) / 1000.0 * 2.0 - 1.0) * jitter
+		var drift := (float((r >> 10) % 1000) / 1000.0 - 0.5) * GARRISON_ALT_JITTER * rung_frac()
+		var alt := clampf(depth_altitude(d) + drift,
+			FLOOR_FRAC + GARRISON_FLOOR_CLEAR, ceiling)
+		out.append({
+			"key": garrison_key(t, d, k),
+			"tile": t, "depth": d, "index": k,
+			"kind": String(kinds[k % kinds.size()]),
+			"x": x, "alt": alt,
+		})
+	return out
+
+
+## THE WHOLE GARRISON of a seed, every tile at every rung. The map room draws
+## this; the world never asks for it (it scans the tiles around you instead —
+## see `world._dive_materialize_garrison`).
+static func garrison_all(sv: int) -> Array:
+	var out: Array = []
+	for tile in RING.size():
+		for d in range(2, DEPTHS + 1):
+			out.append_array(tile_garrison(sv, tile, d))
+	return out
+
+
+# --- WHERE THE PLAYERS ARE (owner 2026-09-01) -------------------------------
+#
+# "It would have to be the boundary of all active players as if they were using
+# a ship's MAX ZOOM."
+#
+# So the two distances a materialization is judged by are both measured against
+# EVERY active body, not against "the player":
+#
+#   * the INCLUSION radius is the distance to the NEAREST player — anybody who
+#     could see it is reason enough for it to exist;
+#   * the EXCLUSION bubble is that same nearest distance held OUTSIDE a max-zoom
+#     view — nothing may be born inside anyone's widest possible frame, because
+#     that is the pop-in the owner is complaining about.
+#
+# Pure, taking plain positions, so the world site and the suite share exactly
+# one piece of arithmetic and a two-player case needs no second body to test.
+
+## Distance from `pos` to the NEAREST of `points`, or INF when there is nobody to
+## be near (a world mid-teardown decides nothing — the same convention
+## `Dormancy.distance_to_nearest` keeps).
+static func nearest_distance(pos: Vector2, points: Array) -> float:
+	var best := INF
+	for p in points:
+		best = minf(best, pos.distance_to(p as Vector2))
+	return best
+
+
+## May a garrison entry at `pos` be given a body right now? Inside somebody's
+## `reach`, and outside EVERYBODY's `keep_out` bubble.
+static func in_materialize_band(pos: Vector2, points: Array,
+		keep_out: float, reach: float) -> bool:
+	if points.is_empty():
+		return false
+	var d := nearest_distance(pos, points)
+	return d > keep_out and d <= reach
+
+
+## Push `pos` along `dir` until it is `keep_out` clear of every player — what the
+## den's pulse uses when its lead down YOUR travel vector would land it inside
+## somebody else's frame. Bounded (four passes): each pass moves by the worst
+## shortfall, and a surge that still cannot find air is one the world skips.
+static func clear_of_players(pos: Vector2, dir: Vector2, points: Array,
+		keep_out: float) -> Vector2:
+	if points.is_empty() or dir.length_squared() <= 0.0:
+		return pos
+	var step := dir.normalized()
+	var out := pos
+	for _pass in 4:
+		var short := 0.0
+		for p in points:
+			short = maxf(short, keep_out - out.distance_to(p as Vector2))
+		if short <= 0.0:
+			return out
+		out += step * (short + 1.0)
+	return out
+
+
+# --- The garrison's live half (this run's bookkeeping) ----------------------
+
+## Garrison entries this run has already given a body, by `garrison_key`.
+##
+## SPAWN-ONCE IS THE WHOLE RULE, and it is also the owner's "a cleared sky stays
+## cleared": an entry the wake cull frees (or that you blew apart) is marked and
+## never comes back, while an entry you simply never flew near stays pending for
+## as long as the run lasts. Nothing here is saved — a run is not a save file.
+var garrison_spawned := {}
+
+
+func garrison_is_spawned(key: String) -> bool:
+	return garrison_spawned.has(key)
+
+
+func mark_garrison_spawned(key: String) -> void:
+	garrison_spawned[key] = true

@@ -56,6 +56,14 @@ extends Node2D
 ## clamped to ±50% of them (owner's first guess at the range). Left alone by the
 ## 30% pass on purpose — it is a RATIO, so the ends moved with `camera_zoom`.
 var _zoom_user := 1.0
+## The wheel's two ends, NAMED. They were inline literals in `_input` until the
+## Dive needed to know how wide the view can ever get (`max_view_width_px`) —
+## and a spawn radius derived from a number nobody could find is a spawn radius
+## that silently stops tracking the next zoom pass. The owner has moved
+## `camera_zoom` twice already (×1.3 in v0.103.0, ×0.6 in v0.110.0); these are
+## the other two factors in the same product.
+const ZOOM_USER_MIN := 0.5
+const ZOOM_USER_MAX := 1.5
 
 const SHIP_START := Vector2(0, -200)
 
@@ -141,10 +149,19 @@ var _dive_went_shipless := false
 ## the cooldown on saying so. See `_dive_nudge_if_stuck`.
 var _dive_pressing := 0.0
 var _dive_nudge_cd := 0.0
-## Every hull a surge has spawned this run, so the run can clean up after itself
-## (`_dive_cull_the_wake`). Instance ids, because the ships die by other means too.
+## Every PICKET this run put in the sky — the den's pulse (`_dive_surge`) and the
+## pregenerated garrison (`_dive_materialize_garrison`) alike — so the run can
+## clean up after itself (`_dive_cull_the_wake`), keep them hunting, and keep
+## them AWAKE (`Dormancy.is_exempt` reads this list by name). Instance ids,
+## because the ships die by other means too.
 var _dive_surged: Array[int] = []
 var _dive_cull_clock := 0.0
+## The garrison scan's own clock, and two counters the suite reads: how many
+## entries this run has given bodies, and how many were HELD BACK because they
+## would have been born inside somebody's frame.
+var _dive_garrison_clock := 0.0
+var _dive_materialized := 0
+var _dive_held_in_view := 0
 ## The Blueprint-Loft hull parked on the launch deck as the second candidate.
 ## A run prop: made once, reused across runs, cleared with the run unless you
 ## chose it.
@@ -1089,6 +1106,9 @@ func begin_dive() -> void:
 	dive = DiveRun.new()
 	_dive_shipless = 0.0
 	_dive_went_shipless = false
+	_dive_garrison_clock = 0.0
+	_dive_materialized = 0
+	_dive_held_in_view = 0
 	_dive_landings.clear()
 	_dive_chunks_cut = {}
 	_dive_shelf = Vector2.ZERO
@@ -1131,6 +1151,9 @@ func end_dive() -> void:
 	_dive_nudge_cd = 0.0
 	_dive_surged.clear()
 	_dive_cull_clock = 0.0
+	_dive_garrison_clock = 0.0
+	_dive_materialized = 0
+	_dive_held_in_view = 0
 	if is_instance_valid(_dive_deck):
 		_dive_deck.queue_free()
 	_dive_deck = null
@@ -1774,10 +1797,16 @@ func _dive_keep_the_hunt() -> void:
 const DIVE_CULL_RUNGS := 1.5
 func _dive_cull_the_wake(delta: float) -> void:
 	_dive_cull_clock += delta
-	if _dive_cull_clock < 1.0 or dive == null or player == null 			or not is_instance_valid(player):
+	if _dive_cull_clock < 1.0 or dive == null:
 		return
 	_dive_cull_clock = 0.0
 	if _dive_surged.is_empty():
+		return
+	# THE NEAREST PLAYER, not "the" player (owner 2026-09-01: the run measures
+	# against "all active players"). A picket a crewmate is fighting is not litter
+	# because YOU flew away from it.
+	var foci := dive_player_foci()
+	if foci.is_empty():
 		return
 	var far := absf(dive_altitude_y(DiveRun.depth_altitude(2))
 		- dive_altitude_y(DiveRun.depth_altitude(1))) * DIVE_CULL_RUNGS
@@ -1786,7 +1815,7 @@ func _dive_cull_the_wake(delta: float) -> void:
 		var ship := instance_from_id(id) as Ship
 		if ship == null or not is_instance_valid(ship):
 			continue   # already dead by other means; drop the id
-		if ship.global_position.distance_to(player.global_position) < far:
+		if DiveRun.nearest_distance(ship.global_position, foci) < far:
 			kept.append(id)
 			continue
 		ship.queue_free()
@@ -2092,6 +2121,9 @@ func _tick_dive(delta: float) -> void:
 	_dive_pursue(delta)
 	_dive_keep_the_hunt()
 	_dive_cull_the_wake(delta)
+	# THE SKY WAS ALREADY POPULATED (owner 2026-09-01): the run's standing
+	# garrison was decided with the seed; this is only where it gets bodies.
+	_dive_materialize_garrison(delta)
 	# THE WIND RING replaces the corridor while it is on: the corridor pushes
 	# you back to the centre line, and the ring's whole point is that LEAVING
 	# the centre is the game. Turning zones off (F2) brings the corridor back.
@@ -2427,6 +2459,199 @@ func _dive_cut_chunks(tile: int, d: int) -> void:
 	terrain.flush_rebuilds()
 
 
+# --- THE PREGENERATED GARRISON (owner 2026-09-01) ---------------------------
+#
+# "I don't really like how enemies just suddenly APPEAR. Again, perhaps we
+# should pregenerate per seed, and only spawn things as the player is close
+# enough, perhaps 2 screens away."
+#
+# `DiveRun.tile_garrison` is the model half: who stands where, decided when the
+# seed was rolled, for every ring tile at every rung. This is the world half —
+# it hands out BODIES, and only to entries that are already within two max-zoom
+# screens of somebody. Nothing is invented here; if the map room and the sky ever
+# disagree it is because one of them stopped reading `tile_garrison`.
+#
+# The den's PULSE is untouched by all this (`_dive_surge` below). The garrison is
+# the sky's residents; the surge is the pressure wave on top of them — and after
+# this round the surge is born beyond the horizon too, so neither of them pops.
+
+
+## Every ACTIVE PLAYER BODY, as plain positions — the foci this mode measures
+## everything against (owner 2026-09-01: "it would have to be the boundary of all
+## active players as if they were using a ship's max zoom"). In single-player
+## that is the one body; online it is the whole crew. Same crew-then-fallback
+## idiom as `Dormancy.foci`, minus the ships: a hull parked three tiles away is
+## not somebody who can see.
+func dive_player_foci() -> Array:
+	var out: Array = []
+	if crew != null and is_instance_valid(crew):
+		for p in crew.players():
+			if p != null and is_instance_valid(p):
+				out.append((p as Node2D).global_position)
+	if out.is_empty() and player != null and is_instance_valid(player):
+		out.append(player.global_position)
+	return out
+
+
+## How far out a garrison entry gets a body: `dive_spawn_screens` of the WIDEST
+## frame the game can show, measured to the NEAREST player.
+func dive_materialize_px() -> float:
+	return Tunables.get_num("dive_spawn_screens") * max_view_width_px()
+
+
+## How many pickets a run currently has alive. Carcasses do not count — a dead
+## picket is loot, not population.
+func _dive_live_pickets() -> int:
+	var live := 0
+	for pid in _dive_surged:
+		var s := instance_from_id(pid) as Ship
+		if s != null and is_instance_valid(s) and not s.is_carcass():
+			live += 1
+	return live
+
+
+## THE GARRISON DOES NOT EAT THE HEARTBEAT. `dive_picket_cap` is ONE bound over
+## every body a run has in the sky (it is an FPS guard, and the 13→58-ship
+## baseline is why it exists), so the standing garrison is allowed only a SHARE
+## of it — otherwise a fully populated tile would fill the cap and the den's
+## pulse would silently stop landing, which is the mode's heartbeat gone.
+func _dive_garrison_budget() -> int:
+	var cap := Tunables.get_int("dive_picket_cap")
+	var share := Tunables.get_num("dive_garrison_share")
+	if share <= 0.0:
+		return 0   # the lever's OFF position: the pre-0.128.0 surge-only sky
+	var room := clampi(int(round(float(cap) * share)), 1, cap)
+	return room - _dive_live_pickets()
+
+
+## Where one garrison row actually sits in the world. `row.x` is in tile widths
+## from its tile's centre and `row.alt` is an altitude fraction, so this is the
+## only place the model meets real coordinates.
+##
+## THE RING WRAPS, so the nearest copy of a tile may be off the FAR edge of the
+## world — a run crossing the seam must meet the garrison it is flying into, not
+## the one a full circumference behind it. `near` is the point the answer is
+## wanted relative to.
+func dive_garrison_pos(row: Dictionary, near: Vector2) -> Vector2:
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	var tile_w := _dive_tile_w()
+	var x := cx + (DiveRun.zone_offset(int(row["tile"])) + float(row["x"])) * tile_w
+	var y := dive_altitude_y(float(row["alt"]))
+	if Tunables.get_bool("dive_zones_enabled"):
+		var ring_w := dive_ring_width()
+		if ring_w > 1.0:
+			x = near.x + wrapf(x - near.x + ring_w * 0.5, 0.0, ring_w) - ring_w * 0.5
+	return Vector2(x, y)
+
+
+## How wide a window of the ring and the ladder the scan even LOOKS at. The
+## radius is under two tiles and under a rung at the shipped numbers, so this is
+## generous on purpose — it exists so the scan costs a few dozen distance checks
+## a quarter-second instead of walking the whole ring × ladder every tick.
+const DIVE_GARRISON_TILE_WINDOW := 2
+const DIVE_GARRISON_DEPTH_WINDOW := 1
+## Seconds between scans. A run falls ~2,400 px/s and the radius is tens of
+## thousands, so four times a second is many times more often than it can matter.
+const DIVE_GARRISON_PERIOD := 0.25
+
+
+## One scan: give bodies to the nearest pending garrison entries that are inside
+## somebody's reach and outside EVERYBODY's frame.
+func _dive_materialize_garrison(delta: float) -> void:
+	_dive_garrison_clock += delta
+	if _dive_garrison_clock < DIVE_GARRISON_PERIOD:
+		return
+	_dive_garrison_clock = 0.0
+	if dive == null or dive.outcome != "":
+		return
+	# THE DOCK IS SAFE UNTIL YOU HAVE BEEN DOWN — the same gate the den's clock
+	# and the closing sky already ride (`DiveRun.advance` returns early while
+	# `deepest <= 1`). Depth 1 carries no garrison of its own, but depth 2's can
+	# drift most of a rung up, and a picket waking under the launch deck would
+	# turn "take a ship, or step off the edge with nothing" into a fight you did
+	# not choose. Come back up here to extract and `deepest` is long past 1 —
+	# the way home is not a safe place, which is the point.
+	if dive.deepest <= 1:
+		return
+	var foci := dive_player_foci()
+	if foci.is_empty():
+		return
+	var budget := _dive_garrison_budget()
+	if budget <= 0:
+		return
+	var reach := dive_materialize_px()
+	# THE NO-POP BUBBLE, at MAX ZOOM-OUT and around every player. Two screens out
+	# is comfortably past it at the shipped numbers; this is the belt to that
+	# braces, and it is what a future zoom change would trip on instead of the
+	# owner finding a picket blinking into frame.
+	var keep_out := max_view_horizon_px()
+	var here := dive_zone()
+	var candidates: Array = []
+	for dt in range(-DIVE_GARRISON_TILE_WINDOW, DIVE_GARRISON_TILE_WINDOW + 1):
+		var tile: int = posmod(here + dt, DiveRun.RING.size())
+		for dd in range(-DIVE_GARRISON_DEPTH_WINDOW, DIVE_GARRISON_DEPTH_WINDOW + 1):
+			var d: int = dive.depth + dd
+			for r in DiveRun.tile_garrison(dive.seed_v, tile, d):
+				var row := r as Dictionary
+				var key := String(row["key"])
+				if dive.garrison_is_spawned(key):
+					continue
+				var pos := dive_garrison_pos(row, foci[0] as Vector2)
+				var dist := DiveRun.nearest_distance(pos, foci)
+				if dist > reach:
+					continue
+				candidates.append([dist, pos, String(row["kind"]), key])
+	if candidates.is_empty():
+		return
+	# Nearest first, so a cap that bites drops the far ones — the fight in front
+	# of you is the one that has to exist.
+	candidates.sort_custom(func(a, b) -> bool: return float(a[0]) < float(b[0]))
+	for c in candidates:
+		if budget <= 0:
+			break
+		if not DiveRun.in_materialize_band(c[1] as Vector2, foci, keep_out, reach):
+			# Inside somebody's widest frame: LEFT PENDING, never marked. It gets
+			# its body the moment the run moves on, which in a dive is seconds.
+			_dive_held_in_view += 1
+			continue
+		var born := _dive_spawn_picket(String(c[2]), c[1] as Vector2)
+		if born == null:
+			continue
+		# Marked SPAWNED for good. An entry the wake cull frees does not come
+		# back — the owner's cleared sky stays cleared — and one you never flew
+		# near stays pending for the rest of the run.
+		dive.mark_garrison_spawned(String(c[3]))
+		_dive_materialized += 1
+		budget -= 1
+
+
+## GIVE ONE PICKET A BODY. Shared by the den's pulse and the garrison so the two
+## can never drift apart, and every line of it is load-bearing:
+##
+##   * `_dive_surged` is the run's litter list, the cull's leash, the hunt's
+##     roster AND the dormancy EXEMPTION (`Dormancy.is_exempt` reads this array
+##     by name). A picket materialized 40,000 px out is far outside the 12,000 px
+##     dormancy range and would be put to sleep on the next scan without it —
+##     which is the v0.118.0 sleeping-hunters bug, and it cost a whole version.
+##   * BORN HUNTING: a hostile aggros at birth and `_dive_keep_the_hunt`
+##     re-provokes it every tick, so no de-aggro range talks it out of the chase.
+##   * ...and born MORTAL: a run's vessels die as units (hull integrity), which
+##     is also what makes them PAY as kills.
+##
+## Wildlife needs neither of the last two: a kraken self-provokes, a basilisk
+## engages by its own stand-off envelope, and a creature is already one unit.
+func _dive_spawn_picket(kind: String, at: Vector2) -> Ship:
+	var born := debug_spawn(kind, at)
+	if born == null or not is_instance_valid(born):
+		return null
+	_dive_surged.append(born.get_instance_id())
+	if born.faction == 1:
+		_enemy_aggro[born.get_instance_id()] = true
+		_enemy_provoked_at[born.get_instance_id()] = Time.get_ticks_msec()
+		_dive_arm_integrity(born, Tunables.get_num("dive_picket_integrity"))
+	return born
+
+
 ## A depth's den comes for you: hunters spawned AHEAD of you on your own line,
 ## as many as the ladder says, spread across it so you fly into a picket rather
 ## than a stack.
@@ -2436,7 +2661,15 @@ func _dive_cut_chunks(tile: int, d: int) -> void:
 ## anything spawned beside you is scenery you have already left before its brain
 ## finishes waking. Putting the picket a few seconds down your travel vector
 ## means you meet it — and it is the honest fiction too: they live below you and
-## come up. Nothing spawns ON you; the lead is always at least a hull length.
+## come up. Nothing spawns ON you; the lead is always past the horizon.
+##
+## How far past, as multiples of the MAX-ZOOM view's half-diagonal
+## (`max_view_horizon_px`). The floor is a small margin outside the frame so the
+## picket is genuinely off-screen and visibly flies in; the ceiling keeps it from
+## being so far that the surge reads as nothing happening. Ratios, not pixels, so
+## the next zoom pass carries them.
+const DIVE_SURGE_HORIZON_MARGIN := 1.15
+const DIVE_SURGE_HORIZON_MAX := 1.6
 func _dive_surge() -> void:
 	if dive == null or player == null or not is_instance_valid(player):
 		return
@@ -2449,11 +2682,7 @@ func _dive_surge() -> void:
 	# pressure per surge is unchanged while you fight and move (the dead and the
 	# culled make room), and a siege on a parked hull holds at a bounded fleet
 	# instead of growing one. Carcasses do not count — a dead picket is loot.
-	var live := 0
-	for pid in _dive_surged:
-		var s2 := instance_from_id(pid) as Ship
-		if s2 != null and is_instance_valid(s2) and not s2.is_carcass():
-			live += 1
+	var live := _dive_live_pickets()
 	# The garrison grows away from home (the ring): rocks +1, downdraft +2.
 	var extra := 0
 	if Tunables.get_bool("dive_zones_enabled"):
@@ -2472,15 +2701,30 @@ func _dive_surge() -> void:
 		speed = local_ship.linear_velocity.length()
 		if speed > 200.0 * ws:
 			vel = local_ship.linear_velocity / speed
-	# THE LEAD MUST FIT THE SCREEN (owner 2026-08-31: "there are ZERO enemies
-	# at the beginning of the game down to depth 3 or 4"). The old floor put a
-	# picket >=28,800 px down your line — TWO-PLUS SCREENS below the helm view
-	# (~12,000 px tall) — so every arrival garrison spawned invisible and
-	# trailed the descent forever. Capped at ~5,600 px the picket is born ON
-	# SCREEN, ahead of you, and the fight exists.
+	# THE LEAD IS THE HORIZON NOW (owner 2026-09-01: "I don't really like how
+	# enemies just suddenly APPEAR").
+	#
+	# v0.119.0 clamped this to 1,800..5,600 px because the old floor put a picket
+	# 28,800 px down your line, where it was invisible AND ASLEEP — "there are
+	# ZERO enemies at the beginning of the game down to depth 3 or 4". The
+	# sleeping half of that was the real bug and it was fixed properly
+	# (`Dormancy.is_exempt` exempts everything in `_dive_surged`); all that was
+	# left was the distance, and 5,600 px is INSIDE the helm view. The picket was
+	# being born ON SCREEN, which is exactly the pop the owner is now reporting.
+	#
+	# So a surge is born JUST BEYOND THE VISIBLE HORIZON and flies in. The floor
+	# is the max-zoom-out frame's far corner plus a margin — measured, not
+	# written down, so the next zoom pass moves it — and the ceiling is a little
+	# past that, because a picket four screens out is a picket that takes a
+	# minute to arrive and reads as nothing happening.
+	var horizon := max_view_horizon_px()
 	var lead := clampf(Tunables.get_num("dive_surge_lead") * maxf(speed, 225.0 * ws),
-		225.0 * ws, 700.0 * ws)
-	var ahead := player.global_position + vel * lead
+		horizon * DIVE_SURGE_HORIZON_MARGIN, horizon * DIVE_SURGE_HORIZON_MAX)
+	# ...and clear of EVERY player's frame, not just the one whose line this is
+	# (owner: "the boundary of all active players"). Identity in single-player.
+	var foci := dive_player_foci()
+	var ahead := DiveRun.clear_of_players(player.global_position + vel * lead,
+		vel, foci, horizon * DIVE_SURGE_HORIZON_MARGIN)
 	var across := Vector2(-vel.y, vel.x)
 	# SPACE THEM BY WHAT THEY ACTUALLY ARE (owner 2026-08-30: "some enemies are
 	# spawning way too close together, so their ships are literally stuck to each
@@ -2495,9 +2739,9 @@ func _dive_surge() -> void:
 	var right := 0.0
 	var left := 0.0
 	for i in n:
-		var born := debug_spawn(String(kinds[i % kinds.size()]),
+		var born := _dive_spawn_picket(String(kinds[i % kinds.size()]),
 			ahead + vel * float(i % 2) * 500.0 * ws)
-		if born == null or not is_instance_valid(born):
+		if born == null:
 			continue
 		var half := 900.0 * ws
 		if born.solid_bounds.size.x > 0.0:
@@ -2513,23 +2757,9 @@ func _dive_surge() -> void:
 			centre = left - half
 			left = centre - half - air
 		born.global_position = ahead + across * centre 			+ vel * float(i % 2) * 500.0 * ws
-		_dive_surged.append(born.get_instance_id())
-		# BORN HUNTING (owner: "enemies aren't really aggressive"). A gunboat
-		# picket used to spawn ~4 s down your line — 28,800 px out at the surge
-		# lead's floor — with 5,600 px of eyesight (enemy_aggro_range 700 × 8),
-		# so it idled in its figure-eight while you slalomed past on screen. A
-		# thing the surge placed IN YOUR PATH has no business waiting to notice
-		# you: it aggros at birth, and _dive_keep_the_hunt re-provokes it every
-		# tick so no range ever talks it out of the chase. Wildlife needs
-		# neither: a kraken self-provokes and a basilisk engages by its own
-		# stand-off envelope.
-		if born.faction == 1:
-			_enemy_aggro[born.get_instance_id()] = true
-			_enemy_provoked_at[born.get_instance_id()] = Time.get_ticks_msec()
-			# ...and MORTAL (v0.111.0): a hostile vessel in a run dies as a unit
-			# when its integrity breaks — which is also what makes it PAY as a
-			# kill. Creatures are skipped: they already are one unit.
-			_dive_arm_integrity(born, Tunables.get_num("dive_picket_integrity"))
+		# (Listed in `_dive_surged`, armed, born hunting and dormancy-EXEMPT
+		# already — that is all `_dive_spawn_picket`, shared with the garrison.
+		# Only the bracketing of your line above is the surge's own trick.)
 	# The top of the ladder is gunboats and the bottom is krakens, so the line
 	# says which — "they come" reads the same whether it is a crewed vessel you
 	# can out-fly or something from the floor.
@@ -6069,6 +6299,66 @@ func _track_camera() -> void:
 	camera.zoom = camera.zoom.lerp(Vector2(target, target), 0.12)
 
 
+# --- HOW MUCH SKY A PLAYER CAN SEE ------------------------------------------
+#
+# Owner, on where the Dive is allowed to put a body (2026-09-01): "this would
+# necessarily have to be computed based on whatever the ship's MAX ZOOM is. note
+# that we've changed the max zoom."
+#
+# So none of the numbers below is written down anywhere. The whole view is one
+# product — `camera_zoom` × the wheel's end ÷ `pilot_zoom_out` — and every one of
+# those three has moved at least once. Deriving the extent from them means the
+# next zoom pass carries the spawn distances with it, for free, and the suite
+# holds the two halves against each other so they cannot drift apart quietly.
+
+
+## The viewport in pixels, with the project's authored size as the fallback for
+## the frame or two before a viewport exists (and for a headless boot that never
+## sizes one).
+func _viewport_px() -> Vector2:
+	var vp := get_viewport_rect().size
+	if vp.x > 1.0 and vp.y > 1.0:
+		return vp
+	return Vector2(
+		float(ProjectSettings.get_setting("display/window/size/viewport_width", 1280)),
+		float(ProjectSettings.get_setting("display/window/size/viewport_height", 720)))
+
+
+## The SMALLEST camera zoom this scene can ever reach — the helm view (or a
+## ridden creature's) with the wheel wound all the way out. Smaller zoom = more
+## world on screen, so this is the widest frame the game can show.
+func min_camera_zoom() -> float:
+	return maxf(camera_zoom * ZOOM_USER_MIN / maxf(pilot_zoom_out, 0.001), 0.00001)
+
+
+## The WIDEST the player can ever see, in world px. The Dive's materialization
+## radius is counted in these (`dive_materialize_px`).
+func max_view_width_px() -> float:
+	return _viewport_px().x / min_camera_zoom()
+
+
+## The farthest ANY point of a max-zoom-out frame is from its centre — half the
+## view's diagonal, so the bubble holds whichever way the run happens to be
+## travelling. This is the exclusion zone: nothing a run spawns may be born
+## inside it, for any player, at any zoom they might be sitting at.
+##
+## Deliberately NOT the live zoom (owner: "as if they were using a ship's MAX
+## ZOOM"): a player wound in tight would otherwise let a picket be born just off
+## their own screen and then pop into frame the moment they scrolled out.
+func max_view_horizon_px() -> float:
+	return _viewport_px().length() * 0.5 / min_camera_zoom()
+
+
+## Half the width of what is ACTUALLY on screen right now, at the live zoom. The
+## suites use it to say "this was born off-screen even by the tighter measure";
+## the spawn rules themselves use the max-zoom pair above.
+func view_half_width_px() -> float:
+	var z := camera_zoom
+	if camera != null and is_instance_valid(camera) and camera.zoom.x > 0.0:
+		z = camera.zoom.x
+	return _viewport_px().x * 0.5 / maxf(z, 0.00001)
+
+
 ## Scroll wheel zooms; everything else about the camera stays hard-locked.
 ## Global UI hotkeys are handled at the INPUT stage — BEFORE the GUI can swallow a
 ## key by focus — so a toggle always fires on the FIRST press. This fixes F9 (the
@@ -6147,9 +6437,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		match (event as InputEventMouseButton).button_index:
 			MOUSE_BUTTON_WHEEL_UP:
-				_zoom_user = clampf(_zoom_user + 0.1, 0.5, 1.5)
+				_zoom_user = clampf(_zoom_user + 0.1, ZOOM_USER_MIN, ZOOM_USER_MAX)
 			MOUSE_BUTTON_WHEEL_DOWN:
-				_zoom_user = clampf(_zoom_user - 0.1, 0.5, 1.5)
+				_zoom_user = clampf(_zoom_user - 0.1, ZOOM_USER_MIN, ZOOM_USER_MAX)
 
 
 func _process(_delta: float) -> void:

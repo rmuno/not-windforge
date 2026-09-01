@@ -61,6 +61,7 @@ func _initialize() -> void:
 	await _test_ship_editor_screen()
 	_test_dive_ring()
 	_test_dive_floating_chunks()
+	_test_dive_garrison()
 	await _test_map_room_screen()
 	_test_dive_cards()
 	_test_dive_blast()
@@ -2405,6 +2406,175 @@ func _test_dive_floating_chunks() -> void:
 	_check(differs, "...and another seed furnishes the flanks differently")
 
 
+## THE PREGENERATED GARRISON (owner 2026-09-01: "I don't really like how enemies
+## just suddenly APPEAR. Again, perhaps we should pregenerate per seed, and only
+## spawn things as the player is close enough").
+##
+## The MODEL half, which is the half that has to be pure: a run's standing
+## population is a function of (seed, tile, depth) and nothing else, so the world
+## and the MAP ROOM cannot disagree about it, and a picket's place is decided
+## long before anybody is near enough to watch it appear.
+func _test_dive_garrison() -> void:
+	_t("THE GARRISON: a run's standing population, decided with its seed")
+	var sv := 5150607
+	# WHERE IT IS NOT. Depth 1 is the launch deck's own air and the den's clock
+	# does not run there either — a garrison standing around the deck would
+	# delete the unhurried "take a ship, or step off the edge with nothing".
+	for tile in DiveRun.RING.size():
+		_check(DiveRun.tile_garrison(sv, tile, 1).is_empty(),
+			"tile %d keeps the launch deck's air clear" % tile)
+	_check(DiveRun.tile_garrison(sv, 0, DiveRun.DEPTHS + 1).is_empty(),
+		"...and nothing stands off the bottom of the ladder")
+
+	# THE OWNER'S OWN TABLES, unchanged: the depth says how many, the ring says
+	# how much worse than home. That is what makes the tuned difficulty shape
+	# survive the change from "spawned at you" to "already out there".
+	var miscount := 0
+	var wrong_kind := 0
+	var mislabelled := 0
+	var total := 0
+	var worst_reach := 0.0
+	var outside := 0
+	var off_ladder := 0
+	var worst_alt := 1.0
+	var too_close := 0
+	var tightest := 9.0
+	var keys := {}
+	var dupes := 0
+	for tile in DiveRun.RING.size():
+		for d in range(2, DiveRun.DEPTHS + 1):
+			var rows := DiveRun.tile_garrison(sv, tile, d)
+			if rows.size() != DiveRun.surge_count(d) + DiveRun.zone_extra_pickets(tile):
+				miscount += 1
+			var kinds := DiveRun.surge_kinds(d)
+			var xs: Array = []
+			for r in rows:
+				var row := r as Dictionary
+				total += 1
+				if not kinds.has(String(row["kind"])):
+					wrong_kind += 1
+				if int(row["tile"]) != tile or int(row["depth"]) != d:
+					mislabelled += 1
+				if keys.has(String(row["key"])):
+					dupes += 1
+				keys[String(row["key"])] = true
+				# INSIDE ITS OWN TILE — a picket in the neighbour's tile is a
+				# picket the ring's difficulty table never ordered.
+				var reach: float = absf(float(row["x"]))
+				worst_reach = maxf(worst_reach, reach)
+				if reach >= 0.5:
+					outside += 1
+				# IN THE LADDER'S AIR: under the deck, over the lava.
+				var alt := float(row["alt"])
+				worst_alt = minf(worst_alt, alt)
+				if alt >= DiveRun.depth_altitude(1) or alt <= DiveRun.FLOOR_FRAC:
+					off_ladder += 1
+				xs.append(float(row["x"]))
+			# SPACED BY CONSTRUCTION (owner 2026-08-30: "their ships are literally
+			# stuck to each other"). Slot-and-jitter guarantees this however the
+			# hash falls, which is why the bound is a function and not a hope.
+			xs.sort()
+			var sep := DiveRun.garrison_min_sep(rows.size())
+			for i in range(1, xs.size()):
+				var gap: float = float(xs[i]) - float(xs[i - 1])
+				tightest = minf(tightest, gap)
+				if gap < sep - 0.0001:
+					too_close += 1
+	_check(total > 0, "the ring is garrisoned (%d pickets over the whole ladder)" % total)
+	_check(miscount == 0,
+		"every tile carries surge_count + zone_extra pickets (%d disagreed)" % miscount)
+	_check(wrong_kind == 0,
+		"every picket is one of its depth's own kinds (%d strangers)" % wrong_kind)
+	_check(mislabelled == 0,
+		"every picket knows its tile and depth (%d confused)" % mislabelled)
+	_check(dupes == 0, "every entry has its own key (%d collisions)" % dupes)
+	_check(outside == 0,
+		"every picket stands inside its own tile (worst %.2f of 0.50, %d over)"
+			% [worst_reach, outside])
+	_check(off_ladder == 0,
+		"every picket hangs in the ladder's air (lowest %.3f vs floor %.2f, %d adrift)"
+			% [worst_alt, DiveRun.FLOOR_FRAC, off_ladder])
+	_check(too_close == 0,
+		"no two pickets of a tile stack (tightest gap %.3f tile widths, %d too close)"
+			% [tightest, too_close])
+	# The downdraft is the meanest garrison — the ring's "away from home is
+	# worse" promise, said in bodies rather than in wind.
+	_check(DiveRun.tile_picket_count(6) > DiveRun.tile_picket_count(0),
+		"the downdraft keeps more than home (%d vs %d)"
+			% [DiveRun.tile_picket_count(6), DiveRun.tile_picket_count(0)])
+	_check(DiveRun.tile_picket_count(1) > DiveRun.tile_picket_count(0),
+		"...and the rocks keep more than home too (%d vs %d)"
+			% [DiveRun.tile_picket_count(1), DiveRun.tile_picket_count(0)])
+
+	# PURE IN THE SEED: the same run is the same sky twice, and another seed is
+	# another sky. (The COUNTS come from the tables, so the difference has to be
+	# looked for in the PLACES.)
+	_check(DiveRun.tile_garrison(sv, 3, 4) == DiveRun.tile_garrison(sv, 3, 4),
+		"the same seed lays out the same garrison")
+	var moved := 0
+	var same_count := true
+	for tile2 in DiveRun.RING.size():
+		for d2 in range(2, DiveRun.DEPTHS + 1):
+			var a := DiveRun.tile_garrison(sv, tile2, d2)
+			var b := DiveRun.tile_garrison(sv + 1, tile2, d2)
+			if a.size() != b.size():
+				same_count = false
+			for i2 in mini(a.size(), b.size()):
+				if not is_equal_approx(float((a[i2] as Dictionary)["x"]),
+						float((b[i2] as Dictionary)["x"])):
+					moved += 1
+	_check(moved > 0, "...and another seed stands them somewhere else (%d moved)" % moved)
+	_check(same_count,
+		"...while the difficulty shape stays the tables', not the seed's")
+	_check(DiveRun.garrison_all(sv).size() == total,
+		"garrison_all is the whole ring (%d)" % DiveRun.garrison_all(sv).size())
+
+	# THE RUN'S OWN BOOKKEEPING: spawn-once, which IS the owner's "a cleared sky
+	# stays cleared" — an entry the wake cull frees is marked and never reborn.
+	var run := DiveRun.new()
+	var key := DiveRun.garrison_key(3, 4, 0)
+	_check(not run.garrison_is_spawned(key), "a fresh run has given out no bodies")
+	run.mark_garrison_spawned(key)
+	_check(run.garrison_is_spawned(key), "...and remembers the one it did")
+	_check(not run.garrison_is_spawned(DiveRun.garrison_key(3, 4, 1)),
+		"...without marking its neighbours")
+
+	# --- THE BOUNDARY OF ALL ACTIVE PLAYERS (owner 2026-09-01) --------------
+	# "It would have to be the boundary of all active players as if they were
+	# using a ship's MAX ZOOM." Both distances are measured against EVERY body:
+	# inside the NEAREST one's reach, outside EVERYBODY's frame. Pure, taking
+	# plain positions, so the two-player case needs no second body to pin.
+	var solo: Array = [Vector2.ZERO]
+	var pair: Array = [Vector2.ZERO, Vector2(0.0, 30000.0)]
+	_check(is_equal_approx(DiveRun.nearest_distance(Vector2(1000.0, 0.0), solo), 1000.0),
+		"nearest_distance measures to the one body in single-player")
+	_check(is_equal_approx(DiveRun.nearest_distance(Vector2(0.0, 29000.0), pair), 1000.0),
+		"...and to the NEAREST of two, not to the first in the list")
+	_check(DiveRun.nearest_distance(Vector2.ZERO, []) == INF,
+		"...and nobody at all is INF, so nothing materializes into an empty world")
+	_check(DiveRun.in_materialize_band(Vector2(5000.0, 0.0), solo, 2000.0, 9000.0),
+		"an entry in the band gets a body")
+	_check(not DiveRun.in_materialize_band(Vector2(1000.0, 0.0), solo, 2000.0, 9000.0),
+		"...one inside the frame does NOT — that is the pop the owner reported")
+	_check(not DiveRun.in_materialize_band(Vector2(50000.0, 0.0), solo, 2000.0, 9000.0),
+		"...and one past everyone's reach stays pending")
+	_check(not DiveRun.in_materialize_band(Vector2(5000.0, 0.0), [], 2000.0, 9000.0),
+		"...and an unwatched world materializes nothing")
+	_check(DiveRun.in_materialize_band(Vector2(0.0, 29000.0), solo, 2000.0, 40000.0),
+		"alone, an entry 29,000 px out is fair game")
+	_check(not DiveRun.in_materialize_band(Vector2(0.0, 29000.0), pair, 2000.0, 40000.0),
+		"...but not while a crewmate is standing 1,000 px from it")
+	# ...and the den's pulse pushes its lead out until it clears everybody.
+	var clear := DiveRun.clear_of_players(Vector2(0.0, 5000.0), Vector2.DOWN, pair, 8000.0)
+	_check(DiveRun.nearest_distance(clear, pair) >= 8000.0,
+		"a surge lead is pushed clear of every player's frame (%.0f px)"
+			% DiveRun.nearest_distance(clear, pair))
+	_check(clear.y > 5000.0, "...along its own travel vector, never sideways")
+	_check(DiveRun.clear_of_players(Vector2(0.0, 20000.0), Vector2.DOWN, solo, 8000.0)
+			== Vector2(0.0, 20000.0),
+		"...and a lead that already clears everybody is left exactly where it was")
+
+
 ## THE MAP ROOM (owner 2026-09-01: "this way I can look at the full Dive mode
 ## map, for example, and SEE the entire thing there"). The screen is a VIEWER
 ## over pure model functions, so the whole chart is assertable with no world,
@@ -2477,6 +2647,39 @@ func _test_map_room_screen() -> void:
 		"every slab falls between the chart's edges (%d off it)" % off_chart)
 	_check(off_span == 0,
 		"...and at an altitude the chart spans (%d outside)" % off_span)
+
+	# THE GARRISON IS ON THE CHART (owner 2026-09-01): the map room now answers
+	# "where WILL they be", from the very same pure rows the world materializes.
+	var foes := m["garrison"] as Array
+	var foes_off := 0
+	var foes_high := 0
+	var by_tile := {}
+	for f in foes:
+		var pk := f as Dictionary
+		if float(pk["x"]) <= x_min or float(pk["x"]) >= x_max:
+			foes_off += 1
+		if float(pk["alt"]) > DiveRun.TOP_FRAC or float(pk["alt"]) < DiveRun.FLOOR_FRAC:
+			foes_high += 1
+		by_tile[int(pk["tile"])] = int(by_tile.get(int(pk["tile"]), 0)) + 1
+	_check(not foes.is_empty(), "the pregenerated garrison is drawn (%d pickets)" % foes.size())
+	_check(foes_off == 0, "every picket falls between the chart's edges (%d off it)" % foes_off)
+	_check(foes_high == 0,
+		"...and at an altitude the chart spans (%d outside)" % foes_high)
+	# It is the MODEL's garrison, not a second one invented here — the seam tile
+	# is drawn at both edges, so it is the only one counted twice.
+	_check(int(by_tile.get(0, 0)) == DiveRun.tile_picket_count(0),
+		"the chart draws exactly what the model says stands at home (%d)"
+			% int(by_tile.get(0, 0)))
+	_check(int(by_tile.get(6, 0)) == DiveRun.tile_picket_count(6) * 2,
+		"...and the seam's, twice — once at each edge, because it is one tile (%d)"
+			% int(by_tile.get(6, 0)))
+	# The ring's own readout carries the number too, so a reader sees "how bad is
+	# that side" without counting dots.
+	for c3 in m["columns"] as Array:
+		var col3 := c3 as Dictionary
+		_check(int(col3["pickets"]) == DiveRun.tile_picket_count(int(col3["tile"])),
+			"the column at %+.0f says how many stand there (%d)"
+				% [float(col3["offset"]), int(col3["pickets"])])
 
 	# AND IT REALLY PAINTS. `model()` passing proves the numbers; only a redraw
 	# proves the drawing — a bad index or a null font in `_draw_chart` would
