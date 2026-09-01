@@ -666,7 +666,31 @@ func _ready() -> void:
 
 ## Where the player stands relative to their ship, at any world scale.
 func _spawn_offset() -> Vector2:
-	return SHIP_START + Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale
+	return SHIP_START + _spawn_offset_for_cells(_starter_cells())
+
+
+## The body's berth INSIDE a blueprint, in ship-local px: one cell above the
+## topmost helm cell, so a fresh body drops to the cabin floor beside the
+## wheel. DERIVED, not authored — `PLAYER_SPAWN_CELL` pointed at where the
+## STOCK starter's helm happened to be, and the drafting table made the
+## blueprint editable: the owner's first two exports both moved the helm and
+## both broke boot on a constant that silently assumed it. The constant
+## survives only as the fallback for a helmless blueprint (nothing to stand
+## by — the old spot is as good as any).
+##
+## `cells` is the UPSCALED grid (world cells of Ship.CELL px each), so there
+## is no ×world_scale here — that multiply is the eightfold family.
+func _spawn_offset_for_cells(cells: Dictionary) -> Vector2:
+	var best := Vector2i(1 << 30, 1 << 30)
+	for c in cells:
+		if int(cells[c]) != BlockDB.Type.HELM:
+			continue
+		var v: Vector2i = c
+		if v.y < best.y or (v.y == best.y and v.x < best.x):
+			best = v
+	if best.x == 1 << 30:
+		return Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale
+	return (Vector2(best) + Vector2(0.5, -0.5)) * Ship.CELL
 
 
 ## The body multiplier for the world-scale experiment: a person
@@ -3213,7 +3237,7 @@ func _on_peer_joined(id: int) -> void:
 	# And a body standing on its deck — players replicate exactly like
 	# ships do, through the one place they are created.
 	crew.spawn_player(id,
-		ship_pos + Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale,
+		ship_pos + _spawn_offset_for_cells(_starter_cells()),
 		_player_scale_mult())
 
 
@@ -7664,12 +7688,25 @@ func respawn_player() -> void:
 	# is a hundred thousand pixels from anything the run built, so the LAUNCH
 	# DECK is the only sane ground to put you back on.
 	var anchor := SHIP_START
+	var spawn_off := Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale
 	if dive != null and dive.outcome == "":
-		anchor = dive_landing_pos(1) - Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale \
-			- Vector2(0.0, 150.0 * float(world_scale))
+		# The offset cancels below on purpose: the deck respawn is the landing
+		# itself, whatever the offset happens to be.
+		anchor = dive_landing_pos(1) - spawn_off - Vector2(0.0, 150.0 * float(world_scale))
 	if is_instance_valid(local_ship):
 		anchor = local_ship.global_position
-	player.global_position = anchor + Vector2(PLAYER_SPAWN_CELL) * Ship.CELL * world_scale
+		# A live hull knows where its OWN helm is — the blueprint may be anything
+		# by now (an owner edit, a dive candidate, battle damage). Same rule as
+		# the boot berth: one cell above the topmost helm cell; the constant only
+		# when the hull has no helm left to stand by.
+		if not local_ship.helm_cells.is_empty():
+			var hc: Vector2i = local_ship.helm_cells[0]
+			for c in local_ship.helm_cells:
+				var v: Vector2i = c
+				if v.y < hc.y or (v.y == hc.y and v.x < hc.x):
+					hc = v
+			spawn_off = local_ship.local_pos_of(hc) + Vector2(Ship.CELL * 0.5, -Ship.CELL * 0.5)
+	player.global_position = anchor + spawn_off
 	# A fresh body starts whole: refill the GRIT pool (a respawn from death OR from
 	# falling out of the world both come through here). The pack is KEPT — the
 	# simplest sane choice; on-death loot drop is a documented seam (BACKLOG).
