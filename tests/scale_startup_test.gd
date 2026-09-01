@@ -493,6 +493,33 @@ func _check_machine_bundles(world: Node, local) -> void:
 		if e2["kind"] == "block" and int(e2["id"]) == BlockDB.Type.STRUT:
 			strut_listed = true
 	_ok(not strut_listed, "the strut is not offered by the build palette")
+
+	# SPAWN FINDS THE HELM (owner drafts 1 and 2 both moved the helm and both
+	# broke boot on the old constant spawn cell). The fixture is the owner's own
+	# first drafting-table export: the berth the world derives for it must land
+	# inside ITS helm bundle — not at the constant — and a helmless grid must
+	# fall back to the constant rather than crash.
+	var draft: Dictionary = ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/drafts/starter_owner_draft_1.ship"), 8)
+	if draft.is_empty():
+		_ok(false, "the owner-draft spawn fixture loads")
+	else:
+		var off: Vector2 = world._spawn_offset_for_cells(draft)
+		var lo := Vector2(INF, INF)
+		var hi := Vector2(-INF, -INF)
+		for hc in draft:
+			if int(draft[hc]) == BlockDB.Type.HELM:
+				lo = Vector2(minf(lo.x, hc.x), minf(lo.y, hc.y))
+				hi = Vector2(maxf(hi.x, hc.x), maxf(hi.y, hc.y))
+		var helm_px := Rect2(lo * Ship.CELL, (hi - lo + Vector2.ONE) * Ship.CELL)
+		_ok(helm_px.grow(Ship.CELL * 2.0).has_point(off),
+			"a moved helm moves the spawn with it (off %s)" % str(off))
+		_ok(off != Vector2(world.PLAYER_SPAWN_CELL) * Ship.CELL * world.world_scale,
+			"...and it is derived, not the constant")
+		var helmless := {Vector2i(0, 0): BlockDB.Type.HULL}
+		_ok(world._spawn_offset_for_cells(helmless)
+				== Vector2(world.PLAYER_SPAWN_CELL) * Ship.CELL * world.world_scale,
+			"a helmless blueprint falls back to the constant")
 	world.select_build("block", BlockDB.Type.PROPELLER, true)
 	_ok(world.build_selection_label() == "build: Propeller 2×6",
 		"the rotated propeller reads 2×6 (%s)" % world.build_selection_label())
