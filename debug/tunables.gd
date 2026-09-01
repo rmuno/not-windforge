@@ -272,7 +272,7 @@ const _REGISTRY := [
 	# ~3x the deck's real air — brisk (~1,700 px/s terminal), survivable, and
 	# past the shallow rungs the REAL density overtakes the floor anyway.
 	{"id": "dive_thrust_density_floor", "label": "Dive: min air density the props feel (0 = off)",
-		"group": "World", "kind": KIND_FLOAT, "default": 0.15, "min": 0.0,
+		"group": "World", "kind": KIND_FLOAT, "default": 0.40, "min": 0.0,
 		"max": 1.0, "step": 0.05},                               # Ship.thrust_density_floor
 	# The closing sky's strength, a multiplier on DiveRun.CEILING_PUSH (400
 	# px/s²@1×/rung, capped at 3 rungs ≈ 10× the props). 1.0 = the shipped rail;
