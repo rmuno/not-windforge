@@ -70,4 +70,30 @@ func _initialize() -> void:
 		starter.get("_total_hthrust"), starter.get("_total_vthrust"),
 		starter.power_supply(), starter.active_draw()]
 	print("GEAR:   %s" % g)
+	print("DAMP:   linear_damp %.2f | mass %.0f | accel(first s) est from curve above" % [
+		starter.linear_damp, starter.mass])
+	# THE COMPARISON HULL: the Loft ship, same throttle, same air — is the
+	# starter authored weak, or is lateral flight itself the bottleneck?
+	if loft != null and is_instance_valid(loft):
+		pl.disembark()
+		await world.get_tree().physics_frame
+		pl.global_position = loft.to_global(loft.local_pos_of(loft.helm_cells[0]))
+		await world.get_tree().physics_frame
+		var took2: bool = pl.board(loft, loft.helm_cells[0])
+		await world.get_tree().physics_frame
+		print("
+LOFT:   %d blocks, %.0f px wide, mass %.0f (boarded %s)" % [
+			loft.blocks.size(), loft.solid_bounds.size.x, loft.mass, str(took2)])
+		Input.action_press("ship_right")
+		var t2 := 0.0
+		var lx0: float = loft.global_position.x
+		var peak2 := 0.0
+		while t2 < 8.0:
+			await world.get_tree().physics_frame
+			t2 += STEP
+			peak2 = maxf(peak2, absf(loft.linear_velocity.x))
+		Input.action_release("ship_right")
+		print("LOFT RESULT: 8 s = %.0f px, peak vx %.0f px/s | thrust h=%.0f | damp %.2f" % [
+			loft.global_position.x - lx0, peak2,
+			loft.get("_total_hthrust"), loft.linear_damp])
 	quit()

@@ -259,9 +259,17 @@ const _REGISTRY := [
 	{"id": "dive_picket_integrity", "label": "Dive: a hostile picket's integrity pool",
 		"group": "World", "kind": KIND_FLOAT, "default": 600.0, "min": 50.0,
 		"max": 20000.0, "step": 50.0, "note": "next spawn"},     # world._dive_surge
+	# 80 -> 25 (owner 2026-08-31, ship death must not execute the player): the
+	# blast HURTS; jumping off still avoids even that.
 	{"id": "dive_explosion_damage", "label": "Dive: blast damage to anyone aboard a dying ship",
-		"group": "World", "kind": KIND_FLOAT, "default": 80.0, "min": 0.0,
+		"group": "World", "kind": KIND_FLOAT, "default": 25.0, "min": 0.0,
 		"max": 500.0, "step": 5.0},                              # world._dive_explode_ship
+	# Prop thrust multiplies by air density and the run starts in THIN air
+	# (altitude 0.86) — measured, the props were strangled ~10x at the deck. The
+	# run floors the density the PROPS feel (never the lift). 0 = off.
+	{"id": "dive_thrust_density_floor", "label": "Dive: min air density the props feel (0 = off)",
+		"group": "World", "kind": KIND_FLOAT, "default": 0.8, "min": 0.0,
+		"max": 1.0, "step": 0.05},                               # Ship.thrust_density_floor
 	# The closing sky's strength, a multiplier on DiveRun.CEILING_PUSH (400
 	# px/s²@1×/rung, capped at 3 rungs ≈ 10× the props). 1.0 = the shipped rail;
 	# 0 turns the ceiling off entirely for A/B play.
@@ -301,8 +309,9 @@ const _REGISTRY := [
 	# screen 4,200 px tall — more than a screen and a half every second. 300 puts
 	# it at 2,400 px/s, about a screen every 1.7 s, which is a descent you can
 	# read. 0 turns the hold off and gives back the old plunge.
+	# 300 -> 240 (owner 2026-08-31: "it's kind of too fast going down").
 	{"id": "dive_descent_max", "label": "Dive: fastest a hull may fall (px/s at 1x, 0 = off)",
-		"group": "World", "kind": KIND_FLOAT, "default": 300.0,
+		"group": "World", "kind": KIND_FLOAT, "default": 240.0,
 		"min": 0.0, "max": 900.0, "step": 25.0},   # world._dive_hold_the_descent
 	{"id": "dive_assistant", "label": "Dive: the assistant mans the repair station",
 		"group": "World", "kind": KIND_BOOL, "default": true},

@@ -546,11 +546,14 @@ static func surge_kinds(d: int) -> Array:
 	return (SURGE_LADDER[i] as Array).duplicate()
 
 
-## How many hunters a depth's den throws at you in one surge. Deliberately gentle
-## at the top and unreasonable at the bottom — the ladder IS the difficulty
-## curve, so nothing else has to be.
+## How many hunters a depth's den throws at you in one surge. TOP-HEAVY WITH
+## WEAK VESSELS on purpose (owner 2026-08-31: "more weak enemies — people on
+## their tiny ships — on the first level; those should be the threat"): the
+## shallow rungs swarm with gunboats you can beat, the floor sends few, mean
+## things. Whales stay neutral (never in the ladder — pinned).
+const SURGE_COUNTS := [3, 3, 2, 2, 3, 3, 4, 5]
 static func surge_count(d: int) -> int:
-	return clampi(1 + int(floor(float(clampi(d, 1, DEPTHS) - 1) * 0.5)), 1, 5)
+	return int(SURGE_COUNTS[clampi(d, 1, DEPTHS) - 1])
 
 
 ## The name of a depth, for the HUD and the ledger. Depth DEPTHS is not a number
@@ -840,7 +843,10 @@ const RING := ["up", "rock", "rock", "down", "rock", "rock"]
 ## Wind acceleration at strength 1, px/s² at scale 1. Comparable to the props
 ## (HULL_LATERAL_ACCEL 125): the updraft meaningfully slows a descent and the
 ## downdraft meaningfully feeds one, but neither is a rail.
-const ZONE_WIND := 120.0
+## 120 was authored blind and turned the updraft into a geyser ~5x the hull's
+## own vertical authority — the start tile pinned the ship. 30 is a LEAN: you
+## feel it, you fly through it.
+const ZONE_WIND := 30.0
 
 
 ## Which ring tile an offset of `x_off_tiles` tile-widths from the world centre
