@@ -30,6 +30,7 @@ func _draw() -> void:
 	_draw_balloon_ghost()
 	_draw_interact_prompt()
 	_draw_damage_numbers()
+	_draw_scrap()
 	_draw_pickups()
 	_draw_fires()
 	_draw_engineering()
@@ -390,6 +391,39 @@ func _draw_damage_numbers() -> void:
 		draw_string(font, pos - Vector2(0.0, fs * 0.5),
 			"%d" % roundi(float(n["total"])),
 			HORIZONTAL_ALIGNMENT_CENTER, -1, fs, col)
+
+
+## SCRAP — the Dive's XP hanging in the air where something died (v0.137.0).
+## Flat-colour, no assets: a small four-point shard with a pale core, glinting on
+## the phase the world hands over. A mote already locked onto a player burns
+## brighter and whiter, so "it is coming to me" reads without a HUD element.
+##
+## The world decides everything (where, how big, how bright); this only paints —
+## `dive_scrap_marks()` is the seam, and it returns plain values with no mote,
+## no field and no run in them.
+const SCRAP_COLD := Color(0.55, 0.85, 1.0)
+const SCRAP_HOT := Color(1.0, 0.95, 0.70)
+
+
+func _draw_scrap() -> void:
+	var marks: Array = world.call("dive_scrap_marks")
+	if marks.is_empty():
+		return
+	for entry in marks:
+		var m := entry as Dictionary
+		var at := m["pos"] as Vector2
+		var r := float(m["r"])
+		var glint := float(m["glint"])
+		var hot := bool(m.get("locked", false))
+		var col := (SCRAP_HOT if hot else SCRAP_COLD)
+		col.a = 0.55 + 0.45 * glint
+		# A diamond, not a circle: it reads as a chip of a broken hull, and four
+		# points cost the same as a filled disc at this size.
+		var body := PackedVector2Array([
+			at + Vector2(0.0, -r), at + Vector2(r * 0.62, 0.0),
+			at + Vector2(0.0, r), at + Vector2(-r * 0.62, 0.0)])
+		draw_colored_polygon(body, col)
+		draw_circle(at, r * 0.30, Color(1.0, 1.0, 1.0, 0.5 + 0.5 * glint))
 
 
 ## Floating "+1 Stone" pickup numbers at each mined cell, rising and fading.

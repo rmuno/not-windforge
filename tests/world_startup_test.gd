@@ -332,6 +332,8 @@ func _initialize() -> void:
 	# ...then the survival cards, which need their own run because they END one:
 	# Second Heart is spent and the blow after it finishes the run for real.
 	await _check_dive_survival(world, fleet)
+	# ...then SCRAP + WRECK HUSKS, which needs its own run too (it kills hulls).
+	await _check_dive_scrap_and_husks(world, fleet)
 
 	# ...and LAST OF ALL, a second, SEPARATE boot: the streamlined dive world.
 	# This one cannot share the world above, because the whole point of it is
@@ -3419,6 +3421,194 @@ func _check_dive_survival(world: Node, fleet) -> void:
 	_ok(is_equal_approx(pl.max_health, stock_pool),
 		"...and the health pool with them (%.0f)" % pl.max_health)
 	# Leave the body whole for whatever runs after this.
+	pl.health = pl.max_health
+	await world.get_tree().physics_frame
+
+
+## SCRAP + WRECK HUSKS against the live world (owner 2026-09-02, slice 1 of the
+## descent arc). Both features are pinned pure in the unit suite; what has to be
+## true HERE is the wiring:
+##
+##   * a real picket at integrity zero leaves a BODY, not a hole — machines gone,
+##     lattice standing, nobody's faction, integrity disarmed;
+##   * it drops scrap whoever killed it, while COINS still ask who did;
+##   * the drop is collected by DISTANCE and by nothing else;
+##   * the blast, the credit and the shipless ending are all exactly as they were.
+func _check_dive_scrap_and_husks(world: Node, fleet) -> void:
+	print("\n--- SCRAP + WRECK HUSKS: the XP drop, and what a dead vessel leaves ---")
+	var pl = world.get("player")
+	if pl == null or not is_instance_valid(pl):
+		_ok(false, "a body for the scrap/husk check")
+		return
+	# Dormancy off for the duration: a husk is not in `_dive_surged` any more, so
+	# it is ordinary far-away furniture and a frozen one cannot be seen to fall.
+	var dorm_was: bool = Tunables.get_bool("dormancy_enabled")
+	Tunables.set_value("dormancy_enabled", false)
+	world.call("begin_dive")
+	await _dive_take_a_hull(world, fleet)
+	var run = world.get("dive")
+	var scrap = world.get("_dive_scrap")
+	if run == null or scrap == null:
+		_ok(false, "a live run and a scrap field")
+		Tunables.set_value("dormancy_enabled", dorm_was)
+		return
+	scrap.call("clear")
+	var depth: int = int(run.get("depth"))
+
+	# --- The two channels really did separate -------------------------------
+	var xp_before: int = int(run.get("xp"))
+	var pot_before: int = int(run.get("pot"))
+	world.call("_dive_credit_kill", "kraken")
+	_ok(int(run.get("pot")) > pot_before,
+		"a credited kill still pays COINS into the pot (%d -> %d)"
+			% [pot_before, int(run.get("pot"))])
+	_ok(int(run.get("xp")) == xp_before,
+		"...and pays no XP: the card bar no longer moves on a kill")
+
+	# --- A picket at integrity zero leaves a HUSK ---------------------------
+	var here: Vector2 = pl.global_position
+	var picket = world.call("_dive_spawn_picket", "hulk", here + Vector2(0.0, -6000.0))
+	if picket == null or not is_instance_valid(picket):
+		_ok(false, "a picket to blow up")
+		Tunables.set_value("dormancy_enabled", dorm_was)
+		return
+	var pid: int = picket.get_instance_id()
+	var blocks_before: int = picket.blocks.size()
+	# NOBODY'S KILL: no attacker stamped is exactly the kraken-killed / crashed
+	# picket the owner asked about — it must pay no coins and still drop scrap.
+	picket.last_attacker_id = 0
+	var kills_before: int = int(run.get("kills"))
+	pot_before = int(run.get("pot"))
+	picket.hull_integrity = 0.0
+	world.call("_dive_watch_integrity")
+
+	_ok(is_instance_valid(picket) and not picket.is_queued_for_deletion(),
+		"a destroyed vessel leaves a BODY behind instead of vanishing")
+	if is_instance_valid(picket):
+		var machines := 0
+		var structure := 0
+		for cell in picket.blocks:
+			if BlockDB.is_machine(int(picket.blocks[cell]["type"])):
+				machines += 1
+			else:
+				structure += 1
+		_ok(machines == 0 and structure > 0,
+			"the husk is structure only (%d machine cells, %d structural of %d)"
+				% [machines, structure, blocks_before])
+		_ok(bool(picket.get("is_husk")) and int(picket.faction) == Ship.FACTION_WRECK,
+			"...flagged a husk and on nobody's side (faction %d)" % int(picket.faction))
+		_ok(float(picket.hull_integrity_max) == 0.0,
+			"...with its integrity pool disarmed, so it never explodes again")
+	_ok((world.get("_dive_husks") as Array).has(pid)
+			and not (world.get("_dive_surged") as Array).has(pid),
+		"the wreck moved off the hunt list and onto the run's wreck list")
+	_ok(int(run.get("kills")) == kills_before and int(run.get("pot")) == pot_before,
+		"an unattributed death still pays no COINS (kills %d, pot %d)"
+			% [int(run.get("kills")), int(run.get("pot"))])
+	var owed: int = DiveRun.scrap_for("hulk", depth)
+	_ok(int(scrap.call("pending_value")) == owed,
+		"...but it DOES drop scrap — %d XP hanging where it died" % owed)
+	_ok(int(scrap.call("count")) >= 1 and not (world.call("dive_scrap_marks") as Array).is_empty(),
+		"...as %d shards the overlay can paint" % int(scrap.call("count")))
+
+	# --- Collected by distance, and by nothing else -------------------------
+	var radius: float = float(world.call("dive_scrap_radius"))
+	_ok(radius > 0.0, "the absorption radius is a live F2 lever (%.0f px)" % radius)
+	pl.global_position = here + Vector2(0.0, -6000.0) + Vector2(radius * 12.0, 0.0)
+	xp_before = int(run.get("xp"))
+	for i in 60:
+		world.call("_dive_tick_scrap", 1.0 / 60.0)
+	_ok(int(run.get("xp")) == xp_before and int(scrap.call("pending_value")) == owed,
+		"scrap outside the radius is never absorbed, however long you sit there")
+	pl.global_position = here + Vector2(0.0, -6000.0)
+	for i in 240:
+		world.call("_dive_tick_scrap", 1.0 / 60.0)
+	_ok(int(run.get("xp")) - xp_before == owed and int(scrap.call("count")) == 0,
+		"...and inside it the whole cloud comes in and fills the bar (+%d XP)"
+			% (int(run.get("xp")) - xp_before))
+
+	# --- The husk FALLS -----------------------------------------------------
+	if is_instance_valid(picket):
+		picket.linear_velocity = Vector2.ZERO
+		picket.global_position = here + Vector2(0.0, -20000.0)
+		pl.global_position = picket.global_position
+		var y0: float = picket.global_position.y
+		for i in 30:
+			await world.get_tree().physics_frame
+		_ok(is_instance_valid(picket) and picket.global_position.y > y0 + 1.0,
+			"a husk in clear air falls under its own weight (%.0f -> %.0f)"
+				% [y0, picket.global_position.y if is_instance_valid(picket) else y0])
+
+	# --- ...and lands on a ship without costing it a block ------------------
+	var target = world.call("_dive_spawn_picket", "hulk", here + Vector2(0.0, -12000.0))
+	if target != null and is_instance_valid(target) and is_instance_valid(picket):
+		var target_blocks: int = target.blocks.size()
+		picket.global_position = target.global_position + Vector2(0.0, -2500.0)
+		picket.linear_velocity = Vector2(0.0, 3000.0)
+		pl.global_position = target.global_position
+		for i in 45:
+			await world.get_tree().physics_frame
+		_ok(is_instance_valid(target) and target.blocks.size() == target_blocks,
+			"a falling husk costs the hull it lands on nothing (%d blocks, still %d)"
+				% [target_blocks, target.blocks.size() if is_instance_valid(target) else -1])
+		if is_instance_valid(target):
+			target.queue_free()
+
+	# --- The blast, the credit and the notice are all still there -----------
+	var mine = world.call("_dive_spawn_picket", "hulk", pl.global_position)
+	if mine != null and is_instance_valid(mine):
+		pl.global_position = mine.global_position
+		pl.health = pl.max_health
+		var hp_before: float = pl.health
+		mine.last_attacker_id = pl.get_instance_id()
+		kills_before = int(run.get("kills"))
+		pot_before = int(run.get("pot"))
+		mine.hull_integrity = 0.0
+		world.call("_dive_watch_integrity")
+		_ok(pl.health < hp_before,
+			"the blast still hurts anyone standing in it (%.0f -> %.0f)"
+				% [hp_before, pl.health])
+		_ok(int(run.get("kills")) == kills_before + 1
+				and int(run.get("pot")) == pot_before + DiveRun.coins_for("hulk", depth),
+			"...and a kill that IS yours still credits its coins (+%d)"
+				% DiveRun.coins_for("hulk", depth))
+		pl.health = pl.max_health
+
+	# --- end_dive takes the wrecks and the scrap with it --------------------
+	var husks_live: int = (world.get("_dive_husks") as Array).size()
+	_ok(husks_live > 0, "the run is carrying %d wreck(s) when it ends" % husks_live)
+	world.call("end_dive")
+	await world.get_tree().physics_frame
+	_ok(int(scrap.call("count")) == 0 and (world.get("_dive_husks") as Array).is_empty(),
+		"end_dive clears the scrap field and frees every husk")
+	_ok(not is_instance_valid(picket) or picket.is_queued_for_deletion(),
+		"...the wreck itself really is gone with the run")
+
+	# --- YOUR OWN hull: the husk is cosmetic, the ending is unchanged -------
+	# Losing the hull has made a committed run SHIPLESS since v0.112.0 (the ship
+	# is not your life); the husk must not have quietly turned that into a
+	# run-over, so the whole sequence is walked again here.
+	world.call("begin_dive")
+	await _dive_take_a_hull(world, fleet)
+	run = world.get("dive")
+	var yours = world.get("local_ship")
+	if run != null and yours != null and is_instance_valid(yours):
+		world.call("_tick_dive", 0.016)   # boarding commits the run
+		_ok(bool(run.get("committed")), "the run is committed to your hull")
+		yours.hull_integrity_max = 500.0
+		yours.hull_integrity = 0.0
+		world.call("_dive_watch_integrity")
+		_ok(world.get("local_ship") == null,
+			"your hull's death still leaves you shipless mid-air")
+		_ok(String(run.get("outcome")) == "",
+			"...and does NOT end the run (the ship is not your life)")
+		pl.global_position = yours.global_position if is_instance_valid(yours) else pl.global_position
+		for i in 4:
+			world.call("_tick_dive", 0.6)
+		_ok(bool(world.get("_dive_went_shipless")),
+			"...the shipless grace still expires and says so")
+	world.call("end_dive")
+	Tunables.set_value("dormancy_enabled", dorm_was)
 	pl.health = pl.max_health
 	await world.get_tree().physics_frame
 

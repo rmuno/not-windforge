@@ -352,6 +352,16 @@ var _player_death_watched := {}
 ## Floating "+1 Stone" pickup numbers that pop when you mine a cell
 ## (maps/world/pickup_floats.gd). Pure data here; drawn by the WorldOverlay.
 var _pickups: PickupFloats
+## THE SCRAP FIELD (combat/scrap.gd) — the Dive's XP as a physical, collectable
+## drop. Always allocated, empty outside a run; pure data here, drawn by the
+## WorldOverlay off `dive_scrap_marks()`.
+var _dive_scrap: ScrapField
+## Instance ids of this run's WRECK HUSKS — dead vessels' skeletons, falling.
+## Their own list rather than `_dive_surged`, because they are not pickets: they
+## must not be pursued, hunted, stamped with the thrust floor or counted against
+## the picket cap. They ARE litter, so the wake cull sweeps them and end_dive
+## clears them.
+var _dive_husks: Array[int] = []
 var build_type: int = BlockDB.Type.HULL
 var local_ship: Ship = null
 var player: Player = null
@@ -498,6 +508,7 @@ func _ready() -> void:
 
 	_damage_numbers = DamageNumbers.new()
 	_pickups = PickupFloats.new()
+	_dive_scrap = ScrapField.new()
 
 	var overlay := WorldOverlay.new()
 	overlay.world = self
@@ -1133,6 +1144,9 @@ func begin_dive() -> void:
 	_dive_shelf = Vector2.ZERO
 	_dive_deck_cells = {}
 	_dive_berth_taken = {}
+	_dive_husks.clear()
+	if _dive_scrap != null:
+		_dive_scrap.clear()
 	# The card draft's RNG — seeded off the run's own seed so a given run offers a
 	# fixed sequence of hands (like the ladder), and distinct from the ladder seed.
 	_dive_rng = RandomNumberGenerator.new()
@@ -1177,6 +1191,15 @@ func end_dive() -> void:
 	_dive_pressing = 0.0
 	_dive_nudge_cd = 0.0
 	_dive_surged.clear()
+	# The wrecks and the scrap go with the run: a husk is run litter and a mote
+	# of XP outside a run has nothing to pay into.
+	for hid in _dive_husks:
+		var wreck := instance_from_id(hid) as Ship
+		if wreck != null and is_instance_valid(wreck):
+			wreck.queue_free()
+	_dive_husks.clear()
+	if _dive_scrap != null:
+		_dive_scrap.clear()
 	_dive_cull_clock = 0.0
 	_dive_garrison_clock = 0.0
 	_dive_materialized = 0
@@ -1853,7 +1876,8 @@ func _dive_cull_the_wake(delta: float) -> void:
 	if _dive_cull_clock < 1.0 or dive == null:
 		return
 	_dive_cull_clock = 0.0
-	if _dive_surged.is_empty():
+	if _dive_surged.is_empty() and _dive_husks.is_empty() \
+			and (_dive_scrap == null or _dive_scrap.count() == 0):
 		return
 	# THE NEAREST PLAYER, not "the" player (owner 2026-09-01: the run measures
 	# against "all active players"). A picket a crewmate is fighting is not litter
@@ -1863,6 +1887,22 @@ func _dive_cull_the_wake(delta: float) -> void:
 		return
 	var far := absf(dive_altitude_y(DiveRun.depth_altitude(2))
 		- dive_altitude_y(DiveRun.depth_altitude(1))) * DIVE_CULL_RUNGS
+	# SCRAP AND WRECKS ARE LITTER ONCE LOOTED, and they ride the same leash and
+	# the same yardstick as the pickets that made them — a rung and a half from
+	# the nearest player, so a wreck scene you are still fighting over stays whole
+	# and one you flew away from a rung ago goes quietly.
+	if _dive_scrap != null:
+		_dive_scrap.cull(foci, far)
+	var husks_kept: Array[int] = []
+	for hid in _dive_husks:
+		var wreck := instance_from_id(hid) as Ship
+		if wreck == null or not is_instance_valid(wreck):
+			continue   # already gone by other means; drop the id
+		if DiveRun.nearest_distance(wreck.global_position, foci) < far:
+			husks_kept.append(hid)
+			continue
+		wreck.queue_free()
+	_dive_husks = husks_kept
 	var kept: Array[int] = []
 	for id in _dive_surged:
 		var ship := instance_from_id(id) as Ship
@@ -2205,6 +2245,9 @@ func _tick_dive(delta: float) -> void:
 	_dive_nudge_if_stuck(delta)
 	_dive_pursue(delta)
 	_dive_keep_the_hunt()
+	# The XP channel, made physical: motes bob where things died and fly to
+	# whoever gets close enough (owner 2026-09-02).
+	_dive_tick_scrap(delta)
 	_dive_cull_the_wake(delta)
 	# THE SKY WAS ALREADY POPULATED (owner 2026-09-01): the run's standing
 	# garrison was decided with the seed; this is only where it gets bodies.
@@ -2327,9 +2370,17 @@ func _dive_watch_integrity() -> void:
 
 
 ## The end of an armed hull: a blast that hurts every PERSON aboard or beside
-## it, then the ship is gone. The blast reach is the hull's own bounds grown by
-## a few cells — jump clear before it goes and you take nothing, which is the
-## owner's escape clause.
+## it, then the vessel comes APART. The blast reach is the hull's own bounds
+## grown by a few cells — jump clear before it goes and you take nothing, which
+## is the owner's escape clause.
+##
+## THE DISAPPEARANCE IS GONE (owner 2026-09-02: ships "just explode and
+## disappear … 'poof, gone'"). Everything above the last line is untouched — the
+## blast, the kill credit, the notice, the shipless grace on your own hull — and
+## only the ending changed: instead of `queue_free`, the wreck is stripped to its
+## structural lattice and left to FALL (`_dive_leave_a_husk`). The scrap cloud is
+## dropped at the same instant, so the husk and the XP hanging over it read as
+## one wreck scene rather than two unrelated effects.
 func _dive_explode_ship(ship: Ship) -> void:
 	if ship == null or not is_instance_valid(ship):
 		return
@@ -2353,10 +2404,156 @@ func _dive_explode_ship(ship: Ship) -> void:
 		# turning the sky's neutral third party is its own reward.
 		if _dive_kill_is_yours(ship.last_attacker_id):
 			_dive_credit_kill("hulk")
+		# ...but the SCRAP falls whoever killed it (owner 2026-09-02: "if a
+		# kraken kills an enemy ship, I guess the player can still get that
+		# exp"). No attribution question is asked: the XP channel is spatial now,
+		# so a picket that flew into a cliff still leaves its shards hanging
+		# there for whoever comes past. It is the reward channel — a death that
+		# paid nothing at all is the thing this replaces.
+		_dive_drop_scrap("hulk", ship.global_position)
 	_notify("Your ship blows apart!" if was_mine else "Their ship blows apart!")
 	if was_mine:
 		local_ship = null   # the ship-loss grace takes it from here
-	ship.queue_free()
+	_dive_leave_a_husk(ship)
+
+
+## What a burnt-out wreck is tinted to. Darker and flatter than DIVE_SCORCH (the
+## living tint an integrity pool lerps toward), so a husk reads as OVER at a
+## glance rather than as a hull that is merely badly hurt.
+const DIVE_HUSK_TINT := Color(0.30, 0.24, 0.22)
+
+
+## LEAVE A HUSK instead of a hole in the sky. The vessel keeps its body, its
+## position and its momentum; what it loses is everything that made it a
+## participant:
+##
+##   * its CREW died in the blast (a Crewman frees itself when its ship goes, and
+##     a husk does not go — so they are freed here, explicitly);
+##   * its BRAIN goes with them (`_ship_ais`) along with the aggro bookkeeping,
+##     and with no driver at a live helm nothing would fly it anyway;
+##   * its ALLEGIANCE — `Ship.FACTION_WRECK` is nobody's side, so no AI targets
+##     it, no map blip calls it hostile and no gun prefers it;
+##   * its MACHINES AND ITS LIFT (`Ship.strip_to_husk`), which is what turns it
+##     from a ship into a falling skeleton;
+##   * its INTEGRITY pool, or `_dive_watch_integrity` would explode it again on
+##     the very next frame.
+##
+## What it keeps is physics: it tumbles, meets the terrain and settles. It hurts
+## nothing on the way down — see the husk gate in `Ship._integrate_forces`.
+func _dive_leave_a_husk(ship: Ship) -> void:
+	if ship == null or not is_instance_valid(ship):
+		return
+	var id := ship.get_instance_id()
+	var crewless: Array = []
+	for npc in _npcs:
+		if npc != null and is_instance_valid(npc):
+			if npc.ship == ship:
+				npc.queue_free()
+			else:
+				crewless.append(npc)
+	_npcs = crewless
+	_ship_ais.erase(id)
+	_enemy_aggro.erase(id)
+	_enemy_provoked_at.erase(id)
+	ship.faction = Ship.FACTION_WRECK
+	ship.pilot_peer = 0
+	ship.strip_to_husk()
+	# A hull with nothing structural in it (an all-machine oddity) empties its
+	# grid and frees itself in that rebuild — the old poof, in the one case where
+	# there is genuinely no skeleton to leave.
+	if not is_instance_valid(ship) or ship.blocks.is_empty():
+		_dive_surged.erase(id)
+		return
+	# rgb only — the spawn fade owns the alpha, exactly as in _dive_watch_integrity.
+	var tint := DIVE_HUSK_TINT
+	tint.a = ship.modulate.a
+	ship.modulate = tint
+	# It is litter now, not a picket: off the hunt list, onto the wreck list.
+	_dive_surged.erase(id)
+	if not _dive_husks.has(id):
+		_dive_husks.append(id)
+
+
+# --- SCRAP: the XP channel, made physical (owner 2026-09-02) ----------------
+#
+# "Separate, a la vampire survivors." Coins are unchanged — credited at the kill,
+# to the killer. XP left the kill entirely: it is SCRAP, it hangs where the thing
+# died, and it belongs to whoever gets close enough to suck it in. The whole
+# model is `combat/scrap.gd` (pure, no bodies, no collision); this is the world's
+# three-line half — where it drops, when it ticks, and what the overlay paints.
+
+
+## Drop a `kind` death's worth of scrap at `at`. No attribution, by design: this
+## is the reward channel now, so a death with zero interaction still pays.
+func _dive_drop_scrap(kind: String, at: Vector2) -> void:
+	if dive == null or dive.outcome != "" or _dive_scrap == null:
+		return
+	_dive_scrap.spawn(at, DiveRun.scrap_for(kind, dive.depth), float(world_scale))
+
+
+## THE ABSORPTION RADIUS, in world px. Authored at 1x and scaled, like every
+## other distance in the game. The default (F2 `dive_scrap_radius`, 120 at 1x =
+## 960 px at the shipped 8x) is about a QUARTER of the helm view's height — close
+## enough that scrap is a thing you fly at rather than a thing that follows you
+## home, generous enough that "we have to get somewhat close" never becomes a
+## chore of pixel-hunting four shards around a corpse.
+func dive_scrap_radius() -> float:
+	return Tunables.get_num("dive_scrap_radius") * float(world_scale)
+
+
+## One frame of the field: bob, magnet, absorb. Whatever landed this frame is
+## paid straight into the run's XP bar, which is why no new HUD was needed — the
+## card bar already exists and now fills on absorption instead of on the kill.
+func _dive_tick_scrap(delta: float) -> void:
+	if dive == null or dive.outcome != "" or _dive_scrap == null:
+		return
+	var foci := dive_player_foci()
+	if foci.is_empty():
+		return
+	var gained := _dive_scrap.update(delta, foci, dive_scrap_radius(), float(world_scale))
+	if gained <= 0:
+		return
+	dive.absorb_scrap(gained)
+	if _pickups != null and player != null and is_instance_valid(player):
+		_pickups.add(player.global_position + Vector2(0.0, -200.0 * world_scale),
+			"+%d scrap" % gained, float(world_scale))
+
+
+## The live scrap, as plain values for the WorldOverlay (world-decides/layer-
+## paints): [{pos, r, glint}]. `r` is the drawn half-size in world px and `glint`
+## is a 0..1 twinkle the painter maps to brightness — the layer computes no
+## gameplay and never sees a mote's value.
+func dive_scrap_marks() -> Array:
+	var out: Array = []
+	if _dive_scrap == null or dive == null:
+		return out
+	var s := float(world_scale)
+	for m in _dive_scrap.active():
+		var v := int(m["value"])
+		# Fatter for a fatter shard, but only just — a legible size range, not a
+		# value readout (the number lands on the XP bar, which is where it reads).
+		var r := (4.0 + minf(float(v), 60.0) * 0.06) * s
+		out.append({
+			"pos": m["pos"] as Vector2,
+			"r": r,
+			"glint": 0.5 + 0.5 * sin(float(m["age"]) * 6.0 + float(m["phase"])),
+			"locked": bool(m["locked"]),
+		})
+	return out
+
+
+## Debug (F2): drop a scrap cloud beside you — the absorption radius, the magnet
+## and the bar are all playtestable without finding something to kill. No-ops
+## outside a live run (there is nothing for the XP to land in).
+func debug_spawn_scrap() -> void:
+	if dive == null or dive.outcome != "" or player == null \
+			or not is_instance_valid(player) or _dive_scrap == null:
+		return
+	# Just OUTSIDE the radius, so the first thing the owner sees is the magnet
+	# catching as they close, which is the feel being judged.
+	var at := player.global_position + Vector2(dive_scrap_radius() * 1.4, 0.0)
+	_dive_scrap.spawn(at, DiveRun.scrap_for("kraken", dive.depth), float(world_scale))
+	_notify("Scrap dropped %.0f px to starboard — fly into it." % (at.x - player.global_position.x))
 
 
 ## Half the width of the shaft a run holds you in, in world px.
@@ -2609,6 +2806,8 @@ func _dive_wrap_ring(shift: float) -> void:
 		_damage_numbers.shift_x(shift)
 	if _pickups != null:
 		_pickups.shift_x(shift)
+	if _dive_scrap != null:
+		_dive_scrap.shift_x(shift)
 	# The camera is hard-locked to the body in `_track_camera`, but it is read by
 	# the parallax BEFORE that runs; moving it here keeps the two in step.
 	if camera != null and is_instance_valid(camera):
@@ -5524,10 +5723,18 @@ func _announce_eco() -> void:
 ## A whale-family body just died: let the deep off its leash a notch. Wired once
 ## per creature in `_whale_ai_for` (the one place every brain is set up), server-
 ## side like all spawning. A non-whale death is ignored.
-func _on_creature_perished(kind: String) -> void:
+## `body` is the creature that died — bound at the connect site, and OPTIONAL so
+## the ecology half stays callable with a bare kind (the suites do exactly that).
+## It is what the scrap needs: a drop has to happen somewhere.
+func _on_creature_perished(kind: String, body: Ship = null) -> void:
 	# THE DIVE pays coins for ANY creature death (the ecology below cares only
 	# about whales) — the mode's whole economy is "kill things on the way down".
 	_dive_credit_kill(kind)
+	# ...and the XP half hangs in the air over the corpse (owner 2026-09-02).
+	# Unattributed on purpose: a whale that took its revenge on a kraken has
+	# still left something worth flying through.
+	if body != null and is_instance_valid(body):
+		_dive_drop_scrap(kind, body.global_position)
 	if not Tunables.get_bool("eco_enabled") or not WHALE_KINDS.has(kind):
 		return
 	kraken_ascendancy = clampf(
@@ -5852,7 +6059,10 @@ func _whale_ai_for(creature: Ship) -> WhaleAI:
 		# The ecology hook: a whale-family death lets the deep off its leash. Wired
 		# here because this is the one place every creature's brain is set up — and
 		# a creature being simulated enough to be KILLED already has one.
-		creature.creature_perished.connect(_on_creature_perished)
+		# BOUND TO THE BODY: the signal carries only the kind, and the SCRAP drop
+		# needs a place to hang (v0.137.0). `bind` appends the creature after the
+		# signal's own argument, so the handler reads (kind, body).
+		creature.creature_perished.connect(_on_creature_perished.bind(creature))
 	return _whale_ais[id]
 
 

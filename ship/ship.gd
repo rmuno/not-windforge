@@ -358,6 +358,30 @@ var creature_kind := ""
 var hull_integrity := 0.0
 var hull_integrity_max := 0.0
 
+## WRECK HUSK (owner 2026-09-02: ships "just explode and disappear when their
+## health bar reaches 0. I think it might make sense to have a slightly cleaner
+## method other than just 'poof, gone'. Perhaps the background tiles necessary
+## for the ship to maintain its blueprint integrity can remain — they'd just fall
+## and hit the ground doing no damage").
+##
+## A husk is the structural lattice of a dead vessel: machines and lift stripped
+## (`strip_to_husk`), integrity disarmed, nobody's faction, physics LIVE so it
+## tumbles to the terrain and settles. The one thing it must not do is HURT
+## anything on the way down, and that is enforced in `_integrate_forces`: a
+## contact where either side is a husk raises no collision episode at all, so the
+## hull it lands on bills itself nothing. Terrain still bites it — a wreck is
+## supposed to shed plating when it hits the ground.
+##
+## LOCAL, like the wound shade: it rides no save and no wire payload. A husk is
+## run-scoped litter (world._dive_husks) and a run is not a save file.
+var is_husk := false
+
+## Nobody's side. A husk is neither yours (0), hostile (1) nor wildlife (2), and
+## that is the whole point: no brain targets it, no gun prefers it, no map blip
+## calls it a threat. Kept as a named constant so the next reader does not have
+## to work out what a stray `faction = 3` meant.
+const FACTION_WRECK := 3
+
 ## The AUTHORED VARIETY id (the `.ship` basename, e.g. "whale_bowhead") for the
 ## creature-log bestiary — finer than `creature_kind`, which is only the coarse
 ## family. Set at spawn by the world (world._spawn_one_*) via
@@ -819,6 +843,40 @@ func remove_block(cell: Vector2i, rebuild_now := true) -> void:
 
 func has_block(cell: Vector2i) -> bool:
 	return blocks.has(cell)
+
+
+## TURN THIS VESSEL INTO A WRECK HUSK — the owner's "slightly cleaner method
+## other than just 'poof, gone'". Strips every cell that does NOT survive a wreck
+## (`BlockDB.survives_husk`: the machines died in the blast, and anything that
+## LIFTS goes too or the skeleton never falls) and leaves the lattice standing.
+## Returns how many cells were removed.
+##
+## Deliberately NOT a severing pass. `remove_block(cell, false)` skips the
+## per-cell rebuild AND `_resolve_severing`, so one coalesced `rebuild()` at the
+## end pays for the whole strip — and, more importantly, a wreck that loses its
+## engine bay does not spray four independent ships across the sky. A husk is one
+## falling object.
+##
+## Grid mutation, so authority-side like every other structural edit. If nothing
+## structural survived (a hypothetical all-machine hull) the grid empties and
+## `rebuild` frees the body — the old poof, for the one case where there is
+## genuinely no skeleton to leave.
+func strip_to_husk() -> int:
+	var doomed: Array[Vector2i] = []
+	for cell in blocks:
+		if not BlockDB.survives_husk(int(blocks[cell]["type"])):
+			doomed.append(cell)
+	for cell in doomed:
+		remove_block(cell, false)
+	is_husk = true
+	# Mortality was the RUN's rule and this thing is already dead: a disarmed
+	# pool is what keeps world._dive_watch_integrity from exploding it forever.
+	hull_integrity = 0.0
+	hull_integrity_max = 0.0
+	menders_running = false
+	thrust_input = Vector2.ZERO
+	rebuild()
+	return doomed.size()
 
 
 ## Is this a whale CARCASS — a dead creature whose flesh blocks break for
@@ -2213,6 +2271,16 @@ func _integrate_forces(state: PhysicsDirectBodyState2D) -> void:
 		if obj is CharacterBody2D:
 			continue
 		if obj is Ship:
+			# A WRECK HUSK IS INERT (owner 2026-09-02: it falls and hits the
+			# ground "doing no damage"). Impact damage is billed by each hull on
+			# ITSELF from its own contacts, so the way to make a falling husk
+			# one-sidedly harmless is to raise no episode at all on either side
+			# of the contact: the ship it lands on never records the hit, and the
+			# husk does not grind itself through the deck it settled on. TERRAIN
+			# is untouched by this — a wreck is supposed to shed plating when it
+			# meets the ground, which is the `best` path below.
+			if is_husk or (obj as Ship).is_husk:
+				continue
 			# Vessel contacts take the EPISODE path below, never this one:
 			# ship-on-ship collisions resolve softly across many solver
 			# steps (both hulls yield), so each step's killed momentum

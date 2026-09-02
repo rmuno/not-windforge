@@ -71,6 +71,8 @@ func _initialize() -> void:
 	_test_dive_garrison()
 	await _test_map_room_screen()
 	_test_dive_cards()
+	_test_dive_scrap()
+	await _test_wreck_husk()
 	_test_dive_blast()
 	_test_dive_card_suite()
 	_test_grapple_card_dials()
@@ -2288,11 +2290,14 @@ func _test_dive_cards() -> void:
 	var run := DiveRun.new()
 	_check(run.pending == 0 and run.draft.is_empty() and run.cards.is_empty(),
 		"a fresh run holds no cards and owes no draft")
-	# One kraken at depth 1 is worth exactly one XP bar (60), so it earns a draft.
+	# One kraken at depth 1 is worth exactly one XP bar (60) of SCRAP, so
+	# sweeping up what it drops earns a draft. (The kill itself no longer pays
+	# XP — v0.137.0 moved that channel out to the physical drop.)
 	_check(DiveRun.coins_for("kraken", 1) == DiveRun.xp_for_level(0),
 		"a first-bar kill is tuned to fill exactly one XP bar")
-	run.credit_kill("kraken")
-	_check(run.pending == 1 and run.xp_level == 1, "a kill that fills the bar owes a draft")
+	run.absorb_scrap(DiveRun.scrap_for("kraken", 1))
+	_check(run.pending == 1 and run.xp_level == 1,
+		"scrap that fills the bar owes a draft")
 	var offer := run.offer(rng)
 	_check(offer.size() == 3 and run.draft_pending(), "the owed draft offers three")
 	_check(not run.take("not_on_offer"), "you cannot take a card that is not on offer")
@@ -2344,6 +2349,219 @@ func _test_dive_cards() -> void:
 	_check(String((view[1] as Dictionary)["rarity"]) == "legendary"
 			and (view[1] as Dictionary)["color"] == DiveCards.RARITY_COLOR["legendary"],
 		"...and the legendary on offer comes through orange")
+
+
+## SCRAP — XP as a physical, collectable drop (owner 2026-09-02, "separate, a la
+## vampire survivors"). Pure: ScrapField has no bodies and no collision, so a
+## whole absorption sequence is a for-loop, which is exactly why it was written
+## that way. The world-level proof (a real picket dying really drops it) lives in
+## world_startup_test.gd.
+func _test_dive_scrap() -> void:
+	_t("SCRAP: XP leaves the kill, hangs in the air and is collected by radius")
+
+	# --- The channels really are separate now -------------------------------
+	var run := DiveRun.new()
+	var coins := run.credit_kill("kraken")
+	_check(coins == DiveRun.coins_for("kraken", 1) and run.pot == coins and run.kills == 1,
+		"a kill still pays COINS exactly as before (%d)" % coins)
+	_check(run.xp == 0 and run.xp_level == 0 and run.pending == 0,
+		"...and pays NO xp: the bar no longer moves on a kill")
+	_check(DiveRun.scrap_for("kraken", 5) == DiveRun.coins_for("kraken", 5),
+		"a death's scrap is worth exactly what its XP used to be, at every depth")
+	_check(run.absorb_scrap(DiveRun.scrap_for("kraken", 1)) == 60 and run.pending == 1,
+		"absorbed scrap is what fills the bar (and owes the draft)")
+	var dead := DiveRun.new()
+	dead.lose()
+	_check(dead.absorb_scrap(100) == 0 and dead.xp == 0,
+		"a finished run absorbs nothing")
+
+	# --- The shards sum to the value, always --------------------------------
+	# Integer division is the whole risk here: "keep the XP VALUES the same" is
+	# an arithmetic promise, so every split is checked against its own total.
+	for v in [1, 7, 8, 20, 21, 35, 40, 60, 137, 500]:
+		var parts := ScrapField.shard_split(int(v))
+		var sum := 0
+		for p in parts:
+			sum += int(p)
+		_check(sum == int(v) and parts.size() >= 1 and parts.size() <= ScrapField.SHARD_MAX,
+			"%d splits into %d shards summing to %d" % [v, parts.size(), sum])
+	_check(ScrapField.shard_split(0).is_empty(), "a worthless death drops nothing")
+
+	# --- Inside the radius it comes to you; outside it does not -------------
+	var field := ScrapField.new()
+	var at := Vector2(1000.0, 1000.0)
+	var made := field.spawn(at, 60, 1.0)
+	_check(made == ScrapField.shard_split(60).size() and field.pending_value() == 60,
+		"a 60-XP death hangs %d shards worth 60 in the air" % made)
+
+	var radius := 300.0
+	# OUTSIDE: a body a long way off never gains, however long it waits.
+	var far_body := [Vector2(1000.0, 6000.0)]
+	var leaked := 0
+	for i in 240:
+		leaked += field.update(1.0 / 60.0, far_body, radius, 1.0)
+	_check(leaked == 0 and field.pending_value() == 60,
+		"scrap outside the absorption radius is never collected (%d leaked)" % leaked)
+	# ...and it stayed put (bobbing about its anchor, not drifting off).
+	var drift := 0.0
+	for m in field.active():
+		drift = maxf(drift, (m["pos"] as Vector2).distance_to(m["home"] as Vector2))
+	_check(drift <= ScrapField.BOB_PX + 0.01,
+		"...it only bobs where it fell (max %.1f px from its anchor)" % drift)
+
+	# INSIDE: step in and the whole cloud arrives.
+	var near_body := [at + Vector2(radius * 0.5, 0.0)]
+	var got := 0
+	for i in 300:
+		got += field.update(1.0 / 60.0, near_body, radius, 1.0)
+	_check(got == 60 and field.count() == 0,
+		"a body inside the radius absorbs the whole cloud (%d XP)" % got)
+
+	# COMMITTED once locked: the magnet does not drop you the instant you drift
+	# a pixel back out, or a shard would jitter on the radius line forever.
+	var sticky := ScrapField.new()
+	sticky.spawn(Vector2.ZERO, 40, 1.0)
+	sticky.update(1.0 / 60.0, [Vector2(radius * 0.5, 0.0)], radius, 1.0)
+	var locked := 0
+	for m in sticky.active():
+		if bool(m["locked"]):
+			locked += 1
+	_check(locked == sticky.count() and locked > 0, "one pass inside the radius locks the cloud on")
+	var chased := 0
+	for i in 600:
+		chased += sticky.update(1.0 / 60.0, [Vector2(9000.0, 0.0)], radius, 1.0)
+	_check(chased == 40, "...and a locked shard follows you out and still pays (%d)" % chased)
+
+	# --- The wake cull sweeps it, end_dive clears it ------------------------
+	var litter := ScrapField.new()
+	litter.spawn(Vector2(0.0, 0.0), 60, 1.0)
+	litter.spawn(Vector2(50000.0, 0.0), 60, 1.0)
+	var dropped := litter.cull([Vector2.ZERO], 4000.0)
+	_check(dropped > 0 and litter.pending_value() == 60,
+		"the cull frees the far cloud and keeps the near one (%d motes dropped)" % dropped)
+	litter.clear()
+	_check(litter.count() == 0 and litter.pending_value() == 0,
+		"clear() empties the field (end_dive takes the scrap with the run)")
+
+	# A ring wrap carries the field with the world (the PickupFloats contract):
+	# a world-anchored mark left behind is a mark on the far side of the seam.
+	var ring := ScrapField.new()
+	ring.spawn(Vector2(100.0, 0.0), 60, 1.0)
+	var was_pos: Vector2 = ring.active()[0]["pos"] as Vector2
+	var was_home: Vector2 = ring.active()[0]["home"] as Vector2
+	ring.shift_x(-7000.0)
+	_check(is_equal_approx((ring.active()[0]["pos"] as Vector2).x, was_pos.x - 7000.0)
+			and is_equal_approx((ring.active()[0]["home"] as Vector2).x, was_home.x - 7000.0),
+		"a ring wrap carries every mote AND its bob anchor across the seam")
+
+
+## WRECK HUSKS — a dead vessel leaves a falling skeleton, not a poof (owner
+## 2026-09-02: "perhaps the background tiles necessary for the ship to maintain
+## its blueprint integrity can remain — they'd just fall and hit the ground doing
+## no damage"). Composition here, real physics below; the world's half (a picket
+## at integrity zero really leaving one) is in world_startup_test.gd.
+func _test_wreck_husk() -> void:
+	_t("WRECK HUSK: machines and lift die, the lattice falls, and it hurts nobody")
+
+	# --- The classification is BlockDB's, per the block-type rule -----------
+	for t in [BlockDB.Type.ENGINE, BlockDB.Type.PROPELLER, BlockDB.Type.HELM,
+			BlockDB.Type.TURRET, BlockDB.Type.REPAIR]:
+		_check(BlockDB.is_machine(int(t)) and not BlockDB.survives_husk(int(t)),
+			"%s is a machine and dies in the blast" % BlockDB.get_def(int(t))["name"])
+	for t2 in [BlockDB.Type.HULL, BlockDB.Type.BALLAST, BlockDB.Type.PLATFORM,
+			BlockDB.Type.STRUT, BlockDB.Type.SHELL, BlockDB.Type.DOOR,
+			BlockDB.Type.DOOR_CLOSED, BlockDB.Type.MEAT]:
+		_check(BlockDB.survives_husk(int(t2)),
+			"%s is structure and stays in the husk" % BlockDB.get_def(int(t2))["name"])
+	# A HUSK MUST FALL, so anything buoyant goes with the machines — the rule is
+	# `lift`, not a list, which is why blubber is caught as well as the gasbag.
+	_check(not BlockDB.survives_husk(BlockDB.Type.GASBAG)
+			and not BlockDB.survives_husk(BlockDB.Type.BLUBBER),
+		"anything that LIFTS dies too, or the wreck would hang in the sky")
+
+	# --- Stripping a real vessel -------------------------------------------
+	var cells := {}
+	for x in 8:
+		for y in 4:
+			cells[Vector2i(x, y)] = BlockDB.Type.HULL
+	cells[Vector2i(0, 0)] = BlockDB.Type.ENGINE
+	cells[Vector2i(1, 0)] = BlockDB.Type.PROPELLER
+	cells[Vector2i(2, 0)] = BlockDB.Type.HELM
+	cells[Vector2i(3, 0)] = BlockDB.Type.TURRET
+	cells[Vector2i(4, 0)] = BlockDB.Type.GASBAG
+	cells[Vector2i(5, 0)] = BlockDB.Type.BLUBBER
+	var wreck := _make_ship(cells)
+	wreck.hull_integrity_max = 600.0
+	wreck.hull_integrity = 0.0
+	var before := wreck.blocks.size()
+	var removed := wreck.strip_to_husk()
+	var machines := 0
+	var structure := 0
+	var lift := 0.0
+	for cell in wreck.blocks:
+		var type: int = wreck.blocks[cell]["type"]
+		if BlockDB.is_machine(type):
+			machines += 1
+		else:
+			structure += 1
+		lift += BlockDB.lift_of(type)
+	_check(machines == 0 and structure > 0,
+		"the husk keeps only structure (%d machine cells, %d structural)"
+			% [machines, structure])
+	_check(removed == 6 and wreck.blocks.size() == before - 6,
+		"exactly the six machine/lifting cells were stripped (%d)" % removed)
+	_check(is_zero_approx(lift) and is_zero_approx(wreck.lift_ratio()),
+		"a husk has no lift left at all — it can only fall")
+	_check(wreck.is_husk and wreck.hull_integrity_max == 0.0,
+		"the husk is flagged and its integrity pool is disarmed")
+	_check(wreck.solid_bounds.size != Vector2.ZERO,
+		"...and it is still a solid body, so it can land on something")
+
+	# --- It falls ----------------------------------------------------------
+	wreck.gravity_scale = 1.0
+	wreck.position = Vector2(0.0, -40000.0)
+	var y0 := wreck.global_position.y
+	await _step(30)
+	_check(wreck.global_position.y > y0 + 1.0,
+		"a husk in clear air falls (%.0f -> %.0f)" % [y0, wreck.global_position.y])
+	wreck.queue_free()
+	await process_frame
+
+	# --- ...and hurts nothing on the way down -------------------------------
+	# The mirror of _test_ship_ram_bites_at_scale: the same ram, the same speed,
+	# the same hull — the only difference is that the rammer is a husk.
+	var blob := {}
+	for x2 in 5:
+		for y2 in 8:
+			blob[Vector2i(x2, y2 - 4)] = BlockDB.Type.HULL
+	var big: Dictionary = ShipLayout.upscale_cells(blob, 8)
+
+	var victim := _make_ship(big)
+	victim.scale_unit = 8.0
+	victim.gravity_scale = 0.0
+	victim.linear_damp = 0.0
+	victim.position = Vector2(-46000, -34000)
+	var victim_before := victim.blocks.size()
+
+	var husk := _make_ship(big)
+	husk.scale_unit = 8.0
+	husk.gravity_scale = 0.0
+	husk.linear_damp = 0.0
+	husk.position = victim.position + Vector2(-1800, 0)
+	husk.strip_to_husk()     # all hull, so nothing is removed — only the flag
+	var husk_before := husk.blocks.size()
+	husk.linear_velocity = Vector2(4600.0, 0.0)
+	await _step(40)
+
+	_check(is_instance_valid(victim) and victim.blocks.size() == victim_before,
+		"a husk at full ramming speed costs the hull it lands on NOTHING (%d blocks)"
+			% victim_before)
+	_check(is_instance_valid(husk) and husk.blocks.size() == husk_before,
+		"...and the wreck does not grind itself through it either")
+	for n in [victim, husk]:
+		if is_instance_valid(n):
+			n.queue_free()
+	await process_frame
 
 
 ## THE BLAST — the "explode" effect's geometry (owner's legendary, 2026-09-01).
