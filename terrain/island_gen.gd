@@ -179,25 +179,44 @@ static func generate(terrain: Terrain, seed_value: int = DEFAULT_SEED,
 ## the rim used to spill past the boundary walls). Returns whether an island was
 ## actually placed. Sets/restores Airspace.bounds around the band query so it is
 ## correct whether or not the live world keeps bounds active.
+## PERIODIC IN X WHEN THE WORLD LOOPS (2026-09-01). `RingSpace` says how many
+## lattice regions one lap of the Dive's ring is; the RNG is then seeded from
+## the REDUCED index, so candidate i and candidate i ± k are the same island —
+## same jitter, same radius, same shape, same placement roll — a full
+## circumference apart. That is what makes shifting everything by one
+## circumference invisible: the ground you land on is byte-identical to the
+## ground you left. The x-dependent keep-outs (the spawn clearing, the wind
+## columns) are asked about the CANONICAL position for the same reason: a gate
+## that answered differently for two images of one island would put ground on
+## one side of the seam and sky on the other.
 static func _generate_region(terrain: Terrain, seed_value: int, i: int, j: int,
 		world: Rect2i, sub: int, cp: float) -> bool:
 	var spacing := SPACING * sub
+	var ri := i
+	var k := RingSpace.lattice_regions(float(spacing) * cp)
+	if k > 0:
+		ri = RingSpace.reduce_index(i, k)
 	var rng := RandomNumberGenerator.new()
-	rng.seed = hash([seed_value, i, j])
-	var cx := i * spacing + rng.randi_range(-JITTER * sub, JITTER * sub)
+	rng.seed = hash([seed_value, ri, j])
+	var jx := rng.randi_range(-JITTER * sub, JITTER * sub)
+	var cx := i * spacing + jx
 	var cy := j * spacing + rng.randi_range(-JITTER * sub, JITTER * sub)
 	var place_roll := rng.randf()
 	var radius := rng.randi_range(R_MIN * sub, R_MAX * sub)
 	var shape_seed := rng.randi()
+	# The x every PLACEMENT DECISION is taken at: the canonical image of this
+	# candidate, so every image of it decides alike. Identical to `cx` when the
+	# world does not loop.
+	var gx := ri * spacing + jx
 
 	# Spawn keep-out: leave the starting neighbourhood as clear sky.
-	if maxi(absi(cx), absi(cy)) <= SPAWN_CLEAR * sub:
+	if maxi(absi(gx), absi(cy)) <= SPAWN_CLEAR * sub:
 		return false
 	var prev_bounds := Airspace.bounds
 	Airspace.bounds = Rect2(Vector2(world.position) * cp, Vector2(world.size) * cp)
 	var placed := false
 	# NONE in the vertical wind columns — and never let a body spill in.
-	if not _touches_wind_column(cx, radius, cp):
+	if not _touches_wind_column(gx, radius, cp):
 		var band := Airspace.band_at(Vector2(cx, cy) * cp)
 		if place_roll <= _band_density(band):
 			_place_island(terrain, Vector2i(cx, cy), radius, band, shape_seed, sub, world)

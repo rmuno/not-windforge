@@ -368,16 +368,9 @@ func _check_dive_scene_boots() -> void:
 	# THE RUN'S OWN CONTRACTS still hold in the narrow world: the loop closes,
 	# and a surge is born hostile and mortal.
 	if pl != null and is_instance_valid(pl):
-		pl.velocity = Vector2.ZERO
-		pl.global_position = Vector2(cx + ring_w * 0.5 + tile_w * 0.2,
-			pl.global_position.y)
-		w.call("_dive_hold_the_ring", 0.016)
-		_ok(pl.global_position.x < cx,
-			"crossing the seam still arrives from the other side (x-cx %.0f)"
-				% (pl.global_position.x - cx))
-		_ok(rect.has_point(Vector2(pl.global_position.x, rect.get_center().y)),
-			"...and lands INSIDE the world, not through a wall")
+		await _check_dive_seam_is_seamless(w, pl, rect, ring_w, cx, terrain)
 		pl.global_position = Vector2(cx, pl.global_position.y)
+		pl.velocity = Vector2.ZERO
 	w.call("_dive_surge")
 	var born := 0
 	var armed := 0
@@ -395,6 +388,172 @@ func _check_dive_scene_boots() -> void:
 
 	w.queue_free()
 	await process_frame
+
+
+## THE SEAM YOU CANNOT SEE (owner 2026-09-01: *"Looping around through the world
+## seems to make such a mess - it literally teleports the player. could it be a
+## bit more seamless? The world entirely could be fully rollover and we only see
+## a 3x3 centered at our location"*).
+##
+## Every number below is a SCREEN-SCALE distance, which is why this lives here
+## and not in the 1× suite. Four claims, and the wrap is only invisible if all
+## four hold:
+##
+##   1. the circumference is a WHOLE number of terrain-generator regions, so the
+##      ground can repeat over it at all;
+##   2. the world's margin outside the ring is wider than half a max-zoom frame,
+##      which is what pays for carrying everything you can see across the seam;
+##   3. the GROUND one circumference apart is the same ground, sampled over a
+##      whole frame either side of the wrap line;
+##   4. crossing moves the body, what it is RIDING, and the camera by exactly one
+##      circumference and nothing else — silently, once, with the far side of the
+##      ring left where it stands.
+##
+## (4) is the owner's bug in its own words: *"if you tame a creature and go to
+## the edges, you'll get a spam of messages but not actually teleport"* — the old
+## wrap moved the player and their hull and nothing else, so a rider was snapped
+## straight back onto the creature that stayed behind, every frame, forever.
+func _check_dive_seam_is_seamless(w: Node, pl, rect: Rect2, ring_w: float,
+		cx: float, terrain) -> void:
+	# --- 1. THE RING SITS ON THE GROUND'S OWN GRAIN ------------------------
+	var lattice: float = w.call("dive_gen_lattice_px")
+	var regions := ring_w / maxf(lattice, 1.0)
+	_ok(absf(regions - round(regions)) < 0.001,
+		"the ring is a whole number of generator regions (%.4f × %.0f px)"
+			% [regions, lattice])
+	_ok(RingSpace.active() and is_equal_approx(RingSpace.period, ring_w)
+			and absf(RingSpace.centre - cx) < 1.0,
+		"...and the world DECLARES itself a ring, so the generator repeats on it")
+
+	# --- 2. THE MARGIN PAYS FOR THE CARRY ----------------------------------
+	var view: float = w.call("max_view_width_px")
+	var carry: float = w.call("_dive_wrap_carry_px")
+	_ok(carry >= view * 0.5 - 1.0,
+		"the wrap carries at least everything on screen (%.0f px vs half-frame %.0f)"
+			% [carry, view * 0.5])
+	_ok(ring_w * 0.5 + carry <= rect.size.x * 0.5 + 1.0,
+		"...and never past the walls (%.0f px carried into %.0f px of margin)"
+			% [carry, (rect.size.x - ring_w) * 0.5])
+
+	# --- 3. THE GROUND ONE LAP AWAY IS THE SAME GROUND ----------------------
+	# Sampled over a whole max-zoom frame either side of the wrap line, because
+	# that is exactly what a player standing at the seam can see.
+	var y: float = pl.global_position.y
+	var seam := Vector2(cx + ring_w * 0.5, y)
+	IslandGen.ensure_generated(terrain, int(w.get("world_seed")),
+		[seam, Vector2(seam.x - ring_w, y)], view * 1.5, 4096)
+	var cp: float = terrain.call("cell_px")
+	var step := int(maxf(round(256.0 / maxf(cp, 1.0)), 1.0))
+	var half_cells := int(view * 0.5 / maxf(cp, 1.0))
+	# A tall band, not a stripe: the sky is mostly sky, and a probe that happened
+	# to fall between two islands would pass while proving nothing.
+	var tall_cells := int(40000.0 / maxf(cp, 1.0))
+	var origin: Vector2i = terrain.call("world_to_cell", seam)
+	var probes := 0
+	var solid := 0
+	var mismatches := 0
+	var lap_cells := int(round(ring_w / maxf(cp, 1.0)))
+	for dx in range(-half_cells, half_cells + 1, step):
+		for dy in range(-tall_cells, tall_cells + 1, step):
+			var here: int = terrain.call("cell_type",
+				Vector2i(origin.x + dx, origin.y + dy))
+			var there: int = terrain.call("cell_type",
+				Vector2i(origin.x + dx - lap_cells, origin.y + dy))
+			probes += 1
+			if here != TerrainDB.Type.AIR:
+				solid += 1
+			if here != there:
+				mismatches += 1
+	_ok(solid > 0,
+		"there is real ground within a frame of the seam (%d of %d samples)"
+			% [solid, probes])
+	_ok(mismatches == 0,
+		"...and every cell of it repeats exactly one circumference away (%d/%d differ)"
+			% [mismatches, probes])
+
+	# --- 4. THE CROSSING ITSELF --------------------------------------------
+	# A creature to ride over the seam (the owner's case) and one parked on the
+	# ring's far side, which must NOT be dragged along.
+	var mount_at := Vector2(seam.x + 400.0, y)
+	var ridden: Ship = w.call("debug_spawn", "critter", mount_at)
+	var parked: Ship = w.call("debug_spawn", "critter", Vector2(cx, y))
+	_ok(ridden != null and parked != null, "two creatures for the seam test")
+	if ridden == null or parked == null:
+		return
+	ridden.freeze = true          # hold it still: this is about the WRAP, not swimming
+	parked.freeze = true
+	# A whisker past the wrap line, riding, with the camera where the run put it.
+	# No physics frame between the mount and the wrap: `_handle_taming` ends a
+	# ride the moment the hook is not on the creature, and this test is about the
+	# WRAP, not the leash.
+	var overshoot := 600.0
+	pl.global_position = Vector2(seam.x + overshoot, y)
+	pl.velocity = Vector2(2400.0, -180.0)
+	ridden.global_position = pl.global_position
+	_ok(pl.mount(ridden), "the body climbs onto it (the tamed-creature case)")
+	var cam = w.get("camera")
+	cam.global_position = pl.global_position
+	var pickups = w.get("_pickups")
+	var said_before: int = pickups.call("count")
+	var before_body: Vector2 = pl.global_position
+	var before_vel: Vector2 = pl.velocity
+	var before_ridden: Vector2 = ridden.global_position
+	var before_parked: Vector2 = parked.global_position
+	var before_cam: Vector2 = cam.global_position
+	var before_zone: int = w.call("dive_zone")
+	w.call("_dive_hold_the_ring", 0.016)
+
+	_ok(is_equal_approx(pl.global_position.x, before_body.x - ring_w)
+			and is_equal_approx(pl.global_position.y, before_body.y),
+		"the body arrives from the other side, exactly one circumference over (%.0f px)"
+			% (pl.global_position.x - before_body.x))
+	# The wrap is a change of FRAME, not of motion. (The tick's own tile wind is
+	# applied in the same call and legitimately leans on `y` — the seam tile is
+	# the downdraft — so the claim the wrap owns is the x component and that `y`
+	# only ever moved by a wind's worth.)
+	_ok(is_equal_approx(pl.velocity.x, before_vel.x)
+			and absf(pl.velocity.y - before_vel.y) < 50.0,
+		"...carrying its velocity untouched (%.0f, %.0f — was %.0f, %.0f)"
+			% [pl.velocity.x, pl.velocity.y, before_vel.x, before_vel.y])
+	_ok(rect.has_point(Vector2(pl.global_position.x, rect.get_center().y)),
+		"...and lands INSIDE the world, not through a wall")
+	_ok(is_equal_approx(ridden.global_position.x, before_ridden.x - ring_w),
+		"THE CREATURE IT IS RIDING COMES TOO — the owner's bug, gone")
+	_ok(is_equal_approx(
+			pl.global_position.distance_to(ridden.global_position),
+			before_body.distance_to(before_ridden)),
+		"...with the two of them exactly as far apart as they were")
+	_ok(is_equal_approx(cam.global_position.x, before_cam.x - ring_w),
+		"the camera crosses in the same frame, so the view never moves")
+	_ok(parked.global_position.is_equal_approx(before_parked),
+		"...while the far side of the ring stays where the ring says it is")
+	_ok(int(pickups.call("count")) == said_before,
+		"and NOTHING is announced: a seamless wrap has nothing to report")
+	_ok(int(w.call("dive_zone")) == before_zone,
+		"the run's own bookkeeping never notices (tile %d either side)" % before_zone)
+
+	# NO OSCILLATION — the other half of the owner's bug. The old wrap fired EVERY
+	# FRAME at the seam (and said so every frame) because the rider was snapped
+	# straight back onto a creature that had not moved. So: run the real mode for
+	# a while and count circumference-sized jumps. There must be none.
+	var jumps := 0
+	var last_x: float = pl.global_position.x
+	for i in 12:
+		await w.get_tree().physics_frame
+		if absf(pl.global_position.x - last_x) > ring_w * 0.4:
+			jumps += 1
+		last_x = pl.global_position.x
+	_ok(jumps == 0,
+		"no spam at the edge: the seam is crossed ONCE, not every frame (%d re-wraps)"
+			% jumps)
+	_ok(absf(pl.global_position.x - cx) <= ring_w * 0.5 + 1.0,
+		"...and it is still on this side of the seam (%.0f px from the centre line)"
+			% (pl.global_position.x - cx))
+
+	pl.dismount()
+	ridden.queue_free()
+	parked.queue_free()
+	await w.get_tree().physics_frame
 
 
 ## THE PREGENERATED GARRISON, AT THE SCALE THE OWNER PLAYS (owner 2026-09-01:

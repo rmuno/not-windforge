@@ -1236,6 +1236,32 @@ var is_nest := false
 var dormant_anchor := Vector2.ZERO
 
 
+## CARRY THIS HULL ACROSS A RING WRAP (2026-09-01). The Dive's sky loops: when
+## the run crosses the seam the world shifts everything in frame by exactly one
+## circumference, and "everything" has to include the positions a body
+## REMEMBERS as well as the one it occupies. A dormant creature's migration
+## anchor and the wire pose a client is easing toward are both world points; a
+## hull that moved while they did not would spend the next second flying back
+## to where the sky used to be.
+##
+## Velocity, rotation and every relative fact are untouched — this is a change
+## of frame, not of motion, which is exactly why it is invisible.
+func ring_shift(dx: float) -> void:
+	var step := Vector2(dx, 0.0)
+	global_position += step
+	dormant_anchor += step
+	net_position += step
+	if _facing_has_prev:
+		_facing_prev_pos += step
+	# A body outside the physics step (dormant) is moved by writing the
+	# transform, so the server has to be told or it resumes from the pose it
+	# remembered — the same re-seat `set_dormant(false)` does, and for the same
+	# reason.
+	if dormant:
+		PhysicsServer2D.body_set_state(get_rid(),
+			PhysicsServer2D.BODY_STATE_TRANSFORM, global_transform)
+
+
 ## Leave (or rejoin) the physics simulation.
 ##
 ## `process_mode = PROCESS_MODE_DISABLED` is the whole mechanism, and it is

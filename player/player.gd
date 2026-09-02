@@ -763,6 +763,22 @@ func release_grapple() -> void:
 	_pivots.clear()
 
 
+## CARRY THE BODY ACROSS A RING WRAP (2026-09-01) — the twin of Ship.ring_shift.
+## The grapple is the part that would otherwise notice: a hook latched into
+## terrain and every rope bend around it are WORLD points, so a body that moved
+## a circumference while its rope did not would be yanked back across the sky by
+## its own line. Bends that ride a SHIP are stored ship-local and move with the
+## hull on their own, which is exactly why only the free ones are touched here.
+func ring_shift(dx: float) -> void:
+	var step := Vector2(dx, 0.0)
+	global_position += step
+	_hook_pos += step
+	for p in _pivots:
+		var ship: Ship = p["ship"]
+		if ship == null or not is_instance_valid(ship):
+			p["point"] = (p["point"] as Vector2) + step
+
+
 func grapple_latched() -> bool:
 	return _hook_state == HookState.LATCHED
 
