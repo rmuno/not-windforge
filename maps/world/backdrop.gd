@@ -102,6 +102,17 @@ func _process(_delta: float) -> void:
 	queue_redraw()  # erasing is a redraw too (godot-quirks)
 
 
+## A TELEPORT IS NOT MOTION (2026-09-01, the seamless ring wrap). The backdrop
+## INTEGRATES the camera's step — right for flying, and exactly wrong for the
+## one frame the Dive's ring shifts the whole world by a circumference: a
+## 405,504 px "step" would fling every parallax layer across the sky and turn an
+## invisible wrap into the most visible thing on screen. The world calls this
+## with the same shift it applied, so the step the next `_draw` computes is
+## ZERO and the scenery does not move at all.
+func rebase(shift: Vector2) -> void:
+	_last_cam += shift
+
+
 # --- The generative half: static and pure, so it is testable ---------------
 
 ## The motif of one MAP cell (MapDiscovery's grid). Pure in (seed, cell).

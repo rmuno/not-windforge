@@ -60,6 +60,8 @@ func _initialize() -> void:
 	_test_ship_edit()
 	await _test_ship_editor_screen()
 	_test_dive_ring()
+	_test_ring_space()
+	_test_ring_terrain_is_periodic()
 	_test_dive_floating_chunks()
 	_test_dive_garrison()
 	await _test_map_room_screen()
@@ -2325,6 +2327,113 @@ func _test_dive_ring() -> void:
 				and int(col["extra_pickets"]) >= 0,
 			"the column at %+.0f is a real tile (%s)"
 				% [float(col["offset"]), String(col["label"])])
+
+
+## THE SEAM YOU CANNOT SEE (owner 2026-09-01: *"Looping around through the world
+## seems to make such a mess - it literally teleports the player. could it be a
+## bit more seamless?"*).
+##
+## `RingSpace` is the model half: a world that loops, stated once, so the
+## generator, the wrap and every distance measurement agree about it. The whole
+## seamless wrap rests on two claims made here — the SHORT WAY ROUND is the real
+## distance, and a lattice index reduced by one lap names the same site — and on
+## the terrain check below, which proves the ground actually repeats.
+func _test_ring_space() -> void:
+	_t("THE RING: the world that loops, and the ground that repeats")
+	RingSpace.clear()
+	_check(not RingSpace.active(), "no ring by default — an expedition does not loop")
+	_check(is_equal_approx(RingSpace.dx(1234.0), 1234.0)
+			and is_equal_approx(RingSpace.wrap_x(-9e5), -9e5),
+		"...and with no ring every function is the identity")
+	var period := 1000.0
+	RingSpace.set_ring(period, 0.0)
+	_check(RingSpace.active(), "a ring, once declared, is active")
+	# THE SHORT WAY ROUND. Two points either side of the seam are neighbours.
+	_check(is_equal_approx(RingSpace.dx(10.0), 10.0), "a short step is itself")
+	_check(is_equal_approx(RingSpace.dx(990.0), -10.0),
+		"...but 990 the long way is 10 the short way — the other side of the seam")
+	_check(is_equal_approx(RingSpace.dx(-990.0), 10.0), "...and symmetrically back")
+	_check(is_equal_approx(RingSpace.dx(period), 0.0),
+		"a full lap is no distance at all")
+	for d in [-2400.0, -517.0, -1.0, 0.0, 1.0, 517.0, 2400.0]:
+		_check(absf(RingSpace.dx(float(d))) <= period * 0.5 + 0.001,
+			"nothing is ever more than half a lap away (%.0f)" % float(d))
+	_check(is_equal_approx(RingSpace.nearest_x(-490.0, 480.0), 510.0),
+		"the copy of a point NEAREST you is the one you are shown")
+	_check(is_equal_approx(RingSpace.wrap_x(1200.0), 200.0)
+			and is_equal_approx(RingSpace.wrap_x(-1200.0), -200.0),
+		"any x folds back into one lap")
+	_check(is_equal_approx(RingSpace.distance(Vector2(490.0, 0.0),
+			Vector2(-490.0, 30.0)), Vector2(20.0, 30.0).length()),
+		"...so a distance across the seam is measured across the seam")
+	# `fold` takes its circumference, because a run can loop inside a world that
+	# does not (the F2 dive in an expedition).
+	RingSpace.clear()
+	_check(is_equal_approx(RingSpace.fold(990.0, 1000.0), -10.0),
+		"fold works on a stated circumference even with no ring declared")
+	# THE LATTICE. The ground can only repeat on whole generator regions.
+	RingSpace.set_ring(1536.0 * 20.0, 0.0)
+	_check(RingSpace.lattice_regions(1536.0) == 20,
+		"a circumference of 20 whole regions IS 20 regions")
+	_check(RingSpace.lattice_regions(1000.0) == 0,
+		"...and one that does not divide is not periodic — the generator is told so")
+	for i in [-41, -20, -19, -1, 0, 1, 19, 20, 41]:
+		_check(RingSpace.reduce_index(int(i), 20)
+				== RingSpace.reduce_index(int(i) + 20, 20),
+			"index %d and index %d are the same site, one lap apart" % [int(i), int(i) + 20])
+		var r := RingSpace.reduce_index(int(i), 20)
+		_check(r >= -10 and r < 10,
+			"...and the canonical index sits in the middle of the world (%d)" % r)
+	RingSpace.clear()
+
+
+## THE GROUND REPEATS. The wrap is invisible only because a shift by exactly one
+## circumference lands on IDENTICAL terrain, so this generates a two-lap window
+## and compares it against itself, column by column, a lap apart. The
+## break-the-fix half matters as much: with the ring cleared the SAME probe must
+## find a mismatch, or the check is measuring nothing.
+func _test_ring_terrain_is_periodic() -> void:
+	_t("THE RING: generated ground is periodic over one circumference")
+	var window := Rect2i(-1536, -1152, 3072, 2304)
+	var lap_cells := 16 * IslandGen.SPACING     # 16 regions = 1,536 cells
+	var probe_x := range(-1400, -200, 7)
+	var probe_y := range(-900, 900, 11)
+	var seed_v := 5150
+
+	var run_probe := func(t: Terrain) -> Array:
+		var solid := 0
+		var diffs := 0
+		for x in probe_x:
+			for y in probe_y:
+				var here := t.cell_type(Vector2i(int(x), int(y)))
+				var there := t.cell_type(Vector2i(int(x) + lap_cells, int(y)))
+				if here != TerrainDB.Type.AIR:
+					solid += 1
+				if here != there:
+					diffs += 1
+		return [solid, diffs]
+
+	# The ring on: candidate i and candidate i ± 16 are the same island.
+	RingSpace.set_ring(float(lap_cells) * TerrainDB.CELL, 0.0)
+	var ring_t := _make_terrain()
+	IslandGen.generate(ring_t, seed_v, window)
+	var got := run_probe.call(ring_t) as Array
+	_check(int(got[0]) > 200,
+		"the probed band is real ground, not empty sky (%d solid samples)" % int(got[0]))
+	_check(int(got[1]) == 0,
+		"every probed cell is identical one circumference away (%d mismatches)"
+			% int(got[1]))
+	ring_t.queue_free()
+
+	# BREAK THE FIX: no ring, same seed, same probe — the ground must differ.
+	RingSpace.clear()
+	var flat_t := _make_terrain()
+	IslandGen.generate(flat_t, seed_v, window)
+	var flat := run_probe.call(flat_t) as Array
+	_check(int(flat[1]) > 0,
+		"...and WITHOUT the ring the same probe finds the seam (%d mismatches)"
+			% int(flat[1]))
+	flat_t.queue_free()
 
 
 ## THE ROCKS HAVE ROCKS IN THEM (owner 2026-09-01, on the ring's intermediate

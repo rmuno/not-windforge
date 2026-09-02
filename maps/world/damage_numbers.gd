@@ -91,6 +91,15 @@ func count() -> int:
 	return _numbers.size()
 
 
+## Carry every live number across a ring wrap (`world._dive_wrap_ring`). A
+## number is anchored to the world point it was struck at, so a world that
+## shifted under it would leave the hit marker a circumference behind the hull
+## it belongs to.
+func shift_x(dx: float) -> void:
+	for n in _numbers:
+		n["pos"] = (n["pos"] as Vector2) + Vector2(dx, 0.0)
+
+
 ## Bucketed key: same ship + same coarse world cell. floori (not truncation) so
 ## negative coordinates bucket consistently on both sides of the origin.
 func _key(source_id: int, world_pos: Vector2, world_scale: float) -> String:

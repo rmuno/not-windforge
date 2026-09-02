@@ -57,3 +57,11 @@ func active() -> Array[Dictionary]:
 
 func count() -> int:
 	return _floats.size()
+
+
+## Carry every live float across a ring wrap (`world._dive_wrap_ring`) — see
+## DamageNumbers.shift_x for why a world-anchored mark has to move with the
+## world.
+func shift_x(dx: float) -> void:
+	for f in _floats:
+		f["pos"] = (f["pos"] as Vector2) + Vector2(dx, 0.0)

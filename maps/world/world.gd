@@ -446,6 +446,16 @@ func _ready() -> void:
 	if dive_native:
 		wpx = _dive_native_world_px()
 	_world_rect = wpx   # kept for the on-foot altitude read (deep-air gate)
+	# DOES THIS WORLD LOOP? Declared BEFORE a single chunk is generated, because
+	# the answer changes what the ground IS: a ring's terrain is periodic over
+	# one circumference (IslandGen reduces its lattice index), which is what
+	# makes the wrap invisible. Set here and nowhere else, and CLEARED for every
+	# world that is not a ring so a previous scene (or a previous test) can never
+	# leave one behind — `RingSpace.period` is static, like `Airspace.bounds`.
+	if dive_native and Tunables.get_bool("dive_zones_enabled"):
+		RingSpace.set_ring(dive_nominal_ring_width(), wpx.get_center().x)
+	else:
+		RingSpace.clear()
 	var t := 4.0 * cp   # wall thickness (a few cells)
 	_terrain_rects = [
 		Rect2(wpx.position.x - t, wpx.position.y - t, t, wpx.size.y + 2.0 * t),  # left wall
@@ -1465,6 +1475,14 @@ func _dive_park_at(ship: Ship, at: Vector2, index: int) -> Vector2:
 ## Where depth `d`'s landing is in the world. The ladder decides the altitude and
 ## this run's seed decides the drift, so the descent is a slalom you fly rather
 ## than a shaft you drop down (`DiveRun.landing_offset`).
+##
+## NEEDS NO SEAM IMAGE, and that is a property of `DiveRun.LADDER_SPREAD`, not
+## luck: the ladder is clamped to ±3 shelf spans (±33,600 px) of the centre
+## line, and the wrap line is 6 tiles out (±202,752 px), so a landing — and the
+## quartermaster standing on it — can never come within a frame of the seam. The
+## ring's floating rock CAN (`_dive_cut_chunks`), which is why that one stamps
+## both images and this one does not. Widen LADDER_SPREAD past ~5.5 tiles and
+## that stops being true.
 func dive_landing_pos(d: int) -> Vector2:
 	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
 	var span := _dive_shelf_span()
@@ -1766,7 +1784,10 @@ func _dive_pursue(delta: float) -> void:
 			continue   # you are diving but it is already below you
 		if mine < 0.0 and at.y >= ship.global_position.y:
 			continue   # you are climbing but it is already above you
-		if ship.global_position.distance_to(at) > reach:
+		# THE SHORT WAY ROUND: in a looping sky a picket a hair over the seam is
+		# a neighbour, not a world away, and the raw distance would drop the
+		# chase the instant either of you crossed.
+		if _dive_ring_span(ship.global_position, at) > reach:
 			continue
 		if mine > 0.0:
 			if ship.linear_velocity.y >= want:
@@ -2356,11 +2377,34 @@ func _dive_tile_w() -> float:
 	return maxf(Tunables.get_num("dive_zone_tile_widths") * _dive_shelf_span().x, 1.0)
 
 
+## The width of ONE lattice region of generated ground, in world px — the grain
+## the terrain generator lays candidate islands on (`IslandGen.SPACING` cells of
+## `TerrainDB.CELL`). Independent of `terrain_subdiv`: a finer subdiv multiplies
+## the cell COUNT and divides the cell SIZE by the same number.
+func dive_gen_lattice_px() -> float:
+	return float(IslandGen.SPACING) * TerrainDB.CELL * float(world_scale)
+
+
 ## The ring tile as AUTHORED: `dive_zone_tile_widths` of the launch shelf's own
 ## constant width, at this world's scale. Needs no fleet, so `_ready` can ask it.
+##
+## SNAPPED TO THE GROUND'S OWN GRAIN (2026-09-01, the seamless wrap). A wrap can
+## only be invisible if the terrain REPEATS over one circumference, and the
+## generator can only repeat on whole lattice regions (`IslandGen` seeds each
+## candidate island from its lattice index, so index i and i ± k are the same
+## island only when k regions ARE the circumference). The circumference is
+## therefore rounded to the nearest whole number of regions and the tile is a
+## twelfth of THAT: a 0.6% nudge to the authored 33,600 px, and the difference
+## between a seam you cannot see and one you can. Everything downstream still
+## derives from this one number, which is the whole point of the one-number rule.
 func dive_nominal_tile_w() -> float:
-	return maxf(LAUNCH_SHELF_PX.x * float(world_scale)
+	var raw := maxf(LAUNCH_SHELF_PX.x * float(world_scale)
 		* Tunables.get_num("dive_zone_tile_widths"), 1.0)
+	var tiles := float(DiveRun.RING.size())
+	var lattice := dive_gen_lattice_px()
+	if lattice <= 0.0 or tiles < 1.0:
+		return raw
+	return maxf(maxf(1.0, round(raw * tiles / lattice)) * lattice / tiles, 1.0)
 
 
 ## THE RING'S CIRCUMFERENCE, live — the ONE number the wrap teleport uses, so
@@ -2425,10 +2469,9 @@ func dive_zone() -> int:
 
 
 ## The ring: each tile's wind leans on hull and body, and crossing the ring's
-## outer edge arrives from the other side (the loop — hull, body and their
-## velocities all carry over; the camera is hard-locked to the player and
-## follows by itself). The ladder's landings stay near the centre column on
-## purpose in this first cut — the downdraft is a fast lane, not a home.
+## outer edge arrives from the other side. The ladder's landings stay near the
+## centre column on purpose in this first cut — the downdraft is a fast lane,
+## not a home.
 func _dive_hold_the_ring(delta: float) -> void:
 	if player == null or not is_instance_valid(player):
 		return
@@ -2438,11 +2481,14 @@ func _dive_hold_the_ring(delta: float) -> void:
 	# The loop first, so the wind below always reads the wrapped position.
 	var off: float = player.global_position.x - cx
 	if absf(off) > half:
-		var shift := -signf(off) * ring_w
-		player.global_position.x += shift
-		if is_instance_valid(local_ship):
-			local_ship.global_position.x += shift
-		_notify("...and around: the sky loops back on itself.")
+		_dive_wrap_ring(-signf(off) * ring_w)
+	# ...and anything ELSE that has flown clean off the ring comes round too, so
+	# a picket that chased you over the seam keeps chasing instead of grinding
+	# against a wall it was never meant to reach. This is deliberately a WIDER
+	# line than the player's (`half + carry`): inside that band a body is part of
+	# the frame the wrap above already carried, and wrapping it again here would
+	# tear it back out of the picture.
+	_dive_wrap_strays(cx, ring_w)
 	var here := dive_zone()
 	# THE ROCKS HAVE ROCKS IN THEM: the tile you are standing in grows its
 	# floating slabs the first time you and this depth meet in it — the same
@@ -2460,9 +2506,139 @@ func _dive_hold_the_ring(delta: float) -> void:
 		player.velocity.y += wind * delta
 
 
+## HOW MUCH OF THE WORLD COMES WITH YOU across the seam, in px from the body.
+##
+## Two hard bounds, and the answer is squeezed between them:
+##   * it must be AT LEAST half the widest frame the game can show, or something
+##     visible would be left behind and the wrap would be seen;
+##   * it must be AT MOST the world's margin outside the ring (minus the wall),
+##     or a straggler at the back of the bubble would land inside the boundary
+##     wall it was carried past.
+## That the margin (`DIVE_WORLD_MARGIN`, ~16,200 px) comfortably exceeds half a
+## max-zoom frame (~14,300 px) is what makes a seamless wrap possible at all —
+## it is the "one tile of duplicated margin" the ring is built with, spent.
+func _dive_wrap_carry_px() -> float:
+	var seen := max_view_width_px() * 0.5
+	var margin := maxf(_world_rect.size.x - dive_ring_width(), 0.0) * 0.5 \
+		- 4.0 * TerrainDB.CELL * float(world_scale)
+	return maxf(seen, minf(margin, max_view_width_px()))
+
+
+## THE SEAMLESS WRAP (owner 2026-09-01: *"could it be a bit more seamless? … that'd
+## ensure we never have to awkwardly teleport"*).
+##
+## Nothing here is a teleport in any sense the player can perceive, because
+## nothing moves RELATIVE to anything else. The terrain is periodic over exactly
+## one circumference (`RingSpace` + `IslandGen`), so ground shifted by `shift` is
+## the same ground; everything in frame — the body, its rope, every hull, every
+## shot, every hazard, every floating number, the camera — moves by that same
+## `shift` in the same frame; and the backdrop is told the step was not motion.
+## The screen is therefore IDENTICAL across the wrap frame. That is the whole
+## mechanism, and it is why there is no notification: there is nothing to
+## announce.
+##
+## It is also the fix for the owner's bug (*"if you tame a creature and go to the
+## edges, you'll get a spam of messages but not actually teleport"*): the old
+## wrap moved the player and `local_ship` and nothing else, so a rider was
+## snapped straight back onto the creature that had stayed behind, and the wrap
+## — and its message — fired again on the very next frame. Everything in frame
+## moves now, so the thing you are riding moves too.
+func _dive_wrap_ring(shift: float) -> void:
+	if player == null or not is_instance_valid(player) or is_zero_approx(shift):
+		return
+	var from := player.global_position
+	var carry := _dive_wrap_carry_px()
+	player.ring_shift(shift)
+	if fleet != null and is_instance_valid(fleet):
+		for s in fleet.ships():
+			if not is_instance_valid(s):
+				continue
+			if absf(s.global_position.x - from.x) > carry:
+				continue   # off the edge of the widest possible frame: it stays
+			s.ring_shift(shift)
+			# A creature's ROAM ANCHOR is a world point too. Carry it, or a tame
+			# you brought across the seam would immediately set off back to the
+			# sky it was tamed in — half a world away.
+			var ai := _whale_ais.get(s.get_instance_id()) as WhaleAI
+			if ai != null:
+				ai.home.x += shift
+	# Shots are children of the world itself; hazards live under `_hazards`.
+	for n in get_children():
+		var shot := n as Shot
+		if shot != null and absf(shot.global_position.x - from.x) <= carry:
+			shot.global_position.x += shift
+	if _hazards != null and is_instance_valid(_hazards):
+		for hn in _hazards.get_children():
+			var ball := hn as HazardFireball
+			if ball != null and absf(ball.global_position.x - from.x) <= carry:
+				ball.global_position.x += shift
+	if _damage_numbers != null:
+		_damage_numbers.shift_x(shift)
+	if _pickups != null:
+		_pickups.shift_x(shift)
+	# The camera is hard-locked to the body in `_track_camera`, but it is read by
+	# the parallax BEFORE that runs; moving it here keeps the two in step.
+	if camera != null and is_instance_valid(camera):
+		camera.global_position.x += shift
+	if _backdrop != null and is_instance_valid(_backdrop):
+		_backdrop.rebase(Vector2(shift, 0.0))
+
+
+## Bring home anything that has flown off the ring under its own steam. Only
+## bodies well outside the frame the player's own wrap carries are touched, so
+## this can never fight `_dive_wrap_ring`, and a wrapped picket is by
+## construction a long way off screen when it happens.
+func _dive_wrap_strays(cx: float, ring_w: float) -> void:
+	# ONLY WHERE THE WORLD ITSELF IS THE RING. An F2 dive inside an EXPEDITION
+	# loops the player through a world that is nine times wider than the loop and
+	# not periodic at all; teleporting its wildlife around a line only the run
+	# believes in would move bodies the expedition has its own reasons for.
+	if not RingSpace.active():
+		return
+	if fleet == null or not is_instance_valid(fleet) or ring_w <= 1.0:
+		return
+	var edge := ring_w * 0.5 + _dive_wrap_carry_px()
+	for s in fleet.ships():
+		if not is_instance_valid(s):
+			continue
+		var off := s.global_position.x - cx
+		if absf(off) <= edge:
+			continue
+		var shift := -signf(off) * ring_w
+		s.ring_shift(shift)
+		var ai := _whale_ais.get(s.get_instance_id()) as WhaleAI
+		if ai != null:
+			ai.home.x += shift
+
+
 ## Which (tile, depth) pairs have already grown their floating rock. Cleared with
 ## the run; the key is a plain string so a loaded save can never half-match one.
 var _dive_chunks_cut := {}
+
+
+## The distance between two points measured THE SHORT WAY ROUND the ring (the
+## plain distance outside a run, or with the loop turned off). One helper so the
+## mode never has to remember which of its measurements is on a circle.
+func _dive_ring_span(a: Vector2, b: Vector2) -> float:
+	var ring_w := dive_ring_width() if Tunables.get_bool("dive_zones_enabled") else 0.0
+	return Vector2(RingSpace.fold(b.x - a.x, ring_w), b.y - a.y).length()
+
+
+## Every copy of a ring point that still falls inside the world's own rect: the
+## point itself, plus its ±circumference images when the ring's margin reaches
+## them. One entry for anything away from the seam, two for anything near it —
+## which is the whole "we only ever see a neighbourhood of the ring" idea,
+## applied to the few things the run STAMPS rather than generates.
+func _dive_ring_images(at: Vector2) -> Array:
+	var out: Array = [at]
+	var ring_w := dive_ring_width()
+	if not RingSpace.active() or ring_w <= 1.0 or _world_rect.size.x <= 0.0:
+		return out
+	for s in [-ring_w, ring_w]:
+		var image := Vector2(at.x + float(s), at.y)
+		if image.x >= _world_rect.position.x and image.x <= _world_rect.end.x:
+			out.append(image)
+	return out
 
 
 ## Stamp one rock tile's floating slabs at one depth (`DiveRun.tile_chunks` is
@@ -2494,8 +2670,17 @@ func _dive_cut_chunks(tile: int, d: int) -> void:
 		var size := Vector2(float(r["w"]), float(r["h"])) * tile_w
 		var mid := Vector2(tile_x + float(r["x"]) * tile_w,
 			dive_altitude_y(float(r["alt"])))
-		centres.append(mid)
-		slabs.append(Rect2(mid - size * 0.5, size))
+		# STAMPED ON BOTH SIDES OF THE SEAM. Generated ground repeats over a
+		# circumference on its own (IslandGen is periodic in a ring), but these
+		# slabs are an EDIT — they exist only where they are put. The seam tile
+		# sits astride the wrap line, so half of its rock would be missing from
+		# whichever edge you happened to arrive at. Stamping the ±circumference
+		# image too — wherever it still lands inside the world's margin — is the
+		# duplicated margin that makes the seam tile whole from either side.
+		for image in _dive_ring_images(mid):
+			var at := image as Vector2
+			centres.append(at)
+			slabs.append(Rect2(at - size * 0.5, size))
 	IslandGen.ensure_generated(terrain, world_seed, centres, tile_w * 0.5, 64)
 	for slab in slabs:
 		_stone((slab as Rect2).position, (slab as Rect2).size)
@@ -2581,9 +2766,7 @@ func dive_garrison_pos(row: Dictionary, near: Vector2) -> Vector2:
 	var x := cx + (DiveRun.zone_offset(int(row["tile"])) + float(row["x"])) * tile_w
 	var y := dive_altitude_y(float(row["alt"]))
 	if Tunables.get_bool("dive_zones_enabled"):
-		var ring_w := dive_ring_width()
-		if ring_w > 1.0:
-			x = near.x + wrapf(x - near.x + ring_w * 0.5, 0.0, ring_w) - ring_w * 0.5
+		x = near.x + RingSpace.fold(x - near.x, dive_ring_width())
 	return Vector2(x, y)
 
 
