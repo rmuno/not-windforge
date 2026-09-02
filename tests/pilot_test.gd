@@ -60,6 +60,11 @@ var _hold_hatch := Rect2()  ## lower platform strip: hold → out the belly
 
 
 func _initialize() -> void:
+	# THE OWNER'S REAL PROFILE IS NOT A FIXTURE: every suite writes through
+	# the profile (creature sightings, the F2 forget buttons, card takes), and
+	# a full run used to wipe the real bestiary + card gallery. Redirect first,
+	# before anything can touch disk.
+	Profile.path = "user://profile_test.json"
 	scale = _scale_from_args()
 	S = float(scale)
 	print("\n=== pilot test (%dx) ===\n" % scale)

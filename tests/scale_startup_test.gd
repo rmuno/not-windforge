@@ -12,6 +12,11 @@ var failures := 0
 
 
 func _initialize() -> void:
+	# THE OWNER'S REAL PROFILE IS NOT A FIXTURE: every suite writes through
+	# the profile (creature sightings, the F2 forget buttons, card takes), and
+	# a full run used to wipe the real bestiary + card gallery. Redirect first,
+	# before anything can touch disk.
+	Profile.path = "user://profile_test.json"
 	print("\n=== 8x default startup ===\n")
 
 	# 8x IS the main scene now (owner verdict 2026-08-18); this boots the

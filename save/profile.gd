@@ -19,6 +19,14 @@ extends RefCounted
 ## type in a test file (CODEMAP §4).
 
 const PATH := "user://profile.json"
+
+## Where load/save actually point. THE SUITES REDIRECT THIS to a scratch file
+## in their _initialize — every full run used to WIPE the owner's real
+## bestiary + card gallery (the creature-log check and the F2 forget buttons
+## write through the live path), which on a machine where the assistant runs
+## run_all constantly meant the profile never survived a working session. A
+## `static var` so a test can point it away; the game never touches it.
+static var path := PATH
 ## Bump when the shape changes and migrate in `from_dict`; an unrecognised format
 ## loads as empty (the same graceful gate SaveGame uses).
 const FORMAT_VERSION := 1
@@ -39,9 +47,9 @@ var cards := DiveCards.new()
 ## file yet, an unreadable handle, malformed JSON, or an unsupported format — so a
 ## first-run or corrupt profile is simply "nothing met yet".
 static func load() -> Profile:
-	if not FileAccess.file_exists(PATH):
+	if not FileAccess.file_exists(path):
 		return Profile.new()
-	var f := FileAccess.open(PATH, FileAccess.READ)
+	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
 		return Profile.new()
 	var text := f.get_as_text()
@@ -81,7 +89,7 @@ func to_dict() -> Dictionary:
 ## be opened — never throws. Called when a creature is newly met or a card is
 ## taken for the first time, so it is a small write on a rare event.
 func save() -> bool:
-	var f := FileAccess.open(PATH, FileAccess.WRITE)
+	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
 		return false
 	f.store_string(JSON.stringify(to_dict(), "\t"))

@@ -12,6 +12,11 @@ var failures := 0
 
 
 func _initialize() -> void:
+	# THE OWNER'S REAL PROFILE IS NOT A FIXTURE: every suite writes through
+	# the profile (creature sightings, the F2 forget buttons, card takes), and
+	# a full run used to wipe the real bestiary + card gallery. Redirect first,
+	# before anything can touch disk.
+	Profile.path = "user://profile_test.json"
 	print("\n=== world startup (legacy 1x scene) ===\n")
 
 	# 8x is the shipped default (maps/world/world.tscn); this suite keeps
