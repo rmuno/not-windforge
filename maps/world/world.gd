@@ -1161,9 +1161,17 @@ func end_dive() -> void:
 		local_ship.hull_integrity = 0.0
 		local_ship.modulate = Color.WHITE
 		local_ship.physics_material_override = null   # the stock keel comes back
-	# ...and so do your legs: the move_speed card dial is run-scoped like the rest.
+	# ...and so does your body: every card dial stamped on it is run-scoped like the
+	# rest, so a character who walks out of a run walks, falls and grapples stock.
+	# The pool shrinks LAST (grant_bonus_health trims `health` to the smaller max),
+	# which is why it is not simply an assignment.
 	if is_instance_valid(player):
 		player.run_speed_mult = 1.0
+		player.hook_range_mult = 1.0
+		player.hook_speed_mult = 1.0
+		player.fall_damage_mult = 1.0
+		player.hook_carries_body = false
+		player.grant_bonus_health(0.0)
 	dive = null
 	_dive_shipless = 0.0
 	_dive_pressing = 0.0
@@ -2168,6 +2176,17 @@ func _tick_dive(delta: float) -> void:
 	# on a shipless run, where your legs are the only engine you have left.
 	if is_instance_valid(player):
 		player.run_speed_mult = _dive_mod("move_speed")
+		# The rest of the body's card dials, stamped the same way and for the same
+		# reasons (a card taken mid-fall applies the same frame). Long Line's two
+		# numbers, Thick Skin's landing discount, Harpooneer's Arm's rule switch...
+		player.hook_range_mult = _dive_mod("grapple_range")
+		player.hook_speed_mult = _dive_mod("grapple_speed")
+		player.fall_damage_mult = _dive_mod("fall_damage_taken")
+		player.hook_carries_body = _dive_flag("grapple_free_fire")
+		# ...and the ADDITIVE channel. Not an assignment: `grant_bonus_health`
+		# mends the difference the frame the pool grows, and does nothing on the
+		# thousand ticks after that (it is idempotent by design).
+		player.grant_bonus_health(_dive_add("max_hp"))
 	_dive_hold_the_descent(delta)
 	_dive_nudge_if_stuck(delta)
 	_dive_pursue(delta)
@@ -3085,11 +3104,30 @@ func _dive_mod(key: String) -> float:
 	return dive.modifier(key) if dive != null and dive.outcome == "" else 1.0
 
 
+## The held cards' ADDEND on dial `key`, or 0.0 outside a live run — the twin of
+## `_dive_mod` for the flat channel (Iron Constitution's +25 HP). Identity is 0
+## here and 1 there, which is exactly why they are two calls and not one.
+func _dive_add(key: String) -> float:
+	return dive.addend(key) if dive != null and dive.outcome == "" else 0.0
+
+
+## Is card rule `name` switched on right now? False outside a live run, so every
+## flag site is inert in ordinary play the way every dial site is 1.0.
+func _dive_flag(name: String) -> bool:
+	return dive != null and dive.outcome == "" and dive.flag(name)
+
+
 ## Apply every held card's proc for `event`. `damage` carries the hit size for
 ## lifesteal and the blast; it is 0 for kill/land events, where both are inert.
 func _dive_apply_procs(event: String, damage := 0.0) -> void:
 	if dive == null or dive.outcome != "":
 		return
+	# The bounce is gathered rather than applied in the loop, because it is ONE
+	# sequence however many cards ask for it: Chain Lightning carries its own
+	# first bounce so it reads as a complete card, and holding Ricochet Rounds
+	# alongside it must be an upgrade, not two shells. Max, never sum.
+	var ricochet := 0.0
+	var chain := 0.0
 	for p in dive.procs_for(event):
 		var pd := p as Dictionary
 		match String(pd.get("effect", "")):
@@ -3106,6 +3144,17 @@ func _dive_apply_procs(event: String, damage := 0.0) -> void:
 				# other event `_dive_hit_at` is unset and the blast is a no-op.
 				if damage > 0.0 and _dive_hit_at != Vector2.INF:
 					_dive_blast(_dive_hit_at, damage * float(pd.get("amount", 0.0)))
+			"ricochet":
+				ricochet = maxf(ricochet, float(pd.get("amount", 0.0)))
+			"chain":
+				chain = maxf(chain, float(pd.get("amount", 0.0)))
+	# THE BOUNCE, after every other proc on this hit has been paid. Only a hit has
+	# a place to bounce from, and A RICOCHET NEVER RICOCHETS — `_dive_in_ricochet`
+	# is the whole loop guard, and it is what makes "a bounce is a real damage
+	# event" safe to mean literally.
+	if ricochet > 0.0 and damage > 0.0 and _dive_hit_at != Vector2.INF \
+			and not _dive_in_ricochet:
+		_dive_ricochet(damage, ricochet, chain)
 
 
 ## WHERE the shell that is currently firing hit-procs landed, and WHO fired it.
@@ -3115,6 +3164,14 @@ func _dive_apply_procs(event: String, damage := 0.0) -> void:
 ## `Vector2.INF` is "nowhere", because Vector2.ZERO is a real world position.
 var _dive_hit_at := Vector2.INF
 var _dive_hit_by := 0
+## The hull the shell actually struck, for the duration of one `_dive_on_hit`.
+## The bounce needs it so it never bounces back into what it just hit.
+var _dive_hit_ship: Ship = null
+## True while a BOUNCE's own hit event is being paid out. The one guard that
+## stops Ricochet Rounds from bouncing forever: everything else on a hit
+## (lifesteal, coins, Cluster Shells) still fires off a bounce — that synergy is
+## the card's whole appeal — but the ricochet effect itself is skipped.
+var _dive_in_ricochet := false
 
 
 ## A card's "hit" procs, fired by a player/ship shell landing on an enemy (Shot
@@ -3130,9 +3187,11 @@ func _dive_on_hit(target: Object, damage: float, at := Vector2.INF) -> void:
 	# creature caught in the blast provokes at whoever pulled the trigger rather
 	# than at nobody (the whale-retaliation wiring reads exactly this field).
 	_dive_hit_by = struck.last_attacker_id if struck != null and is_instance_valid(struck) else 0
+	_dive_hit_ship = struck if struck != null and is_instance_valid(struck) else null
 	_dive_apply_procs("hit", damage)
 	_dive_hit_at = Vector2.INF
 	_dive_hit_by = 0
+	_dive_hit_ship = null
 
 
 ## THE BLAST — the "explode" effect's world half (owner's legendary, 2026-09-01).
@@ -3141,9 +3200,9 @@ func _dive_on_hit(target: Object, damage: float, at := Vector2.INF) -> void:
 ## `DiveCards.rect_distance` / `blast_catches` (pure, tested), and the damage goes
 ## through `Ship.net_damage_cell`, the same door a shell uses.
 ##
-## Wildlife counts as an enemy here (`faction != 0`) — a kraken is what you are
-## shooting at down deep — but a TAMED ally and a carcass never do: blowing up
-## your own tamed whale with your own card would be a betrayal, not a build.
+## Who counts as an enemy is `_dive_body_rows`' call, shared with the bounce — a
+## tamed ally and a carcass never do: blowing up your own tamed whale with your
+## own card would be a betrayal, not a build.
 ##
 ## Returns how many bodies it caught, which is what the suite asserts on.
 func _dive_blast(at: Vector2, hurt: float) -> int:
@@ -3152,37 +3211,121 @@ func _dive_blast(at: Vector2, hurt: float) -> int:
 	var radius := DiveCards.BLAST_RADIUS_PX * float(world_scale)
 	# Rows first (plain data), then the pure catcher, then the damage — the same
 	# world-decides split every other layer of this file uses.
+	var pair := _dive_body_rows(at)
+	var bodies: Array = pair[0]
+	var rows: Array = pair[1]
+	var caught := 0
+	for i in DiveCards.blast_catches(rows, radius):
+		var victim := bodies[i] as Ship
+		if victim == null or not is_instance_valid(victim):
+			continue
+		_dive_hurt_nearest_plating(victim, at, hurt)
+		caught += 1
+	return caught
+
+
+## EVERY LIVE HULL, measured from `at`, as [bodies, rows] — `bodies` the Ships and
+## `rows` the plain {hostile, dist} the pure catchers (`DiveCards.blast_catches`,
+## `nearest_catch`) read. Distance is to the PLATING in the ship's own frame, so a
+## long vessel is judged by the end nearest the shot at any rotation.
+##
+## Wildlife counts as hostile (`faction != 0`) — a kraken is what you are shooting
+## at down deep — but a TAMED ally and a carcass never do.
+func _dive_body_rows(at: Vector2) -> Array:
 	var bodies: Array = []
 	var rows: Array = []
+	if fleet == null:
+		return [bodies, rows]
 	for s in fleet.ships():
 		var ship := s as Ship
 		if ship == null or not is_instance_valid(ship):
 			continue
 		var hostile := ship.faction != 0 and not ship.is_tamed_ally() \
 			and not ship.is_carcass() and ship.solid_bounds.size != Vector2.ZERO
-		var local := ship.to_local(at)
 		bodies.append(ship)
 		rows.append({"hostile": hostile,
-			"dist": DiveCards.rect_distance(ship.solid_bounds, local)})
-	var caught := 0
-	for i in DiveCards.blast_catches(rows, radius):
-		var victim := bodies[i] as Ship
-		if victim == null or not is_instance_valid(victim):
-			continue
-		if _dive_hit_by != 0:
-			victim.last_attacker_id = _dive_hit_by
-		# Aim the blast at the plating NEAREST the detonation rather than at `at`
-		# itself: a hull twelve hundred pixels away has no block under the blast
-		# centre, and nearest_solid_cell only searches a few rings out.
-		var b := victim.solid_bounds
-		var local := victim.to_local(at)
-		var near := Vector2(
-			clampf(local.x, b.position.x, b.end.x),
-			clampf(local.y, b.position.y, b.end.y))
-		victim.net_damage_cell(
-			victim.nearest_solid_cell(victim.to_global(near)), hurt)
-		caught += 1
-	return caught
+			"dist": DiveCards.rect_distance(ship.solid_bounds, ship.to_local(at))})
+	return [bodies, rows]
+
+
+## Land `hurt` on `victim`'s plating NEAREST `at`, and return the world point it
+## actually struck. Aimed at the nearest plating rather than at `at` itself
+## because a hull twelve hundred pixels away has no block under the blast centre,
+## and `nearest_solid_cell` only searches a few rings out. Attribution travels
+## with it, so a creature caught here provokes at whoever pulled the trigger.
+func _dive_hurt_nearest_plating(victim: Ship, at: Vector2, hurt: float) -> Vector2:
+	if victim == null or not is_instance_valid(victim):
+		return at
+	if _dive_hit_by != 0:
+		victim.last_attacker_id = _dive_hit_by
+	var b := victim.solid_bounds
+	var local := victim.to_local(at)
+	var near := victim.to_global(Vector2(
+		clampf(local.x, b.position.x, b.end.x),
+		clampf(local.y, b.position.y, b.end.y)))
+	victim.net_damage_cell(victim.nearest_solid_cell(near), hurt)
+	return near
+
+
+## THE BOUNCE — the "ricochet"/"chain" effects' world half (owner-approved epic +
+## legendary, 2026-09-01). The shell that just landed `damage` leaps to the
+## NEAREST OTHER enemy within `RICOCHET_RADIUS_PX × world_scale` for `first` of
+## that damage, and — if a chain card is held — on again `CHAIN_HOPS` more times
+## for `chain` each, each hop measured from the body it just struck.
+##
+## A BOUNCE IS A REAL DAMAGE EVENT: the hit procs fire again on it, so Sanguine
+## Tide heals off it and Cluster Shells detonates on it. That synergy is the
+## reason these cards are priced where they are. The loop guard is one rule and
+## one flag: while `_dive_in_ricochet` is up, the ricochet effect itself is
+## skipped, so a bounce can never bounce.
+##
+## Never touches your own hull or a tamed ally (the row builder's `hostile`), and
+## never hits the same body twice in one sequence. Returns the number of bodies
+## the sequence struck, which is what the suite asserts on.
+func _dive_ricochet(damage: float, first: float, chain: float) -> int:
+	var steps := DiveCards.bounce_damages(damage, first, chain)
+	if steps.is_empty() or fleet == null or _dive_hit_at == Vector2.INF:
+		return 0
+	var radius := DiveCards.RICOCHET_RADIUS_PX * float(world_scale)
+	# Everything the sequence has already touched, by instance id — the struck
+	# hull seeds it, so the first bounce always goes somewhere NEW.
+	var spent := {}
+	if _dive_hit_ship != null and is_instance_valid(_dive_hit_ship):
+		spent[_dive_hit_ship.get_instance_id()] = true
+	var from := _dive_hit_at
+	var struck := 0
+	for hurt in steps:
+		var pair := _dive_body_rows(from)
+		var bodies: Array = pair[0]
+		var rows: Array = pair[1]
+		# The rows are rebuilt every hop (the measuring point moved), so the
+		# exclusion has to be re-indexed every hop too.
+		var taken: Array = []
+		for i in bodies.size():
+			var s := bodies[i] as Ship
+			if s == null or not is_instance_valid(s) or spent.has(s.get_instance_id()):
+				taken.append(i)
+		var idx := DiveCards.nearest_catch(rows, radius, taken)
+		if idx < 0:
+			break   # nothing left in reach: the chain runs out of sky
+		var victim := bodies[idx] as Ship
+		spent[victim.get_instance_id()] = true
+		var landed := _dive_hurt_nearest_plating(victim, from, float(hurt))
+		struck += 1
+		# ...and the bounce's own hit event. Guarded, saved and restored, because
+		# the outer hit is still mid-flight through `_dive_apply_procs` and its
+		# remaining procs must still detonate at the ORIGINAL impact point.
+		var was_at := _dive_hit_at
+		var was_ship := _dive_hit_ship
+		_dive_in_ricochet = true
+		_dive_hit_at = landed
+		_dive_hit_ship = victim
+		_dive_apply_procs("hit", float(hurt))
+		_dive_in_ricochet = false
+		_dive_hit_at = was_at
+		_dive_hit_ship = was_ship
+		from = landed
+	return struck
 
 
 ## Heal the player up to their pool — the sink for heal/lifesteal procs.
@@ -3274,6 +3417,23 @@ func debug_grant_card_draft() -> void:
 	dive.add_draft()
 	dive.offer(_dive_rng)
 	_notify("A card draft is waiting — press 1, 2 or 3.")
+
+
+## Debug (F2): deal the v0.134.0 SURVIVAL SUITE straight into the run's hand.
+## The seven cards it names change rules a random draft cannot be relied on to
+## hand you — a bounce, a reprieve, a grapple that works in free fall — and all
+## of them want to be felt in the same run to be judged. Grants only; the ids are
+## checked by `grant_card`, so a retired one is silently skipped.
+const DEBUG_CARD_SUITE := ["iron_constitution", "long_line", "harpooneers_arm",
+	"thick_skin", "ricochet_rounds", "chain_lightning", "second_heart"]
+
+
+func debug_grant_card_suite() -> void:
+	if dive == null or dive.outcome != "":
+		return
+	for id in DEBUG_CARD_SUITE:
+		dive.grant_card(String(id))
+	_notify("Survival suite dealt: %d cards in hand." % dive.cards.size())
 
 
 func debug_grant_dive_xp(amount: int) -> void:
@@ -6377,6 +6537,16 @@ func _watch_player_death() -> void:
 ## networked player-damage replication is a documented seam (BACKLOG).
 func _on_player_died(dead: Player) -> void:
 	if dead != player:
+		return
+	# SECOND HEART (the legendary), spent BEFORE any of the run-over paths below.
+	# The card promises "the first blow that would kill you leaves you at 1 HP",
+	# and this signal is fired from inside `Player.take_damage` the instant the
+	# pool empties — so putting the body back here is literally that, and the one
+	# life rule is untouched: the model's reprieve is spent once per run, and the
+	# next lethal blow falls straight through to `_dive_perish`.
+	if dive != null and dive.outcome == "" and dive.spend_second_heart():
+		player.health = 1.0
+		_notify("SECOND HEART. Something in your chest starts again. One HP.")
 		return
 	if _dive_perish():
 		return

@@ -324,6 +324,9 @@ func _initialize() -> void:
 	# world, stamps terrain, and un-claims the ship the boot gave you — every
 	# later check would be counting a world this one had rearranged.
 	await _check_dive(world, fleet)
+	# ...then the survival cards, which need their own run because they END one:
+	# Second Heart is spent and the blow after it finishes the run for real.
+	await _check_dive_survival(world, fleet)
 
 	# ...and LAST OF ALL, a second, SEPARATE boot: the streamlined dive world.
 	# This one cannot share the world above, because the whole point of it is
@@ -2831,6 +2834,13 @@ func _check_dive(world: Node, fleet) -> void:
 			boom_b.queue_free()
 		await world.get_tree().physics_frame
 
+		# --- THE BOUNCE (v0.134.0: Ricochet Rounds / Chain Lightning) -------
+		# Three hulks in a line, and every claim the two cards make is a
+		# MEASUREMENT here: the amounts come off each victim's own `damaged`
+		# signal, so "50% of the damage" and "35% each" are numbers rather than
+		# adjectives, and the third hull is what proves a bounce never bounces.
+		await _check_the_bounce(world, fleet, carded, pl)
+
 		# --- THE TAKE SITE RECORDS TO THE PROFILE (owner 2026-09-01) --------
 		# The title's card gallery shows what YOU have drafted, and there is
 		# exactly one place in the game that writes that: the moment a card is
@@ -3232,6 +3242,180 @@ func _check_backdrop(world: Node, fleet) -> void:
 		pl.max_health = pl.stats.max_health()
 		pl.health = pl.max_health
 	await process_frame
+
+
+## THE BOUNCE, with real hulls (v0.134.0). Three hulks in a line: a shell into A,
+## and the card has to carry it to B for exactly half the damage — and no further,
+## because a ricochet never ricochets. Then Chain Lightning is added and the same
+## shot has to reach C for 35%.
+##
+## The AMOUNTS are read off each victim's own `damaged` signal rather than
+## inferred from lost blocks, because "50% of the damage" is a number the card
+## prints on its face and block loss is not linear in it.
+func _check_the_bounce(world: Node, fleet, run, pl) -> void:
+	if run == null or pl == null or not is_instance_valid(pl):
+		return
+	var scale := float(world.get("world_scale"))
+	var reach := DiveCards.RICOCHET_RADIUS_PX * scale
+	var where: Vector2 = pl.global_position + Vector2(0.0, -6000.0 * scale)
+	var a = world.call("debug_spawn", "hulk", where)
+	var b = world.call("debug_spawn", "hulk", where + Vector2(1.0e5, 0.0))
+	var c = world.call("debug_spawn", "hulk", where + Vector2(2.0e5, 0.0))
+	await world.get_tree().physics_frame
+	if a == null or not is_instance_valid(a) or b == null or not is_instance_valid(b) \
+			or c == null or not is_instance_valid(c) or a.solid_bounds.size.x <= 0.0:
+		_ok(false, "the bounce check could spawn three hulks in a line")
+		return
+	# Spaced by the MEASURED beam plus a fifth of the bounce's reach, so the
+	# geometry is a fraction of the radius and never a raw pixel count (the
+	# eightfold-error family — the blast check carries the same scar).
+	var beam: float = a.solid_bounds.size.x
+	var step := Vector2(beam + reach * 0.2, 0.0)
+	a.global_position = where
+	b.global_position = where + step
+	c.global_position = where + step * 2.0
+	for body in [a, b, c]:
+		body.linear_velocity = Vector2.ZERO
+	# Every amount each hull is dealt, in order.
+	var got_b: Array = []
+	var got_c: Array = []
+	b.damaged.connect(func(_cell, amount): got_b.append(amount))
+	c.damaged.connect(func(_cell, amount): got_c.append(amount))
+	# ONLY the bounce card: Light Boots and Cluster Shells are still in the hand
+	# from the checks above, and a blast would hurt all three and prove nothing.
+	run.cards = ["ricochet_rounds"]
+	var impact: Vector2 = a.to_global(Vector2(
+		a.solid_bounds.end.x, a.solid_bounds.get_center().y))
+	var dmg := 4000.0
+	world.call("_dive_on_hit", a, dmg, impact)
+	_ok(got_b.size() == 1, "one shell, one bounce (%d hits on the neighbour)" % got_b.size())
+	if got_b.size() == 1:
+		_ok(is_equal_approx(float(got_b[0]), dmg * 0.5),
+			"...and it lands exactly 50%% of the damage (%.0f of %.0f)"
+				% [float(got_b[0]), dmg])
+	_ok(got_c.is_empty(),
+		"THE BOUNCE DOES NOT BOUNCE: the third hull is untouched (%d hits)" % got_c.size())
+	# ...and C really was reachable from B, or the line above proves nothing. The
+	# hop the chain would take is measured, not assumed.
+	var b_edge: Vector2 = b.to_global(Vector2(
+		b.solid_bounds.position.x, b.solid_bounds.get_center().y))
+	_ok(DiveCards.rect_distance(c.solid_bounds, c.to_local(b_edge)) <= reach,
+		"...with the third hull sitting well inside a bounce of the second")
+
+	# CHAIN LIGHTNING: the same shot, one more card, and the bolt keeps going.
+	got_b.clear()
+	got_c.clear()
+	run.cards = ["ricochet_rounds", "chain_lightning"]
+	world.call("_dive_on_hit", a, dmg, impact)
+	_ok(got_b.size() == 1 and is_equal_approx(float(got_b[0]), dmg * 0.5),
+		"holding both bounce cards still bounces ONCE to the first neighbour (%d)"
+			% got_b.size())
+	_ok(got_c.size() == 1, "Chain Lightning reaches the THIRD hull (%d hits)" % got_c.size())
+	if got_c.size() == 1:
+		_ok(is_equal_approx(float(got_c[0]), dmg * 0.35),
+			"...for 35%% of the ORIGINAL damage (%.0f of %.0f)" % [float(got_c[0]), dmg])
+	# Your own ship is never a link in the chain, however close it is parked.
+	var mine = world.get("local_ship")
+	if mine != null and is_instance_valid(mine):
+		var mine_before: int = mine.blocks.size()
+		var mine_hits: Array = []
+		mine.damaged.connect(func(_cell, amount): mine_hits.append(amount))
+		world.call("_dive_on_hit", a, dmg, impact)
+		_ok(mine_hits.is_empty() and mine.blocks.size() == mine_before,
+			"a bounce never leaps to your own hull")
+	# Leave the fleet as found — every later check counts the ships it finds.
+	for body in [a, b, c]:
+		if body != null and is_instance_valid(body):
+			body.queue_free()
+	await world.get_tree().physics_frame
+
+
+## THE BODY'S OWN CARD DIALS AND SECOND HEART (v0.134.0).
+##
+## Its own run, because it ENDS one: the reprieve is spent, then the next lethal
+## blow has to finish the run for real. Driven through `Player.take_damage` — the
+## same door a hostile shell knocks on — so what is pinned is the wiring, not a
+## model call the game might never make.
+func _check_dive_survival(world: Node, fleet) -> void:
+	print("\n--- THE SURVIVAL CARDS: the pool, the grapple, the second heart ---")
+	var pl = world.get("player")
+	if pl == null or not is_instance_valid(pl):
+		_ok(false, "the survival check has a body to hurt")
+		return
+	world.call("begin_dive")
+	await _dive_take_a_hull(world, fleet)
+	var run = world.get("dive")
+	if run == null:
+		_ok(false, "the survival check has a live run")
+		return
+
+	# --- The stamps: every body dial the cards move, on the real body --------
+	_ok(is_equal_approx(pl.hook_range_mult, 1.0) and is_equal_approx(pl.hook_speed_mult, 1.0)
+			and not pl.hook_carries_body and is_zero_approx(pl.bonus_max_health)
+			and is_equal_approx(pl.fall_damage_mult, 1.0),
+		"a run with no survival cards leaves the body entirely stock")
+	var stock_pool: float = pl.max_health
+	pl.health = stock_pool * 0.4
+	var hurt_at: float = pl.health
+	# Dealt through the F2 button the owner playtests with, not by hand — so the
+	# standing order ("a feature F2 cannot reach is invisible") is pinned too, and
+	# a typo in its id list reddens here rather than in a play session.
+	world.call("debug_grant_card_suite")
+	var dealt := true
+	for id in ["iron_constitution", "long_line", "harpooneers_arm", "thick_skin",
+			"ricochet_rounds", "chain_lightning", "second_heart"]:
+		if not run.cards.has(String(id)):
+			dealt = false
+	_ok(dealt, "F2's survival-suite button deals all seven cards into the hand (%d held)"
+		% run.cards.size())
+	world.call("_tick_dive", 0.016)
+	_ok(pl.hook_range_mult > 1.0 and pl.hook_speed_mult > 1.0,
+		"Long Line's two dials are stamped on the body each tick (%.2fx / %.2fx)"
+			% [pl.hook_range_mult, pl.hook_speed_mult])
+	_ok(float(pl.call("_hook_range")) > pl.HOOK_MAX_RANGE
+			and float(pl.call("_hook_speed")) > pl.HOOK_SPEED,
+		"...and the grapple really reaches further and flies faster (%.0f px / %.0f px/s)"
+			% [float(pl.call("_hook_range")), float(pl.call("_hook_speed"))])
+	_ok(pl.hook_carries_body,
+		"Harpooneer's Arm lifts the free-fall restriction on the body itself")
+	_ok(pl.fall_damage_mult < 1.0,
+		"Thick Skin softens the landing bill (%.2fx)" % pl.fall_damage_mult)
+	_ok(is_equal_approx(pl.max_health, stock_pool + 75.0),
+		"the flat HP cards raise the real pool (%.0f -> %.0f)" % [stock_pool, pl.max_health])
+	_ok(is_equal_approx(pl.health, hurt_at + 75.0),
+		"...and MEND the difference, so you are not left as close to death (%.0f -> %.0f)"
+			% [hurt_at, pl.health])
+	# Stamped every tick, and idempotent: ticking again must not heal you again.
+	var settled: float = pl.health
+	world.call("_tick_dive", 0.016)
+	world.call("_tick_dive", 0.016)
+	_ok(is_equal_approx(pl.health, settled),
+		"the stamp is idempotent — a hundred ticks is not a hundred heals")
+
+	# --- SECOND HEART: once, and then never again this run -------------------
+	world.call("_watch_player_death")
+	pl.health = pl.max_health
+	pl.take_damage(pl.max_health * 3.0)
+	_ok(is_equal_approx(pl.health, 1.0),
+		"a lethal blow with Second Heart leaves you at exactly 1 HP (%.1f)" % pl.health)
+	_ok(String(run.outcome) == "", "...and the run is still live")
+	_ok(run.second_heart_spent, "...with the reprieve marked spent")
+	# The one-life rule is untouched: the NEXT one is the end of the run.
+	pl.take_damage(pl.max_health * 3.0)
+	_ok(is_zero_approx(pl.health), "the second lethal blow is not survived")
+	_ok(String(run.outcome) == "lost",
+		"...and it ends the run for real (outcome '%s')" % String(run.outcome))
+
+	world.call("end_dive")
+	_ok(is_equal_approx(pl.hook_range_mult, 1.0) and is_equal_approx(pl.hook_speed_mult, 1.0)
+			and not pl.hook_carries_body and is_equal_approx(pl.fall_damage_mult, 1.0)
+			and is_zero_approx(pl.bonus_max_health),
+		"ending the run puts every body dial back to stock")
+	_ok(is_equal_approx(pl.max_health, stock_pool),
+		"...and the health pool with them (%.0f)" % pl.max_health)
+	# Leave the body whole for whatever runs after this.
+	pl.health = pl.max_health
+	await world.get_tree().physics_frame
 
 
 func _ok(condition: bool, detail: String) -> void:

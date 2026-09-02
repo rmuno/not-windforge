@@ -277,6 +277,14 @@ func _build_spawn_tab() -> void:
 		func() -> void:
 			if world != null and world.has_method("debug_grant_dive_xp"):
 				world.call("debug_grant_dive_xp", 100))
+	# THE SURVIVAL SUITE (v0.134.0). The seven new cards change things a draft
+	# cannot be relied on to hand you — a bounce, a reprieve, a grapple that works
+	# in free fall — so one button deals the whole suite into the run's hand.
+	# STANDING ORDER: a feature the owner cannot reach through F2 is invisible.
+	_action_button(box, "DIVE CARD: deal the survival suite (the 7 new cards)",
+		func() -> void:
+			if world != null and world.has_method("debug_grant_card_suite"):
+				world.call("debug_grant_card_suite"))
 	# The CARD GALLERY on the title (the taken-cards log in the profile): fill it
 	# or wipe it — the same pair the bestiary has, so the page is playtestable
 	# without drafting the whole deck across a dozen runs. These work OUTSIDE a run
