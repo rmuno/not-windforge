@@ -3205,6 +3205,10 @@ func take_dive_card(index: int) -> bool:
 	var id := String(d[index - 1])
 	if dive.take(id):
 		_notify("Card: %s — %s" % [DiveCards.name_of(id), DiveCards.desc_of(id)])
+		# THE TAKE SITE IS THE RECORD (owner 2026-09-01). The held card burns with
+		# the run; the fact that you once drafted it is permanent, and this is the
+		# only place in the game that writes it.
+		_note_card(id)
 		# Another draft owed (a fat kill can fill two bars)? Refill NOW — the
 		# world is paused, so the tick cannot — and stay held; otherwise breathe.
 		dive.offer(_dive_rng)
@@ -4352,6 +4356,50 @@ func creature_log_status() -> Dictionary:
 	if creature_profile == null:
 		return {"met": 0, "total": CreatureLog.total()}
 	return {"met": creature_profile.creatures.count(), "total": CreatureLog.total()}
+
+
+# --- The card log (the title-screen card gallery, workshop page 2) ----------
+#
+# The same shape as the creature log above, one layer thinner: there is no sensor
+# to run, because the discovery event is the player's own click. `take_dive_card`
+# calls `_note_card`, this persists it, and the title reads the profile with no
+# world loaded. `creature_profile` is the ONE profile object (it kept its name
+# from when the bestiary was the only log in it) and now carries both.
+
+## Record one card id as taken, forever. Persists only on a genuinely new card, so
+## a run full of repeats writes nothing. Silent — the take already floats its own
+## notice, and a second toast on the same keypress would be noise.
+func _note_card(id: String) -> void:
+	if creature_profile == null:
+		return
+	if creature_profile.cards.mark(id):
+		creature_profile.save()
+
+
+## {taken, total} for the F2 readout — the card half of creature_log_status.
+func card_log_status() -> Dictionary:
+	if creature_profile == null:
+		return {"taken": 0, "total": DiveCards.total()}
+	return {"taken": creature_profile.cards.count(), "total": DiveCards.total()}
+
+
+## F2 Spawn-tab cheats for playtesting the gallery without drafting the whole deck
+## across a dozen runs. Both persist, so a quit-to-title shows the result at once.
+func debug_reveal_cards() -> void:
+	if creature_profile == null:
+		creature_profile = Profile.new()
+	for c in DiveCards.CATALOG:
+		creature_profile.cards.mark(String((c as Dictionary)["id"]))
+	creature_profile.save()
+	_notify("Card gallery revealed (%d cards)" % DiveCards.total())
+
+
+func debug_forget_cards() -> void:
+	if creature_profile == null:
+		creature_profile = Profile.new()
+	creature_profile.cards.taken.clear()
+	creature_profile.save()
+	_notify("Card gallery forgotten")
 
 
 ## F2 Spawn-tab cheats for playtesting the bestiary without hunting the whole

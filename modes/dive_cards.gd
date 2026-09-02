@@ -170,6 +170,11 @@ const DIALS := ["weapon_damage", "turret_damage", "fire_rate", "hull_repair",
 	"thrust", "move_speed", "grapple", "ride"]
 
 
+## The whole deck's size — the denominator of "N of M taken" in the gallery.
+static func total() -> int:
+	return CATALOG.size()
+
+
 ## The tier a card sits in (defaults to common, so an un-tiered row is still legal
 ## data — the suite is what insists every shipped row names one).
 static func rarity_of(id: String) -> String:
@@ -232,10 +237,116 @@ static func blast_catches(rows: Array, radius: float) -> Array:
 	return out
 
 
-## THE CARD CODEX — the whole deck as a page for the title's WORKSHOP (owner
-## 2026-08-31: "the workshop should have a card viewer perhaps as with
-## bestiary"). Unlike the bestiary there is nothing to hide: the deck is the
-## run's toolbox, and knowing it is strategy, not a spoiler.
+# --- THE CARD LOG (an instance) --------------------------------------------
+#
+# WHICH CARDS YOU HAVE EVER TAKEN, across every run and every save (owner
+# 2026-09-01: "the card screen from the title should display the individual known
+# cards based on what the user has selected"). The exact shape CreatureLog uses
+# for creatures — catalog statics above, a discovered set and its dict codec
+# here, and the page model below — so `save/profile.gd` stores the two logs the
+# same way and the title reads them the same way.
+#
+# It lives HERE rather than in a new file for the same reason the bestiary's set
+# lives in CreatureLog: the set is meaningless without the catalog that defines
+# which ids are real, and one file means an id can never be spelled two ways.
+#
+# Held cards inside a live run stay `DiveRun.held` (they burn with the run). This
+# is the META record, and the only thing that writes it is the world's take site.
+
+## Taken card ids, as a set (id -> true). A Dictionary so `has`/`mark` are O(1)
+## and it JSON round-trips straight into the profile.
+var taken := {}
+
+
+## Record that card `id` has been taken. True only on a genuinely NEW card that
+## is really in the catalog — the signal the world uses to persist. An unknown id
+## (a card since cut from the deck) is dropped rather than stored.
+func mark(id: String) -> bool:
+	if id == "" or not is_known(id) or taken.has(id):
+		return false
+	taken[id] = true
+	return true
+
+
+func has(id: String) -> bool:
+	return taken.has(id)
+
+
+## How many DISTINCT catalog cards have been taken — counted against the CATALOG,
+## so a stale id from an older deck cannot inflate the gallery's header.
+func count() -> int:
+	var n := 0
+	for c in CATALOG:
+		if taken.has(String((c as Dictionary)["id"])):
+			n += 1
+	return n
+
+
+## The set as a JSON-safe dict {id: true}. Only ids still in the deck are written,
+## so a retired card is quietly cleaned out on the next save.
+func to_dict() -> Dictionary:
+	var out := {}
+	for c in CATALOG:
+		var id := String((c as Dictionary)["id"])
+		if taken.has(id):
+			out[id] = true
+	return out
+
+
+static func from_dict(data: Dictionary) -> DiveCards:
+	var log := DiveCards.new()
+	for key in data.keys():
+		var id := String(key)
+		if is_known(id) and bool(data[key]):
+			log.taken[id] = true
+	return log
+
+
+# --- THE GALLERY MODEL (pure; the title's CARDS page paints these rows) ------
+
+## The whole deck as PLAIN ROWS for the card gallery, grouped in tier order
+## (common → legendary), each {id, name, desc, rarity, rarity_label, color,
+## taken}. World-decides/layer-paints: the panel never asks the catalog anything,
+## it just builds one tile per row and dims the ones with `taken` false.
+##
+## EVERY card is a row, taken or not. The deck is strategy, not a spoiler (the
+## codex's own doctrine, unchanged since it was a wall of text) — so an untaken
+## card still shows its name and what it does; it is simply dimmed, which is what
+## makes the gallery read as progress rather than as a locked grid.
+static func gallery_rows(taken_set: Dictionary) -> Array:
+	var out: Array = []
+	for tier in RARITIES:
+		for c in CATALOG:
+			var cd := c as Dictionary
+			if String(cd.get("rarity", "common")) != tier:
+				continue
+			out.append({
+				"id": String(cd["id"]),
+				"name": String(cd["name"]),
+				"desc": String(cd.get("desc", "")),
+				"rarity": String(tier),
+				"rarity_label": rarity_label(String(tier)),
+				"color": rarity_color(String(tier)),
+				"taken": taken_set.has(String(cd["id"])),
+			})
+	return out
+
+
+## How many of the deck a set has taken — counted against the CATALOG (a stale id
+## does not count), so the gallery's "N of M" is always honest.
+static func taken_count(taken_set: Dictionary) -> int:
+	var n := 0
+	for c in CATALOG:
+		if taken_set.has(String((c as Dictionary)["id"])):
+			n += 1
+	return n
+
+
+## THE CARD CODEX — the whole deck as one block of text. The title's CARDS page
+## paints TILES now (gallery_rows above, owner 2026-09-01: "I'd like to see them
+## as cards not as a wall of text"), but this stays: it is the cheapest complete
+## assertion that every shipped row has a name, a description and a tier, and the
+## suite reads it as exactly that.
 static func codex_text() -> String:
 	var lines: Array = [
 		"",

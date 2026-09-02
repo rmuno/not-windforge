@@ -68,6 +68,7 @@ func _initialize() -> void:
 	_test_dive_cards()
 	_test_dive_blast()
 	_test_creature_log()
+	_test_card_log()
 	await _test_hull_integrity()
 	await _test_sealed_pockets_cut_a_holed_body()
 	await _test_living_whale_rests_on_terrain_with_coarse_collider()
@@ -1948,6 +1949,131 @@ func _test_creature_log() -> void:
 	var one_text := CreatureLog.bestiary_text({"whale": true})
 	_check(one_text.contains("Met 1 of") and one_text.contains("Blue Whale"),
 		"a met creature shows its name and bumps the count")
+
+
+## THE CARD LOG + THE GALLERY MODEL (owner 2026-09-01: "the card screen from the
+## title should display the individual known cards based on what the user has
+## selected... as cards not as a wall of text").
+##
+## Three things, all pure: the taken-set behaves like the creature log's
+## discovered-set, the PROFILE carries it to disk and back (and an OLD profile
+## written before the key existed still loads its bestiary), and `gallery_rows` —
+## the model the title's tiles are built from — is one row per card in tier order
+## with the right `taken` flag.
+func _test_card_log() -> void:
+	_t("THE CARD LOG: taken cards persist, and the gallery's rows are the deck")
+
+	# --- The taken set: new-once, idempotent, guarded -----------------------
+	var log := DiveCards.new()
+	_check(log.count() == 0 and not log.has("honed_edge"), "a fresh card log is empty")
+	_check(log.mark("honed_edge"), "taking a card for the first time is NEW")
+	_check(not log.mark("honed_edge"), "taking it again in a later run is not new")
+	_check(log.has("honed_edge") and log.count() == 1, "the card is in the log")
+	_check(not log.mark("not_a_card") and not log.mark(""),
+		"an unknown or empty id never marks")
+	_check(log.count() == 1, "...and the failed marks left the count alone")
+
+	# --- Dict round-trip, and a retired card is dropped ---------------------
+	log.mark("sanguine_tide")
+	var back := DiveCards.from_dict(log.to_dict())
+	_check(back.has("honed_edge") and back.has("sanguine_tide") and back.count() == 2,
+		"a card log round-trips through to_dict/from_dict")
+	var stale := DiveCards.from_dict({"honed_edge": true, "cut_from_the_deck": true})
+	_check(stale.count() == 1 and not stale.has("cut_from_the_deck"),
+		"a card since cut from the deck is ignored, not counted")
+
+	# --- The profile carries it (pure half) ---------------------------------
+	var prof := Profile.new()
+	prof.cards.mark("kings_ransom")
+	prof.creatures.mark("whale")
+	var prof2 := Profile.from_dict(prof.to_dict())
+	_check(prof2.cards.has("kings_ransom"), "the profile carries the card log through a dict")
+	_check(prof2.creatures.has("whale"), "...alongside the bestiary, in one profile")
+	# THE OLD-PROFILE GATE: every profile on disk before today has no "cards" key
+	# at all. It must load its bestiary and an EMPTY card log — the format version
+	# deliberately did not move, because a bump would wipe the log that is there.
+	var old := Profile.from_dict({"format": Profile.FORMAT_VERSION,
+		"creatures": {"whale": true}})
+	_check(old.creatures.has("whale") and old.cards.count() == 0,
+		"an old profile with no card key loads clean: bestiary kept, cards empty")
+
+	# --- The disk round-trip -------------------------------------------------
+	# The suite shares user:// with the owner's real profile, so the file is put
+	# back exactly as found (the bestiary checks already stomp it; this one does
+	# not add to that).
+	var had := FileAccess.file_exists(Profile.PATH)
+	var kept := ""
+	if had:
+		var rf := FileAccess.open(Profile.PATH, FileAccess.READ)
+		if rf != null:
+			kept = rf.get_as_text()
+			rf.close()
+	var writing := Profile.new()
+	writing.cards.mark("cluster_shells")
+	writing.cards.mark("quick_hands")
+	_check(writing.save(), "the profile writes to disk")
+	var read_back := Profile.load()
+	_check(read_back.cards.has("cluster_shells") and read_back.cards.has("quick_hands")
+			and read_back.cards.count() == 2,
+		"...and the taken cards are still there after a load")
+	if had:
+		var wf := FileAccess.open(Profile.PATH, FileAccess.WRITE)
+		if wf != null:
+			wf.store_string(kept)
+			wf.close()
+	else:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(Profile.PATH))
+
+	# --- The gallery model (what the title's tiles are built from) ----------
+	var rows := DiveCards.gallery_rows({})
+	_check(rows.size() == DiveCards.total() and rows.size() == DiveCards.CATALOG.size(),
+		"the gallery has one row per card (%d)" % rows.size())
+	var seen := {}
+	var tier_first := {}
+	for i in rows.size():
+		var r := rows[i] as Dictionary
+		seen[String(r["id"])] = true
+		if not tier_first.has(String(r["rarity"])):
+			tier_first[String(r["rarity"])] = i
+		_check(not String(r["name"]).is_empty() and not String(r["desc"]).is_empty(),
+			"row '%s' carries a name and a description" % r["id"])
+	_check(seen.size() == rows.size(), "...and every row is a distinct card")
+	# TIER ORDER, weakest first — the sections the page draws, in the catalog's
+	# own display order.
+	var ordered := true
+	var last := -1
+	for tier in DiveCards.RARITIES:
+		if not tier_first.has(tier):
+			continue
+		if int(tier_first[tier]) < last:
+			ordered = false
+		last = int(tier_first[tier])
+	_check(ordered, "the rows run common -> legendary, grouped by tier")
+	# NOTHING IS HIDDEN: an untaken card still names itself. The deck is strategy,
+	# not a spoiler — the codex doctrine, carried into the tiles.
+	var untaken_named := true
+	for r in rows:
+		if bool((r as Dictionary)["taken"]):
+			untaken_named = false
+		if String((r as Dictionary)["name"]).contains("?"):
+			untaken_named = false
+	_check(untaken_named, "with nothing taken, every card is still named (no ??? wall)")
+	# ...and the taken flag follows the set, not the catalog.
+	var lit := DiveCards.gallery_rows({"honed_edge": true})
+	var lit_n := 0
+	for r in lit:
+		if bool((r as Dictionary)["taken"]):
+			lit_n += 1
+			_check(String((r as Dictionary)["id"]) == "honed_edge",
+				"the lit row is the one that was taken")
+	_check(lit_n == 1, "exactly one row lights for a one-card log")
+	_check(DiveCards.taken_count({"honed_edge": true, "cut_from_the_deck": true}) == 1,
+		"the header's count ignores a card no longer in the deck")
+	# Every row carries the picker's own colour for its tier — the in-run card and
+	# the gallery tile cannot drift apart, because they read one table.
+	var legend := DiveCards.gallery_rows({})[rows.size() - 1] as Dictionary
+	_check((legend["color"] as Color) == DiveCards.rarity_color(String(legend["rarity"])),
+		"a row's colour is the catalog's rarity colour")
 
 
 ## HULL INTEGRITY (v0.111.0): an ARMED vessel drains a shared pool by the

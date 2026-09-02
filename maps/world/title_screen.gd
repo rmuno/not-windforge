@@ -10,6 +10,11 @@ extends PanelContainer
 ##              the workshop? should be in game"): the Bestiary today, the
 ##              records board and builder tomorrow — one page they all hang off.
 ##   BESTIARY — the creature log, read from the persistent profile.
+##   CARDS    — the CARD GALLERY: one tile per card in the Dive's deck, grouped
+##              by rarity, the ones you have actually drafted lit and the rest
+##              dimmed. Also read from the profile (owner 2026-09-01: "the card
+##              screen should display the individual known cards based on what
+##              the user has selected... as cards not as a wall of text").
 ##
 ## CLICKABLE, NOT KEY-SALAD (owner 2026-08-31: "don't add all the random
 ## keybindings on the title screen. Those can be clickable. No need to force
@@ -30,6 +35,22 @@ var page: int = Page.TITLE
 ## it from the persistent profile and hands it over before open(); this panel
 ## knows nothing about disk. Empty = a fresh player who has met nothing.
 var discovered := {}
+
+## The taken-cards set (id -> true) the CARDS page renders lit. Handed over the
+## same way `discovered` is — the intro reads the profile once and passes both;
+## this panel never touches disk and never sees a world. Empty = nothing drafted
+## yet, and the whole gallery is dimmed (every card still legible).
+var cards_taken := {}
+
+## THE GALLERY'S SHAPE. Four columns of fixed tiles inside a scroll box: the deck
+## is nineteen cards and the panel is a plain centred VBox with no scroll of its
+## own, so a taller page simply ran off the bottom of a 720p window (the wall of
+## text hit exactly this, which is why it was one line per card). Four × 196 plus
+## the gaps is ~810 px wide and the box is capped at 430 px tall — the whole page,
+## header and back button included, fits inside 720p with room to spare.
+const GALLERY_COLUMNS := 4
+const GALLERY_TILE := Vector2(196, 96)
+const GALLERY_MAX_HEIGHT := 430.0
 
 var _rows: VBoxContainer
 
@@ -102,7 +123,11 @@ func _repaint() -> void:
 			_label(CreatureLog.bestiary_text(discovered), 13)
 			_list_button("back", func() -> void: _go(Page.WORKSHOP))
 		Page.CARDS:
-			_label(DiveCards.codex_text(), 13)
+			var deck: Array = DiveCards.gallery_rows(cards_taken)
+			_label("  T H E   C A R D S  ", 15)
+			_label("  %d of %d taken in your runs  "
+				% [DiveCards.taken_count(cards_taken), deck.size()], 12)
+			_card_gallery(deck)
 			_list_button("back", func() -> void: _go(Page.WORKSHOP))
 		_:
 			_label("\n  N O T   W I N D F O R G E  \n", 17)
@@ -176,6 +201,126 @@ func _mode_card(row: Container, chip: String, mode_name: String, desc: String,
 				and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
 			cb.call())
 	row.add_child(card)
+
+
+## THE CARD GALLERY — a scrolling column of rarity sections, each a grid of card
+## tiles. `deck` is the model's plain rows (DiveCards.gallery_rows); this reads
+## nothing else, so the page is exactly as truthful as that pure function
+## (world-decides/layer-paints, with the catalog standing in for the world).
+func _card_gallery(deck: Array) -> void:
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(
+		float(GALLERY_COLUMNS) * GALLERY_TILE.x + float(GALLERY_COLUMNS + 1) * 8.0,
+		GALLERY_MAX_HEIGHT)
+	# Vertical only: the grid is sized to fit the width exactly, and a sideways
+	# scrollbar on a page of cards reads as a layout bug.
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	scroll.add_child(col)
+	_rows.add_child(scroll)
+	# The rows arrive already in tier order, so a change of rarity opens a new
+	# section — no second pass over the catalog, and the grouping cannot disagree
+	# with the model's order.
+	var tier := ""
+	var grid: GridContainer = null
+	for row in deck:
+		var r := row as Dictionary
+		if String(r.get("rarity", "")) != tier:
+			tier = String(r.get("rarity", ""))
+			var head := Label.new()
+			head.text = "  %s  " % String(r.get("rarity_label", tier.to_upper()))
+			head.add_theme_font_size_override("font_size", 11)
+			head.add_theme_color_override("font_color",
+				Color(r.get("color", Color.WHITE) as Color, 0.85))
+			col.add_child(head)
+			grid = GridContainer.new()
+			grid.columns = GALLERY_COLUMNS
+			grid.add_theme_constant_override("h_separation", 8)
+			grid.add_theme_constant_override("v_separation", 8)
+			col.add_child(grid)
+		if grid != null:
+			_card_tile(grid, r)
+
+
+## ONE CARD TILE. The in-run picker's visual language, brought to the title
+## (dive_hud._draw_draft): the rarity is the colour, and a rarer card wears a
+## thicker, brighter frame, so the shape of your collection reads before a word
+## of it does.
+##
+## TAKEN vs NOT is the second axis, and it is deliberately NOT a lock: an untaken
+## card shows its name and exactly what it does, dimmed (the codex's doctrine —
+## the deck is strategy, not a spoiler). The tick mark carries the same fact
+## without colour, so the page still works if the dimming is hard to see.
+func _card_tile(parent: Container, row: Dictionary) -> void:
+	var taken := bool(row.get("taken", false))
+	var tint := row.get("color", Color(0.88, 0.92, 1.0)) as Color
+	var rare := String(row.get("rarity", "common")) != "common"
+	var card := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.05, 0.07, 0.11, 0.92)
+	style.border_color = Color(tint, 0.85 if rare else 0.55)
+	style.set_border_width_all(2 if rare else 1)
+	style.set_content_margin_all(10)
+	card.add_theme_stylebox_override("panel", style)
+	card.custom_minimum_size = GALLERY_TILE
+	# A tile is a fact, not a button — nothing on this page is clickable, so it
+	# keeps the arrow cursor and the page stays a display.
+	if not taken:
+		card.modulate = Color(1.0, 1.0, 1.0, 0.42)
+	# The suite counts tiles and reads their ids through these (a headless test
+	# cannot see a drawn card, and walking for Labels would count the headers too).
+	card.set_meta("card_id", String(row.get("id", "")))
+	card.set_meta("card_taken", taken)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 3)
+	card.add_child(col)
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 6)
+	col.add_child(top)
+	var n := Label.new()
+	n.text = ("✓ " if taken else "·  ") + String(row.get("name", ""))
+	n.add_theme_font_size_override("font_size", 13)
+	n.add_theme_color_override("font_color", tint)
+	n.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top.add_child(n)
+	var tier_word := Label.new()
+	tier_word.text = String(row.get("rarity_label", ""))
+	tier_word.add_theme_font_size_override("font_size", 8)
+	tier_word.add_theme_color_override("font_color", Color(tint, 0.7))
+	top.add_child(tier_word)
+	var d := Label.new()
+	d.text = String(row.get("desc", ""))
+	d.add_theme_font_size_override("font_size", 10)
+	d.add_theme_color_override("font_color", Color(0.78, 0.82, 0.90))
+	d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	d.custom_minimum_size = Vector2(GALLERY_TILE.x - 24.0, 0.0)
+	col.add_child(d)
+	parent.add_child(card)
+
+
+## Every card tile currently on screen, as {id, taken} rows. The suite's handle on
+## the gallery — asked through a method rather than by walking the tree from a
+## test, so the panel owns how a tile is recognised.
+func card_tiles() -> Array:
+	var out: Array = []
+	_collect_tiles(self, out)
+	return out
+
+
+func _collect_tiles(node: Node, out: Array) -> void:
+	# A repaint queue_frees the old page and builds the new one in the SAME frame,
+	# so the previous page's tiles are still children until the tree catches up.
+	# Skipping the doomed ones is what makes this an answer about what is on
+	# screen rather than about how many times the page has been opened.
+	if node.is_queued_for_deletion():
+		return
+	if node.has_meta("card_id"):
+		out.append({"id": String(node.get_meta("card_id")),
+			"taken": bool(node.get_meta("card_taken"))})
+	for child in node.get_children():
+		_collect_tiles(child, out)
 
 
 func _go(to: int) -> void:

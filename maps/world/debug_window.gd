@@ -277,6 +277,18 @@ func _build_spawn_tab() -> void:
 		func() -> void:
 			if world != null and world.has_method("debug_grant_dive_xp"):
 				world.call("debug_grant_dive_xp", 100))
+	# The CARD GALLERY on the title (the taken-cards log in the profile): fill it
+	# or wipe it — the same pair the bestiary has, so the page is playtestable
+	# without drafting the whole deck across a dozen runs. These work OUTSIDE a run
+	# too: the log is meta, not run state.
+	_action_button(box, "CARD GALLERY: reveal every card (fills the title gallery)",
+		func() -> void:
+			if world != null and world.has_method("debug_reveal_cards"):
+				world.call("debug_reveal_cards"))
+	_action_button(box, "CARD GALLERY: forget every card (wipe the gallery)",
+		func() -> void:
+			if world != null and world.has_method("debug_forget_cards"):
+				world.call("debug_forget_cards"))
 
 
 func _build_player_tab() -> void:
@@ -490,6 +502,11 @@ Sites:    %-6d  charted, %d/%d residents out" % [
 		var cl: Dictionary = world.call("creature_log_status")
 		sites += "\nBestiary: %-6s  creatures met" % ("%d/%d" % [
 			int(cl.get("met", 0)), int(cl.get("total", 0))])
+	# CARD LOG (the title gallery): how much of the deck has ever been drafted.
+	if world != null and world.has_method("card_log_status"):
+		var kl: Dictionary = world.call("card_log_status")
+		sites += "\nCards:    %-6s  cards taken (ever)" % ("%d/%d" % [
+			int(kl.get("taken", 0)), int(kl.get("total", 0))])
 
 	# Retained rect COMMANDS: every merged region draws a fill and a border,
 	# and the renderer replays both every frame forever. Terrain's regions are
