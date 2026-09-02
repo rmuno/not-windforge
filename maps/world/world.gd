@@ -966,6 +966,13 @@ func _edge_marker_kind(ship: Ship) -> String:
 		return ""        # its SITE already marks the place; two marks, one thing
 	if ship.is_carcass():
 		return ""        # a kill is a place you have already been (a seam, below)
+	if ship.is_husk:
+		# Same doctrine as the carcass - and the bug that proved it: FACTION_WRECK
+		# fell through every branch below to "ship", so a freshly killed picket
+		# wore the green a-hull-on-your-side blimp (owner 2026-09-02: "enemy ships
+		# show as ships you can use"). A wreck advertises nothing; the scrap cloud
+		# hanging over it is the only invitation it makes.
+		return ""
 	match ship.creature_kind:
 		"whale_city":
 			return "boss"
