@@ -73,8 +73,11 @@ extends RefCounted
 ##   * fire_rate × explode — more trigger pulls, more blasts (Cluster Shells wants
 ##     Quick Hands / Hair Trigger / Blood Engine).
 ##   * fire_rate × lifesteal — Sanguine Tide turns a fast gun into a health bar.
-##   * coins × the XP curve — coins ARE xp (DiveRun.credit_kill), so Pickpocket and
-##     King's Ransom do not merely pay, they DRAW MORE CARDS.
+##   * coins × the outpost counter — Pickpocket and King's Ransom buy the Aether
+##     Lung and the hull patches sooner, and the pot is the only money a landing
+##     spends. (They no longer draw CARDS: since v0.137.0 XP is SCRAP, a physical
+##     drop swept off a corpse rather than a share of the coins — the two channels
+##     are separate now, see DiveRun.credit_kill.)
 ##   * move_speed × going shipless — the run is legal without a hull, and legs are
 ##     the only engine a shipless run has (Light Boots, Sea Legs).
 ##   * ricochet × lifesteal/explode — a BOUNCE IS A REAL HIT (world._dive_ricochet

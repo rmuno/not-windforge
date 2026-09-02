@@ -277,6 +277,14 @@ func _build_spawn_tab() -> void:
 		func() -> void:
 			if world != null and world.has_method("debug_grant_dive_xp"):
 				world.call("debug_grant_dive_xp", 100))
+	# SCRAP (v0.137.0): XP is a physical drop now, so it needs a physical way to
+	# reach it. Drops a kraken's worth just outside the absorption radius — the
+	# thing being judged is the magnet catching as you close, and the radius lever
+	# ("Dive: scrap (XP) absorption radius") is a few rows up in this same group.
+	_action_button(box, "DIVE SCRAP: drop a cloud beside you (fly into it)",
+		func() -> void:
+			if world != null and world.has_method("debug_spawn_scrap"):
+				world.call("debug_spawn_scrap"))
 	# THE SURVIVAL SUITE (v0.134.0). The seven new cards change things a draft
 	# cannot be relied on to hand you — a bounce, a reprieve, a grapple that works
 	# in free fall — so one button deals the whole suite into the run's hand.

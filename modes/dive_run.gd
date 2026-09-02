@@ -624,16 +624,43 @@ func go_home() -> bool:
 
 
 ## Credit a kill of `kind` at the current depth. Returns the coins added, so the
-## world can float the number over the corpse. The kill also feeds the CARD XP bar
-## (a kill's coin value is its XP), and every bar filled owes a draft.
+## world can float the number over the corpse.
+##
+## COINS ONLY, since v0.137.0. The XP half used to be paid right here — a kill's
+## coin value WAS its XP — and the owner moved it out of the kill entirely: XP is
+## SCRAP now, a physical drop that hangs where the thing died and pays whoever
+## flies through it (`absorb_scrap`; the field lives in `combat/scrap.gd`). The
+## two channels are deliberately different in kind, which is the owner's
+## "separate, a la vampire survivors": coins are credited to the KILLER (the
+## world still asks `_dive_kill_is_yours` before paying), scrap is collected by
+## whoever gets NEAREST — "if a kraken kills an enemy ship, I guess the player
+## can still get that exp".
 func credit_kill(kind: String) -> int:
 	if outcome != "":
 		return 0
 	var coins := coins_for(kind, depth)
 	pot += coins
 	kills += 1
-	_gain_xp(coins)
 	return coins
+
+
+## What a death of `kind` at depth `d` HANGS IN THE AIR as scrap. Identical to
+## its coin value on purpose: that is exactly what the XP bar used to be paid, so
+## every pacing number the card deck was tuned against survives the move to a
+## physical drop untouched.
+static func scrap_for(kind: String, d: int) -> int:
+	return coins_for(kind, d)
+
+
+## Absorb `amount` XP out of collected scrap. The one door XP comes through now,
+## and the reason it is public where `_gain_xp` is not: the world calls this at
+## the absorption site, every frame a mote lands. Returns the XP actually taken
+## (0 on a finished run — a dead run cannot level).
+func absorb_scrap(amount: int) -> int:
+	if outcome != "" or amount <= 0:
+		return 0
+	_gain_xp(amount)
+	return amount
 
 
 ## Add `amount` XP and owe a draft for each bar it fills. A single fat kill can

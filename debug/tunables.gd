@@ -282,6 +282,13 @@ const _REGISTRY := [
 	{"id": "dive_explosion_damage", "label": "Dive: blast damage to anyone aboard a dying ship",
 		"group": "World", "kind": KIND_FLOAT, "default": 25.0, "min": 0.0,
 		"max": 500.0, "step": 5.0},                              # world._dive_explode_ship
+	# SCRAP (owner 2026-09-02): XP is a physical drop now, and this is how close
+	# "somewhat close" is. Px at scale 1, x world_scale at the site — 120 is
+	# 960 px at the shipped 8x, about a quarter of the helm view's height. An all
+	# new affordance: there is no constant it has to mirror.
+	{"id": "dive_scrap_radius", "label": "Dive: scrap (XP) absorption radius, px at 1x",
+		"group": "World", "kind": KIND_FLOAT, "default": 120.0, "min": 0.0,
+		"max": 600.0, "step": 10.0},                             # world.dive_scrap_radius
 	# Prop thrust multiplies by air density and the run starts in THIN air
 	# (altitude 0.86) — measured, the props were strangled ~10x at the deck. The
 	# run floors the density the PROPS feel (never the lift). 0 = off.

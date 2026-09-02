@@ -191,6 +191,35 @@ static func is_bundle(type: int, su: float) -> bool:
 static func deconstructs_whole(type: int, su: float) -> bool:
 	return is_bundle(type, su) and type != Type.GASBAG
 
+## THE MACHINES — the powered/crewed fittings, as opposed to the structural
+## lattice that merely holds a ship's shape. Listed here rather than derived from
+## `power`/`draw`/`thrust` because the HELM draws nothing and is still a machine:
+## it is the seat of control, and a wreck has none.
+const MACHINE_TYPES := [Type.ENGINE, Type.PROPELLER, Type.HELM, Type.TURRET,
+	Type.REPAIR]
+
+
+static func is_machine(type: int) -> bool:
+	return MACHINE_TYPES.has(type)
+
+
+static func lift_of(type: int) -> float:
+	return get_def(type)["lift"]
+
+
+## Does a cell of `type` survive into a WRECK HUSK (owner 2026-09-02: "perhaps
+## the background tiles necessary for the ship to maintain its blueprint
+## integrity can remain — they'd just fall and hit the ground doing no damage")?
+##
+## Two rules, and the second is not cosmetic: the MACHINES died in the blast, and
+## ANYTHING THAT LIFTS has to go with them or the skeleton hangs in the sky
+## instead of falling. That is why this asks `lift_of` rather than naming the
+## gasbag — blubber is buoyant structure too, and a husk built of it would float.
+## Everything else — hull, ballast, platform, strut, shell, doors, meat — stays.
+static func survives_husk(type: int) -> bool:
+	return not is_machine(type) and lift_of(type) <= 0.0
+
+
 static func get_def(type: int) -> Dictionary:
 	return BLOCKS.get(type, BLOCKS[Type.HULL])
 
