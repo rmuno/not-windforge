@@ -178,6 +178,12 @@ func _initialize() -> void:
 	if panel != null:
 		_ok(panel.visible and bool(panel.call("on_title_page")),
 			"...showing the title page")
+		# Both workshop logs are handed over from the PROFILE at build time — the
+		# title has no world and no save, so a missing hand-off is a page that is
+		# silently, permanently empty.
+		_ok(typeof(panel.get("discovered")) == TYPE_DICTIONARY
+				and typeof(panel.get("cards_taken")) == TYPE_DICTIONARY,
+			"the intro hands it both profile logs (bestiary + cards)")
 		# QUIT IS A DOOR HERE, and Escape is not it: Escape means "back", and
 		# there is nothing behind the front page.
 		var esc := InputEventKey.new()
@@ -244,6 +250,61 @@ func _initialize() -> void:
 		% ", ".join(PackedStringArray(doors)))
 	_ok(doors.has("SHIP BUILDER") and doors.has("BESTIARY"),
 		"...alongside the rooms that were already there")
+	_ok(doors.has("CARD CODEX"), "...and the card gallery's door")
+
+	# --- THE CARD GALLERY (owner 2026-09-01) --------------------------------
+	# "The card screen from the title should display the individual known cards
+	# based on what the user has selected. I'd like to see them as cards not as a
+	# wall of text." So the page is TILES, one per card in the deck, and the ones
+	# actually drafted are lit. A headless run cannot see a drawn tile, so the
+	# panel hands its tiles over as rows (TitleScreen.card_tiles).
+	orphan.set("cards_taken", {})
+	orphan.call("_go", TitleScreen.Page.CARDS)
+	var tiles: Array = orphan.call("card_tiles")
+	_ok(tiles.size() == DiveCards.CATALOG.size(),
+		"the CARDS page builds one tile per card in the deck (%d of %d)"
+			% [tiles.size(), DiveCards.CATALOG.size()])
+	var tile_ids := {}
+	var lit := 0
+	for t in tiles:
+		tile_ids[String((t as Dictionary)["id"])] = true
+		if bool((t as Dictionary)["taken"]):
+			lit += 1
+	_ok(tile_ids.size() == tiles.size(), "...each one a distinct card")
+	_ok(lit == 0, "with an empty log every tile is dimmed, none lit (%d lit)" % lit)
+	# A tile is not a wall of text: the page must really be built out of panels,
+	# not one Label carrying the codex.
+	var codex_wall := false
+	for node in _walk(orphan):
+		if node is Label and (node as Label).text.contains("Honed Edge") \
+				and (node as Label).text.contains("Cluster Shells"):
+			codex_wall = true
+	_ok(not codex_wall, "the page is tiles, not one Label holding the whole codex")
+	# ...and 19 tiles have to fit a 720p window, so the grid lives in a scroll box.
+	var scrolled := false
+	for node in _walk(orphan):
+		if node is ScrollContainer:
+			scrolled = true
+	_ok(scrolled, "the gallery scrolls, so the deck cannot run off a 720p screen")
+	# THE TAKEN SET LIGHTS TILES. This is the whole feature: what YOU drafted.
+	orphan.set("cards_taken", {"honed_edge": true})
+	orphan.call("_go", TitleScreen.Page.CARDS)
+	var relit: Array = orphan.call("card_tiles")
+	var lit_ids: Array = []
+	for t in relit:
+		if bool((t as Dictionary)["taken"]):
+			lit_ids.append(String((t as Dictionary)["id"]))
+	_ok(lit_ids == ["honed_edge"],
+		"a taken card lights exactly its own tile (%s)" % ", ".join(PackedStringArray(lit_ids)))
+	_ok(relit.size() == DiveCards.CATALOG.size(),
+		"...and the rest of the deck is still shown, dimmed, not hidden")
+	# Escape still walks back out of the page.
+	var back_key := InputEventKey.new()
+	back_key.keycode = KEY_ESCAPE
+	back_key.pressed = true
+	orphan._input(back_key)
+	_ok(int(orphan.get("page")) == TitleScreen.Page.WORKSHOP,
+		"Escape backs the gallery out to the workshop")
 	orphan.call("_go", TitleScreen.Page.TITLE)
 	# A STRAY KEY DOES NOTHING (owner 2026-08-31: "no need to force 'any key'
 	# to do things") — only the quiet conventions act.

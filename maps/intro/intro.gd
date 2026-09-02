@@ -130,7 +130,11 @@ func _ready() -> void:
 	# world writes as the player meets creatures. The title has no world and no
 	# loaded save, so it reads the profile directly here — read-only, so a fresh
 	# player simply sees an all-"???" log.
-	_title.discovered = Profile.load().creatures.discovered
+	# The CARD GALLERY reads the same profile in the SAME read — one disk hit for
+	# both workshop logs, on a scene that is reloaded on every quit to the title.
+	var prof := Profile.load()
+	_title.discovered = prof.creatures.discovered
+	_title.cards_taken = prof.cards.taken
 	layer.add_child(_title)
 	add_child(layer)
 	_title.open()

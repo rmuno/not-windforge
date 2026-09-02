@@ -7,10 +7,10 @@ extends RefCounted
 ## to read from something that is always on disk and not tied to one expedition.
 ##
 ## Deliberately SEPARATE from user://saves/*.json: a save is ONE run of the world;
-## this is everything you have ever met, across every save and every Dive. Today it
-## holds exactly one thing — the CreatureLog's discovered set (the bestiary, step 1
-## of the workshop). More of the workshop (unlocked blueprints, a records board)
-## would land here beside it.
+## this is everything you have ever met, across every save and every Dive. Two
+## logs today, both of them workshop pages: the CreatureLog's discovered set (the
+## bestiary) and the DiveCards taken set (the card gallery). More of the workshop
+## (unlocked blueprints, a records board) would land here beside them.
 ##
 ## FORMAT — human-inspectable JSON at user://profile.json, versioned like SaveGame
 ## and read with the same graceful-failure discipline: a missing, unreadable,
@@ -25,6 +25,14 @@ const FORMAT_VERSION := 1
 
 ## The met-creatures record. Always present (a fresh CreatureLog for a new player).
 var creatures := CreatureLog.new()
+
+## The taken-cards record (owner 2026-09-01: the title's card screen shows what
+## YOU have actually drafted). Always present; empty for a new player, and empty
+## for every profile written before this key existed — which is why the FORMAT
+## VERSION DID NOT MOVE. A bump would send every existing profile through the
+## migration gate below and wipe the bestiary that is already on the owner's disk;
+## an ADDED key needs no bump, because `from_dict` defaults it to empty.
+var cards := DiveCards.new()
 
 
 ## Read the profile off disk. Returns a clean empty profile on ANY failure — no
@@ -55,16 +63,23 @@ static func from_dict(data: Dictionary) -> Profile:
 	if int(data.get("format", -1)) != FORMAT_VERSION:
 		return p
 	p.creatures = CreatureLog.from_dict(data.get("creatures", {}) as Dictionary)
+	# Absent on every profile written before the card log existed — an empty log,
+	# never a failed load (the graceful rule applies per key, not just per file).
+	p.cards = DiveCards.from_dict(data.get("cards", {}) as Dictionary)
 	return p
 
 
 func to_dict() -> Dictionary:
-	return {"format": FORMAT_VERSION, "creatures": creatures.to_dict()}
+	return {
+		"format": FORMAT_VERSION,
+		"creatures": creatures.to_dict(),
+		"cards": cards.to_dict(),
+	}
 
 
 ## Write the profile to disk (pretty-printed). Returns false if the file could not
-## be opened — never throws. Called when a creature is newly met, so it is a small
-## write on a rare event.
+## be opened — never throws. Called when a creature is newly met or a card is
+## taken for the first time, so it is a small write on a rare event.
 func save() -> bool:
 	var f := FileAccess.open(PATH, FileAccess.WRITE)
 	if f == null:

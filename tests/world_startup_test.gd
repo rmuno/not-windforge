@@ -2830,7 +2830,44 @@ func _check_dive(world: Node, fleet) -> void:
 		if boom_b != null and is_instance_valid(boom_b):
 			boom_b.queue_free()
 		await world.get_tree().physics_frame
+
+		# --- THE TAKE SITE RECORDS TO THE PROFILE (owner 2026-09-01) --------
+		# The title's card gallery shows what YOU have drafted, and there is
+		# exactly one place in the game that writes that: the moment a card is
+		# taken. Held cards burn with the run; this record does not. Driven
+		# through the real take path (take_dive_card, the same call 1/2/3 makes),
+		# because the wiring — not the model — is what only exists here.
+		var kprof = world.get("creature_profile")
+		_ok(kprof != null, "the world's profile is loaded for the card log")
+		if kprof != null:
+			world.call("debug_forget_cards")
+			_ok(int((world.call("card_log_status") as Dictionary)["taken"]) == 0,
+				"a forgotten card log has taken nothing")
+			world.call("debug_grant_card_draft")
+			var offer: Array = carded.draft
+			_ok(not offer.is_empty(), "a draft is on offer to take from (%d cards)"
+				% offer.size())
+			if not offer.is_empty():
+				var want := String(offer[0])
+				_ok(bool(world.call("take_dive_card", 1)),
+					"taking the first card of the draft succeeds")
+				_ok(kprof.cards.has(want),
+					"...and the take site records '%s' to the profile forever"
+						% DiveCards.name_of(want))
+				_ok(int((world.call("card_log_status") as Dictionary)["taken"]) == 1,
+					"exactly the one taken card is counted")
+				_ok(int((world.call("card_log_status") as Dictionary)["total"])
+						== DiveCards.total(),
+					"...against the whole deck (%d)" % DiveCards.total())
+				# The record is META: ending the run burns the held card and
+				# leaves the log alone. That is the difference the page shows.
+				_ok(carded.cards.has(want), "the run is holding it too, for now")
 	world.call("end_dive")
+	var after_run = world.get("creature_profile")
+	if after_run != null:
+		_ok(after_run.cards.count() >= 1,
+			"the card log survives the run that earned it (%d taken)"
+				% after_run.cards.count())
 	if pl != null and is_instance_valid(pl):
 		_ok(is_equal_approx(pl.run_speed_mult, 1.0),
 			"ending the run puts your legs back to stock (%.2fx)" % pl.run_speed_mult)
