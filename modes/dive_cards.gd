@@ -149,50 +149,50 @@ const CATALOG := [
 		"desc": "Your repair station mends 60% faster.",
 		"mods": {"hull_repair": 1.60}, "procs": []},
 	{"id": "trimmed_sails", "name": "Trimmed Sails", "rarity": "common", "weight": 8,
-		"desc": "Your ship's propellers push 30% harder.",
+		"desc": "Your propellers push 30% harder.",
 		"mods": {"thrust": 1.30}, "procs": []},
 	# The owner's own ask, verbatim: "+10% player move speed".
 	{"id": "light_boots", "name": "Light Boots", "rarity": "common", "weight": 9,
-		"desc": "You run 10% faster on foot.",
+		"desc": "You run 10% faster.",
 		"mods": {"move_speed": 1.10}, "procs": []},
 	{"id": "bounty_hunter", "name": "Bounty Hunter", "rarity": "common", "weight": 8,
-		"desc": "Every kill drops 10 extra coins.",
+		"desc": "Kills drop 10 extra coins.",
 		"mods": {}, "procs": [{"on": "kill", "effect": "coins", "amount": 10}]},
 	# Small, but coins are XP — so this quietly draws you more cards, which is the
 	# cheapest synergy in the deck and the one that teaches the rule.
 	{"id": "pickpocket", "name": "Pickpocket", "rarity": "common", "weight": 7,
-		"desc": "Every hit shakes 3 coins loose. Coins are experience.",
+		"desc": "Hits shake 3 coins loose.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "coins", "amount": 3}]},
 
 	# The `adds` channel's first row, and the reason it exists: the owner asked
 	# for "+25 max HP (flat, not %)". Taking it MENDS the difference on the spot —
 	# a card that raises your ceiling and leaves you as hurt as you were would read
 	# as a downgrade in the middle of a fight.
-	{"id": "iron_constitution", "name": "Iron Constitution", "rarity": "common", "weight": 9,
-		"desc": "+25 to your health pool, and you are mended the difference.",
+	{"id": "iron_constitution", "name": "Iron Ribs", "rarity": "common", "weight": 9,
+		"desc": "+25 max health, mended on the spot.",
 		"mods": {}, "adds": {"max_hp": 25.0}, "procs": []},
 	# ONE CARD, BOTH NUMBERS (owner: "grapple range should probably also have hook
 	# speed attached to it"). Range on its own is a hook that takes longer to reach
 	# the same wall — a nerf wearing a buff.
 	{"id": "long_line", "name": "Long Line", "rarity": "common", "weight": 8,
-		"desc": "Your grapple reaches 40% further, and the hook flies 40% faster.",
+		"desc": "Your grapple reaches 40% further and flies 40% faster.",
 		"mods": {"grapple_range": 1.40, "grapple_speed": 1.40}, "procs": []},
 
 	# --- UNCOMMON (blue) — stronger, or two systems at once ------------------
-	{"id": "vampiric_rounds", "name": "Vampiric Rounds", "rarity": "uncommon", "weight": 8,
-		"desc": "Landing a hit heals you for 8% of the damage.",
+	{"id": "vampiric_rounds", "name": "Leech Line", "rarity": "uncommon", "weight": 8,
+		"desc": "Hits heal you 8% of the damage.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "lifesteal", "amount": 0.08}]},
 	{"id": "second_wind", "name": "Second Wind", "rarity": "uncommon", "weight": 7,
-		"desc": "Reaching a new depth heals you 40 HP.",
+		"desc": "Reaching a new depth heals you 40 health.",
 		"mods": {}, "procs": [{"on": "land", "effect": "heal", "amount": 40}]},
 	{"id": "hair_trigger", "name": "Hair Trigger", "rarity": "uncommon", "weight": 7,
 		"desc": "Your sidearm fires 32% faster.",
 		"mods": {"fire_rate": 0.68}, "procs": []},
 	{"id": "field_surgeon", "name": "Field Surgeon", "rarity": "uncommon", "weight": 7,
-		"desc": "Every kill mends you 25 HP.",
+		"desc": "Kills mend you 25 health.",
 		"mods": {}, "procs": [{"on": "kill", "effect": "heal", "amount": 25}]},
 	{"id": "sea_legs", "name": "Sea Legs", "rarity": "uncommon", "weight": 6,
-		"desc": "You run 25% faster and your propellers push 15% harder.",
+		"desc": "You run 25% faster; your propellers push 15% harder.",
 		"mods": {"move_speed": 1.25, "thrust": 1.15}, "procs": []},
 
 	# THE RESTRICTION, LIFTED. The hook is a world-space projectile that does NOT
@@ -202,12 +202,12 @@ const CATALOG := [
 	# YOUR frame instead (Player.hook_step's `carry`), so it separates at full speed
 	# in every direction whatever you are doing. See `Player.hook_separation_speed`.
 	{"id": "harpooneers_arm", "name": "Harpooneer's Arm", "rarity": "uncommon", "weight": 7,
-		"desc": "Your grapple fires at full reach in any direction — even in free fall.",
+		"desc": "Your grapple fires at full strength in any direction, even falling.",
 		"mods": {}, "flags": ["grapple_free_fire"], "procs": []},
 	# Both channels on one row, which is the point of it: a flat pool and a
 	# multiplier on what the ground charges you.
 	{"id": "thick_skin", "name": "Thick Skin", "rarity": "uncommon", "weight": 6,
-		"desc": "+50 to your health pool, and a landing costs you 15% less.",
+		"desc": "+50 max health; landings hurt 15% less.",
 		"mods": {"fall_damage_taken": 0.85}, "adds": {"max_hp": 50.0}, "procs": []},
 
 	# --- EPIC (purple) — build-defining. Pure upside, bigger numbers ----------
@@ -215,10 +215,10 @@ const CATALOG := [
 		"desc": "Your propellers push 75% harder.",
 		"mods": {"thrust": 1.75}, "procs": []},
 	{"id": "broadside", "name": "Broadside", "rarity": "epic", "weight": 7,
-		"desc": "Ship guns hit 90% harder; your sidearm 40% harder.",
+		"desc": "Your ship's guns hit 90% harder; your sidearm 40%.",
 		"mods": {"turret_damage": 1.90, "weapon_damage": 1.40}, "procs": []},
-	{"id": "blood_engine", "name": "Blood Engine", "rarity": "epic", "weight": 6,
-		"desc": "Fire 15% faster, and every hit heals you 20% of the damage.",
+	{"id": "blood_engine", "name": "Hungry Engine", "rarity": "epic", "weight": 6,
+		"desc": "You fire 15% faster; hits heal you 20% of the damage.",
 		"mods": {"fire_rate": 0.85},
 		"procs": [{"on": "hit", "effect": "lifesteal", "amount": 0.20}]},
 
@@ -227,20 +227,20 @@ const CATALOG := [
 	# the reason this is an epic rather than an uncommon. The loop guard is one
 	# rule: a ricochet never ricochets (world._dive_in_ricochet).
 	{"id": "ricochet_rounds", "name": "Ricochet Rounds", "rarity": "epic", "weight": 6,
-		"desc": "Your shots bounce to the nearest other enemy for 50% of the damage.",
+		"desc": "Shots bounce to the nearest other enemy for 50% of the damage.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "ricochet", "amount": 0.50}]},
 
 	# --- LEGENDARY (orange) — the run you tell someone about -----------------
 	{"id": "cluster_shells", "name": "Cluster Shells", "rarity": "legendary", "weight": 8,
-		"desc": "Every hit detonates — 60% of the damage again to everything around it.",
+		"desc": "Hits detonate: 60% of the damage again to everything nearby.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "explode", "amount": 0.60}]},
-	{"id": "kings_ransom", "name": "King's Ransom", "rarity": "legendary", "weight": 6,
-		"desc": "Kills drop 120 coins, hits shake 12 loose — and coins are experience.",
+	{"id": "kings_ransom", "name": "Prize Money", "rarity": "legendary", "weight": 6,
+		"desc": "Kills drop 120 extra coins; hits shake 12 loose.",
 		"mods": {}, "procs": [
 			{"on": "kill", "effect": "coins", "amount": 120},
 			{"on": "hit", "effect": "coins", "amount": 12}]},
-	{"id": "sanguine_tide", "name": "Sanguine Tide", "rarity": "legendary", "weight": 5,
-		"desc": "Every hit heals you 45% of the damage dealt.",
+	{"id": "sanguine_tide", "name": "Leech Rig", "rarity": "legendary", "weight": 5,
+		"desc": "Hits heal you 45% of the damage.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "lifesteal", "amount": 0.45}]},
 	# IT CARRIES ITS OWN FIRST BOUNCE (design call, v0.134.0). A legendary that
 	# does nothing unless you already drew a particular epic is a legendary that
@@ -248,8 +248,8 @@ const CATALOG := [
 	# complete card on its own. Holding Ricochet Rounds too is not double-dipping:
 	# the world takes the MAX of the ricochet amounts and fires ONE sequence
 	# (world._dive_apply_procs), so the pair is an upgrade, never two bounces.
-	{"id": "chain_lightning", "name": "Chain Lightning", "rarity": "legendary", "weight": 5,
-		"desc": "Your shots bounce for 50%, then leap on twice more for 35% each.",
+	{"id": "chain_lightning", "name": "Skip Shot", "rarity": "legendary", "weight": 5,
+		"desc": "Shots bounce for 50%, then twice more for 35% each.",
 		"mods": {}, "procs": [
 			{"on": "hit", "effect": "ricochet", "amount": 0.50},
 			{"on": "hit", "effect": "chain", "amount": 0.35}]},
@@ -258,7 +258,7 @@ const CATALOG := [
 	# second lethal blow of a run still ends it. Run-scoped state, like everything
 	# else a card does: it does not survive `end_dive`.
 	{"id": "second_heart", "name": "Second Heart", "rarity": "legendary", "weight": 4,
-		"desc": "The first blow that would kill you this run leaves you at 1 HP.",
+		"desc": "The first killing blow each run leaves you at 1 health instead.",
 		"mods": {}, "flags": ["second_heart"], "procs": []},
 ]
 

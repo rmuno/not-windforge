@@ -3497,6 +3497,11 @@ func _check_dive_scrap_and_husks(world: Node, fleet) -> void:
 				% [machines, structure, blocks_before])
 		_ok(bool(picket.get("is_husk")) and int(picket.faction) == Ship.FACTION_WRECK,
 			"...flagged a husk and on nobody's side (faction %d)" % int(picket.faction))
+		# The wreck ADVERTISES nothing (owner 2026-09-02: "enemy ships show as
+		# ships you can use") — FACTION_WRECK used to fall through the marker
+		# kinds to the green a-hull-on-your-side blimp.
+		_ok(String(world.call("_edge_marker_kind", picket)) == "",
+			"...and it wears no edge marker (a wreck is not an invitation)")
 		_ok(float(picket.hull_integrity_max) == 0.0,
 			"...with its integrity pool disarmed, so it never explodes again")
 	_ok((world.get("_dive_husks") as Array).has(pid)
