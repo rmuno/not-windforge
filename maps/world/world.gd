@@ -2171,6 +2171,20 @@ func _tick_dive(delta: float) -> void:
 		# The thin-air fix (see Ship.thrust_density_floor): the run floors the
 		# density the props feel, so the hull answers the stick at every rung.
 		local_ship.thrust_density_floor = Tunables.get_num("dive_thrust_density_floor")
+	# ...AND THE ENEMY HULLS BREATHE THE SAME AIR (owner 2026-09-01: "enemies
+	# drop so fast it's not even funny"). The floor was stamped on the player's
+	# hull alone, so every picket flew with its props strangled by the REAL
+	# density — 3-20x down across most of the ladder against the player's 0.40
+	# — structurally unable to hold altitude, falling into the slabs the moment
+	# it spawned. Same stamp, every listed hull, every tick (self-healing like
+	# the local stamp above; ~a dozen entries, and end_dive/queue_free clears
+	# them with the list). VESSELS only — a creature flies on muscle
+	# (unsupported_weight), not props, and its envelope is its own.
+	var floor_v := Tunables.get_num("dive_thrust_density_floor")
+	for sid in _dive_surged:
+		var hull := instance_from_id(sid) as Ship
+		if hull != null and is_instance_valid(hull) and hull.creature_kind == "":
+			hull.thrust_density_floor = floor_v
 	# The "move_speed" card dial (Light Boots, Sea Legs) — the LEGS' twin of the
 	# thrust stamp above, and stamped for exactly the same reasons. It matters most
 	# on a shipless run, where your legs are the only engine you have left.
