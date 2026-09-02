@@ -389,6 +389,26 @@ func _check_dive_scene_boots() -> void:
 	_ok(born > 0, "a surge still garrisons the narrow world (%d pickets)" % born)
 	_ok(armed == born, "...and every picket is born mortal (%d of %d)" % [armed, born])
 
+	# THE ENEMY HULLS BREATHE THE SAME AIR (owner: "enemies drop so fast it's
+	# not even funny"). The thin-air floor was stamped on the player's hull
+	# alone; a picket's props were strangled by the real density and it simply
+	# fell. The dive tick now stamps every listed VESSEL — give it a tick, then
+	# every surged vessel must carry the same floor the player's hull gets.
+	for i in 3:
+		await w.get_tree().physics_frame
+	var floored := 0
+	var vessels := 0
+	for sid in (w.get("_dive_surged") as Array):
+		var hull := instance_from_id(sid) as Ship
+		if hull == null or not is_instance_valid(hull) or hull.creature_kind != "":
+			continue
+		vessels += 1
+		if is_equal_approx(hull.thrust_density_floor,
+				Tunables.get_num("dive_thrust_density_floor")):
+			floored += 1
+	_ok(vessels > 0 and floored == vessels,
+		"every surged vessel breathes the floored air (%d of %d)" % [floored, vessels])
+
 	await _check_dive_garrison_materializes(w, pl, run, cx)
 
 	w.queue_free()
