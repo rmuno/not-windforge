@@ -17,6 +17,11 @@ var _current := ""
 
 
 func _initialize() -> void:
+	# THE OWNER'S REAL PROFILE IS NOT A FIXTURE: every suite writes through
+	# the profile (creature sightings, the F2 forget buttons, card takes), and
+	# a full run used to wipe the real bestiary + card gallery. Redirect first,
+	# before anything can touch disk.
+	Profile.path = "user://profile_test.json"
 	print("\n=== not-windforge test suite ===\n")
 
 	await _test_mass_and_centre_of_mass()
@@ -2003,10 +2008,10 @@ func _test_card_log() -> void:
 	# The suite shares user:// with the owner's real profile, so the file is put
 	# back exactly as found (the bestiary checks already stomp it; this one does
 	# not add to that).
-	var had := FileAccess.file_exists(Profile.PATH)
+	var had := FileAccess.file_exists(Profile.path)
 	var kept := ""
 	if had:
-		var rf := FileAccess.open(Profile.PATH, FileAccess.READ)
+		var rf := FileAccess.open(Profile.path, FileAccess.READ)
 		if rf != null:
 			kept = rf.get_as_text()
 			rf.close()
@@ -2019,12 +2024,12 @@ func _test_card_log() -> void:
 			and read_back.cards.count() == 2,
 		"...and the taken cards are still there after a load")
 	if had:
-		var wf := FileAccess.open(Profile.PATH, FileAccess.WRITE)
+		var wf := FileAccess.open(Profile.path, FileAccess.WRITE)
 		if wf != null:
 			wf.store_string(kept)
 			wf.close()
 	else:
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(Profile.PATH))
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(Profile.path))
 
 	# --- The gallery model (what the title's tiles are built from) ----------
 	var rows := DiveCards.gallery_rows({})
