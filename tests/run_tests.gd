@@ -67,6 +67,8 @@ func _initialize() -> void:
 	await _test_map_room_screen()
 	_test_dive_cards()
 	_test_dive_blast()
+	_test_dive_card_suite()
+	_test_grapple_card_dials()
 	_test_creature_log()
 	_test_card_log()
 	await _test_hull_integrity()
@@ -2132,12 +2134,32 @@ func _test_dive_cards() -> void:
 		for key in (cd.get("mods", {}) as Dictionary):
 			if not DiveCards.DIALS.has(String(key)):
 				ok = false   # a card modifies a dial the world does not wire
+		# The two channels added in v0.134.0 are closed the same way. A key in the
+		# WRONG channel is the quiet failure this exists to catch: an addend read
+		# as a multiplier (or the reverse) does nothing at all and reddens nothing.
+		for key in (cd.get("adds", {}) as Dictionary):
+			if not DiveCards.ADDS.has(String(key)) or DiveCards.DIALS.has(String(key)):
+				ok = false
+		for f in (cd.get("flags", []) as Array):
+			if not DiveCards.FLAGS.has(String(f)):
+				ok = false
 		for p in (cd.get("procs", []) as Array):
 			var pd := p as Dictionary
 			if not DiveCards.EVENTS.has(String(pd.get("on", ""))) \
 					or not DiveCards.EFFECTS.has(String(pd.get("effect", ""))):
 				ok = false   # a proc on an event/effect the world cannot apply
-	_check(ok, "every card has a unique id/name and stays in the DIAL/EVENT/EFFECT vocabulary")
+	_check(ok, "every card has a unique id/name and stays in the DIAL/ADD/FLAG/EVENT/EFFECT vocabulary")
+	# A card that changes NOTHING is a blank the draft can still offer you — the
+	# worst possible pick, and invisible without this.
+	var inert := 0
+	for c in DiveCards.CATALOG:
+		var cd := c as Dictionary
+		if (cd.get("mods", {}) as Dictionary).is_empty() \
+				and (cd.get("adds", {}) as Dictionary).is_empty() \
+				and (cd.get("flags", []) as Array).is_empty() \
+				and (cd.get("procs", []) as Array).is_empty():
+			inert += 1
+	_check(inert == 0, "no card in the deck does nothing at all (%d inert)" % inert)
 
 	# --- RARITY (owner 2026-09-01) is data, closed, and on every row ----------
 	# "White -> normal & common, green or blue -> rarer/better, purple -> spicy
@@ -2156,7 +2178,9 @@ func _test_dive_cards() -> void:
 	_check(tiers.size() == DiveCards.RARITIES.size(),
 		"all four tiers are actually stocked (%d)" % tiers.size())
 	# "I don't want a bazillion cards" — the deck stays a hand you can hold.
-	_check(DiveCards.CATALOG.size() >= 16 and DiveCards.CATALOG.size() <= 20,
+	# The owner-approved suite (v0.134.0) took it from 19 to 26; the band moved
+	# with it rather than being deleted, because "small" is still the rule.
+	_check(DiveCards.CATALOG.size() >= 24 and DiveCards.CATALOG.size() <= 30,
 		"the deck stays small and meaningful (%d cards)" % DiveCards.CATALOG.size())
 	# Every tier has its own colour and its own name; a duplicate would make the
 	# picker's whole colour language a lie.
@@ -2365,6 +2389,297 @@ func _test_dive_blast() -> void:
 			and String((DiveCards.procs_for(["cluster_shells"], "hit")[0]
 				as Dictionary)["effect"]) == "explode",
 		"Cluster Shells is one legendary row that procs `explode` on a hit")
+
+
+## THE OWNER-APPROVED CARD SUITE (v0.134.0): seven cards, two new channels
+## (`adds` and `flags`), three new dials, and the bounce. Everything pure lives
+## here; the world-level halves — a bounce that really reaches a second hull, a
+## Second Heart that really survives a lethal shot — are in world_startup_test.gd.
+func _test_dive_card_suite() -> void:
+	_t("THE CARD SUITE: flat HP, the grapple pair, the bounce and the reprieve")
+
+	# --- The seven rows are really in the deck, at the rarities approved -------
+	var approved := {
+		"iron_constitution": "common", "long_line": "common",
+		"harpooneers_arm": "uncommon", "thick_skin": "uncommon",
+		"ricochet_rounds": "epic",
+		"chain_lightning": "legendary", "second_heart": "legendary",
+	}
+	for id in approved:
+		_check(DiveCards.is_known(String(id)), "the deck carries '%s'" % id)
+		_check(DiveCards.rarity_of(String(id)) == String(approved[id]),
+			"...at the approved rarity (%s: %s)" % [id, DiveCards.rarity_of(String(id))])
+	_check(DiveCards.CATALOG.size() == 26,
+		"the deck is the owner's 26 (%d)" % DiveCards.CATALOG.size())
+	# The gallery is the deck: a new card that never reaches the title's page is
+	# a card the player can never learn exists.
+	var gal := {}
+	for r in DiveCards.gallery_rows({}):
+		gal[String((r as Dictionary)["id"])] = true
+	_check(gal.size() == 26, "the gallery covers all 26 rows (%d)" % gal.size())
+	var all_galleried := true
+	for id in approved:
+		if not gal.has(String(id)):
+			all_galleried = false
+	_check(all_galleried, "...including every one of the seven new cards")
+
+	# --- THE `adds` CHANNEL: flat, and it SUMS ---------------------------------
+	_check(DiveCards.ADDS.has("max_hp"), "max_hp is in the ADDS vocabulary")
+	_check(not DiveCards.DIALS.has("max_hp"),
+		"...and NOT in DIALS — a key in both channels would read one and drop the other")
+	_check(is_zero_approx(DiveCards.addend([], "max_hp")),
+		"no cards means a 0.0 addend (ordinary play has no bonus pool)")
+	_check(is_equal_approx(DiveCards.addend(["iron_constitution"], "max_hp"), 25.0),
+		"Iron Constitution adds a flat 25")
+	_check(is_equal_approx(DiveCards.addend(["thick_skin"], "max_hp"), 50.0),
+		"Thick Skin adds a flat 50")
+	_check(is_equal_approx(
+			DiveCards.addend(["iron_constitution", "thick_skin"], "max_hp"), 75.0),
+		"...and two of them SUM to 75, never multiply")
+	# A flat card leaves the multiplicative channel alone, and the reverse.
+	_check(is_equal_approx(DiveCards.modifier(["iron_constitution"], "max_hp"), 1.0),
+		"an `adds` card moves no multiplier")
+	_check(is_zero_approx(DiveCards.addend(["honed_edge"], "weapon_damage")),
+		"...and a `mods` card contributes no addend")
+
+	# --- THE `flags` CHANNEL: a rule, held or not ------------------------------
+	for f in ["grapple_free_fire", "second_heart"]:
+		_check(DiveCards.FLAGS.has(String(f)), "'%s' is in the FLAGS vocabulary" % f)
+	_check(not DiveCards.has_flag([], "grapple_free_fire"),
+		"no cards means no flag (ordinary play grapples stock)")
+	_check(DiveCards.has_flag(["harpooneers_arm"], "grapple_free_fire"),
+		"Harpooneer's Arm raises grapple_free_fire")
+	_check(not DiveCards.has_flag(["harpooneers_arm"], "second_heart"),
+		"...and only that one — a flag is not a blanket")
+	_check(DiveCards.has_flag(["second_heart", "harpooneers_arm"], "second_heart"),
+		"a flag is found wherever it sits in the hand")
+
+	# --- LONG LINE: one card, BOTH numbers (the owner's explicit ask) ---------
+	for d in ["grapple_range", "grapple_speed", "fall_damage_taken"]:
+		_check(DiveCards.DIALS.has(String(d)), "the %s dial is in the vocabulary" % d)
+	_check(is_equal_approx(DiveCards.modifier(["long_line"], "grapple_range"), 1.40)
+			and is_equal_approx(DiveCards.modifier(["long_line"], "grapple_speed"), 1.40),
+		"Long Line moves range AND hook speed together (both 1.40)")
+	_check(is_equal_approx(DiveCards.modifier([], "grapple_range"), 1.0)
+			and is_equal_approx(DiveCards.modifier([], "grapple_speed"), 1.0),
+		"...and both are 1.0 with no card, so ordinary play grapples exactly as before")
+	_check(DiveCards.modifier(["thick_skin"], "fall_damage_taken") < 1.0,
+		"Thick Skin softens a landing (%.2fx)"
+			% DiveCards.modifier(["thick_skin"], "fall_damage_taken"))
+
+	# --- THE BOUNCE's arithmetic ----------------------------------------------
+	_check(DiveCards.EFFECTS.has("ricochet") and DiveCards.EFFECTS.has("chain"),
+		"ricochet and chain are in the EFFECT vocabulary")
+	_check(DiveCards.bounce_damages(100.0, 0.0, 0.0).is_empty(),
+		"no ricochet card means no bounce at all")
+	var one := DiveCards.bounce_damages(100.0, 0.50, 0.0)
+	_check(one.size() == 1 and is_equal_approx(float(one[0]), 50.0),
+		"Ricochet Rounds alone is exactly one bounce at 50%")
+	var many := DiveCards.bounce_damages(100.0, 0.50, 0.35)
+	_check(many.size() == 1 + DiveCards.CHAIN_HOPS,
+		"Chain Lightning adds %d more hops (%d steps)" % [DiveCards.CHAIN_HOPS, many.size()])
+	_check(is_equal_approx(float(many[0]), 50.0)
+			and is_equal_approx(float(many[1]), 35.0)
+			and is_equal_approx(float(many[2]), 35.0),
+		"...at 50%, then 35% each — off the ORIGINAL damage, never compounding down")
+	# The chain is finite by construction. A sequence that could grow with the
+	# damage it deals is the infinite loop this whole design is guarding against.
+	_check(DiveCards.bounce_damages(1.0e9, 0.5, 0.35).size() == many.size(),
+		"the sequence length never depends on how big the hit was")
+
+	# --- nearest_catch: ONE target, the nearest, never one already struck ------
+	var rows := [
+		{"dist": 0.0, "hostile": true},      # 0 — the struck hull
+		{"dist": 400.0, "hostile": true},    # 1 — the nearest neighbour
+		{"dist": 900.0, "hostile": true},    # 2 — the one after that
+		{"dist": 50.0, "hostile": false},    # 3 — your own hull, right there
+		{"dist": 9000.0, "hostile": true},   # 4 — out of reach
+	]
+	_check(DiveCards.nearest_catch(rows, 1000.0, [0]) == 1,
+		"the bounce goes to the NEAREST other enemy")
+	_check(DiveCards.nearest_catch(rows, 1000.0, [0, 1]) == 2,
+		"...and the next hop skips the one it just hit")
+	_check(DiveCards.nearest_catch(rows, 1000.0, [0, 1, 2]) == -1,
+		"with everything in reach spent, the chain stops (-1)")
+	_check(DiveCards.nearest_catch(rows, 100.0, [0]) == -1,
+		"nothing inside the radius means no bounce, not a long-range leap")
+	_check(DiveCards.nearest_catch(rows, 1.0e6, [0, 1, 2, 4]) == -1,
+		"your own hull is NEVER a bounce target, at any radius")
+	_check(DiveCards.RICOCHET_RADIUS_PX * 8.0 > 1500.0
+			and DiveCards.RICOCHET_RADIUS_PX * 8.0 < 4000.0,
+		"the shipped bounce reads at 8x (%.0f px)" % (DiveCards.RICOCHET_RADIUS_PX * 8.0))
+
+	# --- Chain Lightning is a COMPLETE card on its own (the design call) -------
+	var cl := DiveCards.procs_for(["chain_lightning"], "hit")
+	var has_rico := false
+	var has_chain := false
+	for p in cl:
+		match String((p as Dictionary)["effect"]):
+			"ricochet": has_rico = true
+			"chain": has_chain = true
+	_check(has_rico and has_chain,
+		"Chain Lightning carries its own first bounce, so it is never a dud draw")
+	# ...and holding both must be an UPGRADE, not two shells. The world takes the
+	# max of the ricochet amounts; this pins that the amounts are equal, so the
+	# pair adds hops and nothing else.
+	var pair_rico := 0.0
+	for p in DiveCards.procs_for(["ricochet_rounds", "chain_lightning"], "hit"):
+		if String((p as Dictionary)["effect"]) == "ricochet":
+			pair_rico = maxf(pair_rico, float((p as Dictionary)["amount"]))
+	_check(is_equal_approx(pair_rico, 0.50),
+		"holding both bounce cards still bounces ONCE, at 50%")
+
+	# --- SECOND HEART: once per run, and only once ----------------------------
+	var no_card := DiveRun.new()
+	_check(not no_card.spend_second_heart(),
+		"a run with no Second Heart has no reprieve to spend")
+	var heart := DiveRun.new()
+	heart.grant_card("second_heart")
+	_check(heart.flag("second_heart"), "the run reads the flag off the held card")
+	_check(heart.spend_second_heart(), "the FIRST lethal blow is survived")
+	_check(not heart.spend_second_heart(),
+		"...and the second is not — one life, once forgiven")
+	_check(heart.second_heart_spent, "the run records that it was spent")
+	# A finished run never resurrects anybody.
+	var over := DiveRun.new()
+	over.grant_card("second_heart")
+	over.lose()
+	_check(not over.spend_second_heart(), "a run already over cannot spend it")
+	# Nothing about the one-life rule moved: the run still ends on perish.
+	var ended := DiveRun.new()
+	ended.grant_card("second_heart")
+	ended.commit()
+	ended.perish_aboard()
+	_check(ended.outcome == "lost" and String(ended.lost_how) == "worn",
+		"the ledger's one-life path is untouched by the card")
+
+	# --- The run's own addend/flag queries ------------------------------------
+	var run := DiveRun.new()
+	_check(is_zero_approx(run.addend("max_hp")) and not run.flag("grapple_free_fire"),
+		"a fresh run adds nothing and raises no flag")
+	run.grant_card("iron_constitution")
+	run.grant_card("thick_skin")
+	run.grant_card("harpooneers_arm")
+	_check(is_equal_approx(run.addend("max_hp"), 75.0),
+		"run.addend sums the held deck (%.0f)" % run.addend("max_hp"))
+	_check(run.flag("grapple_free_fire"), "run.flag reads the held deck")
+
+
+## THE GRAPPLE'S DIALS AND THE RESTRICTION HARPOONEER'S ARM LIFTS (v0.134.0).
+##
+## The restriction is arithmetic, not a rule: the hook is a WORLD-SPACE
+## projectile that does not inherit the body's velocity, and `HOOK_SPEED` (900)
+## is exactly `MAX_FALL` (900). A body at terminal velocity firing straight down
+## therefore separates from its own hook at ZERO px/s — the line hangs at your
+## boots and never reaches anything. This pins the before and the after.
+func _test_grapple_card_dials() -> void:
+	_t("THE GRAPPLE CARDS: reach, hook speed, and firing while you fall")
+
+	var p := Player.new()
+	# The two numbers are the same number, which is the whole bug.
+	_check(is_equal_approx(p.HOOK_SPEED, p.MAX_FALL),
+		"the shipped hook flies at exactly terminal fall speed (%.0f == %.0f)"
+			% [p.HOOK_SPEED, p.MAX_FALL])
+
+	var down := Vector2.DOWN
+	var falling := Vector2(0.0, p.MAX_FALL)
+	# BEFORE: fired downward at terminal velocity, the hook goes nowhere.
+	var stock := Player.hook_separation_speed(down, p.HOOK_SPEED, falling, false)
+	_check(is_zero_approx(stock),
+		"BEFORE: a downward hook fired in free fall separates at %.0f px/s" % stock)
+	# AFTER: the card fires it from your own frame, so it separates at full speed.
+	var armed := Player.hook_separation_speed(down, p.HOOK_SPEED, falling, true)
+	_check(is_equal_approx(armed, p.HOOK_SPEED),
+		"AFTER: Harpooneer's Arm restores the full %.0f px/s downward" % armed)
+	# The degradation is proportional, not a cliff — half terminal is half reach.
+	_check(is_equal_approx(
+			Player.hook_separation_speed(down, p.HOOK_SPEED,
+				Vector2(0.0, p.MAX_FALL * 0.5), false), p.HOOK_SPEED * 0.5),
+		"...and the stock loss is proportional to how fast you are falling")
+	# UPWARD is the mirror image, and always was: falling made your hook reach
+	# FURTHER above you. The card levels the circle rather than merely buffing it.
+	_check(Player.hook_separation_speed(Vector2.UP, p.HOOK_SPEED, falling, false)
+			> p.HOOK_SPEED,
+		"stock, a falling body's UPWARD hook is faster than the number on the tin")
+	_check(is_equal_approx(
+			Player.hook_separation_speed(Vector2.UP, p.HOOK_SPEED, falling, true),
+			p.HOOK_SPEED),
+		"...and the card makes every direction the same speed, which is the point")
+	# Standing still, the card changes NOTHING — ordinary play is untouched.
+	_check(is_equal_approx(
+			Player.hook_separation_speed(down, p.HOOK_SPEED, Vector2.ZERO, false),
+			Player.hook_separation_speed(down, p.HOOK_SPEED, Vector2.ZERO, true)),
+		"a body at rest fires an identical hook with or without the card")
+
+	# hook_step is the term the flight loop actually adds.
+	var d := 0.1
+	_check(Player.hook_step(down, 900.0, d, falling, false)
+			== Vector2(0.0, 900.0 * d),
+		"stock, the step is pure muzzle travel")
+	_check(Player.hook_step(down, 900.0, d, falling, true)
+			== Vector2(0.0, (900.0 + p.MAX_FALL) * d),
+		"carried, the body's own displacement rides along")
+
+	# --- LONG LINE really moves the body's grapple numbers ---------------------
+	var reach := float(p.call("_hook_range"))
+	var speed := float(p.call("_hook_speed"))
+	_check(is_equal_approx(reach, p.HOOK_MAX_RANGE) and is_equal_approx(speed, p.HOOK_SPEED),
+		"outside a run the multipliers are 1.0 and the hook is stock")
+	p.hook_range_mult = 1.40
+	p.hook_speed_mult = 1.40
+	_check(is_equal_approx(float(p.call("_hook_range")), reach * 1.40),
+		"Long Line's range dial reaches 40%% further (%.0f -> %.0f px)"
+			% [reach, float(p.call("_hook_range"))])
+	_check(is_equal_approx(float(p.call("_hook_speed")), speed * 1.40),
+		"...and the hook flies 40%% faster (%.0f -> %.0f px/s)"
+			% [speed, float(p.call("_hook_speed"))])
+	# The dials survive the world-scale multiply — they are ratios, not distances.
+	var big := Player.new()
+	big.scale_body(8.0)
+	big.hook_range_mult = 1.40
+	_check(is_equal_approx(float(big.call("_hook_range")), big.HOOK_MAX_RANGE * 1.40),
+		"the range dial is a ratio, so it survives the 8x world untouched")
+	big.free()
+
+	# --- THICK SKIN's flat pool, and the mend that comes with it --------------
+	_check(is_zero_approx(p.bonus_max_health), "a stock body carries no bonus pool")
+	var pool := p.max_health
+	p.health = pool * 0.4
+	var hurt := p.health
+	p.grant_bonus_health(25.0)
+	_check(is_equal_approx(p.max_health, pool + 25.0),
+		"Iron Constitution raises the pool (%.0f -> %.0f)" % [pool, p.max_health])
+	_check(is_equal_approx(p.health, hurt + 25.0),
+		"...and MENDS the difference (%.0f -> %.0f), never leaving you as close to death"
+			% [hurt, p.health])
+	# Idempotent: the world stamps this every tick, so the same value must not heal.
+	var held := p.health
+	p.grant_bonus_health(25.0)
+	p.grant_bonus_health(25.0)
+	_check(is_equal_approx(p.health, held),
+		"stamping the same bonus again heals nothing (it is stamped every tick)")
+	# Growing it again tops up only the new slice.
+	p.grant_bonus_health(75.0)
+	_check(is_equal_approx(p.max_health, pool + 75.0)
+			and is_equal_approx(p.health, held + 50.0),
+		"a second HP card adds only its own slice (%.0f/%.0f)" % [p.health, p.max_health])
+	# ...and the run ending trims the pool without killing you.
+	p.grant_bonus_health(0.0)
+	_check(is_equal_approx(p.max_health, pool) and p.health > 0.0 and p.health <= pool,
+		"ending the run puts the pool back to stock and leaves you alive (%.0f/%.0f)"
+			% [p.health, p.max_health])
+	# A full body that gains max HP is capped, never overhealed.
+	p.health = p.max_health
+	p.grant_bonus_health(50.0)
+	_check(is_equal_approx(p.health, p.max_health),
+		"a whole body ends up whole, not over the line")
+
+	# --- THICK SKIN's landing discount ---------------------------------------
+	var full := Player.fall_damage_for(800.0, 520.0, 900.0, 100.0, 1.0)
+	var soft := Player.fall_damage_for(800.0, 520.0, 900.0, 100.0, 0.85)
+	_check(soft < full and is_equal_approx(soft, full * 0.85),
+		"the fall_damage_taken dial rides the F2 lever (%.1f -> %.1f)" % [full, soft])
+	p.free()
 
 
 ## THE WIND RING (owner experiment 2026-08-31): the looping tile model. Pure —

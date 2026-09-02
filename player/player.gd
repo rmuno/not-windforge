@@ -385,6 +385,89 @@ func _move_speed() -> float:
 	return SPEED * (stats.move_speed_mult() if stats != null else 1.0) * run_speed_mult
 
 
+# --- THE REST OF THE DIVE-CARD STAMPS (v0.134.0) ----------------------------
+#
+# All five follow `run_speed_mult` exactly: a plain field nothing outside a run
+# ever writes, stamped by `world._tick_dive` every tick and put back by
+# `world.end_dive`. Defaults are the identity, so ordinary play is byte-identical
+# and every one of them is 1.0 / 0.0 / false in the expedition and the sandbox.
+
+## Long Line's two numbers. Dimensionless, so they survive `scale_body` untouched.
+var hook_range_mult := 1.0
+var hook_speed_mult := 1.0
+## Harpooneer's Arm. See `hook_step` for what it actually lifts.
+var hook_carries_body := false
+## Thick Skin's half of the bill for a landing (multiplied into the F2 dial).
+var fall_damage_mult := 1.0
+## Iron Constitution / Thick Skin. Flat px of pool, ADDED to whatever GRIT gives.
+## Never assign this directly — `grant_bonus_health` heals the difference.
+var bonus_max_health := 0.0
+
+
+## The hook's speed and reach right now, card multipliers included.
+func _hook_speed() -> float:
+	return HOOK_SPEED * maxf(hook_speed_mult, 0.01)
+
+
+func _hook_range() -> float:
+	return HOOK_MAX_RANGE * maxf(hook_range_mult, 0.01)
+
+
+## The whole health pool: what GRIT buys, plus what the run's cards granted.
+func _health_pool() -> float:
+	return (stats.max_health() if stats != null else StatDB.BASE_HEALTH) + maxf(bonus_max_health, 0.0)
+
+
+## Set the card-granted slice of the pool to `bonus`, MENDING THE DIFFERENCE when
+## it grows. Taking +25 max at 40/100 must read 65/125, not 40/125 — a card that
+## raises your ceiling and leaves you exactly as close to death would be a
+## downgrade mid-fight, which is not what "+25 max HP" promises. Shrinking (the
+## run ending) only trims the pool; it never heals and never kills.
+##
+## Idempotent, because the world stamps it every tick: the same value twice does
+## nothing at all, so the heal happens on the frame the card is taken and never
+## again.
+func grant_bonus_health(bonus: float) -> void:
+	var want := maxf(bonus, 0.0)
+	if is_equal_approx(want, bonus_max_health):
+		return
+	var gained := want - bonus_max_health
+	bonus_max_health = want
+	max_health = _health_pool()
+	health = minf(max_health, health + maxf(gained, 0.0))
+
+
+## HOW FAR THE HOOK MOVES IN ONE FRAME, and the restriction Harpooneer's Arm lifts.
+##
+## The hook is a WORLD-SPACE projectile: it is launched at `speed` along `dir` and
+## does not inherit the body's velocity. That is invisible on the ground and
+## crippling in the air, because the shipped numbers are `HOOK_SPEED` 900 and
+## `MAX_FALL` 900 — THE SAME NUMBER. A body at terminal velocity firing straight
+## down separates from its own hook at exactly 0 px/s: the line hangs at your
+## boots, never reaches `HOOK_MAX_RANGE`, never retracts, and never finds the
+## ledge you were aiming at. Firing anywhere in the lower half of the circle is
+## degraded by the same arithmetic, in proportion.
+##
+## `carry` fires it from YOUR frame instead — the body's own displacement is added
+## to the hook's — so separation is `speed` in every direction whatever you are
+## doing. That is the card, in one term.
+static func hook_step(dir: Vector2, speed: float, delta: float,
+		body_vel: Vector2, carry: bool) -> Vector2:
+	var step := dir.normalized() * speed * delta
+	return step + body_vel * delta if carry else step
+
+
+## How fast the hook pulls AWAY from the body that fired it, px/s along `dir`.
+## `speed` flat with `carry`; without it, whatever is left after the body's own
+## motion along that line is subtracted — zero (or less) when you are falling as
+## fast as the hook flies. This is the before/after the suite pins.
+static func hook_separation_speed(dir: Vector2, speed: float,
+		body_vel: Vector2, carry: bool) -> float:
+	if carry:
+		return speed
+	return speed - body_vel.dot(dir.normalized())
+
+
 ## Can the player start an AIR jump right now? Only when the double-jump perk
 ## (GRACE) is unlocked AND an air jump remains in the budget. This is the actual
 ## gate the jump path uses — so it asserts the PERK'S EFFECT, not merely the flag.
@@ -475,7 +558,9 @@ func _physics_process(delta: float) -> void:
 	# since combat happens at the helm — never healed (owner 2026-08-23: "the hp
 	# regen traits aren't working"). Regen still needs the GRIT perk (Second Wind at
 	# GRIT 3, Undying at 5); a level-1 body has 0 regen by design.
-	max_health = stats.max_health() if stats != null else StatDB.BASE_HEALTH
+	# `_health_pool` folds in the Dive cards' flat grant (bonus_max_health) so a
+	# card's +25 is not wiped off the pool by this line on the very next frame.
+	max_health = _health_pool()
 	health = minf(max_health, health + (stats.regen_rate() if stats != null else 0.0) * delta)
 
 	if is_piloting():
@@ -591,7 +676,7 @@ func _physics_process(delta: float) -> void:
 		if Input.is_action_pressed("reel_in"):
 			_rope_len = maxf(ROPE_MIN, _rope_len - REEL_SPEED * delta)
 		elif Input.is_action_pressed("move_down"):
-			_rope_len = minf(HOOK_MAX_RANGE, _rope_len + REEL_SPEED * delta)
+			_rope_len = minf(_hook_range(), _rope_len + REEL_SPEED * delta)
 		_apply_rope_constraint()
 		# Rope attrition AFTER the constraint: this is not a spinning simulator
 		# (owner). Proportional (see ROPE_ATTRITION note), and ordered after
@@ -640,8 +725,10 @@ func _land_from(arriving: float) -> void:
 	if _fall_forgiven:
 		_fall_forgiven = false
 		return
+	# The Dive card dial (Thick Skin) rides the F2 lever, so a run's cards soften
+	# the bill without either of them knowing about the other. 1.0 outside a run.
 	var hurt_by := fall_damage_for(arriving, FALL_SAFE_SPEED, MAX_FALL,
-		max_health, Tunables.get_num("fall_damage"))
+		max_health, Tunables.get_num("fall_damage") * maxf(fall_damage_mult, 0.0))
 	if hurt_by > 0.0:
 		take_damage(hurt_by)
 
@@ -821,20 +908,27 @@ func _wrapped_len() -> float:
 func _update_hook(delta: float) -> void:
 	match _hook_state:
 		HookState.FLYING:
-			var next := _hook_pos + _hook_dir * HOOK_SPEED * delta
+			# `hook_step` carries the body's own motion into the flight when
+			# Harpooneer's Arm is held — see its comment for the restriction that
+			# lifts. Stock (carry false) this is the original line exactly.
+			var next := _hook_pos + hook_step(_hook_dir, _hook_speed(), delta,
+				velocity, hook_carries_body)
 			if _try_latch(_hook_pos, next):
 				return
 			_hook_pos = next
-			if _hook_pos.distance_to(global_position) >= HOOK_MAX_RANGE:
+			if _hook_pos.distance_to(global_position) >= _hook_range():
 				_hook_state = HookState.RETRACTING
 		HookState.RETRACTING:
 			# The hook latches on the way back too — original behaviour, and
 			# it makes sloppy shots forgiving.
 			var back := global_position - _hook_pos
-			if back.length() <= HOOK_SPEED * delta * 1.5:
+			if back.length() <= _hook_speed() * delta * 1.5:
 				_hook_state = HookState.IDLE
 				return
-			var next := _hook_pos + back.normalized() * HOOK_SPEED * delta
+			# Carried on the way home too, or a falling body would out-run its own
+			# retracting hook and the line would take seconds to clear.
+			var next := _hook_pos + hook_step(back.normalized(), _hook_speed(), delta,
+				velocity, hook_carries_body)
 			if _try_latch(_hook_pos, next):
 				return
 			_hook_pos = next

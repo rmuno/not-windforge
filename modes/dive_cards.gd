@@ -27,14 +27,36 @@ extends RefCounted
 ##     (the Dive assistant's mend rate), "thrust" (your hull's propeller force —
 ##     `Ship.thrust_mult`, stamped on the local ship each dive tick, reset by
 ##     end_dive), "move_speed" (your legs — `Player.run_speed_mult`, stamped the
-##     same way). STAGED (model supports, world not yet): "grapple", "ride".
+##     same way), "grapple_range" / "grapple_speed" (`Player.hook_range_mult` /
+##     `hook_speed_mult`, stamped the same way), "fall_damage_taken" (the bill for
+##     a landing — <1 is SOFTER; `Player.fall_damage_mult`).
+##     STAGED (model supports, world not yet): "grapple", "ride".
+##   adds:  {dial_key: amount}               — ADDED to an existing number
+##     A second, deliberately tiny channel (v0.134.0). Some numbers are not
+##     sensibly a percentage: the owner asked for "+25 max HP (flat)", and a
+##     multiplier on a pool that GRIT already scales would mean a different card
+##     for every character. Multipliers stay the default — `adds` exists for the
+##     handful of dials where a flat number is what the card actually promises.
+##     dials wired today: "max_hp" (`Player.bonus_max_health`; taking the card
+##     HEALS the difference, so +25 max at 40/100 reads 65/125).
+##   flags: ["flag_name"]                    — a RULE turned on, not a number moved
+##     The third channel, and the smallest (v0.134.0). Some cards do not scale
+##     anything: they lift a restriction or arm a one-shot. A flag is held or it
+##     is not, and the world asks `_dive_flag("x")`.
+##     flags wired today: "grapple_free_fire" (the hook is fired from your own
+##     moving frame, so it works at full reach even in free fall — see
+##     `Player.hook_step`), "second_heart" (the first lethal blow of a run leaves
+##     you at 1 HP instead; the run model spends it once — `DiveRun.spend_second_heart`).
 ##   procs: [{on, effect, amount}]           — fired when the world emits `on`
 ##     events wired today: "kill" (a creature died to you), "hit" (your shot landed
 ##     on an enemy), "land" (you reached a new depth). STAGED: "attack", "hurt".
 ##     effects wired today: "coins" (+amount to the pot), "heal" (+amount HP to the
 ##     player), "lifesteal" (heal amount× the damage dealt), "explode" (the hit
 ##     detonates: amount× the damage dealt again to every enemy within
-##     BLAST_RADIUS_PX × world_scale of the struck hull).
+##     BLAST_RADIUS_PX × world_scale of the struck hull), "ricochet" (the hit
+##     BOUNCES to the nearest OTHER enemy within RICOCHET_RADIUS_PX × world_scale
+##     for amount× the damage), "chain" (the bounce keeps going, CHAIN_HOPS more
+##     times at amount× the damage each).
 ##
 ## RARITY (owner 2026-09-01: "white -> normal & common, green or blue ->
 ## rarer/better, purple -> spicy epic, orange -> legendary for extra spicy
@@ -45,7 +67,7 @@ extends RefCounted
 ## branches on it, so re-tiering a card is a one-word edit.
 ##
 ## THE DECK STAYS SMALL (owner: "I don't want a bazillion cards", "they have to be
-## meaningful"). Under twenty rows, and every one of them either changes a number
+## meaningful"). Under thirty rows, and every one of them either changes a number
 ## you can feel in the first ten seconds or writes a build around a SYNERGY that
 ## already exists in the vocabulary:
 ##   * fire_rate × explode — more trigger pulls, more blasts (Cluster Shells wants
@@ -55,6 +77,14 @@ extends RefCounted
 ##     King's Ransom do not merely pay, they DRAW MORE CARDS.
 ##   * move_speed × going shipless — the run is legal without a hull, and legs are
 ##     the only engine a shipless run has (Light Boots, Sea Legs).
+##   * ricochet × lifesteal/explode — a BOUNCE IS A REAL HIT (world._dive_ricochet
+##     re-fires the hit event on it), so Ricochet Rounds turns one trigger pull
+##     into two Sanguine Tide heals or two Cluster Shells detonations. Deliberate;
+##     the loop guard is that a bounce never bounces again.
+##   * max_hp × fall_damage_taken × grapple — the SURVIVAL build the deck was
+##     missing. Fall damage is charged on the speed you ACTUALLY LAND AT, so a
+##     grapple that works while you are falling (Harpooneer's Arm) is already the
+##     game's own answer to a long drop; Thick Skin pays the rest of the bill.
 
 ## Rarity tiers, weakest first. Display order in the codex, too.
 const RARITIES := ["common", "uncommon", "epic", "legendary"]
@@ -83,6 +113,20 @@ const RARITY_LABEL := {
 ## shipped zoom. Big enough that a cluster of pickets goes up together (which is
 ## the whole fantasy), small enough that you have to aim into the crowd.
 const BLAST_RADIUS_PX := 220.0
+
+## THE BOUNCE's reach in px at scale 1 — the same unit as BLAST_RADIUS_PX, so the
+## world multiplies by `world_scale` and it is ~2,240 px at the shipped 8×.
+## DELIBERATELY WIDER THAN THE BLAST: a blast is an area you aim INTO (it wants a
+## crowd), while a bounce is a line the shell finds for you and has to read as
+## generous or the card looks broken every time the second gunboat is one hull
+## length too far. Still well under a screen, so "the nearest OTHER enemy" is
+## somebody you can see when it happens.
+const RICOCHET_RADIUS_PX := 280.0
+
+## How many EXTRA hops the "chain" effect adds after the first bounce. Two, so a
+## chained shot touches four bodies in all (struck + bounce + 2) — enough to read
+## as lightning, few enough that a surge does not resolve in one trigger pull.
+const CHAIN_HOPS := 2
 
 ## The deck. Order is display order within the draft. Keep procs' effect/amount in
 ## the closed vocabulary above and the rarity in RARITIES, or the world silently
@@ -117,6 +161,20 @@ const CATALOG := [
 		"desc": "Every hit shakes 3 coins loose. Coins are experience.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "coins", "amount": 3}]},
 
+	# The `adds` channel's first row, and the reason it exists: the owner asked
+	# for "+25 max HP (flat, not %)". Taking it MENDS the difference on the spot —
+	# a card that raises your ceiling and leaves you as hurt as you were would read
+	# as a downgrade in the middle of a fight.
+	{"id": "iron_constitution", "name": "Iron Constitution", "rarity": "common", "weight": 9,
+		"desc": "+25 to your health pool, and you are mended the difference.",
+		"mods": {}, "adds": {"max_hp": 25.0}, "procs": []},
+	# ONE CARD, BOTH NUMBERS (owner: "grapple range should probably also have hook
+	# speed attached to it"). Range on its own is a hook that takes longer to reach
+	# the same wall — a nerf wearing a buff.
+	{"id": "long_line", "name": "Long Line", "rarity": "common", "weight": 8,
+		"desc": "Your grapple reaches 40% further, and the hook flies 40% faster.",
+		"mods": {"grapple_range": 1.40, "grapple_speed": 1.40}, "procs": []},
+
 	# --- UNCOMMON (blue) — stronger, or two systems at once ------------------
 	{"id": "vampiric_rounds", "name": "Vampiric Rounds", "rarity": "uncommon", "weight": 8,
 		"desc": "Landing a hit heals you for 8% of the damage.",
@@ -134,6 +192,21 @@ const CATALOG := [
 		"desc": "You run 25% faster and your propellers push 15% harder.",
 		"mods": {"move_speed": 1.25, "thrust": 1.15}, "procs": []},
 
+	# THE RESTRICTION, LIFTED. The hook is a world-space projectile that does NOT
+	# inherit your velocity, and HOOK_SPEED (900) is exactly MAX_FALL (900) — so a
+	# body at terminal velocity firing straight down separates from its own hook at
+	# 0 px/s and the line simply hangs at your boots. This card fires the hook from
+	# YOUR frame instead (Player.hook_step's `carry`), so it separates at full speed
+	# in every direction whatever you are doing. See `Player.hook_separation_speed`.
+	{"id": "harpooneers_arm", "name": "Harpooneer's Arm", "rarity": "uncommon", "weight": 7,
+		"desc": "Your grapple fires at full reach in any direction — even in free fall.",
+		"mods": {}, "flags": ["grapple_free_fire"], "procs": []},
+	# Both channels on one row, which is the point of it: a flat pool and a
+	# multiplier on what the ground charges you.
+	{"id": "thick_skin", "name": "Thick Skin", "rarity": "uncommon", "weight": 6,
+		"desc": "+50 to your health pool, and a landing costs you 15% less.",
+		"mods": {"fall_damage_taken": 0.85}, "adds": {"max_hp": 50.0}, "procs": []},
+
 	# --- EPIC (purple) — build-defining. Pure upside, bigger numbers ----------
 	{"id": "full_sail", "name": "Full Sail", "rarity": "epic", "weight": 8,
 		"desc": "Your propellers push 75% harder.",
@@ -145,6 +218,14 @@ const CATALOG := [
 		"desc": "Fire 15% faster, and every hit heals you 20% of the damage.",
 		"mods": {"fire_rate": 0.85},
 		"procs": [{"on": "hit", "effect": "lifesteal", "amount": 0.20}]},
+
+	# A BOUNCE IS A REAL HIT. The world re-fires the whole hit event on the bounced
+	# target, so lifesteal and Cluster Shells both chain off it — deliberate, and
+	# the reason this is an epic rather than an uncommon. The loop guard is one
+	# rule: a ricochet never ricochets (world._dive_in_ricochet).
+	{"id": "ricochet_rounds", "name": "Ricochet Rounds", "rarity": "epic", "weight": 6,
+		"desc": "Your shots bounce to the nearest other enemy for 50% of the damage.",
+		"mods": {}, "procs": [{"on": "hit", "effect": "ricochet", "amount": 0.50}]},
 
 	# --- LEGENDARY (orange) — the run you tell someone about -----------------
 	{"id": "cluster_shells", "name": "Cluster Shells", "rarity": "legendary", "weight": 8,
@@ -158,16 +239,42 @@ const CATALOG := [
 	{"id": "sanguine_tide", "name": "Sanguine Tide", "rarity": "legendary", "weight": 5,
 		"desc": "Every hit heals you 45% of the damage dealt.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "lifesteal", "amount": 0.45}]},
+	# IT CARRIES ITS OWN FIRST BOUNCE (design call, v0.134.0). A legendary that
+	# does nothing unless you already drew a particular epic is a legendary that
+	# reads as a dud two runs out of three, so this row carries BOTH procs and is a
+	# complete card on its own. Holding Ricochet Rounds too is not double-dipping:
+	# the world takes the MAX of the ricochet amounts and fires ONE sequence
+	# (world._dive_apply_procs), so the pair is an upgrade, never two bounces.
+	{"id": "chain_lightning", "name": "Chain Lightning", "rarity": "legendary", "weight": 5,
+		"desc": "Your shots bounce for 50%, then leap on twice more for 35% each.",
+		"mods": {}, "procs": [
+			{"on": "hit", "effect": "ricochet", "amount": 0.50},
+			{"on": "hit", "effect": "chain", "amount": 0.35}]},
+	# ONE LIFE, ONCE FORGIVEN. The run's one-life rule (DiveRun.perish_aboard) is
+	# untouched — this card is spent BEFORE the death path is reached, so the
+	# second lethal blow of a run still ends it. Run-scoped state, like everything
+	# else a card does: it does not survive `end_dive`.
+	{"id": "second_heart", "name": "Second Heart", "rarity": "legendary", "weight": 4,
+		"desc": "The first blow that would kill you this run leaves you at 1 HP.",
+		"mods": {}, "flags": ["second_heart"], "procs": []},
 ]
 
 ## The events a proc may hook, and the effects the world knows how to apply. A card
 ## naming anything outside these is a bug the suite catches — the world's
 ## interpreter is deliberately a closed set.
 const EVENTS := ["kill", "hit", "land", "attack", "hurt"]
-const EFFECTS := ["coins", "heal", "lifesteal", "explode"]
+const EFFECTS := ["coins", "heal", "lifesteal", "explode", "ricochet", "chain"]
 ## Dial keys a `mods` entry may name (mirrors the world's `_dive_mod` call sites).
 const DIALS := ["weapon_damage", "turret_damage", "fire_rate", "hull_repair",
-	"thrust", "move_speed", "grapple", "ride"]
+	"thrust", "move_speed", "grapple_range", "grapple_speed", "fall_damage_taken",
+	"grapple", "ride"]
+## Dial keys an `adds` entry may name (the world's `_dive_add` call sites). A
+## separate list, not a corner of DIALS, because the two channels compose
+## differently — a missing multiplier is 1.0 and a missing addend is 0.0, and a
+## key in the wrong one would silently do nothing at all.
+const ADDS := ["max_hp"]
+## Rule switches a `flags` entry may name (the world's `_dive_flag` call sites).
+const FLAGS := ["grapple_free_fire", "second_heart"]
 
 
 ## The whole deck's size — the denominator of "N of M taken" in the gallery.
@@ -234,6 +341,52 @@ static func blast_catches(rows: Array, radius: float) -> Array:
 			continue
 		if float(row.get("dist", INF)) <= radius:
 			out.append(i)
+	return out
+
+
+# --- THE BOUNCE (the "ricochet" / "chain" effects) --------------------------
+#
+# The blast's twin, and deliberately the SAME row shape ({dist, hostile}) so the
+# world builds its candidate list once and both effects read it. Where a blast
+# catches EVERY hostile in a radius, a bounce picks exactly ONE — the nearest
+# that has not been hit yet — which is what makes it read as a shell finding its
+# way rather than as a smaller explosion.
+
+## The NEAREST hostile row within `radius`, ignoring every index in `taken`
+## (the bodies this bounce sequence has already struck — the struck hull first
+## of all, or the shell would simply bounce back into what it just hit). -1 when
+## nothing qualifies, which is how the world knows a chain has run out of sky.
+##
+## Ties go to the lower index. Arbitrary, but DETERMINISTIC, which is what a test
+## needs and what stops two identical shots resolving differently.
+static func nearest_catch(rows: Array, radius: float, taken: Array) -> int:
+	var best := -1
+	var best_d := INF
+	for i in rows.size():
+		var row := rows[i] as Dictionary
+		if not bool(row.get("hostile", false)) or taken.has(i):
+			continue
+		var d := float(row.get("dist", INF))
+		if d <= radius and d < best_d:
+			best_d = d
+			best = i
+	return best
+
+
+## How much damage each step of a bounce sequence deals, given the ORIGINAL hit's
+## `damage`, the first-bounce fraction and the per-chain-hop fraction. Empty when
+## nothing bounces; one entry with no chain; 1 + CHAIN_HOPS entries with one.
+##
+## Pure so the card's arithmetic — "50%, then 35% each" — is pinned without a
+## ship, and so the world's loop has nothing to get wrong but the geometry.
+static func bounce_damages(damage: float, first: float, chain: float) -> Array:
+	var out: Array = []
+	if damage <= 0.0 or first <= 0.0:
+		return out
+	out.append(damage * first)
+	if chain > 0.0:
+		for _hop in CHAIN_HOPS:
+			out.append(damage * chain)
 	return out
 
 
@@ -409,6 +562,29 @@ static func modifier(held: Array, key: String) -> float:
 		if mods.has(key):
 			m *= float(mods[key])
 	return m
+
+
+## The combined ADDEND a set of held card ids applies to dial `key` — the SUM of
+## every held card's `adds[key]` (0.0 when none touch it). Sum, not product, and
+## that is the whole reason this channel is separate: two +25 HP cards must be
+## +50 HP, and a flat number folded into a multiplier vocabulary would either
+## compound absurdly or need a special case at every read site.
+static func addend(held: Array, key: String) -> float:
+	var a := 0.0
+	for id in held:
+		var adds: Dictionary = by_id(String(id)).get("adds", {})
+		if adds.has(key):
+			a += float(adds[key])
+	return a
+
+
+## Does any held card raise `flag`? A flag is a RULE, so holding it twice is the
+## same as holding it once — which is why this is a bool and not a count.
+static func has_flag(held: Array, flag: String) -> bool:
+	for id in held:
+		if (by_id(String(id)).get("flags", []) as Array).has(flag):
+			return true
+	return false
 
 
 ## Every proc effect across the held cards that fires on `event`, as a flat list of

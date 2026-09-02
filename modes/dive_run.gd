@@ -699,9 +699,36 @@ func modifier(key: String) -> float:
 	return DiveCards.modifier(cards, key)
 
 
+## The combined ADDEND the held cards apply to dial `key` (0.0 when none do).
+func addend(key: String) -> float:
+	return DiveCards.addend(cards, key)
+
+
+## Is rule `flag` switched on by a held card? (Harpooneer's Arm, Second Heart.)
+func flag(name: String) -> bool:
+	return DiveCards.has_flag(cards, name)
+
+
 ## The proc effects the held cards fire on `event`, as [{effect, amount}, ...].
 func procs_for(event: String) -> Array:
 	return DiveCards.procs_for(cards, event)
+
+
+## SECOND HEART, spent (owner-approved legendary, 2026-09-01). Has this run
+## already used its one reprieve?
+var second_heart_spent := false
+
+
+## Spend the reprieve, if there is one to spend. True EXACTLY ONCE per run, and
+## only while the card is held and the run is live — the world calls this at the
+## death site and, on a true, puts the body back at 1 HP instead of ending the
+## run. The one-life rule is otherwise untouched: the next lethal blow finds this
+## returning false and the run is over, which is the whole shape of the card.
+func spend_second_heart() -> bool:
+	if outcome != "" or second_heart_spent or not flag("second_heart"):
+		return false
+	second_heart_spent = true
+	return true
 
 
 ## The player died with the run live. One life (owner ruling): the run ends
