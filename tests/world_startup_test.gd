@@ -2790,6 +2790,32 @@ func _check_dive(world: Node, fleet) -> void:
 				"...and Lead Keel's dive_rate rides beside it (%.2fx)"
 					% hull_now.dive_rate_mult)
 
+			# THE GUN CARDS REACH THE HELM (v0.140.0, review §4.2 item 1) — the
+			# whole point of the dial merge. A committed run is flown from the
+			# helm, and before this Quick Hands bought a sidearm cadence the run
+			# never uses and Heavy Shells buffed a dial named for the other gun.
+			# Measured off `turret_cadence`, the function `_handle_shooting`
+			# really assigns from, so a rename on either side reddens here.
+			var stock_cadence: float = world.call("turret_cadence", 1.0)
+			_ok(stock_cadence > 0.0,
+				"the helm's volley cadence is a real interval (%.3f s)" % stock_cadence)
+			_ok(is_equal_approx(float(world.call("_dive_mod", "damage")), 1.0),
+				"...and with no gun card the damage dial is 1.0")
+			carded.grant_card("quick_hands")
+			carded.grant_card("heavy_shells")
+			world.call("_tick_dive", 0.016)
+			_ok(world.call("turret_cadence", 1.0) < stock_cadence,
+				"Quick Hands shortens the HELM's volley cooldown (%.3f -> %.3f s)"
+					% [stock_cadence, float(world.call("turret_cadence", 1.0))])
+			_ok(is_equal_approx(float(world.call("_dive_mod", "damage")), 1.35),
+				"...and Heavy Shells' damage dial reaches the world by the name the"
+					+ " catalog spells (%.2fx)"
+					% float(world.call("_dive_mod", "damage")))
+			# Brownout still stretches it, card or no card — the two factors
+			# compose, they do not replace each other.
+			_ok(world.call("turret_cadence", 0.25) > world.call("turret_cadence", 1.0),
+				"...and an underpowered ship still fires slower than a fed one")
+
 		# THE BLAST. Two hulks side by side, a shell into the first, and the
 		# SECOND one has to lose plating — that is the whole legendary.
 		carded.grant_card("cluster_shells")

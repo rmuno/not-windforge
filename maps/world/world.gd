@@ -5126,16 +5126,7 @@ func _handle_shooting(delta: float) -> void:
 			return  # no power, no fire — same rule as the props
 		var fired := _fire_turrets(ship, aim)
 		if fired:
-			# Brownout STRETCHES the cadence (an underpowered ship fires slower);
-			# the F2 fire-rate lever SHORTENS it. The personal GRACE perk does not
-			# reach the ship's guns — that is the sidearm's (Player.turret_interval).
-			# THE `fire_rate` CARD DIAL REACHES THE HELM (v0.140.0, review §4.2
-			# item 1): it was the sidearm's interval only, so Quick Hands bought a
-			# gun a committed run never fires. Same factor, same place in the
-			# arithmetic as the sidearm below; 1.0 outside a run.
-			_turret_cooldown = Player.turret_interval(
-				TURRET_COOLDOWN, ratio, Tunables.get_num("fire_rate_mult")) \
-				* _dive_mod("fire_rate")
+			_turret_cooldown = turret_cadence(ratio)
 		return
 
 	if _shoot_cooldown > 0.0:
@@ -5163,6 +5154,28 @@ func _handle_shooting(delta: float) -> void:
 	# Hands shortens it further (its mult is < 1).
 	_shoot_cooldown = player.sidearm_interval(
 		SHOOT_COOLDOWN, Tunables.get_num("fire_rate_mult")) * _dive_mod("fire_rate")
+
+
+## THE HELM'S VOLLEY CADENCE, in one place. Brownout STRETCHES it (an
+## underpowered ship fires slower); the F2 fire-rate lever SHORTENS it; the
+## personal GRACE quickness perk does NOT reach the ship's guns — that one is the
+## sidearm's alone (Player.turret_interval).
+##
+## THE `fire_rate` CARD DIAL REACHES IT (v0.140.0, review §4.2 item 1). It used to
+## be the sidearm's interval only, so Quick Hands bought a gun a committed run
+## never fires — a committed run is flown from the helm. Same factor, same place
+## in the arithmetic as the sidearm's below; 1.0 outside a run, so ordinary play
+## volleys exactly as before.
+##
+## Pulled out of `_handle_shooting` so a test can measure the cadence the game
+## really assigns rather than restate its arithmetic: driving the input path needs
+## a held trigger, a turret that bears on the cursor, and a cursor — none of which
+## is the thing that would break.
+func turret_cadence(ratio: float) -> float:
+	return Player.turret_interval(
+		TURRET_COOLDOWN, ratio, Tunables.get_num("fire_rate_mult")) \
+		* _dive_mod("fire_rate")
+
 
 
 ## Slug masses (block-mass units): the sidearm spits pellets, turrets
