@@ -431,6 +431,40 @@ func _check_dive_scene_boots() -> void:
 	_ok(vessels > 0 and sticked == vessels,
 		"...and flies the same rate-controlled stick you do (%d of %d)"
 			% [sticked, vessels])
+	# ...AND BREATHES THE SAME WEATHER (v0.141.0, DESCENT §0 call 7 "symmetric").
+	# Every body the run put in the sky is stamped `extra_wind` for ITS OWN
+	# position, so a picket in a downdraft rides it exactly as you do — the sky is
+	# a place, not a debuff on the player. Checked against the world's own
+	# `dive_weather_at`, which is the one site the model meets coordinates.
+	# Stamped THIS instant, with nothing awaited between the stamp and the read:
+	# a picket flies, and a hull that crossed a tile line since the last live tick
+	# would honestly be carrying the weather of the tile it came from.
+	w.call("_dive_weather", 0.0)
+	var winded := 0
+	var listed := 0
+	var moved_one: Ship = null
+	for sid in (w.get("_dive_surged") as Array):
+		var hull2 := instance_from_id(sid) as Ship
+		if hull2 == null or not is_instance_valid(hull2):
+			continue
+		listed += 1
+		if hull2.extra_wind.is_equal_approx(
+				w.call("dive_weather_at", hull2.global_position)):
+			winded += 1
+		if moved_one == null and hull2.creature_kind == "":
+			moved_one = hull2
+	_ok(listed > 0 and winded == listed,
+		"every listed hull feels the weather where IT is (%d of %d)" % [winded, listed])
+	# ...and the same weather YOU do, when it is where you are. Stated separately
+	# because "each body reads its own position" and "the two agree at one point"
+	# are different bugs.
+	if moved_one != null and pl != null and is_instance_valid(pl):
+		moved_one.global_position = pl.global_position
+		w.call("_dive_weather", 0.0)
+		_ok(moved_one.extra_wind.is_equal_approx(
+				w.call("dive_weather_at", pl.global_position)),
+			"an enemy hull at YOUR position feels your weather exactly (%s)"
+				% moved_one.extra_wind)
 
 	await _check_dive_garrison_materializes(w, pl, run, cx)
 	# LAST, deliberately: this one runs six real seconds of world, which would
@@ -649,7 +683,19 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 			continue
 		picket = hull
 		break
-	_ok(picket != null, "a crewed picket to leave alone at depth 2")
+	if picket == null:
+		# ...and if the run's own population has none, ASK for one. Since
+		# v0.141.0 a depth's garrison is `surge_count(d)` pickets around its
+		# landing column (owner call 3), and at some depths every one of them is
+		# a kraken — so leaning on "there will happen to be a crewed vessel in
+		# the sky" makes this check a lottery. `_dive_spawn_picket` is the run's
+		# own spawn path, shared by the garrison and the F2 surge alike, so a
+		# hulk from it is the same body the sky would have stood there.
+		picket = w.call("_dive_spawn_picket", "hulk",
+			pl.global_position + Vector2(9000.0, 0.0)) as Ship
+		await w.get_tree().physics_frame
+	_ok(picket != null and is_instance_valid(picket) and picket.has_helm(),
+		"a crewed picket to leave alone at depth 2")
 	if picket == null:
 		return
 	# MEASURED, and it is the round's one uncomfortable number: at the SHIPPED
@@ -770,9 +816,28 @@ func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
 	# in the middle would let the run advance out from under the check.
 	var depth := 3
 	pl.velocity = Vector2.ZERO
-	pl.global_position = Vector2(cx,
+	# ON THIS DEPTH'S LANDING COLUMN, not on the ring's centre line. Since
+	# v0.141.0 a depth's whole garrison stands in the three tiles around its own
+	# landing (owner call 3), so "the ring's centre" is a tile that usually keeps
+	# NOBODY — and a check standing there would pass or fail on where this run's
+	# seed happened to put its ladder. Standing on the landing tile, the garrison
+	# in its two NEIGHBOURS is a tile away: outside everybody's frame, inside the
+	# two-screen reach, which is exactly the band a body is handed out in.
+	var land_tile := DiveRun.landing_tile(int(run.get("seed_v")), depth,
+		Tunables.get_num("dive_zone_tile_widths"))
+	pl.global_position = Vector2(
+		cx + DiveRun.zone_offset(land_tile) * float(w.call("_dive_tile_w")),
 		float(w.call("dive_altitude_y", DiveRun.depth_altitude(depth))))
 	run.set("depth", depth)
+
+	# FORGET WHAT THE LIVE WORLD ALREADY WOKE. The ticks that ran while this suite
+	# was flying around have been marking entries spawned all along, and since
+	# v0.141.0 a depth is worth 2-5 pickets in total (owner call 3) rather than
+	# 48 — so "there will be leftovers near the player for the explicit call to
+	# find" stopped being true, and this check went from reliable to a coin flip.
+	# Both books are cleared together, because the assertion below compares them.
+	run.set("garrison_spawned", {})
+	w.set("_dive_materialized", 0)
 
 	# THE DOCK IS SAFE UNTIL YOU HAVE BEEN DOWN, so a run that has never left the
 	# top rung wakes nothing at all — the same gate the den's clock rides, and
@@ -805,7 +870,8 @@ func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
 	var places := {}
 	for tile in DiveRun.RING.size():
 		for d2 in range(2, DiveRun.DEPTHS + 1):
-			for g in DiveRun.tile_garrison(sv, tile, d2):
+			for g in DiveRun.tile_garrison(sv, tile, d2,
+					Tunables.get_num("dive_zone_tile_widths")):
 				var grow := g as Dictionary
 				places[String(grow["key"])] = w.call("dive_garrison_pos",
 					grow, pl.global_position)
@@ -1275,6 +1341,13 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		_ok(starter.rate_control,
 			"in a run the starter's vertical stick commands a rate")
 		Tunables.set_value("dive_air_floor", 0.85)
+		# ...IN STILL AIR. Since v0.141.0 the run's weather is an AIRSTREAM the
+		# hull rides (`Ship.extra_wind`), and the stick commands a speed RELATIVE
+		# to it — so a rate measured in the updraft would be the rate plus the
+		# tile, and this block is about the controller. The weather has its own
+		# block right below, where the composition is the thing being measured.
+		Tunables.set_value("dive_zone_wind_mult", 0.0)
+		Tunables.set_value("dive_ceiling_mult", 0.0)
 		var want_down: float = Tunables.get_num("dive_dive_rate") * 8.0
 		var want_up: float = Tunables.get_num("dive_climb_rate") * 8.0
 		# Linear damping takes its cut of any commanded rate: at HOVER_DAMP 2.0
@@ -1314,6 +1387,45 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 				% (up_y0 - starter.global_position.y))
 		_ok(absf(-vy_up - want_up) < want_up * 0.35,
 			"...at the rate it asks for (%.0f px/s, asked %.0f)" % [-vy_up, want_up])
+
+		# --- THE CLOSING SKY IS A LEASH, ON THE REAL HULL -------------------
+		# (owner call 2, review §3.3 — v0.141.0.) The arithmetic is pinned pure in
+		# `run_tests._test_dive_weather`; what only 8x can say is whether the
+		# SHIPPED starter, at the shipped rates, actually loses the climb one rung
+		# over the line and wins it a quarter rung over. Nothing is teleported —
+		# the CEILING is moved to the hull by setting the run's low-water mark, so
+		# the body never leaves the helm it is flying from.
+		var wrun = world.get("dive")
+		Tunables.set_value("dive_ceiling_mult", 1.0)
+		if wrun != null:
+			wrun.deepest = maxi(int(wrun.deepest), 3)
+			var here_frac: float = float(world.call("_player_altitude_frac"))
+			# A FULL RUNG over the line: the air runs down at 1,200 px/s against a
+			# 960 px/s climb, so full UP is a fall you are slowing. No commuting.
+			wrun.low_frac = here_frac - 1.75 * DiveRun.rung_frac()
+			starter.linear_velocity = Vector2.ZERO
+			Input.action_press("ship_up")
+			for i in 150:
+				await world.get_tree().physics_frame
+			var vy_leash: float = starter.linear_velocity.y
+			Input.action_release("ship_up")
+			_ok(vy_leash > 0.0,
+				"a rung above the closed sky, full UP still DESCENDS (vy %.0f)" % vy_leash)
+			_ok(starter.extra_wind.y > 0.0,
+				"...because the air itself is running down past it (%.0f px/s)"
+					% starter.extra_wind.y)
+			# A QUARTER rung over: 300 px/s down against the same 960 — you pop up
+			# to the ledge. This is the half of the ruling a rail could never do.
+			var here2: float = float(world.call("_player_altitude_frac"))
+			wrun.low_frac = here2 - 1.0 * DiveRun.rung_frac()
+			starter.linear_velocity = Vector2.ZERO
+			Input.action_press("ship_up")
+			for i in 150:
+				await world.get_tree().physics_frame
+			var vy_pop: float = starter.linear_velocity.y
+			Input.action_release("ship_up")
+			_ok(vy_pop < 0.0,
+				"a quarter rung over, the same stick CLIMBS through it (vy %.0f)" % vy_pop)
 		Tunables.reset_all()
 		pl.disembark()
 	world.call("end_dive")

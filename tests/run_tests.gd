@@ -72,6 +72,7 @@ func _initialize() -> void:
 	_test_ship_table_files()
 	await _test_ship_editor_screen()
 	_test_dive_ring()
+	_test_dive_weather()
 	_test_ring_space()
 	_test_ring_terrain_is_periodic()
 	_test_dive_floating_chunks()
@@ -3155,12 +3156,16 @@ func _test_dive_ring() -> void:
 		elif DiveRun.zone_kind(i) == "rock":
 			_check(DiveRun.zone_wind(i) == 0.0, "the rocks have no wind lane")
 	_check(has_down, "the ring carries a downdraft")
-	# The garrison grows away from home; the picket cap still rules the total.
-	_check(DiveRun.zone_extra_pickets(0) == 0, "home adds no extra pickets")
+	# A SUMMONED SURGE grows meaner away from home. (The STANDING garrison stopped
+	# reading this table in v0.141.0 — owner call 3: a depth's garrison is
+	# `surge_count(d)` in total around its landing column. This is the F2 verb's
+	# table and the map room's colouring now, and `_test_dive_garrison` pins that
+	# the standing population no longer adds it.)
+	_check(DiveRun.zone_extra_pickets(0) == 0, "home adds no extra pickets to a surge")
 	for i in n:
 		if DiveRun.zone_kind(i) == "down":
 			_check(DiveRun.zone_extra_pickets(i) > DiveRun.zone_extra_pickets(1),
-				"the downdraft is the meanest garrison")
+				"the downdraft draws the meanest surge")
 	# Labels exist for every tile (the HUD prints them raw).
 	for i in n:
 		_check(not DiveRun.zone_label(i).is_empty(), "tile %d has a name" % i)
@@ -3196,7 +3201,7 @@ func _test_dive_ring() -> void:
 			"tile %d's centre reads back as tile %d" % [i, i])
 
 	# --- ring_overview: the ring unrolled for the MAP ROOM -------------------
-	var over := DiveRun.ring_overview(4242)
+	var over := DiveRun.ring_overview(4242, Tunables.get_num("dive_zone_tile_widths"))
 	_check(over.size() == n + 1,
 		"the overview has a column per tile PLUS the repeated seam (%d)" % over.size())
 	var first_col := over[0] as Dictionary
@@ -3213,6 +3218,81 @@ func _test_dive_ring() -> void:
 				and int(col["extra_pickets"]) >= 0,
 			"the column at %+.0f is a real tile (%s)"
 				% [float(col["offset"]), String(col["label"])])
+
+
+## THE RUN'S WEATHER AS ONE VECTOR (review §3.2, owner call 2 — v0.141.0).
+##
+## Two force sites became one airstream, and the whole reason it is worth doing
+## is that the closing sky stops being a RAIL and becomes a LEASH without a
+## single clamp: `Ship`'s rate controller measures its `v_up` relative to the air
+## it is in, so the arithmetic that decides "can I climb here" is just
+## `climb_rate - downdraft`. That is what this pins — against the real
+## `dive_climb_rate` lever, not against a number written down beside it.
+func _test_dive_weather() -> void:
+	_t("THE RUN'S WEATHER: one vector, and a closing sky that is a leash")
+	# PARITY WITH THE HULL'S OWN DRAG. `weather_wind` converts an authored
+	# acceleration to an airstream speed by dividing by this; if `Ship` ever
+	# retunes its damp and this mirror does not follow, every wind in the mode
+	# silently changes strength.
+	_check(is_equal_approx(DiveRun.AIR_DAMP, Ship.AIR_DAMP),
+		"DiveRun.AIR_DAMP mirrors Ship.AIR_DAMP (%.3f vs %.3f)"
+			% [DiveRun.AIR_DAMP, Ship.AIR_DAMP])
+
+	# --- THE RING: the same lean at rest, now capped at the air's own speed ---
+	# The old site applied `mass × ZONE_WIND × zone_wind(tile)`; the new one
+	# applies `mass × damp × wind`. Equal at rest is the whole compatibility
+	# claim, and it is one division.
+	for tile in DiveRun.RING.size():
+		var kind := DiveRun.zone_kind(tile)
+		var w := DiveRun.weather_wind(kind, 0.0, 1.0, 1.0)
+		var old_force := DiveRun.zone_wind(tile) * DiveRun.ZONE_WIND
+		_check(is_equal_approx(w.y * DiveRun.AIR_DAMP, old_force),
+			"tile %d (%s) leans exactly as hard at rest as the retired force (%.1f)"
+				% [tile, kind, w.y * DiveRun.AIR_DAMP])
+		_check(is_zero_approx(w.x), "...and never sideways — the ring pushes on y only")
+	_check(DiveRun.weather_wind("up", 0.0, 1.0, 1.0).y < 0.0
+		and DiveRun.weather_wind("down", 0.0, 1.0, 1.0).y > 0.0
+		and is_zero_approx(DiveRun.weather_wind("rock", 0.0, 1.0, 1.0).y),
+		"updraft rises, downdraft sinks, the rocks are calm")
+	# An unknown kind is calm, which is what makes the zones-off corridor case
+	# (the world passes "") fall out of the same function.
+	_check(is_zero_approx(DiveRun.weather_wind("", 0.0, 1.0, 1.0).y),
+		"no tile at all is no wind at all — the corridor case")
+	_check(is_zero_approx(DiveRun.weather_wind("down", 0.0, 0.0, 1.0).y),
+		"the zone-wind lever at 0 turns the ring's lean off")
+
+	# --- THE CLOSING SKY: 0 at the line, ramping, capped --------------------
+	var calm := DiveRun.weather_wind("rock", 0.0, 1.0, 1.0).y
+	_check(is_zero_approx(calm)
+			and is_zero_approx(DiveRun.weather_wind("rock", -2.0, 1.0, 1.0).y),
+		"at or below the ceiling line the sky is still")
+	_check(DiveRun.weather_wind("rock", 1.0, 1.0, 1.0).y
+			> DiveRun.weather_wind("rock", 0.5, 1.0, 1.0).y,
+		"the downdraft ramps with the trespass")
+	_check(is_equal_approx(DiveRun.weather_wind("rock", 99.0, 1.0, 1.0).y,
+			DiveRun.CEILING_LEASH_SPEED * DiveRun.CEILING_LEASH_MAX_RUNGS),
+		"...and caps at %.0f px/s@1x (%.1f rungs over)"
+			% [DiveRun.CEILING_LEASH_SPEED * DiveRun.CEILING_LEASH_MAX_RUNGS,
+				DiveRun.CEILING_LEASH_MAX_RUNGS])
+	_check(is_zero_approx(DiveRun.weather_wind("rock", 3.0, 1.0, 0.0).y),
+		"the closing-sky lever at 0 opens the sky again")
+
+	# --- A LEASH, NOT A RAIL (owner call 2) ---------------------------------
+	# The numbers are compared at scale 1 because both sides scale together: the
+	# world multiplies the wind by world_scale and stamps the climb rate the
+	# same way.
+	var climb := Tunables.get_num("dive_climb_rate")
+	var over_one := DiveRun.weather_wind("rock", 1.0, 1.0, 1.0).y
+	_check(over_one > climb,
+		"a rung above the line the air outruns a full climb (%.0f vs %.0f px/s@1x) — you sink"
+			% [over_one, climb])
+	var over_quarter := DiveRun.weather_wind("rock", 0.25, 1.0, 1.0).y
+	_check(over_quarter < climb,
+		"...but a quarter rung over you climb through it at %.0f px/s@1x — pop up to a ledge"
+			% (climb - over_quarter))
+	_check(DiveRun.CEILING_LEASH_SPEED * DiveRun.CEILING_LEASH_MAX_RUNGS
+			< climb * 4.0,
+		"the capped leash is a few times the climb, not the ten-fold rail it replaced")
 
 
 ## THE SEAM YOU CANNOT SEE (owner 2026-09-01: *"Looping around through the world
@@ -3412,18 +3492,68 @@ func _test_dive_floating_chunks() -> void:
 func _test_dive_garrison() -> void:
 	_t("THE GARRISON: a run's standing population, decided with its seed")
 	var sv := 5150607
-	# WHERE IT IS NOT. Depth 1 is the launch deck's own air and the den's clock
-	# does not run there either — a garrison standing around the deck would
-	# delete the unhurried "take a ship, or step off the edge with nothing".
+	var tw := Tunables.get_num("dive_zone_tile_widths")
+	# WHERE IT IS NOT. Depth 1 is the launch deck's own air — a garrison standing
+	# around the deck would delete the unhurried "take a ship, or step off the
+	# edge with nothing".
 	for tile in DiveRun.RING.size():
-		_check(DiveRun.tile_garrison(sv, tile, 1).is_empty(),
+		_check(DiveRun.tile_garrison(sv, tile, 1, tw).is_empty(),
 			"tile %d keeps the launch deck's air clear" % tile)
-	_check(DiveRun.tile_garrison(sv, 0, DiveRun.DEPTHS + 1).is_empty(),
+	_check(DiveRun.tile_garrison(sv, 0, DiveRun.DEPTHS + 1, tw).is_empty(),
 		"...and nothing stands off the bottom of the ladder")
 
-	# THE OWNER'S OWN TABLES, unchanged: the depth says how many, the ring says
-	# how much worse than home. That is what makes the tuned difficulty shape
-	# survive the change from "spawned at you" to "already out there".
+	# --- A DEPTH IS WORTH `surge_count(d)` PICKETS, TOTAL -------------------
+	# (owner call 3, review §5.1). The old table added `surge_count(d)` to
+	# `zone_extra_pickets(tile)` in EVERY tile, which under the revised clear-ALL
+	# ruling came to 48 pickets and ~12 minutes for depth 2. Three checks replace
+	# the old per-tile "miscount" one: the ring's TOTAL is the depth's number, the
+	# only tiles holding anybody are the landing's three, and those three are
+	# neighbours across the seam.
+	for d0 in range(2, DiveRun.DEPTHS + 1):
+		var ring_total := 0
+		var occupied: Array = []
+		for tile0 in DiveRun.RING.size():
+			var c := DiveRun.garrison_count(sv, tile0, d0, tw)
+			ring_total += c
+			if c > 0:
+				occupied.append(tile0)
+		_check(ring_total == DiveRun.surge_count(d0),
+			"depth %d's WHOLE ring holds surge_count pickets (%d vs %d)"
+				% [d0, ring_total, DiveRun.surge_count(d0)])
+		var lt := DiveRun.landing_tile(sv, d0, tw)
+		var nr := DiveRun.RING.size()
+		var wanted := [posmod(lt - 1, nr), lt, posmod(lt + 1, nr)]
+		var strays := 0
+		for t0 in occupied:
+			if not wanted.has(int(t0)):
+				strays += 1
+		_check(strays == 0,
+			"depth %d garrisons only the landing column's three tiles (%d elsewhere)"
+				% [d0, strays])
+		# THE CENTRE IS NEVER THE LIGHT ONE — round-robin from the landing out.
+		_check(DiveRun.garrison_count(sv, lt, d0, tw)
+				>= DiveRun.garrison_count(sv, posmod(lt - 1, nr), d0, tw)
+			and DiveRun.garrison_count(sv, lt, d0, tw)
+				>= DiveRun.garrison_count(sv, posmod(lt + 1, nr), d0, tw),
+			"depth %d puts the biggest share in the landing's own tile" % d0)
+	# ...AND THE THREE WRAP. A landing in tile 0 garrisons 11, 0 and 1 — the ring
+	# closes, so "the tiles around the landing" must survive the seam. Hunt a seed
+	# that actually lands in tile 0 rather than hoping this one does; a wrap test
+	# that never met the wrap proves nothing.
+	var wrapped := -1
+	var wrap_seed := 0
+	for s2 in range(0, 400):
+		for d1 in range(2, DiveRun.DEPTHS + 1):
+			if DiveRun.landing_tile(s2, d1, tw) == 0:
+				wrapped = DiveRun.garrison_count(s2, DiveRun.RING.size() - 1, d1, tw)
+				wrap_seed = s2
+				break
+		if wrapped >= 0:
+			break
+	_check(wrapped > 0,
+		"a landing in tile 0 garrisons the tile across the seam too (seed %d, %d there)"
+			% [wrap_seed, wrapped])
+
 	var miscount := 0
 	var wrong_kind := 0
 	var mislabelled := 0
@@ -3438,8 +3568,8 @@ func _test_dive_garrison() -> void:
 	var dupes := 0
 	for tile in DiveRun.RING.size():
 		for d in range(2, DiveRun.DEPTHS + 1):
-			var rows := DiveRun.tile_garrison(sv, tile, d)
-			if rows.size() != DiveRun.surge_count(d) + DiveRun.zone_extra_pickets(tile):
+			var rows := DiveRun.tile_garrison(sv, tile, d, tw)
+			if rows.size() != DiveRun.garrison_count(sv, tile, d, tw):
 				miscount += 1
 			var kinds := DiveRun.surge_kinds(d)
 			var xs: Array = []
@@ -3477,7 +3607,7 @@ func _test_dive_garrison() -> void:
 					too_close += 1
 	_check(total > 0, "the ring is garrisoned (%d pickets over the whole ladder)" % total)
 	_check(miscount == 0,
-		"every tile carries surge_count + zone_extra pickets (%d disagreed)" % miscount)
+		"every tile lays out exactly its garrison_count share (%d disagreed)" % miscount)
 	_check(wrong_kind == 0,
 		"every picket is one of its depth's own kinds (%d strangers)" % wrong_kind)
 	_check(mislabelled == 0,
@@ -3492,37 +3622,53 @@ func _test_dive_garrison() -> void:
 	_check(too_close == 0,
 		"no two pickets of a tile stack (tightest gap %.3f tile widths, %d too close)"
 			% [tightest, too_close])
-	# The downdraft is the meanest garrison — the ring's "away from home is
-	# worse" promise, said in bodies rather than in wind.
-	_check(DiveRun.tile_picket_count(6) > DiveRun.tile_picket_count(0),
-		"the downdraft keeps more than home (%d vs %d)"
-			% [DiveRun.tile_picket_count(6), DiveRun.tile_picket_count(0)])
-	_check(DiveRun.tile_picket_count(1) > DiveRun.tile_picket_count(0),
-		"...and the rocks keep more than home too (%d vs %d)"
-			% [DiveRun.tile_picket_count(1), DiveRun.tile_picket_count(0)])
+	# THE RING IS MOSTLY EMPTY NOW, and that is the change (owner call 3). The old
+	# pair of checks here pinned "the downdraft keeps more than home, and the
+	# rocks keep more than home" — the per-tile `zone_extra_pickets` table the
+	# standing garrison no longer reads. What replaces them: the whole ladder is
+	# worth the sum of `surge_count`, and most tiles hold nobody at all.
+	var ladder_total := 0
+	for d3 in range(2, DiveRun.DEPTHS + 1):
+		ladder_total += DiveRun.surge_count(d3)
+	_check(total == ladder_total,
+		"the whole ring over the whole ladder is the depth table's sum (%d vs %d)"
+			% [total, ladder_total])
+	var empty_tiles := 0
+	for tile3 in DiveRun.RING.size():
+		if DiveRun.tile_picket_count(sv, tile3, tw) == 0:
+			empty_tiles += 1
+	_check(empty_tiles >= DiveRun.RING.size() / 2,
+		"most of the ring is optional country — %d of %d tiles keep nobody"
+			% [empty_tiles, DiveRun.RING.size()])
 
 	# PURE IN THE SEED: the same run is the same sky twice, and another seed is
-	# another sky. (The COUNTS come from the tables, so the difference has to be
-	# looked for in the PLACES.)
-	_check(DiveRun.tile_garrison(sv, 3, 4) == DiveRun.tile_garrison(sv, 3, 4),
+	# another sky — a different ladder, so different tiles as well as different
+	# places. (The ring's TOTAL still comes from the depth table, which is the
+	# invariant `ladder_total` above holds for every seed we look at.)
+	_check(DiveRun.tile_garrison(sv, 3, 4, tw) == DiveRun.tile_garrison(sv, 3, 4, tw),
 		"the same seed lays out the same garrison")
 	var moved := 0
-	var same_count := true
 	for tile2 in DiveRun.RING.size():
 		for d2 in range(2, DiveRun.DEPTHS + 1):
-			var a := DiveRun.tile_garrison(sv, tile2, d2)
-			var b := DiveRun.tile_garrison(sv + 1, tile2, d2)
+			var a := DiveRun.tile_garrison(sv, tile2, d2, tw)
+			var b := DiveRun.tile_garrison(sv + 1, tile2, d2, tw)
 			if a.size() != b.size():
-				same_count = false
+				moved += 1
+				continue
 			for i2 in mini(a.size(), b.size()):
 				if not is_equal_approx(float((a[i2] as Dictionary)["x"]),
 						float((b[i2] as Dictionary)["x"])):
 					moved += 1
 	_check(moved > 0, "...and another seed stands them somewhere else (%d moved)" % moved)
-	_check(same_count,
-		"...while the difficulty shape stays the tables', not the seed's")
-	_check(DiveRun.garrison_all(sv).size() == total,
-		"garrison_all is the whole ring (%d)" % DiveRun.garrison_all(sv).size())
+	var other_total := 0
+	for d4 in range(2, DiveRun.DEPTHS + 1):
+		for tile4 in DiveRun.RING.size():
+			other_total += DiveRun.garrison_count(sv + 1, tile4, d4, tw)
+	_check(other_total == ladder_total,
+		"...while the difficulty shape stays the depth table's, not the seed's (%d)"
+			% other_total)
+	_check(DiveRun.garrison_all(sv, tw).size() == total,
+		"garrison_all is the whole ring (%d)" % DiveRun.garrison_all(sv, tw).size())
 
 	# THE RUN'S OWN BOOKKEEPING: spawn-once, which IS the owner's "a cleared sky
 	# stays cleared" — an entry the wake cull frees is marked and never reborn.
@@ -3661,18 +3807,23 @@ func _test_map_room_screen() -> void:
 	_check(foes_high == 0,
 		"...and at an altitude the chart spans (%d outside)" % foes_high)
 	# It is the MODEL's garrison, not a second one invented here — the seam tile
-	# is drawn at both edges, so it is the only one counted twice.
-	_check(int(by_tile.get(0, 0)) == DiveRun.tile_picket_count(0),
+	# is drawn at both edges, so it is the only one counted twice. Both counts are
+	# read through the room's OWN `tile_widths()`, which is what makes "the chart
+	# and the game agree" mean something now that the garrison follows the ladder.
+	var chart_tw: float = screen.call("tile_widths")
+	_check(int(by_tile.get(0, 0)) == DiveRun.tile_picket_count(seed_v, 0, chart_tw),
 		"the chart draws exactly what the model says stands at home (%d)"
 			% int(by_tile.get(0, 0)))
-	_check(int(by_tile.get(6, 0)) == DiveRun.tile_picket_count(6) * 2,
+	_check(int(by_tile.get(6, 0))
+			== DiveRun.tile_picket_count(seed_v, 6, chart_tw) * 2,
 		"...and the seam's, twice — once at each edge, because it is one tile (%d)"
 			% int(by_tile.get(6, 0)))
 	# The ring's own readout carries the number too, so a reader sees "how bad is
 	# that side" without counting dots.
 	for c3 in m["columns"] as Array:
 		var col3 := c3 as Dictionary
-		_check(int(col3["pickets"]) == DiveRun.tile_picket_count(int(col3["tile"])),
+		_check(int(col3["pickets"])
+				== DiveRun.tile_picket_count(seed_v, int(col3["tile"]), chart_tw),
 			"the column at %+.0f says how many stand there (%d)"
 				% [float(col3["offset"]), int(col3["pickets"])])
 
@@ -4181,34 +4332,44 @@ func _test_dive_run() -> void:
 	_check(run.outcome == "" and run.deepest == 1, "a fresh run starts at the top")
 	# Sitting at the start line must NOT count as an extraction: passage home is
 	# refused before you have ever left the deck.
-	run.advance(1.0, DiveRun.depth_altitude(1), 45.0)
+	run.advance(1.0, DiveRun.depth_altitude(1))
 	_check(not run.go_home(), "you cannot go home from a run you never dived")
 	_check(run.outcome == "", "...and the refusal leaves the run alive")
 
 	var saw_depths := {}
-	var surge_events := 0
+	var stranger_events := 0
 	var leviathan := 0
-	# Descend one rung at a time, dwelling long enough at each for the den.
+	# Descend one rung at a time, dwelling at each far longer than the retired
+	# 45-second timer ever needed — which is the point of the dwell now.
 	for d in range(2, DiveRun.DEPTHS + 1):
 		for step in 60:
-			for ev in run.advance(1.0, DiveRun.depth_altitude(d), 45.0):
+			for ev in run.advance(1.0, DiveRun.depth_altitude(d)):
 				match String(ev):
 					"depth": saw_depths[run.depth] = true
-					"surge": surge_events += 1
 					"leviathan": leviathan += 1
+					_: stranger_events += 1
 			if step == 0:
 				run.credit_kill("kraken")
 	_check(saw_depths.size() == DiveRun.DEPTHS - 1,
 		"every new depth announced itself once (%d)" % saw_depths.size())
 	_check(leviathan == 1, "the Leviathan is woken exactly once at the floor")
-	_check(surge_events > 0, "the dens attacked on the way down (%d)" % surge_events)
+	# THE TIMER SURGE IS RETIRED (owner call 6, review §5.3). Eight rungs of
+	# standing still used to emit a "surge" every 45 s; the model emits nothing
+	# but "depth" and "leviathan" now, because a run's population is its standing
+	# garrison and pressure comes from the chase, not from a clock. (Replaces the
+	# old `surge_events > 0` check, which pinned exactly the behaviour we cut.)
+	_check(stranger_events == 0,
+		"a whole descent emits only depth/leviathan — no timed surge (%d strangers)"
+			% stranger_events)
+	_check(run.surges == 0,
+		"...and nothing in the model books an attack any more (%d)" % run.surges)
 	_check(run.deepest == DiveRun.DEPTHS, "the run remembers reaching the floor")
 	_check(run.pot > 0 and run.kills == DiveRun.DEPTHS - 1,
 		"kills paid into the pot (%d coins, %d kills)" % [run.pot, run.kills])
 
 	# THE SKY CLOSES BEHIND A RUN (v0.111.0): climbing out no longer exists, so
 	# reaching the surface altitude must NOT end a run any more...
-	run.advance(1.0, DiveRun.TOP_FRAC, 45.0)
+	run.advance(1.0, DiveRun.TOP_FRAC)
 	_check(run.outcome == "", "the surface altitude no longer ends a run (the sky closed)")
 	# ...extraction is PASSAGE HOME at an outpost counter instead, at the same
 	# deepest-scaled premium the climb used to pay.
@@ -4217,7 +4378,7 @@ func _test_dive_run() -> void:
 	_check(run.outcome == "escaped", "...as an escape")
 	_check(run.banked == DiveRun.bank_value(carried, DiveRun.DEPTHS),
 		"the pot banked at the floor's premium (%d -> %d)" % [carried, run.banked])
-	_check(run.advance(1.0, 0.2, 45.0).is_empty(), "a finished run is inert")
+	_check(run.advance(1.0, 0.2).is_empty(), "a finished run is inert")
 	_check(not run.go_home(), "...and cannot be extracted twice")
 
 	# --- The closing sky's arithmetic ---------------------------------------
@@ -4241,21 +4402,13 @@ func _test_dive_run() -> void:
 			DiveRun.rung_frac() * DiveRun.CEILING_SLACK_RUNGS),
 		"between rungs the headroom is STILL the full slack (no ratchet)")
 	var tracked := DiveRun.new()
-	tracked.advance(1.0, DiveRun.depth_altitude(3), 45.0)
-	tracked.advance(1.0, DiveRun.depth_altitude(2), 45.0)   # climbed back a rung
+	tracked.advance(1.0, DiveRun.depth_altitude(3))
+	tracked.advance(1.0, DiveRun.depth_altitude(2))   # climbed back a rung
 	_check(is_equal_approx(tracked.low_frac, DiveRun.depth_altitude(3)),
 		"the run remembers its LOWEST altitude, not its current one")
-	_check(DiveRun.ceiling_push(0.0) == 0.0 and DiveRun.ceiling_push(-2.0) == 0.0,
-		"below the ceiling the sky does not push")
-	_check(DiveRun.ceiling_push(1.0) > 0.0
-		and DiveRun.ceiling_push(2.0) > DiveRun.ceiling_push(1.0),
-		"the push ramps with the trespass")
-	_check(is_equal_approx(DiveRun.ceiling_push(99.0),
-			DiveRun.CEILING_PUSH * DiveRun.CEILING_MAX_RUNGS),
-		"...and caps at the rail's full weight")
-	_check(DiveRun.CEILING_PUSH * DiveRun.CEILING_MAX_RUNGS
-		> DiveRun.HULL_LATERAL_ACCEL * 4.0,
-		"the capped rail beats any hull's authority — no traversing back up")
+	# (`ceiling_push` and its rail constants retired in v0.141.0 — the closing sky
+	# is a term of `weather_wind` now. `_test_dive_weather` holds the ramp, the
+	# cap and the leash-not-rail promise against the real climb rate.)
 
 	# --- The counter's last row is the way home ------------------------------
 	var last_row: Dictionary = DiveRun.STOCK[DiveRun.STOCK.size() - 1]
@@ -4266,7 +4419,7 @@ func _test_dive_run() -> void:
 
 	# --- Losing the ship burns the pot --------------------------------------
 	var doomed := DiveRun.new()
-	doomed.advance(1.0, DiveRun.depth_altitude(5), 45.0)
+	doomed.advance(1.0, DiveRun.depth_altitude(5))
 	doomed.credit_kill("whale")
 	var lost_pot := doomed.pot
 	doomed.lose()
@@ -4278,7 +4431,7 @@ func _test_dive_run() -> void:
 
 	# --- Killing the Leviathan pays the completion bonus ---------------------
 	var won := DiveRun.new()
-	won.advance(1.0, DiveRun.depth_altitude(DiveRun.DEPTHS), 45.0)
+	won.advance(1.0, DiveRun.depth_altitude(DiveRun.DEPTHS))
 	won.credit_kill("whale_city")
 	var won_pot := won.pot
 	won.triumph()
@@ -4446,8 +4599,12 @@ func _test_dive_run() -> void:
 	_check(DiveDeck.berths(holed).is_empty(),
 		"a hole in the walkway is not a berth (only platform is)")
 
+	# The surge is an F2 VERB now, not a clock (owner call 6) — but the geometry
+	# it uses when the owner presses the button is unchanged, so the lead survives.
 	_check(Tunables.get_num("dive_surge_lead") >= 0.5,
-		"a surge always arrives some distance ahead, never on top of you")
+		"a summoned surge always arrives some distance ahead, never on top of you")
+	_check(not Tunables.has("dive_surge_period"),
+		"the surge TIMER's lever is gone with the timer (owner call 6)")
 	_check(DiveRun.surge_kinds(0) == DiveRun.surge_kinds(1)
 		and DiveRun.surge_kinds(99) == DiveRun.surge_kinds(DiveRun.DEPTHS),
 		"an off-ladder depth clamps rather than emptying")
@@ -4457,34 +4614,37 @@ func _test_dive_run() -> void:
 	# ship" a legal way to play rather than an instant loss.
 	var fresh := DiveRun.new()
 	_check(not fresh.committed, "a run starts with no hull committed")
-	# ...and the dock does not attack you while you are choosing one. The clock
-	# only starts once you have actually been below the top rung.
+	# ...and NOTHING is scheduled at you, on the deck or anywhere else. This used
+	# to prove "the den's clock does not run on the launch deck"; with the timer
+	# retired (owner call 6) the stronger statement holds everywhere, so the
+	# replacement pins that: standing still emits nothing at all, at any altitude.
+	# What makes a depth dangerous is the garrison already standing in it.
 	var quiet: Array = []
 	for i in 400:
-		quiet.append_array(fresh.advance(1.0, DiveRun.depth_altitude(1), 45.0))
-	_check(not quiet.has("surge"),
-		"nothing comes for you on the launch deck (%d s of standing still)" % 400)
-	# Going down starts it.
-	var woke := false
+		quiet.append_array(fresh.advance(1.0, DiveRun.depth_altitude(1)))
+	_check(quiet.is_empty(),
+		"nothing comes for you on the launch deck (%d s of standing still, %d events)"
+			% [400, quiet.size()])
+	# Going down announces the depth — and ONLY the depth.
+	var down: Array = []
 	for i in 200:
-		if fresh.advance(1.0, DiveRun.depth_altitude(3), 45.0).has("surge"):
-			woke = true
-	_check(woke, "...and leaving the top rung starts the den's clock")
-	# Coming BACK to the top does not make it safe again — the way home is not
-	# a safe place, and by then `deepest` is long past 1. (Fictionally you can
-	# no longer get here at all — the sky closes — but the model must still be
-	# hostile at every altitude, or a ceiling bug would reopen the safe camp.)
-	var home := false
+		down.append_array(fresh.advance(1.0, DiveRun.depth_altitude(3)))
+	_check(down.size() == 1 and String(down[0]) == "depth",
+		"leaving the top rung announces the rung and schedules nothing (%d events)"
+			% down.size())
+	# Coming BACK to the top is quiet too, for the same reason: `deepest` is long
+	# past 1, and there was never a clock to restart.
+	var home: Array = []
 	for i in 200:
-		if fresh.advance(1.0, DiveRun.depth_altitude(1), 45.0).has("surge"):
-			home = true
-	_check(home, "the dock is not safe once you have been down")
+		home.append_array(fresh.advance(1.0, DiveRun.depth_altitude(1)))
+	_check(home.is_empty(),
+		"the way home schedules nothing either (%d events)" % home.size())
 	_check(fresh.outcome == "",
 		"...and reaching the top no longer ends a run (extraction is passage home)")
 
 	# Dying with no hull is its OWN ending, and says so.
 	var fell := DiveRun.new()
-	fell.advance(1.0, DiveRun.depth_altitude(4), 45.0)
+	fell.advance(1.0, DiveRun.depth_altitude(4))
 	fell.credit_kill("kraken")
 	fell.lose(true)
 	_check(fell.outcome == "lost" and fell.banked == 0, "a shipless death ends the run")
@@ -4496,7 +4656,7 @@ func _test_dive_run() -> void:
 	# pot haircuts along the way.
 	var worn := DiveRun.new()
 	worn.commit()
-	worn.advance(1.0, DiveRun.depth_altitude(6), 45.0)
+	worn.advance(1.0, DiveRun.depth_altitude(6))
 	worn.credit_kill("kraken")
 	worn.credit_kill("kraken")
 	var full := worn.pot
@@ -4514,7 +4674,7 @@ func _test_dive_run() -> void:
 		"...and depth 5's is not — the gate sits between them")
 	var sunk := DiveRun.new()
 	sunk.commit()
-	sunk.advance(1.0, DiveRun.depth_altitude(4), 45.0)
+	sunk.advance(1.0, DiveRun.depth_altitude(4))
 	sunk.lose()
 	_check(DiveRun.outcome_line(sunk.ledger()).contains("SHIP IS GONE"),
 		"...while losing a hull you took still reads as losing a hull")
@@ -4758,7 +4918,7 @@ func _test_dive_run() -> void:
 	# the same number the extraction premium multiplies.
 	var shopper := DiveRun.new()
 	shopper.commit()
-	shopper.advance(1.0, DiveRun.depth_altitude(4), 45.0)
+	shopper.advance(1.0, DiveRun.depth_altitude(4))
 	for i in 12:
 		shopper.credit_kill("kraken")
 	var before_pot := shopper.pot

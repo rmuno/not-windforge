@@ -197,7 +197,7 @@ func tile_widths() -> float:
 ## it is because the game stopped using its own model.
 func model() -> Dictionary:
 	var per_shelf := 1.0 / tile_widths()
-	var columns := DiveRun.ring_overview(seed_v)
+	var columns := DiveRun.ring_overview(seed_v, tile_widths())
 
 	var rows: Array = []
 	for d in range(1, DiveRun.DEPTHS + 1):
@@ -244,11 +244,17 @@ func model() -> Dictionary:
 	# materializes from — `DiveRun.tile_garrison` — on the same axis as
 	# everything else. The seam column is emitted twice, so its pickets are drawn
 	# at both edges, which is right: it is one tile seen from both sides.
+	#
+	# Since v0.141.0 a depth's garrison stands in the three tiles around its own
+	# LANDING COLUMN, so this draws a diagonal of clusters following the ladder's
+	# slalom rather than an evenly-seeded ring — which is the chart finally
+	# saying "the fight is here, the loot is out there" (review §5.1).
 	var garrison: Array = []
 	for c2 in columns:
 		var col2 := c2 as Dictionary
 		for d2 in range(2, DiveRun.DEPTHS + 1):
-			for g in DiveRun.tile_garrison(seed_v, int(col2["tile"]), d2):
+			for g in DiveRun.tile_garrison(seed_v, int(col2["tile"]), d2,
+					tile_widths()):
 				var grow := g as Dictionary
 				garrison.append({
 					"tile": int(col2["tile"]),

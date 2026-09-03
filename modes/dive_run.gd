@@ -42,23 +42,14 @@ const FLOOR_FRAC := 0.10
 ## THE SKY CLOSES BEHIND YOU (owner ruling 2026-08-31: "let's try the sky thing…
 ## just a forced push downward without ability to traverse back up, similar to
 ## ball pit"). A CEILING rides `CEILING_SLACK_RUNGS` above the altitude of the
-## DEEPEST rung you have reached; above it the air shoves you down, ramping with
-## the trespass — the corridor's exact idiom rotated 90°, except this one is
-## MEANT to win: the cap is far past any hull's climb authority, so a brief pop
-## at the line is possible and sustained climbing is not. Extraction therefore
-## no longer means climbing out — it is PASSAGE HOME at an outpost counter
-## (`go_home`, the "passage" stock row). The fiction is deliberately unexplained
-## (owner: "perhaps even just disregard").
+## DEEPEST rung you have reached; above it the air runs DOWN, harder the further
+## you trespass. Extraction therefore does not mean climbing out — it is PASSAGE
+## HOME at an outpost counter (`go_home`, the "passage" stock row). The fiction is
+## deliberately unexplained (owner: "perhaps even just disregard").
 ##
 ## Gated on `deepest > 1` by the world, like the den's clock, so the launch deck
 ## stays an unhurried place.
 const CEILING_SLACK_RUNGS := 0.75
-## px/s² at scale 1 per rung of trespass, and the ramp's cap in rungs. At the
-## cap this is 1,200 px/s² × scale — roughly TEN TIMES the props' authority
-## (HULL_LATERAL_ACCEL 125) — because unlike the corridor, "without ability to
-## traverse back up" is the ruling: this push is a rail on purpose.
-const CEILING_PUSH := 400.0
-const CEILING_MAX_RUNGS := 3.0
 
 
 ## One rung's height as an altitude fraction — the ladder's spacing.
@@ -79,14 +70,59 @@ static func ceiling_at(low: float) -> float:
 	return minf(TOP_FRAC, low + rung_frac() * CEILING_SLACK_RUNGS)
 
 
-## The downward push for a body `over_rungs` rungs above the ceiling, px/s² at
-## scale 1.
-static func ceiling_push(over_rungs: float) -> float:
-	return CEILING_PUSH * clampf(over_rungs, 0.0, CEILING_MAX_RUNGS)
 
-## The grace after arriving somewhere new before that depth's den notices you.
-## This is the "calm" half of the beat — mine, build, patch gasbags, breathe.
-const ARRIVAL_GRACE := 30.0
+# --- THE RUN'S WEATHER, AS ONE VECTOR (review §3.2 / owner call 2) -----------
+#
+# The ring's lean and the closing sky used to be two force sites in `world.gd`,
+# each with its own multiplier, cap and call. They are ONE AIRSTREAM now, stamped
+# on `Ship.extra_wind` and delivered through the drag term `Airspace` has always
+# used — which turns the closing sky from a RAIL into a LEASH without a single
+# clamp, because `Ship`'s rate controller measures its `v_up` relative to the
+# air. In a downdraft faster than `climb_rate_max` a full climb is a fall you are
+# slowing; in a slower one it is a climb you win. You can pop up to a ledge; you
+# cannot commute (owner call 2, review §3.3 — "a leash, not a rail").
+#
+# `CEILING_PUSH` / `ceiling_push` / `CEILING_MAX_RUNGS` retired with the force.
+
+## The hull's drag coefficient, mirrored from `Ship.AIR_DAMP`. It is here because
+## a force of `mass · damp · wind` holds equilibrium exactly at `wind` px/s, so
+## an acceleration authored for the old force sites converts to an airstream
+## SPEED by dividing by it. Mirrored rather than read, because this file is a
+## pure model with no Node classes in it; `_test_dive_weather` pins the parity.
+const AIR_DAMP := 0.4
+
+## The closing sky's airstream, px/s at scale 1 PER RUNG of trespass, and the cap
+## on that ramp in rungs. 150 × 2 = 300 px/s@1× = 2,400 px/s at the shipped 8×.
+##
+## The numbers are chosen against `dive_climb_rate` (120@1× = 960 px/s at 8×),
+## which is the only thing they have to be true against:
+##   * a full rung over  → 1,200 px/s down: a full climb still LOSES 240 px/s;
+##   * a quarter over    →   300 px/s down: a full climb WINS at ~660 px/s.
+## That is the approved shape — a ledge is reachable, a commute is not.
+const CEILING_LEASH_SPEED := 150.0
+const CEILING_LEASH_MAX_RUNGS := 2.0
+
+
+## THE WHOLE OF THE RUN'S WEATHER at one place, px/s at scale 1 (+y is DOWN); the
+## world multiplies by `world_scale` and stamps it on `Ship.extra_wind`.
+##
+##   `zone_kind`     — the ring tile the point is in ("" or an unknown kind = no
+##                     ring wind at all, which is the zones-off corridor case).
+##   `over_rungs`    — how far the point is ABOVE the closed sky's underside, in
+##                     rungs. <= 0 (or a run that has never left the deck, which
+##                     the world passes as 0) means the sky is not shut yet.
+##   `zone_mult`     — F2 `dive_zone_wind_mult`.
+##   `ceiling_mult`  — F2 `dive_ceiling_mult`.
+##
+## The ring half is `ZONE_WIND / AIR_DAMP`: the SAME lean as before at rest (a
+## steady mass·damp·wind force is exactly the old mass·accel force when the hull
+## is still), now capped at the air's own speed instead of accelerating forever.
+static func weather_wind(zone_kind: String, over_rungs: float,
+		zone_mult: float, ceiling_mult: float) -> Vector2:
+	var vy := zone_wind_of(zone_kind) * ZONE_WIND / AIR_DAMP * zone_mult
+	vy += CEILING_LEASH_SPEED * clampf(over_rungs, 0.0, CEILING_LEASH_MAX_RUNGS) \
+		* ceiling_mult
+	return Vector2(0.0, vy)
 
 ## DYING. One pool, one life (owner 2026-08-31: "where did the 3 lives come
 ## from? just do 100 hp for the player"). The old three-deaths-with-a-pot-cut
@@ -136,6 +172,9 @@ var low_frac := 1.0
 var pot := 0            ## coins carried and NOT yet banked — burns with the ship
 var banked := 0         ## what reached the permanent wallet (set when the run ends)
 var kills := 0
+## Surges sent. The 45-second timer that used to drive this is retired (see
+## `advance`); `world._dive_surge` is an F2 verb now and increments it, so the
+## ledger's "attacks" line stays true instead of counting a clock nobody runs.
 var surges := 0
 var deaths := 0
 var elapsed := 0.0
@@ -158,8 +197,7 @@ var committed := false
 ## destroyed), "shipless" (you never took one and your body gave out), or "worn"
 ## (you kept dying aboard until there was nothing left of you).
 var lost_how := ""
-var _grace := ARRIVAL_GRACE   ## seconds until this depth's den comes for you
-var _seen := {1: true}        ## depths already arrived at (the surge arms once)
+var _seen := {1: true}        ## depths already arrived at (each announces once)
 var _leviathan_called := false
 
 # --- Cards (owner arc Q-L, 2026-08-31) --------------------------------------
@@ -511,20 +549,27 @@ static func depth_label(d: int) -> String:
 
 # --- The run ----------------------------------------------------------------
 
-## Advance the run by `delta` at altitude fraction `a`, with `surge_period`
-## seconds between a depth's attacks. Returns the events the world must act on,
-## in order:
+## Advance the run by `delta` at altitude fraction `a`. Returns the events the
+## world must act on, in order:
 ##
-##   "depth"     — you reached a NEW deepest depth (announce it; arm the den)
-##   "surge"     — this depth's den comes for you now (spawn the hunters)
+##   "depth"     — you reached a NEW deepest depth (announce it, cut the rung)
 ##   "leviathan" — you have arrived at the floor; wake the boss (once)
 ##
-## (There is no "escaped" event any more: the sky closes behind a run, so
+## THE TIMER SURGE IS RETIRED (owner call 6, review §5.3). A 45-second clock that
+## spawned hunters past the horizon and flew them in is exactly the sourceless
+## ring-spawn `DESIGN.md` §4 forbids — "danger is a property of PLACE" — and with
+## a standing garrison and a chase that never lets go, its job (pressure on a
+## parked player) was already being done twice. So `_grace`, `ARRIVAL_GRACE`,
+## `surge_in()` and the `"surge"` event are gone, and arriving at a depth spawns
+## nothing by itself: a run's population IS its garrison. `world._dive_surge`
+## survives as an F2 verb so the owner can still summon pressure for an A/B.
+##
+## (There is no "escaped" event any more either: the sky closes behind a run, so
 ## extraction is `go_home` at an outpost counter, not an altitude.)
 ##
 ## Returns nothing at all once the run is over — a finished run is inert, so a
 ## world that keeps ticking it (and one does, for the ledger) costs nothing.
-func advance(delta: float, a: float, surge_period: float) -> Array:
+func advance(delta: float, a: float) -> Array:
 	if outcome != "":
 		return []
 	var out: Array = []
@@ -535,25 +580,10 @@ func advance(delta: float, a: float, surge_period: float) -> Array:
 		deepest = depth
 	if not _seen.has(depth):
 		_seen[depth] = true
-		_grace = ARRIVAL_GRACE
 		out.append("depth")
 	if depth >= DEPTHS and not _leviathan_called:
 		_leviathan_called = true
 		out.append("leviathan")
-	# The den's clock. It runs everywhere, but arriving somewhere new resets it,
-	# so the beat is always "get there, breathe, then they come".
-	#
-	# THE DOCK IS SAFE UNTIL YOU HAVE BEEN DOWN. While you have never left the
-	# top rung the clock does not run at all, so choosing a ship on the launch
-	# deck is unhurried. Come back up here to extract, though, and `deepest` is
-	# long past 1 — the way home is not a safe place, which is the point.
-	if deepest <= 1:
-		return out
-	_grace -= delta
-	if _grace <= 0.0:
-		_grace = maxf(surge_period, 1.0)
-		surges += 1
-		out.append("surge")
 	return out
 
 
@@ -747,11 +777,6 @@ func triumph() -> void:
 		banked = bank_value(pot, DEPTHS) + TRIUMPH_BONUS
 
 
-## Seconds until this depth's den attacks (0 while a run is over).
-func surge_in() -> float:
-	return 0.0 if outcome != "" else maxf(_grace, 0.0)
-
-
 ## The run in plain values — the HUD paints this and the ledger prints it, and
 ## nothing else reaches into the model (the world-decides/layer-paints rule).
 func ledger() -> Dictionary:
@@ -766,9 +791,11 @@ func ledger() -> Dictionary:
 		"pot": pot,
 		"banked": banked,
 		"kills": kills,
+		# "attacks" on the run-over card. With the timer retired this counts the
+		# surges the F2 verb actually sent, which in normal play is zero — the
+		# sky's population is the garrison, and the ledger says so honestly.
 		"surges": surges,
 		"elapsed": elapsed,
-		"surge_in": surge_in(),
 		# Cards (Q-L): held names, the XP bar, and the current draft offer (each as
 		# {id, name, desc}) so the HUD paints without reaching into the catalog.
 		"cards": card_names(),
@@ -868,12 +895,15 @@ static func outcome_line(l: Dictionary) -> String:
 # width and the MAP ROOM all read `RING.size()`).
 const RING := ["up", "rock", "rock", "rock", "rock", "rock",
 	"down", "rock", "rock", "rock", "rock", "rock"]
-## Wind acceleration at strength 1, px/s² at scale 1. Comparable to the props
-## (HULL_LATERAL_ACCEL 125): the updraft meaningfully slows a descent and the
-## downdraft meaningfully feeds one, but neither is a rail.
-## 120 was authored blind and turned the updraft into a geyser ~5x the hull's
-## own vertical authority — the start tile pinned the ship. 30 is a LEAN: you
-## feel it, you fly through it.
+## Wind AT STRENGTH 1, authored as px/s² at scale 1 and read as an airstream
+## speed of `ZONE_WIND / AIR_DAMP` (75 px/s@1×, 600 at the shipped 8×) — see
+## `weather_wind`. The force at rest is identical either way; what changed is
+## that the lean now stops at the air's own speed instead of accelerating on.
+## Comparable to the props (HULL_LATERAL_ACCEL 125): the updraft meaningfully
+## slows a descent and the downdraft meaningfully feeds one, but neither is a
+## rail. 120 was authored blind and turned the updraft into a geyser ~5x the
+## hull's own vertical authority — the start tile pinned the ship. 30 is a LEAN:
+## you feel it, you fly through it.
 const ZONE_WIND := 30.0
 
 
@@ -888,17 +918,30 @@ static func zone_kind(i: int) -> String:
 	return String(RING[posmod(i, RING.size())])
 
 
-## The tile's wind as a SIGNED vertical acceleration factor (+y is DOWN): the
-## updraft is negative, the downdraft positive, the rocks still.
+## The tile's wind as a SIGNED strength factor (+y is DOWN): the updraft is
+## negative, the downdraft positive, the rocks still.
 static func zone_wind(i: int) -> float:
-	match zone_kind(i):
+	return zone_wind_of(zone_kind(i))
+
+
+## ...by KIND rather than by index, because `weather_wind` is handed the kind the
+## world already resolved for a position. An unknown kind (including "") is calm,
+## which is what makes the zones-off corridor case fall out for free.
+static func zone_wind_of(kind: String) -> float:
+	match kind:
 		"up": return -1.0
 		"down": return 1.0
 	return 0.0
 
 
-## Extra pickets a surge adds in this tile — the garrison grows away from home
+## Extra pickets a SURGE adds in this tile — the ring grows meaner away from home
 ## ("just with maybe more enemies"). The picket cap still bounds the total.
+##
+## THE STANDING GARRISON NO LONGER READS THIS (owner call 3, v0.141.0): a depth's
+## garrison is `surge_count(d)` in TOTAL around its landing column, so adding a
+## per-tile bonus on top of it would put the ring straight back at 48 pickets a
+## rung. It survives for `world._dive_surge` (the F2 verb) and for the map room's
+## per-column readout, which is where "how bad is that side" is still a question.
 static func zone_extra_pickets(i: int) -> int:
 	match zone_kind(i):
 		"rock": return 1
@@ -933,7 +976,7 @@ static func zone_offset(i: int) -> float:
 ## tile is emitted TWICE — once at each end — so a reader can see that the two
 ## edges are the same place. Everything is a plain value; nothing here needs a
 ## world, which is what lets the map room draw the whole dive with no dive.
-static func ring_overview(sv: int) -> Array:
+static func ring_overview(sv: int, tile_widths: float) -> Array:
 	var out: Array = []
 	var n := RING.size()
 	var half := n / 2
@@ -951,8 +994,9 @@ static func ring_overview(sv: int) -> Array:
 			"seam": absi(col) == half,
 			"chunks": chunk_count(sv, tile),
 			# ...and who is already standing in it, before you ever fly there
-			# (the pregenerated garrison, below).
-			"pickets": tile_picket_count(tile),
+			# (the pregenerated garrison, below) — most tiles now keep NOBODY,
+			# because a depth's whole garrison stands around its landing column.
+			"pickets": tile_picket_count(sv, tile, tile_widths),
 		})
 	return out
 
@@ -1032,11 +1076,14 @@ static func chunk_count(sv: int, tile: int) -> int:
 # them BODIES when a player comes within two screens of MAX ZOOM-OUT
 # (`world.dive_materialize_px`). They are already there; you fly up on them.
 #
-# The tables are the ones the owner already tuned — `surge_count` for how many a
-# depth is worth and `zone_extra_pickets` for how much meaner the flanks and the
-# downdraft are — so the difficulty shape of the ring survives this change
-# whole. The den's PULSE is untouched too (`world._dive_surge`): the garrison is
-# the sky's residents, the surge is the pressure wave on top of them.
+# A DEPTH'S GARRISON IS `surge_count(d)` PICKETS IN TOTAL (owner call 3, review
+# §5.1, v0.141.0), standing in the three tiles around that rung's LANDING COLUMN.
+# It used to be `surge_count(d) + zone_extra_pickets(tile)` in EVERY tile, which
+# under the owner's revised clear-ALL ruling (DESCENT §0) meant 48 pickets and
+# ~12 minutes for one rung. Small and placed is the fix: the ring reads as "the
+# fight is here, the loot is out there", the far tiles are optional country, and
+# a rung is 45-75 s. `_dive_surge` (now an F2 verb only) still reads
+# `zone_extra_pickets`; the standing garrison does not.
 #
 # Pure, and deliberately so — exactly like `tile_chunks`. The world materializes
 # these rows and the MAP ROOM draws the very same rows with no world in sight,
@@ -1065,21 +1112,49 @@ const GARRISON_DECK_CLEAR := 0.02
 const GARRISON_FLOOR_CLEAR := 0.02
 
 
-## How many pickets tile `tile` keeps at depth `d`. The owner's own two tables,
-## added: the depth says how many, the ring says how much worse than home.
-static func garrison_count(tile: int, d: int) -> int:
+## WHICH RING TILE THIS DEPTH'S LANDING COLUMN SITS IN. `landing_offset` is in
+## SHELF widths and a tile is `tile_widths` shelves across, so the division is
+## the landing's position in tile widths and `zone_index` rounds it to the tile
+## it is standing in. `tile_widths` is passed in (F2 `dive_zone_tile_widths`)
+## rather than read, because this file stays pure — the world and the MAP ROOM
+## both hand it the same lever and so cannot disagree about where the fight is.
+static func landing_tile(sv: int, d: int, tile_widths: float) -> int:
+	return zone_index(landing_offset(sv, d) / maxf(tile_widths, 0.001))
+
+
+## HOW MANY PICKETS TILE `tile` KEEPS AT DEPTH `d` — the depth's WHOLE garrison,
+## shared out among three tiles (owner call 3, review §5.1).
+##
+## The old table added `surge_count(d)` to `zone_extra_pickets(tile)` in EVERY
+## tile, which with the owner's revised clear-ALL ruling (DESCENT §0) came to 48
+## pickets at depth 2 — ~12 minutes of a single rung. A depth is worth
+## `surge_count(d)` pickets IN TOTAL now, and they stand in the three tiles
+## around that depth's LANDING COLUMN: the fight is where you are going, and the
+## rest of the ring is optional country (wrecks, scrap, an outpost, a whale).
+##
+## Round-robin from the CENTRE tile out, so 4 splits 2/1/1 and 3 splits 1/1/1 —
+## the landing's own tile is never the light one.
+static func garrison_count(sv: int, tile: int, d: int, tile_widths: float) -> int:
 	if d < 2 or d > DEPTHS:
 		return 0
-	return maxi(0, surge_count(d) + zone_extra_pickets(tile))
+	var n := RING.size()
+	var t := posmod(tile, n)
+	var lt := landing_tile(sv, d, tile_widths)
+	var order := [lt, posmod(lt - 1, n), posmod(lt + 1, n)]
+	var mine := 0
+	for k in surge_count(d):
+		if int(order[k % order.size()]) == t:
+			mine += 1
+	return mine
 
 
 ## What a tile carries over the whole ladder — the map room's per-tile readout,
-## and the twin of `chunk_count`. Independent of the seed: the seed decides
-## WHERE they stand, the tables decide HOW MANY.
-static func tile_picket_count(tile: int) -> int:
+## and the twin of `chunk_count`. SEED-DEPENDENT since v0.141.0: the seed decides
+## where each rung's landing column falls, and the garrison follows the landing.
+static func tile_picket_count(sv: int, tile: int, tile_widths: float) -> int:
 	var n := 0
 	for d in range(2, DEPTHS + 1):
-		n += garrison_count(tile, d)
+		n += garrison_count(sv, tile, d, tile_widths)
 	return n
 
 
@@ -1109,10 +1184,10 @@ static func garrison_key(tile: int, d: int, k: int) -> String:
 ## never be closer than `garrison_min_sep(n)` however the hash falls. The world's
 ## spawn path may still nudge a body by its real `solid_bounds` — this only has
 ## to stop the MODEL stacking them.
-static func tile_garrison(sv: int, tile: int, d: int) -> Array:
+static func tile_garrison(sv: int, tile: int, d: int, tile_widths: float) -> Array:
 	var out: Array = []
 	var t := posmod(tile, RING.size())
-	var n := garrison_count(t, d)
+	var n := garrison_count(sv, t, d, tile_widths)
 	if n <= 0:
 		return out
 	var kinds := surge_kinds(d)
@@ -1138,11 +1213,11 @@ static func tile_garrison(sv: int, tile: int, d: int) -> Array:
 ## THE WHOLE GARRISON of a seed, every tile at every rung. The map room draws
 ## this; the world never asks for it (it scans the tiles around you instead —
 ## see `world._dive_materialize_garrison`).
-static func garrison_all(sv: int) -> Array:
+static func garrison_all(sv: int, tile_widths: float) -> Array:
 	var out: Array = []
 	for tile in RING.size():
 		for d in range(2, DEPTHS + 1):
-			out.append_array(tile_garrison(sv, tile, d))
+			out.append_array(tile_garrison(sv, tile, d, tile_widths))
 	return out
 
 

@@ -1271,6 +1271,9 @@ func end_dive() -> void:
 		local_ship.rate_control = false
 		local_ship.climb_rate_max = 0.0
 		local_ship.dive_rate_max = 0.0
+		# ...and the run's weather goes with the run: outside it the only wind is
+		# Airspace's, and a stale downdraft would blow a kept hull forever.
+		local_ship.extra_wind = Vector2.ZERO
 		local_ship.hull_integrity_max = 0.0
 		local_ship.hull_integrity = 0.0
 		# The cards' slice of the pool goes with the pool — leaving the stamp set
@@ -1987,10 +1990,11 @@ func _dive_keep_the_hunt() -> void:
 ## The owner's instinct is right and the target is not the terrain — extraction
 ## is CLIMBING BACK UP, so the layers above are exactly the ones a successful run
 ## still needs (and the streamer already demotes what is far away). What actually
-## accumulates is the WAKE: every surge spawns a picket, a surge lands every
-## `dive_surge_period` seconds, and nothing has ever removed one. By the floor a
-## run is dragging every gunboat it out-flew at depth 2 — awake or dormant, they
-## are still bodies, still colliders, still drawn.
+## accumulates is the WAKE: every picket the run puts in the sky stays there, and
+## nothing has ever removed one. By the floor a run is dragging every gunboat it
+## out-flew at depth 2 — awake or dormant, they are still bodies, still colliders,
+## still drawn. (The timer surge that made this urgent retired in v0.141.0; the
+## garrison materializes into the same list, so the wake is the same wake.)
 ##
 ## So only what a SURGE spawned is culled, and only once it is a ladder-rung and
 ## a half away — far enough that it is not the fight you are in, in either
@@ -2377,7 +2381,9 @@ func _tick_dive(delta: float) -> void:
 		_dive_hold_the_ring(delta)
 	else:
 		_hold_the_corridor(delta)
-	_dive_hold_the_ceiling(delta)
+	# ...and ONE wind vector carries everything that is weather (review §3.2):
+	# the tile's lean and the closing sky, composed, stamped, felt by both sides.
+	_dive_weather(delta)
 	_dive_watch_integrity()
 	# Keep the card draft's offer filled while one is owed, so the HUD always has
 	# three to paint and the number keys have something to pick. The moment an
@@ -2387,8 +2393,7 @@ func _tick_dive(delta: float) -> void:
 	dive.offer(_dive_rng)
 	if not had_offer and not dive.draft.is_empty():
 		_dive_pause_for_draft()
-	for ev in dive.advance(delta, _player_altitude_frac(),
-			Tunables.get_num("dive_surge_period")):
+	for ev in dive.advance(delta, _player_altitude_frac()):
 		match String(ev):
 			"depth":
 				# Cut the NEXT rung as you arrive at this one, so there is always
@@ -2400,19 +2405,15 @@ func _tick_dive(delta: float) -> void:
 				# EFFECT on landing is fine; a card GRANT is kills-only now
 				# (owner 2026-08-31 — the quartermaster's card is gone).
 				_dive_apply_procs("land")
-				# EVERY RUNG IS GARRISONED (owner 2026-08-30: "does it sound
-				# alright to simply jump down, get a few things, and die having
-				# FULLY IGNORED the entire 8 levels?"). It did not, and a purely
-				# TIMED surge is what allowed it: a full descent takes about two
-				# minutes, `dive_surge_period` is 45 s, so a fast line down met
-				# two pickets in eight rungs and out-fell both. Arriving at a
-				# depth now spawns that depth's own picket, so what you meet is a
-				# function of HOW DEEP YOU WENT, not how long you loitered. The
-				# timer stays on top of it — that is the pressure to keep moving.
-				if dive.depth > 1:
-					_dive_surge()
-			"surge":
-				_dive_surge()
+				# EVERY RUNG IS GARRISONED, AND ARRIVING SPAWNS NOTHING (owner
+				# call 6, review §5.3). Both the 45-second timer surge and the
+				# on-arrival surge that used to sit here are retired: they were
+				# sourceless ring-spawns past the horizon, which `DESIGN.md` §4
+				# forbids ("danger is a property of PLACE"). What answers the
+				# owner's original worry — "jump down, get a few things, and die
+				# having FULLY IGNORED the entire 8 levels" — is the STANDING
+				# GARRISON around each rung's landing column, which you fly onto
+				# rather than have flown at you, plus a chase that never lets go.
 			"leviathan":
 				_notify("THE FLOOR. Something enormous is down here with you.")
 				_dive_wake_leviathan()
@@ -2421,33 +2422,89 @@ func _tick_dive(delta: float) -> void:
 			# dive.go_home() + _dive_bank() directly — see try_buy_stock.)
 
 
-# --- The closing sky + hull integrity (owner rulings 2026-08-31) ------------
+# --- THE RUN'S WEATHER: ONE VECTOR, ONE SITE (review §3.2, owner call 2) -----
+#
+# The ring's tile lean and the closing sky were two force sites, each applying
+# `mass × accel` to the local hull and `velocity.y +=` to the body on foot, each
+# with its own multiplier and cap. They are ONE AIRSTREAM now, stamped on
+# `Ship.extra_wind` and delivered through the drag term `Airspace` has always
+# used (`Ship._physics_process`).
+#
+# Two things fall out of that, and they are the reason for the change:
+#
+#   * THE CLOSING SKY IS A LEASH, NOT A RAIL. The rate controller measures its
+#     `v_up` relative to `wind.y`, so a stick commands a speed RELATIVE TO THE
+#     AIR. A rung above the line the air runs down at 1,200 px/s against a
+#     960 px/s climb — you sink at 240. A quarter rung over it runs at 300 and
+#     you climb out at 660. Pop up to a ledge, never commute (owner call 2). No
+#     clamp, no cap, no "is this stronger than the props" arithmetic anywhere.
+#   * EVERYBODY BREATHES THE SAME AIR (DESCENT §0 call 7, "symmetric"). Every
+#     body the run put in the sky is stamped with the weather AT ITS OWN
+#     POSITION, so a picket in the downdraft rides it exactly as you do. That
+#     includes the creatures and the leviathan: wind is the medium moving, not a
+#     prop setting — this is deliberately WIDER than the `air_density_floor`
+#     stamp above, which is vessels-only because a creature flies on muscle.
+#
+# The wrap and chunk-cutting halves of `_dive_hold_the_ring` stay where they are;
+# `_hold_the_corridor` (zones off) is untouched and still pushes on x.
 
-## THE SKY CLOSES BEHIND YOU: above `DiveRun.ceiling_at(low_frac)` the air
-## shoves you down — the corridor rotated 90°, except this rail is WANTED
-## ("a forced push downward without ability to traverse back up, similar to
-## ball pit"). Applies to the hull and to a body on foot alike; gated on
-## `deepest > 1` so the launch deck stays an unhurried place, and painted only
-## by the shove itself for now (a haze pass is the art half, BACKLOG).
-func _dive_hold_the_ceiling(delta: float) -> void:
-	if dive == null or dive.deepest <= 1:
-		return
-	var ceiling_y := dive_altitude_y(DiveRun.ceiling_at(dive.low_frac))
-	var rung_px := absf(dive_altitude_y(DiveRun.depth_altitude(2))
-		- dive_altitude_y(DiveRun.depth_altitude(1)))
-	if rung_px <= 0.0:
+## The weather at one world point, in world px/s (+y is DOWN). One place where
+## the pure model meets real coordinates, so the hull, the body and every picket
+## cannot disagree about the sky they are in.
+func dive_weather_at(pos: Vector2) -> Vector2:
+	if dive == null:
+		return Vector2.ZERO
+	# The tile's lean, only where the ring is the sky (zones off = the corridor,
+	# which has no vertical weather at all). An empty kind reads as calm.
+	#
+	# GATED ON `deepest > 1` LIKE EVERY OTHER PART OF THE RING (its floating
+	# rocks, its garrison, the closing sky). The launch deck is the one place in
+	# the mode with a CEILING OVER YOU, and a hull now RIDES the air it is in
+	# rather than station-keeping against it — so an updraft at the deck would fly
+	# the ship you just took straight up into the deck it launched from (measured:
+	# it does, and the hull loses its helm on the way). The old force site did not
+	# do this only because the hover assist fought it to a standstill, which is
+	# exactly the double-counting on the vertical axis this round deleted. Once
+	# you have been down, the ring is the sky at every altitude, deck included.
+	var kind := ""
+	var zone_mult := 0.0
+	if Tunables.get_bool("dive_zones_enabled") and dive.deepest > 1:
+		var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+		kind = DiveRun.zone_kind(DiveRun.zone_index((pos.x - cx) / _dive_tile_w()))
+		zone_mult = Tunables.get_num("dive_zone_wind_mult")
+	# ...and the closing sky, gated on `deepest > 1` exactly as the old force was,
+	# so the launch deck stays an unhurried place.
+	var over := 0.0
+	if dive.deepest > 1:
+		var rung_px := absf(dive_altitude_y(DiveRun.depth_altitude(2))
+			- dive_altitude_y(DiveRun.depth_altitude(1)))
+		if rung_px > 0.0:
+			over = (dive_altitude_y(DiveRun.ceiling_at(dive.low_frac)) - pos.y) / rung_px
+	return DiveRun.weather_wind(kind, over, zone_mult,
+		Tunables.get_num("dive_ceiling_mult")) * float(world_scale)
+
+
+## Stamp this tick's weather on everything the run is flying.
+func _dive_weather(delta: float) -> void:
+	if dive == null:
 		return
 	if is_instance_valid(local_ship):
-		var over := (ceiling_y - local_ship.global_position.y) / rung_px
-		if over > 0.0:
-			local_ship.apply_central_force(Vector2(0.0,
-				DiveRun.ceiling_push(over) * Tunables.get_num("dive_ceiling_mult")
-					* float(world_scale)) * local_ship.mass)
-	if player != null and is_instance_valid(player) and not player.is_piloting():
-		var overp := (ceiling_y - player.global_position.y) / rung_px
-		if overp > 0.0:
-			player.velocity.y += DiveRun.ceiling_push(overp) 				* Tunables.get_num("dive_ceiling_mult") * float(world_scale) * delta
+		local_ship.extra_wind = dive_weather_at(local_ship.global_position)
 
+	for sid in _dive_surged:
+		var hull := instance_from_id(sid) as Ship
+		if hull != null and is_instance_valid(hull):
+			hull.extra_wind = dive_weather_at(hull.global_position)
+	# A BODY ON FOOT HAS NO DRAG, so it cannot be handed an airstream velocity —
+	# it keeps the `velocity.y +=` idiom it always had. Multiplying the stream by
+	# the hull's damp inverts `weather_wind`'s own divide, which is what makes the
+	# felt strength on foot identical to the force the hull is riding.
+	if player != null and is_instance_valid(player) and not player.is_piloting():
+		player.velocity.y += dive_weather_at(player.global_position).y \
+			* DiveRun.AIR_DAMP * delta
+
+
+# --- Hull integrity (owner rulings 2026-08-31) ------------------------------
 
 ## HULL INTEGRITY, armed: the vessel dies as a unit when the pool empties. The
 ## pool rides `Ship.hull_integrity` (drained inside damage_cell by structural
@@ -2816,11 +2873,11 @@ func dive_zone() -> int:
 	return DiveRun.zone_index((player.global_position.x - cx) / _dive_tile_w())
 
 
-## The ring: each tile's wind leans on hull and body, and crossing the ring's
-## outer edge arrives from the other side. The ladder's landings stay near the
-## centre column on purpose in this first cut — the downdraft is a fast lane,
-## not a home.
-func _dive_hold_the_ring(delta: float) -> void:
+## The ring's STRUCTURE: crossing the outer edge arrives from the other side, and
+## the tile you are in grows its rocks the first time you meet it there. The
+## tile's WIND left this function in v0.141.0 — it is one term of `_dive_weather`
+## now, composed with the closing sky into a single airstream (review §3.2).
+func _dive_hold_the_ring(_delta: float) -> void:
 	if player == null or not is_instance_valid(player):
 		return
 	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
@@ -2844,14 +2901,6 @@ func _dive_hold_the_ring(delta: float) -> void:
 	# (a rung generated ahead of time is a rung the island field paints over).
 	if dive != null:
 		_dive_cut_chunks(here, dive.depth)
-	# The tile's wind — a lean, not a rail (comparable to the props).
-	var wind: float = DiveRun.zone_wind(here) * DiveRun.ZONE_WIND 		* Tunables.get_num("dive_zone_wind_mult") * float(world_scale)
-	if is_zero_approx(wind):
-		return
-	if is_instance_valid(local_ship):
-		local_ship.apply_central_force(Vector2(0.0, wind) * local_ship.mass)
-	if not player.is_piloting():
-		player.velocity.y += wind * delta
 
 
 ## HOW MUCH OF THE WORLD COMES WITH YOU across the seam, in px from the body.
@@ -3167,7 +3216,8 @@ func _dive_materialize_garrison(delta: float) -> void:
 		var tile: int = posmod(here + dt, DiveRun.RING.size())
 		for dd in range(-DIVE_GARRISON_DEPTH_WINDOW, DIVE_GARRISON_DEPTH_WINDOW + 1):
 			var d: int = dive.depth + dd
-			for r in DiveRun.tile_garrison(dive.seed_v, tile, d):
+			for r in DiveRun.tile_garrison(dive.seed_v, tile, d,
+					Tunables.get_num("dive_zone_tile_widths")):
 				var row := r as Dictionary
 				var key := String(row["key"])
 				if dive.garrison_is_spawned(key):
@@ -3240,6 +3290,15 @@ func _dive_spawn_picket(kind: String, at: Vector2) -> Ship:
 ## as many as the ladder says, spread across it so you fly into a picket rather
 ## than a stack.
 ##
+## AN F2 VERB ONLY SINCE v0.141.0 (owner call 6, review §5.3). Nothing in the run
+## calls this any more — not a timer, not arriving at a depth. A surge spawns
+## past the horizon with no source you could have seen or shot first, which is
+## the sourceless ring-spawn `DESIGN.md` §4 forbids, and its job (pressure on a
+## parked player) is done twice over by the standing garrison and the chase. It
+## survives because the owner still needs to summon pressure on demand to A/B the
+## garrison against it — the standing order: a feature F2 cannot reach is
+## invisible, and so is the thing you are comparing against.
+##
 ## Ahead, not abeam, and the measurement is why. `tools/dive_probe.gd` clocked a
 ## committed dive at about 1,950 px/s; a kraken closes at a fraction of that, so
 ## anything spawned beside you is scenery you have already left before its brain
@@ -3282,6 +3341,10 @@ func _dive_surge() -> void:
 	if n <= 0:
 		return
 	var kinds := DiveRun.surge_kinds(dive.depth)
+	# The ledger's "attacks" line. Counted HERE now that the model's timer is
+	# retired (owner call 6): a surge is a thing the F2 verb does, so the number
+	# on the run-over card is the number actually sent — normally zero.
+	dive.surges += 1
 	var ws := float(world_scale)
 	# Your line: where you are actually going. A drifting or parked ship gets a
 	# straight-down picket, which is where the deep is anyway.
