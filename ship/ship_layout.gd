@@ -43,6 +43,73 @@ const CHARS := {
 }
 
 
+## WHERE A `user://` BLUEPRINT LIVES. A `static var` so the SUITES can point it
+## at a scratch directory — the same idiom `Profile.path` uses, and for the same
+## reason: the drafting table's "save as" and the Dive's launch deck both read
+## and write this directory, and a full test run must never touch the ships the
+## owner actually saved. The game never reassigns it.
+static var user_dir := "user://ships"
+
+
+## THE HEADER VOCABULARY (owner arc Q-T, 2026-09-02: the drafting table opens
+## and saves any `.ship`, creatures included). A creature is already a `.ship`
+## file; what was NOT in the file is everything the spawn code set afterwards —
+## its pool, its taming tier, its tint, which brain it gets. These `key value`
+## lines carry that, so a body plan is a whole creature rather than a silhouette
+## the code has to recognise by path.
+##
+## Order here IS the order `serialize` writes them in. Values are TYPED on the
+## way in (health/tame/bounty/tint), so a spawn site reads
+## `meta.get("health", <today's constant>)` and gets a number, not a string.
+const META_KEYS := ["name", "kind", "health", "tame", "tint", "role", "bounty", "notes"]
+
+## The kinds a `kind` header may name: `vessel` plus every `creature_kind` the
+## world spawns, plus `nest` for a site's structure. Free text is not refused — a
+## file naming something else round-trips and spawns as a vessel — but this is
+## the list the drafting table offers and the spawn code branches on.
+const META_KINDS := ["vessel", "whale", "whale_city", "kraken", "basilisk",
+	"critter", "nest"]
+
+## Header keys the FORMAT owns, and which `parse_meta` therefore never hands out:
+## `origin` and `scale` are geometry, read by `parse`/`file_scale` and written by
+## `serialize` itself. Putting them in the meta dictionary would mean two writers
+## for one line.
+const RESERVED_KEYS := ["origin", "scale"]
+
+
+## IS THIS LINE A HEADER RATHER THAN A GRID ROW? The single classifier, shared by
+## `parse` (which skips them) and `parse_meta` (which reads them) — they cannot
+## disagree about what a header is, which is the whole point of it existing.
+##
+## THE SCAR THIS GUARDS: the comment rule used to be "anything starting with #",
+## and '#' is also the HULL glyph — it ate the hulk's `#E#H#` row and the enemy
+## spawned with no floor, no engine and no helm. The same trap is one careless
+## `begins_with` away here, so the rule is narrow and structural instead:
+##
+##   a header is `key<space>value`, where key is `[a-z][a-z0-9_]*`.
+##
+## A GRID ROW NEVER CONTAINS A SPACE (empty is '.', which is why the parser keeps
+## leading characters rather than stripping them), and every grid glyph but 'v'
+## is uppercase or punctuation — so no row of blocks can be read as a header, and
+## a header can never be read as a row. Verified against every stock file.
+##
+## Returns ["key", "value"], or empty for a grid row / comment / blank line.
+static func meta_split(line: String) -> PackedStringArray:
+	var sp := line.find(" ")
+	if sp <= 0:
+		return PackedStringArray()
+	var key := line.substr(0, sp)
+	for i in key.length():
+		var ch := key[i]
+		var lower := ch >= "a" and ch <= "z"
+		var digit := ch >= "0" and ch <= "9"
+		if not (lower or digit or ch == "_"):
+			return PackedStringArray()
+	if key[0] < "a" or key[0] > "z":
+		return PackedStringArray()
+	return PackedStringArray([key, line.substr(sp + 1).strip_edges()])
+
+
 ## Returns {Vector2i cell: BlockDB.Type}, or an empty Dictionary on error.
 static func parse(text: String) -> Dictionary:
 	var origin := Vector2i.ZERO
@@ -58,13 +125,16 @@ static func parse(text: String) -> Dictionary:
 		# never contains a space (empty is '.'), so hash-space is unambiguous.
 		if line == "#" or line.begins_with("# "):
 			continue
-		if line.begins_with("scale"):
-			# Grid granularity metadata (see file_scale) — not a grid row.
-			continue
-		if line.begins_with("origin"):
-			var parts := line.split(" ", false)
-			if parts.size() >= 3:
-				origin = Vector2i(int(parts[1]), int(parts[2]))
+		# EVERY header line is skipped here, known key or not, through the one
+		# classifier — so an unknown key the game does not understand still
+		# cannot become a row of blocks. `scale` is read by `file_scale` and the
+		# rest by `parse_meta`; `origin` is the one this function needs itself.
+		var kv := meta_split(line)
+		if not kv.is_empty():
+			if kv[0] == "origin":
+				var parts := line.split(" ", false)
+				if parts.size() >= 3:
+					origin = Vector2i(int(parts[1]), int(parts[2]))
 			continue
 		if line.strip_edges() == "":
 			continue
@@ -77,6 +147,97 @@ static func parse(text: String) -> Dictionary:
 			if CHARS.has(ch):
 				cells[Vector2i(c - origin.x, r - origin.y)] = CHARS[ch]
 	return cells
+
+
+## THE HEADERS OF A `.ship`, typed. Known keys come back as the type the spawn
+## code wants (`health` float, `tame`/`bounty` int, `tint` Color); everything
+## else — including keys this build has never heard of — comes back as its raw
+## text, so a file authored by a later version of the game round-trips through
+## this one without losing anything.
+##
+## An empty Dictionary is the honest answer for a file with no headers, and that
+## is what makes the override layer safe: every spawn site reads
+## `meta.get(key, <today's constant>)`, so a headerless stock file spawns
+## byte-identically to how it did before headers existed.
+static func parse_meta(text: String) -> Dictionary:
+	var meta := {}
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges(false, true)
+		if line == "#" or line.begins_with("# "):
+			continue
+		var kv := meta_split(line)
+		if kv.is_empty() or RESERVED_KEYS.has(kv[0]):
+			continue
+		var key := kv[0]
+		var value := kv[1]
+		match key:
+			"health":
+				meta[key] = float(value)
+			"tame", "bounty":
+				meta[key] = int(value)
+			"tint":
+				var parts := value.split(" ", false)
+				if parts.size() >= 3:
+					meta[key] = Color(float(parts[0]), float(parts[1]), float(parts[2]))
+			_:
+				meta[key] = value
+	return meta
+
+
+## The `tint` header as a Color, or `fallback` when the file did not name one.
+## A typed reader because `meta.get("tint", c)` hands back a Variant, and every
+## spawn site assigns it straight onto `Ship.body_tint`.
+static func meta_tint(meta: Dictionary, fallback: Color) -> Color:
+	var v: Variant = meta.get("tint")
+	return v if typeof(v) == TYPE_COLOR else fallback
+
+
+## `parse_meta` for a file on disk. Empty (not an error) when the file will not
+## open — a spawn site that cannot read the headers still spawns the defaults.
+static func load_meta(path: String) -> Dictionary:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return {}
+	return parse_meta(file.get_as_text())
+
+
+## One header line's text. Floats print as integers when they are integers
+## (`health 1234`, not `health 1234.000`) because these files are hand-edited.
+static func _meta_line(key: String, value: Variant) -> String:
+	match typeof(value):
+		TYPE_COLOR:
+			var c: Color = value
+			return "%s %.3f %.3f %.3f" % [key, c.r, c.g, c.b]
+		TYPE_FLOAT:
+			var f: float = value
+			if is_equal_approx(f, roundf(f)):
+				return "%s %d" % [key, int(roundf(f))]
+			return "%s %s" % [key, String.num(f, 4)]
+		TYPE_INT:
+			return "%s %d" % [key, int(value)]
+	return "%s %s" % [key, String(value)]
+
+
+## The header block for `meta`, in canonical order: the known vocabulary first
+## (META_KEYS order), then anything else alphabetically. Empty values are
+## dropped — a blank `name ` line is noise, not information.
+static func meta_lines(meta: Dictionary) -> Array:
+	var out: Array = []
+	if meta.is_empty():
+		return out
+	for key in META_KEYS:
+		if meta.has(key) and String(meta[key]) != "":
+			out.append(_meta_line(key, meta[key]))
+	var extra: Array = []
+	for key in meta:
+		var k := String(key)
+		if META_KEYS.has(k) or RESERVED_KEYS.has(k):
+			continue
+		extra.append(k)
+	extra.sort()
+	for k in extra:
+		out.append(_meta_line(k, meta[k]))
+	return out
 
 
 ## One canonical glyph per authored type — the reverse of CHARS, for
@@ -162,7 +323,14 @@ static func recentre_if_askew(cells: Dictionary) -> Dictionary:
 ## (a ship exported from the 8x world is an 8x-granularity grid); 1 writes no
 ## line, matching every authored file. A type with no glyph serializes as empty —
 ## honest loss, printed nowhere better.
-static func serialize(cells: Dictionary, scale := 1) -> String:
+##
+## `meta` is the HEADER VOCABULARY (see META_KEYS) — what a creature file needs
+## beyond its silhouette. It is the THIRD parameter and not the second on
+## purpose: `scale` predates it and has live callers (the world's own
+## export_ship writes an 8× file), and reordering them to match a prettier
+## signature would have been a silent argument swap in exactly the place the
+## eightfold family lives.
+static func serialize(cells: Dictionary, scale := 1, meta := {}) -> String:
 	if cells.is_empty():
 		return ""
 	var centred := recentre(cells)
@@ -174,6 +342,8 @@ static func serialize(cells: Dictionary, scale := 1) -> String:
 		hi = Vector2i(maxi(hi.x, c.x), maxi(hi.y, c.y))
 	var lines: Array[String] = []
 	lines.append("# exported from the game (workshop shipyard)")
+	for line in meta_lines(meta):
+		lines.append(String(line))
 	if scale > 1:
 		lines.append("scale %d" % scale)
 	lines.append("origin %d %d" % [-lo.x, -lo.y])

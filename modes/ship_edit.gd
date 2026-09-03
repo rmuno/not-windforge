@@ -35,7 +35,26 @@ var cells := {}
 var _undo: Array = []
 const UNDO_CAP := 64
 
-## Paint-both-sides (the Loft's mirror-X): a paint/erase at x also lands at
+## THE BLUEPRINT’S HEADERS (`ShipLayout.META_KEYS`): name, kind, health, tame,
+## tint, role, bounty, notes — plus any key a later version of the game writes,
+## which round-trips untouched. Empty for a fresh sheet, which is exactly what a
+## headerless stock file parses to, so "the table did not add anything" and "the
+## file said nothing" are the same state.
+##
+## This is what makes the table a CREATURE editor and not just a hull editor: a
+## whale’s pool, taming tier and tint were code constants keyed off the file’s
+## PATH until now, so a new body plan could be drawn but never finished.
+var meta := {}
+
+## WHICH FILE IS OPEN — static, because TRY IT changes scenes and the table has
+## to come back to the same file when the player walks back through the WORKSHOP
+## door. `carry_text` is the unsaved sheet that went out to be flown: without it,
+## trying a design you have not saved yet would silently throw it away.
+static var last_path := ""
+static var carry_text := ""
+
+
+## Paint-both-sides (the Loft’s mirror-X): a paint/erase at x also lands at
 ## width-1-x. A toggle, not a postprocess, so asymmetric touches stay possible.
 var mirror_x := false
 
@@ -59,6 +78,57 @@ static func palette() -> Array:
 		BlockDB.Type.PLATFORM, BlockDB.Type.BLUBBER,
 		BlockDB.Type.MEAT, BlockDB.Type.SHELL,
 	]
+
+
+## THE CREATURE PALETTE: what the authored creature files actually use — W
+## blubber, M meat, K shell, plus hull and platform for the hard parts (checked
+## against every `ships/whale*.ship`, `kraken_*.ship`, `basilisk.ship`,
+## `critter.ship`). Offering the vessel palette here was the old table’s way of
+## saying "this is a boat with the wrong glyphs in it": an engine inside a whale
+## is not a design, it is a mis-click.
+static func creature_palette() -> Array:
+	return [
+		BlockDB.Type.BLUBBER, BlockDB.Type.MEAT, BlockDB.Type.SHELL,
+		BlockDB.Type.HULL, BlockDB.Type.PLATFORM,
+	]
+
+
+## THE NEST PALETTE, likewise read off the four authored `nest_*.ship` files: a
+## roost is a hull deck under gasbags with a turret and a door, a den is shell
+## and meat, an eyrie and a hive hang off STRUTS. The strut left the VESSEL
+## palette (owner 2026-09-01) and has to be here, because it is load-bearing in
+## exactly these files and this is the screen the owner reviews them on.
+static func nest_palette() -> Array:
+	return [
+		BlockDB.Type.HULL, BlockDB.Type.PLATFORM, BlockDB.Type.STRUT,
+		BlockDB.Type.GASBAG, BlockDB.Type.TURRET, BlockDB.Type.DOOR_CLOSED,
+		BlockDB.Type.SHELL, BlockDB.Type.MEAT, BlockDB.Type.BLUBBER,
+	]
+
+
+## WHICH PALETTE A `kind` HEADER ASKS FOR. Unknown text falls through to the
+## vessel palette, which is the same fallback the spawn code makes (a `kind` it
+## does not recognise is not a creature).
+static func palette_for(kind: String) -> Array:
+	match kind:
+		"whale", "whale_city", "kraken", "basilisk", "critter":
+			return creature_palette()
+		"nest":
+			return nest_palette()
+	return palette()
+
+
+## Is this `kind` a living body rather than a vessel or a structure? The one
+## predicate the palette, the FYI panel and TRY IT all branch on.
+static func is_creature_kind(kind: String) -> bool:
+	return kind in ["whale", "whale_city", "kraken", "basilisk", "critter"]
+
+
+## The open sheet’s kind, defaulting to `vessel` — a file with no `kind` header
+## is a vessel, which is what every stock ship file is.
+func kind() -> String:
+	var k := String(meta.get("kind", "vessel"))
+	return k if k != "" else "vessel"
 
 
 func in_bounds(c: Vector2i) -> bool:
@@ -113,7 +183,7 @@ func clear() -> void:
 ## The authored text — scale 1, no header: byte-compatible with every file in
 ## `res://ships/`. This IS the export; there is no other serializer.
 func to_text() -> String:
-	return ShipLayout.serialize(cells)
+	return ShipLayout.serialize(cells, 1, meta)
 
 
 ## Load blueprint text onto the canvas: parsed, REBASED to non-negative cells
@@ -129,6 +199,9 @@ func from_text(text: String) -> bool:
 	var parsed := ShipLayout.parse(text)
 	if parsed.is_empty():
 		return false
+	# The headers come with the grid. Read BEFORE the early returns above would
+	# matter and after them in the file, so a refused load never half-applies.
+	meta = ShipLayout.parse_meta(text)
 	var lo := Vector2i(1 << 30, 1 << 30)
 	var hi := Vector2i(-(1 << 30), -(1 << 30))
 	for c in parsed:
@@ -297,7 +370,17 @@ func stats() -> Dictionary:
 ## Pure information, zero judgement: a ship with trim 0.3 and no props prints
 ## its numbers like any other (owner: a super heavy ship that just sinks is a
 ## legal design — "it's just an FYI panel").
+##
+## KIND-AWARE since Q-T: a whale has no engines, no power budget and no helm, so
+## printing "no helm — nobody can fly it" over a body plan was the panel lying in
+## a new way. `stats_text` DISPATCHES; the vessel text below is unchanged.
 func stats_text() -> String:
+	if is_creature_kind(kind()) or kind() == "nest":
+		return creature_stats_text()
+	return vessel_stats_text()
+
+
+func vessel_stats_text() -> String:
 	var s := stats()
 	var lines: Array[String] = []
 	lines.append("blocks   %d  (%d flown at 8x)" % [int(s["blocks"]), int(s["shipped_blocks"])])
@@ -324,3 +407,208 @@ func stats_text() -> String:
 	for n in names:
 		lines.append("  %-14s %d" % [n, int(counts[n])])
 	return "\n".join(lines)
+
+
+# --- Creature / nest FYI ------------------------------------------------------
+#
+# A body plan is not a boat, so the panel asks different questions of it. What a
+# creature actually needs to be right (world.gd's `_spawn_one_*`): does it float
+# on its own blubber, how big is its pool, and IS IT ONE PIECE — a disconnected
+# body is a bug the game cannot spawn, because `Ship` severs on rebuild and the
+# stray limb becomes a second body nobody's brain is driving.
+
+## How many CONNECTED PIECES the grid is, 4-neighbour (the same adjacency
+## `Ship` severs on). 1 is a whole creature; 0 is an empty sheet; more than 1
+## means the thing would come apart the instant it spawned.
+func piece_count() -> int:
+	var seen := {}
+	var pieces := 0
+	for start in cells:
+		if seen.has(start):
+			continue
+		pieces += 1
+		var queue: Array = [start]
+		seen[start] = true
+		while not queue.is_empty():
+			var c: Vector2i = queue.pop_back()
+			for d in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+				var n: Vector2i = c + d
+				if cells.has(n) and not seen.has(n):
+					seen[n] = true
+					queue.append(n)
+	return pieces
+
+
+## The creature panel's plain values. Shares `stats()`'s arithmetic (the SHIPPED
+## 8× upscale at density 1) so "floats" here means the same thing it means for a
+## hull — buoyancy against weight, the one number that decides whether a body
+## plan hangs in the sky or falls out of it.
+func creature_stats() -> Dictionary:
+	var s := stats()
+	var out := s.duplicate()
+	out["pieces"] = piece_count()
+	out["health"] = float(meta.get("health", 0.0))
+	out["floats"] = float(s["trim"]) >= 1.0
+	return out
+
+
+func creature_stats_text() -> String:
+	var s := creature_stats()
+	var lines: Array[String] = []
+	lines.append("cells    %d  (%d spawned at 8x)"
+		% [int(s["blocks"]), int(s["shipped_blocks"])])
+	lines.append("mass     %.0f" % float(s["mass"]))
+	# Buoyancy vs weight, the creature question. Named in both directions because
+	# a sinking creature is legal (a kraken is held aloft by the wild-creature
+	# hover exception) — FYI, never a gate.
+	lines.append("buoyancy %.2f x weight  %s" % [float(s["trim"]),
+		"(floats)" if bool(s["floats"]) else "(sinks — the sky must hold it)"])
+	var hp := float(s["health"])
+	lines.append("health   %s" % ("%.0f" % hp if hp > 0.0
+		else "— (no header; the spawn code's own constant)"))
+	var pieces := int(s["pieces"])
+	if pieces == 1:
+		lines.append("body     one connected piece")
+	elif pieces == 0:
+		lines.append("body     empty sheet")
+	else:
+		lines.append("body     %d SEPARATE PIECES — the game cannot spawn this"
+			% pieces)
+	lines.append("")
+	var counts: Dictionary = s["counts"]
+	var names: Array = counts.keys()
+	names.sort()
+	for n in names:
+		lines.append("  %-14s %d" % [n, int(counts[n])])
+	return "\n".join(lines)
+
+
+# --- The file list, and saving ------------------------------------------------
+#
+# The table opens ANY .ship now (owner, Q-T: "this is just for players to design
+# their own ships if they want, and for me to manually review/modify anything
+# else we've created"). Two shelves: the repo's own `res://ships` — every stock
+# hull, creature, nest and the launch deck, `drafts/` included — and the player's
+# `ShipLayout.user_dir`, which is also where SAVE AS writes and where the Dive's
+# launch deck looks for candidates.
+
+const RES_SHIP_DIR := "res://ships"
+
+
+## Every `.ship` under `dir_path`, recursively, sorted. An unopenable directory
+## is an empty list, never an error: `user://ships` does not exist until the
+## first save, and a fresh player must not meet a warning for that.
+static func ship_files(dir_path: String) -> Array:
+	var out: Array = []
+	_scan_ships(dir_path, out)
+	out.sort()
+	return out
+
+
+static func _scan_ships(dir_path: String, out: Array) -> void:
+	var d := DirAccess.open(dir_path)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var entry := d.get_next()
+	while entry != "":
+		# A leading underscore marks a SCRATCH file: `_try.ship` is what TRY IT
+		# writes on its way out of this screen, and it is neither something to
+		# open from the list nor a hull the Dive should moor. One convention,
+		# both readers.
+		if entry.begins_with(".") or entry.begins_with("_"):
+			pass
+		elif d.current_is_dir():
+			_scan_ships(dir_path.path_join(entry), out)
+		elif entry.to_lower().ends_with(".ship"):
+			out.append(dir_path.path_join(entry))
+		entry = d.get_next()
+	d.list_dir_end()
+
+
+## One row per openable file: `{path, name, kind, source, label}`. The name is
+## the file's own `name` header when it has one and its basename when it does
+## not, so the stock files (which have neither, by design — the owner adds
+## headers on the table, not in a code round) still read as themselves.
+static func file_rows() -> Array:
+	var rows: Array = []
+	for path in ship_files(RES_SHIP_DIR):
+		rows.append(row_for(String(path), "res"))
+	for path in ship_files(ShipLayout.user_dir):
+		rows.append(row_for(String(path), "user"))
+	return rows
+
+
+static func row_for(path: String, source: String) -> Dictionary:
+	var m := ShipLayout.load_meta(path)
+	var nm := String(m.get("name", ""))
+	if nm == "":
+		nm = path.get_file().get_basename()
+	var k := String(m.get("kind", "vessel"))
+	if k == "":
+		k = "vessel"
+	return {"path": path, "name": nm, "kind": k, "source": source,
+		"label": "%s  [%s]" % [nm, k]}
+
+
+## A file name the OS will actually accept, out of whatever the player typed.
+## Spaces become underscores; anything else outside `[A-Za-z0-9_-]` is dropped,
+## because a `.ship` path ends up in warnings, test output and the launch deck's
+## ordering, and none of those want a quote mark in them.
+static func safe_basename(name: String) -> String:
+	var out := ""
+	for i in name.length():
+		var ch := name[i]
+		if ch == " ":
+			out += "_"
+		elif (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") \
+				or (ch >= "0" and ch <= "9") or ch == "_" or ch == "-":
+			out += ch
+	return out if out != "" else "untitled"
+
+
+static func user_path_for(name: String) -> String:
+	return ShipLayout.user_dir.path_join("%s.ship" % safe_basename(name))
+
+
+## Write the sheet (grid + headers) to `path`, creating the directory if it is
+## not there yet. Remembers it as the open file. False on an empty sheet or a
+## directory that will not take a write (the web export's res://).
+## `remember` is false for the scratch file TRY IT writes: the sheet that goes
+## out to be flown must not become "the file that is open", or coming back from
+## the world would rename the player’s design to `_try`.
+func save_to(path: String, remember := true) -> bool:
+	var text := to_text()
+	if text.is_empty():
+		return false
+	var dir := path.get_base_dir()
+	if dir != "" and not DirAccess.dir_exists_absolute(dir):
+		DirAccess.make_dir_recursive_absolute(dir)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_string(text)
+	f.close()
+	if remember:
+		last_path = path
+	return true
+
+
+## Where TRY IT parks the sheet on its way out to a world. Under `user_dir` so
+## the suites’ redirect covers it too.
+static func try_file() -> String:
+	return ShipLayout.user_dir.path_join("_try.ship")
+
+
+## Open `path` onto the sheet. False (and nothing changed) if it will not open or
+## will not parse — a player's half-written file must never empty the table.
+func load_path(path: String) -> bool:
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return false
+	var text := f.get_as_text()
+	f.close()
+	if not from_text(text):
+		return false
+	last_path = path
+	return true

@@ -267,7 +267,11 @@ func _booting_the_dive() -> bool:
 ## own scene (maps/editor/), which never boots a world at all. `export_ship`
 ## (F2) stays: exporting what you built to a hull mid-expedition is still a verb.
 func _booting_quiet() -> bool:
-	return _booting_the_dive()
+	# ...and the DRAFTING TABLE’S "TRY IT" (Q-T): a world booted to look at ONE
+	# blueprint has no business spawning the pod, the krakens, the hulk, the
+	# trainer and the boss around it. This is the gate the retired mid-air
+	# Shipyard used, put back to the one use that still makes sense.
+	return _booting_the_dive() or GameMode.try_path != ""
 
 
 ## Open in whatever the boot decided, EXACTLY ONCE.
@@ -290,6 +294,82 @@ func _apply_boot_mode() -> void:
 			begin_dive()
 		_:
 			pass   # expedition: the world is already the world
+	# ...and if the drafting table sent a blueprint out to be flown, put it in
+	# front of the body. TAKEN, like the mode, so a reset does not re-spawn it.
+	_spawn_try_ship(GameMode.take_try_path())
+
+
+## THE DRAFTING TABLE’S "TRY IT" (owner arc Q-T, 2026-09-02): boot a quiet world
+## with ONE blueprint in it, spawned through the SAME functions the game spawns
+## that kind of thing with. That last part is the whole value — a preview that
+## went down its own code path would be a preview of a different game.
+##
+##   vessel (or a file with no `kind`): a FROZEN faction-0 hull beside you, moored
+##     the way a launch-deck candidate is, so you can walk to it and take its helm.
+##   a creature kind: itself, faction 2, a screen away — alive, and it will notice
+##     you the way its brain always does.
+##   nest: the structure, frozen, a screen away, like a site’s own.
+##
+## Never fatal: an unreadable or unparseable file says so and leaves you in an
+## ordinary world.
+func _spawn_try_ship(path: String) -> void:
+	if path == "" or player == null or not is_instance_valid(player):
+		return
+	var cells := ShipLayout.load_cells(path)
+	if cells.is_empty():
+		_notify("that blueprint did not parse — nothing to try")
+		return
+	var meta := ShipLayout.load_meta(path)
+	var kind := String(meta.get("kind", "vessel"))
+	var at := player.global_position
+	var body: Ship = null
+	if ShipEdit.is_creature_kind(kind):
+		# ONE SCREEN AWAY: close enough to see whole, far enough that a whale
+		# does not spawn inside the body looking at it.
+		at += Vector2(TRY_CREATURE_GAP * float(world_scale), 0.0)
+		match kind:
+			"kraken":
+				body = _spawn_one_kraken(path, at)
+			"basilisk":
+				body = _spawn_one_basilisk(at, path)
+			"critter":
+				body = _spawn_one_critter(at, path)
+			_:
+				body = _spawn_one_whale(path, at)
+	elif kind == "nest":
+		at += Vector2(TRY_CREATURE_GAP * float(world_scale), 0.0)
+		body = fleet.spawn_ship_from_cells(
+			ShipLayout.upscale_cells(cells, world_scale), at, 0, 0.0,
+			float(world_scale), 2, {"is_nest": true})
+		if body != null:
+			body.freeze = true
+			body.rebuild()
+	else:
+		# A VESSEL moors like a launch-deck candidate: frozen (an unfrozen hull
+		# with lift climbs away while you walk toward it — the bug that took four
+		# rewrites of the deck), faction 0, helm boardable, its own width to one
+		# side so it is not spawned on top of you.
+		body = fleet.spawn_ship_from_cells(
+			ShipLayout.upscale_cells(cells, world_scale),
+			at, 0, 0.0, float(world_scale), 0)
+		if body != null:
+			body.bounty = int(meta.get("bounty", -1))
+			# Rebuilt before it is measured: `solid_bounds` is what decides how
+			# far to one side it moors, and a hull spawned on top of the body is
+			# the launch deck's oldest bug in a new place.
+			body.rebuild()
+			_park_candidate(body, at + Vector2(
+				body.solid_bounds.size.x * 0.6 + 400.0 * float(world_scale), 0.0))
+	if body == null:
+		_notify("could not spawn that blueprint here")
+		return
+	var shown := String(meta.get("name", path.get_file().get_basename()))
+	_notify("Trying %s (%s)." % [shown, kind])
+
+
+## How far from the body a tried CREATURE stands — authored 1× like every other
+## world distance, so it is a screen at 8× rather than eight of them.
+const TRY_CREATURE_GAP := 900.0
 ## The edge POI markers (maps/world/edge_markers.gd): a pointing triangle with an
 ## icon in it for every near thing that is currently off-screen. Fed by
 ## edge_marker_targets(); paints nothing when that is empty.
@@ -1400,15 +1480,23 @@ func _build_launch_deck() -> void:
 	for ship in parked:
 		_park_candidate(ship as Ship, _dive_park_at(ship as Ship, at, i))
 		i += 1
-	# ...and the owner's own Blueprint Loft ship as the second candidate, so
-	# whatever they design in the Loft is a hull they can dive with. Made ONCE
-	# and reused: a run prop that respawned per dive would litter the sky.
-	if is_instance_valid(_dive_loft):
-		_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, 1))
-	else:
-		_dive_loft = _spawn_loft_at(at + Vector2(span.x, span.y))
-		if _dive_loft != null:
-			_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, 1))
+	# THE PLAYER’S OWN SAVED SHIPS ARE CANDIDATES (owner arc Q-T, 2026-09-02):
+	# the starter first — it was parked above — then every vessel in
+	# `ShipLayout.user_dir`, in name order, until the berths run out. Designing a
+	# hull on the drafting table and diving with it is now one save and one door,
+	# with no code in between.
+	i += _moor_saved_candidates(at, i)
+	# ...and the owner's own Blueprint Loft ship fills whatever berth is STILL
+	# free, so a player who has saved nothing gets exactly the deck they had
+	# yesterday. Made ONCE and reused: a run prop that respawned per dive would
+	# litter the sky.
+	if _dive_berth_taken.size() < dive_berth_positions().size():
+		if is_instance_valid(_dive_loft):
+			_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, i))
+		else:
+			_dive_loft = _spawn_loft_at(at + Vector2(span.x, span.y))
+			if _dive_loft != null:
+				_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, i))
 
 	# EVERY CANDIDATE IS IN THE SKY NOW, so re-measure the landing size before a
 	# single rung of the ladder is cut. The first measurement happened above,
@@ -1427,6 +1515,65 @@ func _build_launch_deck() -> void:
 		# body is 144 px tall at 8x, so 160 px of clearance is plenty.
 		player.global_position = Vector2(at.x,
 			at.y - 20.0 * float(world_scale))
+
+
+## MOOR THE PLAYER’S SAVED VESSELS, in name order, into whatever berths are left
+## after the starter. Returns how many were moored.
+##
+## Two refusals, and the difference between them is the point:
+##
+##   A FILE THAT WILL NOT PARSE IS SKIPPED IN SILENCE. `user://ships` is a
+##   directory a player can put anything in — a half-typed export, a text file
+##   they renamed — and the boot of a run is the worst possible place to raise
+##   it. It costs a candidate, not the run.
+##
+##   A HULL TOO WIDE FOR EVERY HATCH IS SKIPPED OUT LOUD, once. That one is not
+##   a broken file, it is a design decision meeting the deck’s geometry, and the
+##   player is the only one who can fix it (`DiveDeck.BERTH_BUFFER_CELLS` is
+##   clearance for the climb out — a hull wider than its hatch drives itself into
+##   the walkway either side). Silently missing candidates are the bug this deck
+##   keeps producing; that is why it says the name.
+##
+## Creatures and nests saved in the same directory are not vessels and are simply
+## not candidates — the `kind` header is what says so.
+func _moor_saved_candidates(at: Vector2, start_index: int) -> int:
+	var berths := dive_berth_positions()
+	if berths.is_empty():
+		return 0
+	var widest := 0.0
+	for b in berths:
+		widest = maxf(widest, float((b as Dictionary)["width"]))
+	var cell_px := Ship.CELL * float(world_scale)
+	var moored := 0
+	var warned := false
+	for entry in ShipEdit.ship_files(ShipLayout.user_dir):
+		if _dive_berth_taken.size() >= berths.size():
+			break
+		var path := String(entry)
+		var meta := ShipLayout.load_meta(path)
+		var kind := String(meta.get("kind", "vessel"))
+		if kind != "vessel" and kind != "":
+			continue
+		var cells := ShipLayout.load_cells(path)
+		if cells.is_empty():
+			continue   # unreadable / not a blueprint — never break the boot
+		var hull := fleet.spawn_ship_from_cells(
+			ShipLayout.upscale_cells(cells, world_scale), at, 0, 0.0,
+			float(world_scale), 0)
+		if hull == null:
+			continue
+		hull.bounty = int(meta.get("bounty", -1))
+		hull.rebuild()   # solid_bounds is what the berth check reads
+		if not DiveDeck.fits(hull.solid_bounds.size.x, widest, cell_px):
+			if not warned:
+				warned = true
+				_notify("%s is too wide for the deck"
+					% String(ShipEdit.row_for(path, "user")["name"]))
+			hull.queue_free()
+			continue
+		_park_candidate(hull, _dive_park_at(hull, at, start_index + moored))
+		moored += 1
+	return moored
 
 
 ## Where a candidate moors. FOURTH layout, and the first three are kept written
@@ -2356,14 +2503,14 @@ func _dive_explode_ship(ship: Ship) -> void:
 		# nothing. An enemy killed by a provoked WHALE credits nobody either;
 		# turning the sky's neutral third party is its own reward.
 		if _dive_kill_is_yours(ship.last_attacker_id):
-			_dive_credit_kill("hulk")
+			_dive_credit_kill("hulk", ship.bounty)
 		# ...but the SCRAP falls whoever killed it (owner 2026-09-02: "if a
 		# kraken kills an enemy ship, I guess the player can still get that
 		# exp"). No attribution question is asked: the XP channel is spatial now,
 		# so a picket that flew into a cliff still leaves its shards hanging
 		# there for whoever comes past. It is the reward channel — a death that
 		# paid nothing at all is the thing this replaces.
-		_dive_drop_scrap("hulk", ship.global_position)
+		_dive_drop_scrap("hulk", ship.global_position, ship.bounty)
 	_notify("Your ship blows apart!" if was_mine else "Their ship blows apart!")
 	if was_mine:
 		local_ship = null   # the ship-loss grace takes it from here
@@ -2438,10 +2585,10 @@ func _dive_leave_a_husk(ship: Ship) -> void:
 
 ## Drop a `kind` death's worth of scrap at `at`. No attribution, by design: this
 ## is the reward channel now, so a death with zero interaction still pays.
-func _dive_drop_scrap(kind: String, at: Vector2) -> void:
+func _dive_drop_scrap(kind: String, at: Vector2, bounty := -1) -> void:
 	if dive == null or dive.outcome != "" or _dive_scrap == null:
 		return
-	_dive_scrap.spawn(at, DiveRun.scrap_for(kind, dive.depth), float(world_scale))
+	_dive_scrap.spawn(at, DiveRun.scrap_for(kind, dive.depth, bounty), float(world_scale))
 
 
 ## THE ABSORPTION RADIUS, in world px. Authored at 1x and scaled, like every
@@ -3239,10 +3386,12 @@ func _dive_kill_is_yours(attacker_id: int) -> bool:
 	return is_instance_valid(local_ship) and attacker_id == local_ship.get_instance_id()
 
 
-func _dive_credit_kill(kind: String) -> void:
+## `bounty` is the dead body's `Ship.bounty` — its blueprint's own price, or −1
+## for "use the kind table", which is every stock file (Q-T).
+func _dive_credit_kill(kind: String, bounty := -1) -> void:
 	if dive == null or dive.outcome != "":
 		return
-	var coins := dive.credit_kill(kind)
+	var coins := dive.credit_kill(kind, bounty)
 	if coins > 0 and _pickups != null and player != null and is_instance_valid(player):
 		_pickups.add(player.global_position + Vector2(0.0, -120.0 * world_scale),
 			"+%d coins" % coins, float(world_scale))
@@ -4332,6 +4481,13 @@ func _spawn_hulk_at(pos: Vector2) -> Ship:
 		pos, 0, 0.0, float(world_scale), 1)
 	if hulk == null:
 		return null
+	# A VESSEL reads its headers too (Q-T): ships/hulk.ship is the worked example
+	# — `kind vessel`, `role gunboat`, `bounty 35` — and the bounty is what a Dive
+	# picket kill pays. 35 is exactly what DiveRun.KIND_COIN already said, so the
+	# example changes what is written down and not what the game does.
+	var hulk_meta := ShipLayout.load_meta(hulk_path)
+	hulk.bounty = int(hulk_meta.get("bounty", -1))
+	hulk.body_tint = ShipLayout.meta_tint(hulk_meta, hulk.body_tint)
 	# Crewed, never automated (owner): a driver stands at the panel, a
 	# gunner at the gun. The gun fires only while its gunner is aboard.
 	_spawn_crewman(hulk, "H", "driver")
@@ -4405,25 +4561,36 @@ func _spawn_whale() -> void:
 ## Single-player / server path only today. If whales ever spawn in a live session,
 ## the pool must ride the spawn payload instead — post-spawn fields are server-only
 ## (godot-quirks).
+## THE BLUEPRINT IS THE OVERRIDE LAYER (owner arc Q-T, 2026-09-02). Every
+## constant below is now a `meta.get(key, <today’s constant>)`, so a file with no
+## headers spawns byte-identically to how it did before headers existed — and a
+## file that names a pool, a taming tier, a tint, a brain or a bounty gets the
+## creature it drew instead of the one the code assumed.
 func _spawn_one_whale(path: String, pos: Vector2) -> Ship:
+	var meta := ShipLayout.load_meta(path)
 	# TAGGED "whale" (the boss overrides to "whale_city" post-spawn): whale-family
 	# deaths feed the ecology meter, and the tag has to ride the payload so it
 	# survives the wire and a save (from_data reads it), not a server-only field.
 	# Every whale-family kind still routes to WhaleAI (the _whale_ai_for default).
+	# `kind vessel` in a file means "not a creature at all", which is "" here.
+	var tag := String(meta.get("kind", "whale"))
+	if tag == "vessel":
+		tag = ""
 	var whale := fleet.spawn_ship_from_cells(
 		ShipLayout.upscale_cells(ShipLayout.load_cells(path), world_scale),
-		pos, 0, 0.0, float(world_scale), 2, {"creature_kind": "whale"})
+		pos, 0, 0.0, float(world_scale), 2, {"creature_kind": tag})
 	if whale == null:
 		return null
-	var hp := Tunables.get_num("whale_health")
+	var hp := float(meta.get("health", Tunables.get_num("whale_health")))
 	whale.shared_health = hp
 	whale.shared_health_max = hp
 	# A whale is the HIGH taming tier (needs LORE Master Trader) and a mining-
 	# capable mount — ride_mine_pulse only drills tame_level>=2 creatures.
-	whale.tame_level = 2
+	whale.tame_level = int(meta.get("tame", 2))
 	# Cosmetic per-variant tint gives the pod visible variety beyond silhouette
 	# (WhaleSpawn.tint_for; body_tint is documented cosmetic).
-	whale.body_tint = WhaleSpawn.tint_for(path)
+	whale.body_tint = ShipLayout.meta_tint(meta, WhaleSpawn.tint_for(path))
+	whale.bounty = int(meta.get("bounty", -1))
 	# The bestiary variety tag, from the body plan itself. The boss overrides its
 	# creature_kind to whale_city post-spawn, but BOSS_PATH's basename is already
 	# "whale_city", so its variety needs no special-case.
@@ -4497,8 +4664,10 @@ func _spawn_boss_at(at: Vector2) -> Ship:
 	var boss := _spawn_one_whale(BOSS_PATH, pos)
 	if boss == null:
 		return null
-	boss.creature_kind = "whale_city"   # id only; the AI still defaults to WhaleAI
-	var hp := Tunables.get_num("boss_health")
+	var meta := ShipLayout.load_meta(BOSS_PATH)
+	# id only; the AI still defaults to WhaleAI. The blueprint may say otherwise.
+	boss.creature_kind = String(meta.get("kind", "whale_city"))
+	var hp := float(meta.get("health", Tunables.get_num("boss_health")))
 	boss.shared_health = hp
 	boss.shared_health_max = hp
 	boss.rebuild()
@@ -4533,21 +4702,33 @@ func _spawn_critters() -> void:
 ## Spawn ONE critter at `pos`, returning it (null if the spawner is not ready).
 ## Mirrors _spawn_one_whale's pool-then-rebuild ordering; small pool, tame_level 1
 ## (the low taming bar), and a nimbler ride than a whale (ride_speed_mult > 1).
-func _spawn_one_critter(pos: Vector2) -> Ship:
+## `path` is a PARAMETER (Q-T) rather than the hard-coded critter: this is the
+## smallest spawn function in the file that builds a whole creature, which makes
+## it the cheapest world-side hook for "spawn the body plan in THIS file" — the
+## drafting table’s TRY IT and the suites’ fixture creature both come through
+## here. The default is unchanged, so every existing caller is untouched.
+const CRITTER_PATH := "res://ships/critter.ship"
+func _spawn_one_critter(pos: Vector2, path := CRITTER_PATH) -> Ship:
+	var meta := ShipLayout.load_meta(path)
 	# Tagged "critter" so a meadow death is never miscounted as a whale by the
 	# ecology meter (both were "" before and both use WhaleAI). Rides the payload
 	# for the same wire/save reasons as the whale tag.
+	var tag := String(meta.get("kind", "critter"))
+	if tag == "vessel":
+		tag = ""
 	var critter := fleet.spawn_ship_from_cells(
-		ShipLayout.upscale_cells(ShipLayout.load_cells("res://ships/critter.ship"), world_scale),
-		pos, 0, 0.0, float(world_scale), 2, {"creature_kind": "critter"})
+		ShipLayout.upscale_cells(ShipLayout.load_cells(path), world_scale),
+		pos, 0, 0.0, float(world_scale), 2, {"creature_kind": tag})
 	if critter == null:
 		return null
-	critter.shared_health = CRITTER_HEALTH
-	critter.shared_health_max = CRITTER_HEALTH
-	critter.tame_level = 1            # the LOW taming bar (Beast Whisperer)
+	var hp := float(meta.get("health", CRITTER_HEALTH))
+	critter.shared_health = hp
+	critter.shared_health_max = hp
+	critter.tame_level = int(meta.get("tame", 1))   # the LOW bar (Beast Whisperer)
 	critter.ride_speed_mult = 1.6     # nimbler than a whale
-	critter.body_tint = Color(0.80, 0.90, 0.78)
-	critter.variety = "critter"       # the bestiary tag (its own single silhouette)
+	critter.body_tint = ShipLayout.meta_tint(meta, Color(0.80, 0.90, 0.78))
+	critter.bounty = int(meta.get("bounty", -1))
+	critter.variety = CreatureLog.variety_from_path(path)   # the bestiary tag
 	critter.rebuild()
 	return critter
 
@@ -4617,22 +4798,25 @@ func _spawn_kraken() -> void:
 ## after it: `pos` rides the spawn payload, and a post-spawn nudge would exist on
 ## the server only (godot-quirks).
 func _spawn_one_kraken(path: String, pos: Vector2) -> Ship:
+	var meta := ShipLayout.load_meta(path)
 	var cells := ShipLayout.upscale_cells(ShipLayout.load_cells(path), world_scale)
 	var spawn_pos := WhaleSpawn.clear_spawn_pos(
 		terrain, pos, WhaleSpawn.footprint_of(cells), float(world_scale))
 	var kraken := fleet.spawn_ship_from_cells(cells, spawn_pos, 0, 0.0, float(world_scale), 2)
 	if kraken == null:
 		return null
-	kraken.shared_health = KRAKEN_HEALTH
-	kraken.shared_health_max = KRAKEN_HEALTH
-	kraken.creature_kind = "kraken"   # → KrakenAI (two-ended)
+	var hp := float(meta.get("health", KRAKEN_HEALTH))
+	kraken.shared_health = hp
+	kraken.shared_health_max = hp
+	kraken.creature_kind = String(meta.get("kind", "kraken"))   # → KrakenAI (two-ended)
 	# TAMEABLE at the TOP tier (owner 2026-08-24, reversing the untameable
 	# ruling: "you can tame krakens, they just are a little wild in their
 	# movement and always do damage if you touch their mouth parts"). tame_level
 	# 3 keeps it OUTSIDE the whale (==2) and critter (==1) startup filters while
 	# gating on Master Trader + — Stats.taming_level() must reach it.
-	kraken.tame_level = 3
-	kraken.body_tint = Color(0.78, 0.82, 0.74)
+	kraken.tame_level = int(meta.get("tame", 3))
+	kraken.body_tint = ShipLayout.meta_tint(meta, Color(0.78, 0.82, 0.74))
+	kraken.bounty = int(meta.get("bounty", -1))
 	kraken.variety = CreatureLog.variety_from_path(path)   # the bestiary tag
 	kraken.rebuild()
 	# Latch the sealed LOOT CAVITY now, while the body is whole. The map cannot be
@@ -4646,24 +4830,27 @@ func _spawn_one_kraken(path: String, pos: Vector2) -> Ship:
 ## rebuild ordering as every other creature (a living creature must rebuild after
 ## its pool is set or it keeps the precise collider for life), and the same
 ## deep-spawn keep-out, since an eyrie can sit against an island.
-func _spawn_one_basilisk(pos: Vector2) -> Ship:
+const BASILISK_PATH := "res://ships/basilisk.ship"
+func _spawn_one_basilisk(pos: Vector2, path := BASILISK_PATH) -> Ship:
+	var meta := ShipLayout.load_meta(path)
 	var cells := ShipLayout.upscale_cells(
-		ShipLayout.load_cells("res://ships/basilisk.ship"), world_scale)
+		ShipLayout.load_cells(path), world_scale)
 	var spawn_pos := WhaleSpawn.clear_spawn_pos(
 		terrain, pos, WhaleSpawn.footprint_of(cells), float(world_scale))
 	var beast := fleet.spawn_ship_from_cells(cells, spawn_pos, 0, 0.0,
 		float(world_scale), 2)
 	if beast == null:
 		return null
-	var hp := Tunables.get_num("basilisk_health")
+	var hp := float(meta.get("health", Tunables.get_num("basilisk_health")))
 	beast.shared_health = hp
 	beast.shared_health_max = hp
-	beast.creature_kind = "basilisk"   # → BasiliskAI (stand off and spit)
+	beast.creature_kind = String(meta.get("kind", "basilisk"))   # → BasiliskAI
 	# Top taming tier, like a kraken: a fire-breathing serpent is not an early
 	# mount. It stays outside the whale (2) and critter (1) startup filters.
-	beast.tame_level = 3
-	beast.body_tint = Color(0.86, 0.72, 0.52)
-	beast.variety = "basilisk"        # the bestiary tag (its own single silhouette)
+	beast.tame_level = int(meta.get("tame", 3))
+	beast.body_tint = ShipLayout.meta_tint(meta, Color(0.86, 0.72, 0.52))
+	beast.bounty = int(meta.get("bounty", -1))
+	beast.variety = CreatureLog.variety_from_path(path)   # the bestiary tag
 	beast.rebuild()
 	return beast
 
@@ -5760,12 +5947,16 @@ func _announce_eco() -> void:
 func _on_creature_perished(kind: String, body: Ship = null) -> void:
 	# THE DIVE pays coins for ANY creature death (the ecology below cares only
 	# about whales) — the mode's whole economy is "kill things on the way down".
-	_dive_credit_kill(kind)
+	# A blueprint's own `bounty` header overrides the kind table, when the dead
+	# body carries one (Q-T). `body` is optional, so the bare-kind call the suites
+	# make still means "the table".
+	var bounty := body.bounty if body != null and is_instance_valid(body) else -1
+	_dive_credit_kill(kind, bounty)
 	# ...and the XP half hangs in the air over the corpse (owner 2026-09-02).
 	# Unattributed on purpose: a whale that took its revenge on a kraken has
 	# still left something worth flying through.
 	if body != null and is_instance_valid(body):
-		_dive_drop_scrap(kind, body.global_position)
+		_dive_drop_scrap(kind, body.global_position, bounty)
 	if not Tunables.get_bool("eco_enabled") or not WHALE_KINDS.has(kind):
 		return
 	kraken_ascendancy = clampf(
@@ -5964,7 +6155,9 @@ func _build_nest(site: Dictionary, path: String) -> Ship:
 	# (both are `shared`/`shared_max`, which the wire and the save already
 	# carry), so a client and a reloaded world agree on how much fight is left
 	# in a place.
-	var pool := SpawnSites.nest_pool(site["kind"])
+	# The blueprint may name its own pool (Q-T); the site table is the default.
+	var pool := float(ShipLayout.load_meta(path).get(
+		"health", SpawnSites.nest_pool(site["kind"])))
 	var nest := fleet.spawn_ship_from_cells(cells, pos, 0, 0.0, float(world_scale),
 		SpawnSites.nest_faction(site["kind"]),
 		{"is_nest": true, "site_x": coord.x, "site_y": coord.y,

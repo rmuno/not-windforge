@@ -418,6 +418,17 @@ const FACTION_WRECK := 3
 ## networked client must log its own sightings.
 var variety := ""
 
+## WHAT KILLING THIS BODY PAYS IN A DIVE, from its blueprint's `bounty` header
+## (owner arc Q-T). −1 means "no override": the run falls back to
+## `DiveRun.KIND_COIN` by `creature_kind`, exactly as it always has. Set at spawn
+## from `ShipLayout.load_meta`, so a headerless stock file is worth what it was
+## worth yesterday.
+##
+## LOCAL like `variety`, and for the same reason: the Dive is single-player, the
+## credit happens on the machine that spawned the body, and a payload field costs
+## wire budget for a mode that has no wire. Promote it the day a run replicates.
+var bounty := -1
+
 ## --- Tethered lift balloons (carcass-as-airship, owner 2026-08-23) ------------
 ## Helium balloons bolted onto a body's cell by cable(s): EXTERNAL lift you attach
 ## to a corpse (which has none of its own) to fly it. Buoyancy alone only floats;

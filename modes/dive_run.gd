@@ -433,8 +433,15 @@ func spend(cost: int) -> bool:
 
 ## What one creature of `kind` is worth killed at `d`. Whole coins, never
 ## negative.
-static func coins_for(kind: String, d: int) -> int:
-	var base: int = int(KIND_COIN.get(kind, BASE_COIN))
+##
+## `bounty` is the BLUEPRINT'S OWN price (a `.ship` file's `bounty` header,
+## carried here on `Ship.bounty`): ≥ 0 replaces the KIND_COIN lookup as the
+## depth-1 base, and the depth premium still applies on top of it — a bounty says
+## what the body is worth, not what the kill pays, and going deeper is worth more
+## for the same reasons it always was. −1 (the default, and what every headerless
+## file yields) is the table, untouched.
+static func coins_for(kind: String, d: int, bounty := -1) -> int:
+	var base: int = bounty if bounty >= 0 else int(KIND_COIN.get(kind, BASE_COIN))
 	var mult := 1.0 + DEPTH_COIN * float(clampi(d, 1, DEPTHS) - 1)
 	return maxi(0, int(round(float(base) * mult)))
 
@@ -578,10 +585,10 @@ func go_home() -> bool:
 ## world still asks `_dive_kill_is_yours` before paying), scrap is collected by
 ## whoever gets NEAREST — "if a kraken kills an enemy ship, I guess the player
 ## can still get that exp".
-func credit_kill(kind: String) -> int:
+func credit_kill(kind: String, bounty := -1) -> int:
 	if outcome != "":
 		return 0
-	var coins := coins_for(kind, depth)
+	var coins := coins_for(kind, depth, bounty)
 	pot += coins
 	kills += 1
 	return coins
@@ -590,9 +597,11 @@ func credit_kill(kind: String) -> int:
 ## What a death of `kind` at depth `d` HANGS IN THE AIR as scrap. Identical to
 ## its coin value on purpose: that is exactly what the XP bar used to be paid, so
 ## every pacing number the card deck was tuned against survives the move to a
-## physical drop untouched.
-static func scrap_for(kind: String, d: int) -> int:
-	return coins_for(kind, d)
+## physical drop untouched — INCLUDING a blueprint's `bounty` override, which is
+## the same word about the same body and would read as a bug if the coins moved
+## and the shards did not.
+static func scrap_for(kind: String, d: int, bounty := -1) -> int:
+	return coins_for(kind, d, bounty)
 
 
 ## Absorb `amount` XP out of collected scrap. The one door XP comes through now,
