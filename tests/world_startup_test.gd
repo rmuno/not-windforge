@@ -2715,11 +2715,27 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(chosen.hull_integrity_max > 0.0
 				and is_equal_approx(chosen.hull_integrity, chosen.hull_integrity_max),
 			"...and commitment arms its integrity pool (%.0f)" % chosen.hull_integrity_max)
-		# THE THIN-AIR FIX (v0.115.0): the run floors the density the props feel
-		# — stamped every tick, so it is on the hull by now.
-		_ok(is_equal_approx(chosen.thrust_density_floor,
-				Tunables.get_num("dive_thrust_density_floor")),
-			"...and floors the prop-felt air density (%.2f)" % chosen.thrust_density_floor)
+		# THE RUN IS FLOWN IN AIR (v0.139.0, replacing the v0.115.0 prop-only
+		# floor) — stamped every tick, so it is on the hull by now. LIFT reads
+		# the same floored density the props do, which is what lets a trimmed
+		# hull hover at the deck instead of sinking on a neutral stick.
+		_ok(is_equal_approx(chosen.air_density_floor,
+				Tunables.get_num("dive_air_floor")),
+			"...and floors the air the whole hull feels (%.2f)" % chosen.air_density_floor)
+		_ok(is_equal_approx(chosen.air_density_at(chosen.global_position.y),
+				Tunables.get_num("dive_air_floor")),
+			"...so the deck's near-vacuum reads as breathable air (%.2f)"
+				% chosen.air_density_at(chosen.global_position.y))
+		# ...AND THE STICK COMMANDS A SPEED (the rate controller, §3.2).
+		_ok(chosen.rate_control,
+			"...and its vertical stick commands a rate, not a shove")
+		var wscale := float(world.get("world_scale"))
+		_ok(is_equal_approx(chosen.dive_rate_max,
+				Tunables.get_num("dive_dive_rate") * wscale)
+			and is_equal_approx(chosen.climb_rate_max,
+				Tunables.get_num("dive_climb_rate") * wscale),
+			"...scaled for this world (%.0f down / %.0f up px/s)"
+				% [chosen.dive_rate_max, chosen.climb_rate_max])
 		# THE OTHERS CAST OFF (owner): committing removes the unchosen
 		# candidates — one deferred-free frame later, none remain.
 		await world.get_tree().physics_frame

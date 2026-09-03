@@ -218,10 +218,6 @@ const DIVE_PICKET_AIR := 700.0
 ## and 7,090 px/s one second later.** It only has to clear a deck three rows
 ## thick; anything past that is the mode grabbing the stick.
 const DIVE_CAST_OFF := 70.0
-## Thick air: a run holds a committed hull to `dive_descent_max` (F2, px/s at
-## scale 1). The arithmetic — how hard the excess bleeds off, and what a NEUTRAL
-## stick costs — lives in `DiveRun` (DESCENT_BLEED / DRIFT_FRACTION), so it is
-## testable without pulling this file into a test's compile graph.
 ## How hard the corridor pushes back, px/s² at scale 1 per shelf-width of
 ## trespass. Firm enough to turn you, gentle enough that it reads as weather.
 ##
@@ -1177,7 +1173,13 @@ func end_dive() -> void:
 	# mortality is the RUN'S rule, so a kept hull is disarmed and un-scorched.
 	if is_instance_valid(local_ship):
 		local_ship.thrust_mult = 1.0
-		local_ship.thrust_density_floor = 0.0
+		local_ship.air_density_floor = 0.0
+		# The rate controller is the RUN's flight model, not the game's: a hull
+		# you keep flies the shipped binary hover afterwards, like every other
+		# mode (the standing owner ruling).
+		local_ship.rate_control = false
+		local_ship.climb_rate_max = 0.0
+		local_ship.dive_rate_max = 0.0
 		local_ship.hull_integrity_max = 0.0
 		local_ship.hull_integrity = 0.0
 		local_ship.modulate = Color.WHITE
@@ -1762,81 +1764,22 @@ func _dive_perish() -> bool:
 	return true
 
 
-## SOME OF THEM CAN KEEP UP (owner 2026-08-30: "there should be many more
-## menacing threats on the way down ... some of which ideally can keep up with
-## you?").
+## THE CHASE IS FLOWN, NOT WRITTEN (DESIGN_DIVE_REVIEW §2.2, replacing
+## `_dive_pursue`). The old chase force-fed every listed picket 0.92 of the
+## player's own sink rate — a second velocity write into a rigid body every
+## tick, on top of the descent cap's. The solver's integration was overwritten
+## after the fact, so impacts measured off `_prev_velocity` saw speeds nothing
+## had accelerated the hull to, and a picket left holding that velocity when you
+## stopped arrived in the slabs with a crippled hover to arrest it. That is the
+## "physics feel off" texture, and it is not tunable away.
 ##
-## They could not, and the reason is arithmetic rather than AI: a committed hull
-## sinks at about 3,900 px/s with the stick down and a free-falling BODY reaches
-## 6,400, while a powered vessel tops out near 2,720 px/s at 8x. Every brain in
-## the game was chasing something it is physically unable to catch, so the whole
-## descent reads as unopposed no matter how much is spawned into it.
-##
-## The fix is not a faster ship - it is that THEY ARE DIVING TOO. A picket the
-## surge put in your path gets gravity's help the same way you do: while you are
-## below it, its downward speed is floored at a share of your own, so it falls
-## after you instead of hanging in the sky you just left. Closing sideways stays
-## the AI's job - this only stops the vertical race being over before it starts.
-##
-## Bounded on purpose. It applies ONLY to what a surge spawned (`_dive_surged` -
-## the world's own inhabitants keep their own physics), only while you are BELOW
-## it, only downward, and never past DIVE_PURSUIT_MATCH of your speed - so a
-## pursuer closes slowly if you dive straight and loses you if you turn. Running
-## is still an answer; it is just no longer a free one.
-const DIVE_PURSUIT_MATCH := 0.92
-## Beyond this many rung-heights a pursuer has lost you and stops diving.
-const DIVE_PURSUIT_RUNGS := 0.8
-func _dive_pursue(delta: float) -> void:
-	# NOT gated on `committed`: the owner's case for this is the SHIPLESS jump
-	# ("if you just jump off without a ship"), and a body falls faster than any
-	# hull — 6,400 px/s against 3,900 — so that is the line most in need of
-	# something able to follow it down.
-	if dive == null or dive.outcome != "" or player == null:
-		return
-	if not is_instance_valid(player) or _dive_surged.is_empty():
-		return
-	# How fast the thing they are chasing is actually moving vertically.
-	var mine := player.velocity.y
-	if is_instance_valid(local_ship) and player.is_piloting():
-		mine = local_ship.linear_velocity.y
-	if absf(mine) < 1.0:
-		return   # hovering: nothing to keep up WITH
-	var want := mine * DIVE_PURSUIT_MATCH
-	var reach := absf(dive_altitude_y(DiveRun.depth_altitude(2))
-		- dive_altitude_y(DiveRun.depth_altitude(1))) * DIVE_PURSUIT_RUNGS
-	var at := player.global_position
-	for id in _dive_surged:
-		var ship := instance_from_id(id) as Ship
-		if ship == null or not is_instance_valid(ship) or ship.freeze:
-			continue
-		# THE CHASE IS SYMMETRIC NOW (owner 2026-09-01: "Enemies shouldn't be
-		# forced to only fall down, they should be able to keep up with the
-		# player vertically"). The original floor was downward-only, which sent
-		# every pursuer into the slalom of slabs below with no way back up —
-		# they died to the terrain in droves and paid the player free XP for
-		# it. A picket now matches your vertical speed toward you in EITHER
-		# direction: diving after you when you are below, climbing after you
-		# when you are above — still never faster than 0.92 of you, so turning
-		# still sheds them.
-		if mine > 0.0 and at.y <= ship.global_position.y:
-			continue   # you are diving but it is already below you
-		if mine < 0.0 and at.y >= ship.global_position.y:
-			continue   # you are climbing but it is already above you
-		# THE SHORT WAY ROUND: in a looping sky a picket a hair over the seam is
-		# a neighbour, not a world away, and the raw distance would drop the
-		# chase the instant either of you crossed.
-		if _dive_ring_span(ship.global_position, at) > reach:
-			continue
-		if mine > 0.0:
-			if ship.linear_velocity.y >= want:
-				continue   # already falling at least as fast
-			ship.linear_velocity.y = minf(want,
-				ship.linear_velocity.y + want * 2.0 * delta)
-		else:
-			if ship.linear_velocity.y <= want:
-				continue   # already climbing at least as fast
-			ship.linear_velocity.y = maxf(want,
-				ship.linear_velocity.y + want * 2.0 * delta)
+## What replaces it is not another force: it is that a picket can now FLY. It
+## breathes the run's floored air (`air_density_floor`), its stick commands a
+## vertical speed with the same scale as yours (`rate_control`), and its brain
+## aims at your position plus its firing offset (combat/ship_ai.gd). A picket
+## that cannot catch a well-built hull is a design statement — build speed
+## matters — not a bug to paper over. `_dive_keep_the_hunt` below is what
+## survives: the WANTING is kept alive, the flying is the ship's own.
 
 
 ## A SURGE PICKET NEVER SHRUGS (the second half of "born hunting", above). The
@@ -1927,41 +1870,6 @@ func _dive_cull_the_wake(delta: float) -> void:
 			continue
 		ship.queue_free()
 	_dive_surged = kept
-
-
-## THE DEEP IS THICK (owner 2026-08-30: "it'd just be nice if it wasn't so FORCED
-## to descend so fast, then, on the ship during dive mode i guess. or it falls too
-## fast").
-##
-## They were right, and the numbers are worse than the complaint. Measured on the
-## shipped hull inside a run, holding the stick down in clear air:
-##
-##     t=1s  4,220 px/s     t=3s  6,499     t=5s  6,704 (terminal)
-##
-## A screen is about 4,200 px tall at the shipped zoom, so the hull was crossing
-## **more than one and a half screens every second** — nothing on it is legible,
-## nothing can be dodged, and the ladder's rungs go past as a flicker. Worse, with
-## the stick NEUTRAL it still sank at 2,389 px/s and rising: at altitude the air
-## is thin, lift is weak, and a hull that is buoyant at the surface simply falls.
-## That is the "FORCED" half of the report — you were not choosing to descend
-## that fast, the sky was choosing for you.
-##
-## So a run holds a hull to `dive_descent_max`. It is EASED, not clamped: the
-## excess over the cap bleeds off at `DiveRun.DESCENT_BLEED` per second, so pushing
-## down still accelerates you and the limit arrives as thick air rather than as a
-## wall. Only DOWNWARD and only inside a run — climbing is the extraction and the
-## other two modes keep their own physics, which is the standing owner ruling.
-func _dive_hold_the_descent(delta: float) -> void:
-	if dive == null or dive.outcome != "" or not is_instance_valid(local_ship):
-		return
-	var cap := Tunables.get_num("dive_descent_max") * float(world_scale) 		* DiveRun.descent_depth_mult(dive.depth)
-	if cap <= 0.0:
-		return
-	# Driving down is three times the drift. `thrust_input.y` is the helm axis:
-	# negative is DOWN (Input.get_axis("ship_down", "ship_up")).
-	cap = DiveRun.descent_cap(cap, local_ship.thrust_input.y)
-	local_ship.linear_velocity.y = DiveRun.bleed_descent(
-		local_ship.linear_velocity.y, cap, delta)
 
 
 ## SAY WHY THE SHIP WILL NOT GO DOWN. The ladder is a slalom of solid slabs, so
@@ -2213,25 +2121,40 @@ func _tick_dive(delta: float) -> void:
 	# The "thrust" card dial (Trimmed Sails): stamped every tick like the assistant
 	# above, so a card taken mid-flight applies the same frame and a helm rebind
 	# never loses it. end_dive resets it — a hull that outlives the run flies stock.
+	var floor_v := Tunables.get_num("dive_air_floor")
+	var rate_on := Tunables.get_bool("dive_rate_control")
+	var climb_v := Tunables.get_num("dive_climb_rate") * float(world_scale)
+	var sink_v := Tunables.get_num("dive_dive_rate") * float(world_scale)
 	if is_instance_valid(local_ship):
 		local_ship.thrust_mult = _dive_mod("thrust")
-		# The thin-air fix (see Ship.thrust_density_floor): the run floors the
-		# density the props feel, so the hull answers the stick at every rung.
-		local_ship.thrust_density_floor = Tunables.get_num("dive_thrust_density_floor")
+		# THE RUN IS FLOWN IN AIR (see Ship.air_density_floor): the run floors the
+		# density the hull feels at all, so LIFT holds it up and the props answer
+		# the stick at every rung — one atmosphere, not two.
+		local_ship.air_density_floor = floor_v
+		# ...and the stick commands a SPEED rather than a shove (Ship.rate_control).
+		# Stamped every tick like the rest, so an F2 flick lands the same frame.
+		local_ship.rate_control = rate_on
+		local_ship.climb_rate_max = climb_v
+		local_ship.dive_rate_max = sink_v
 	# ...AND THE ENEMY HULLS BREATHE THE SAME AIR (owner 2026-09-01: "enemies
 	# drop so fast it's not even funny"). The floor was stamped on the player's
 	# hull alone, so every picket flew with its props strangled by the REAL
-	# density — 3-20x down across most of the ladder against the player's 0.40
-	# — structurally unable to hold altitude, falling into the slabs the moment
-	# it spawned. Same stamp, every listed hull, every tick (self-healing like
+	# density — structurally unable to hold altitude, falling into the slabs the
+	# moment it spawned. Same stamp, every listed hull, every tick (self-healing like
 	# the local stamp above; ~a dozen entries, and end_dive/queue_free clears
 	# them with the list). VESSELS only — a creature flies on muscle
 	# (unsupported_weight), not props, and its envelope is its own.
-	var floor_v := Tunables.get_num("dive_thrust_density_floor")
 	for sid in _dive_surged:
 		var hull := instance_from_id(sid) as Ship
 		if hull != null and is_instance_valid(hull) and hull.creature_kind == "":
-			hull.thrust_density_floor = floor_v
+			hull.air_density_floor = floor_v
+			# THE SAME STICK, both sides. A picket flies the rate controller with
+			# the player's own scale, which is what lets it keep pace under its own
+			# thrust now that nothing writes its velocity for it (_dive_pursue is
+			# gone — DESIGN_DIVE_REVIEW §2.2).
+			hull.rate_control = rate_on
+			hull.climb_rate_max = climb_v
+			hull.dive_rate_max = sink_v
 	# The "move_speed" card dial (Light Boots, Sea Legs) — the LEGS' twin of the
 	# thrust stamp above, and stamped for exactly the same reasons. It matters most
 	# on a shipless run, where your legs are the only engine you have left.
@@ -2248,9 +2171,7 @@ func _tick_dive(delta: float) -> void:
 		# mends the difference the frame the pool grows, and does nothing on the
 		# thousand ticks after that (it is idempotent by design).
 		player.grant_bonus_health(_dive_add("max_hp"))
-	_dive_hold_the_descent(delta)
 	_dive_nudge_if_stuck(delta)
-	_dive_pursue(delta)
 	_dive_keep_the_hunt()
 	# The XP channel, made physical: motes bob where things died and fly to
 	# whoever gets close enough (owner 2026-09-02).
@@ -5321,6 +5242,10 @@ func _fire_turrets_at(ship: Ship, target: Ship, speed_mult: float) -> bool:
 ## never automated (owner): no driver or no panel means the ship coasts,
 ## exactly like a playerless helm. The AI itself lives in combat/ship_ai.gd.
 var _ship_ais := {}
+## Hulls whose stick we have already centred after their driver died — so the
+## zeroing below is ONE call, not one every tick. Cleared the moment a driver is
+## back at the panel, so a re-crewed hull is zeroed again if it loses them again.
+var _stick_centred := {}
 
 
 func _enemy_pilot(delta: float) -> void:
@@ -5329,9 +5254,20 @@ func _enemy_pilot(delta: float) -> void:
 	for ship in fleet.ships():
 		if not is_instance_valid(ship) or ship.faction != 1 or ship.dormant:
 			continue  # dormant hulls coast on the slow tick, not on their AI
+		var sid := ship.get_instance_id()
 		if not _has_driver(ship):
+			# A DEAD DRIVER MUST NOT LEAVE THE STICK JAMMED (DESIGN_DIVE_REVIEW
+			# §2.3). The AI stops ticking but `thrust_input` keeps its last value
+			# forever, so a hull whose crewman was shot at the panel goes on
+			# pushing in whatever direction it was last asked to — up into the
+			# ceiling push, or down into the ground. Centre it once; from here it
+			# coasts, and the altitude hold can hold it.
+			if not _stick_centred.has(sid):
+				ship.net_set_controls(0.0, 0.0)
+				_stick_centred[sid] = true
 			continue
-		var id := ship.get_instance_id()
+		_stick_centred.erase(sid)
+		var id := sid
 		if not _ship_ais.has(id):
 			var ai := ShipAI.new()
 			ai.ship = ship

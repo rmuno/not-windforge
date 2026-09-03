@@ -23,7 +23,7 @@ extends RefCounted
 ##     index modulo the ring makes the terrain repeat exactly.
 ##   * `world._dive_hold_the_ring` — moves the player AND everything in frame
 ##     by the same circumference in the same frame.
-##   * `world.dive_garrison_pos` / `_dive_pursue` — a body's distance is its
+##   * `world.dive_garrison_pos` / `_dive_cull_the_wake` — a body's distance is its
 ##     distance THE SHORT WAY ROUND, not across the whole world.
 ##
 ## PURE AND STATIC, the way `Airspace` is: no node, no autoload, so the suite

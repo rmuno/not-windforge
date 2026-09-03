@@ -72,17 +72,32 @@ func tick(delta: float, target: Ship, aggro_range: float, outnumbered := false) 
 		desired = home + Vector2(sin(_t * WANDER_FREQ.x),
 			0.6 * sin(_t * WANDER_FREQ.y)) * WANDER_RADIUS * u
 
+	# THE VERTICAL AXIS IS A RATE COMMAND, NOT A SHOVE (DESIGN_DIVE_REVIEW §2.1).
+	# The old code fed a small non-zero `y` on EVERY tick, including while
+	# pottering, and `Ship._physics_process` engages the altitude hold only at
+	# dead neutral — so an idling picket had the assist switched off every frame
+	# and sank out of the sky it was supposed to be guarding. Wander is now
+	# horizontal only (`y = 0`, the hold takes the altitude), and in combat or
+	# flight the axis asks for a vertical SPEED proportional to how far off the
+	# desired altitude it is. Inside the arrive radius it is 0: close enough,
+	# let the hold hold.
 	var to := desired - ship.global_position
 	var input := Vector2.ZERO
 	if fleeing:
 		# Flat-out retreat: full throttle down the escape vector (bypasses the
-		# arrive dead-zone — you never "arrive" while running).
+		# arrive dead-zone — you never "arrive" while running). Its `y` is
+		# already a unit-scaled rate command away from the threat.
 		input = to.normalized()
 	elif to.length() > ARRIVE_RADIUS * u:
 		if combat:
 			input = (to / (SLOW_RADIUS * u)).limit_length(1.0)
+			# Per-axis for the vertical, so closing horizontally never dilutes
+			# the altitude the guns need.
+			input.y = clampf(to.y / (SLOW_RADIUS * u), -1.0, 1.0)
 		else:
-			input = to.normalized() * WANDER_INPUT
+			# Potter HORIZONTALLY. The figure-eight still decides where, and it
+			# is still deterministic; the sky is the hold's job.
+			input = Vector2(to.normalized().x * WANDER_INPUT, 0.0)
 	input = _avoid(input)
 	ship.net_set_controls(input.x, -input.y)
 

@@ -271,32 +271,18 @@ static func landing_offset(sv: int, d: int) -> float:
 	return x
 
 
-## HOW FAST A RUN LETS A HULL FALL (owner 2026-08-30: "it'd just be nice if it
-## wasn't so FORCED to descend so fast, then, on the ship during dive mode i
-## guess. or it falls too fast").
-##
-## Measured on the shipped hull, holding the stick down in clear air: 4,220 px/s
-## after one second, terminal 6,704. A screen is about 4,200 px tall at the
-## shipped zoom, so the hull crossed **more than a screen and a half every
-## second** — nothing legible, nothing dodgeable, the ladder a flicker. And with
-## the stick NEUTRAL it still sank at 2,389 px/s and rising, which is the FORCED
-## half: lift is a function of air density, high air is thin, and a hull that
-## floats at the surface simply falls. The stick had no meaning.
-##
-## Two numbers fix it, and they live here rather than in the world so the
-## arithmetic is testable without dragging `world.gd` — and its `Net` autoload —
-## into a test's compile graph (the trap `pause_menu.gd` and `title_screen.gd`
-## both carry scars from).
-##
-## `DESCENT_BLEED` is why the limit is EASED rather than clamped: the excess over
-## the cap bleeds off per second, so pushing down still accelerates and the limit
-## arrives as thick air, not a wall. **20, not 4** — an eased limit settles where
-## the bleed balances the hull's own acceleration (`settles_at` below), and at 4
-## that was a thousand px/s over the number, which made the cap decorative.
-const DESCENT_BLEED := 20.0
-## What the cap becomes with the stick NEUTRAL, as a fraction of the driven cap.
-## Letting go is a slow sink you can read; pushing down is three times that.
-const DRIFT_FRACTION := 0.34
+## THE DESCENT CAP IS RETIRED (DESIGN_DIVE_REVIEW §3.2). `DESCENT_BLEED`,
+## `DRIFT_FRACTION`, `descent_cap`, `bleed_descent`, `settles_at`,
+## `DESCENT_TOP_MULT` and `descent_depth_mult` lived here to hold a hull to
+## `dive_descent_max` by easing `linear_velocity.y` toward a limit — a velocity
+## write into a rigid body, every tick, which is what "the physics feel off" was
+## made of. The cap existed because a hull sank at 2,389 px/s on a NEUTRAL stick:
+## the run started in air of density 0.05 and lift had nothing to hold up. Both
+## halves of that are gone. `Ship.air_density_floor` puts the run in real air, so
+## a trimmed hull hovers; `Ship.rate_control` makes the stick command a SPEED, so
+## the old cap survives as the F2 lever `dive_dive_rate` (the same 240) — the
+## stick's own down scale — and arrives as a controller settling rather than as a
+## write the solver never made.
 
 
 ## HOW HARD THE CORRIDOR LEANS, px/s² at scale 1 per shelf-width of trespass, and
@@ -325,49 +311,6 @@ const HULL_LATERAL_ACCEL := 125.0
 ## The corridor's push for a hull `over_widths` shelf-widths outside it.
 static func corridor_push(over_widths: float) -> float:
 	return CORRIDOR_PUSH * clampf(over_widths, 0.0, CORRIDOR_MAX_WIDTHS)
-
-
-## THE TOP OF THE LADDER IS THIN AIR (owner 2026-08-30: "now it's a little too
-## slow between layers 1 and 2, then 2 & 3?").
-##
-## One cap for the whole shaft made the shallow rungs a commute: they are the
-## emptiest part of a run — the garrison is smallest and there is nothing to dodge
-## — so the same speed that reads as tense at the floor reads as dead time at the
-## top. It also had no physical excuse, which is the tell. THIN AIR IS THE
-## EXCUSE, and it was already in the model: lift falls with air density, which is
-## why a hull sinks on a neutral stick up high in the first place. Thin air is
-## also less to push through.
-##
-## So the cap is `DESCENT_TOP_MULT` at depth 1 and 1.0 at the floor, straight
-## line between. The descent opens fast and thickens as you go — which is the
-## shape the mode wants anyway: the deep should feel like it is closing in.
-const DESCENT_TOP_MULT := 2.1
-static func descent_depth_mult(d: int) -> float:
-	if DEPTHS <= 1:
-		return 1.0
-	var t := float(clampi(d, 1, DEPTHS) - 1) / float(DEPTHS - 1)
-	return lerpf(DESCENT_TOP_MULT, 1.0, t)
-
-
-## The cap that applies right now, in px/s, for a hull whose helm axis is `axis`
-## (negative is DOWN — `Input.get_axis("ship_down", "ship_up")`).
-static func descent_cap(base: float, axis: float) -> float:
-	return base if axis <= -0.1 else base * DRIFT_FRACTION
-
-
-## One frame of the bleed: `vy` eased toward `cap`, never past it, never upward.
-static func bleed_descent(vy: float, cap: float, delta: float) -> float:
-	if cap <= 0.0 or vy <= cap:
-		return vy
-	return maxf(cap, vy - (vy - cap) * minf(1.0, DESCENT_BLEED * delta))
-
-
-## Where an eased cap actually SETTLES for a body accelerating downward at
-## `accel` px/s². This is the arithmetic the first cut got wrong, so it is a
-## function rather than a comment: a bleed that loses to gravity is a cap in
-## name only.
-static func settles_at(cap: float, accel: float) -> float:
-	return cap + accel / maxf(DESCENT_BLEED, 0.001)
 
 
 ## CAN THIS BODY TAKE THAT HELM? (owner 2026-08-30: *"could you compute the
