@@ -1273,10 +1273,15 @@ static func clear_of_players(pos: Vector2, dir: Vector2, points: Array,
 
 ## Garrison entries this run has already given a body, by `garrison_key`.
 ##
-## SPAWN-ONCE IS THE WHOLE RULE, and it is also the owner's "a cleared sky stays
-## cleared": an entry the wake cull frees (or that you blew apart) is marked and
-## never comes back, while an entry you simply never flew near stays pending for
-## as long as the run lasts. Nothing here is saved — a run is not a save file.
+## SPAWN-ONCE IS *NOT* THE WHOLE RULE ANY MORE (DESCENT §2.4 / §10.4). The old
+## comment here promised "a cleared sky stays cleared" and made the wake cull
+## CONSUME an entry permanently. With a seal reading this roster that promise
+## locks the door forever: fly away from a half-fought rung, come back, and the
+## survivors were culled, are marked spawned, will never re-materialize and are
+## not dead — the seal could never open. So the sentence becomes what it always
+## meant: **a KILLED sky stays cleared.** `garrison_spawned` is "has a body right
+## now"; the cull UNMARKS it (`unmark_garrison_spawned`) and the permanent record
+## is `garrison_killed` below. Nothing here is saved — a run is not a save file.
 var garrison_spawned := {}
 
 
@@ -1286,3 +1291,206 @@ func garrison_is_spawned(key: String) -> bool:
 
 func mark_garrison_spawned(key: String) -> void:
 	garrison_spawned[key] = true
+
+
+## The wake cull's half: this entry lost its body without dying, so it goes back
+## to PENDING and will materialize again the next time you fly at it. Never
+## touches `garrison_killed` — killed is forever.
+func unmark_garrison_spawned(key: String) -> void:
+	garrison_spawned.erase(key)
+
+
+# --- THE DESCENT SEAL (Q-R, DESIGN_DESCENT.md — owner rulings §0) -----------
+#
+# "Force someone to go down level by level carefully." Descent used to be a
+# function of patience: hold the stick down and you arrive. Under every depth
+# 2..DEPTHS-1 there is now a LETHAL BAND OF RISING AIR centred on the depth
+# boundary, live until that depth's whole standing garrison is dead (owner call
+# 3, REVISED: clear everything that spawns at the depth — the ring's per-tile
+# lock "feels too broad and empty without much direction").
+#
+# THE SEAL IS WEATHER, NOT A NEW FORCE SITE. Since v0.141.0 all of the run's
+# weather is one wind vector per body (`weather_wind`, stamped on
+# `Ship.extra_wind`), and the seal is another term of it: a rising airstream
+# inside the band. Two properties fall out for free, and they are the reason the
+# design is written this way rather than as the force model DESCENT §4 proposed
+# (which was authored against the pre-0.139 physics):
+#
+#   * A DRIFTER IS EJECTED. `Ship`'s rate controller commands a speed RELATIVE
+#     TO THE AIR, so a neutral stick inside a live band is carried UP and out
+#     with a warning bite. You have to MEAN a crossing (DESCENT §4.4).
+#   * A COMMITTED DIVE CROSSES, at `dive_rate - seal_speed`, paying the toll for
+#     exactly as long as that takes.
+#
+# MASS BEATS IT (ruling 3), in the wind idiom: the airstream speed a hull FEELS
+# scales with `BETA_REF / β`, β = mass per pixel of beam. A dense narrow dart
+# feels a quarter of it and is through in a fraction of the time — the
+# "sacrificial sinker" archetype, as an economic fact rather than flavour.
+
+## The band's height, in RUNGS. Squeezed from both sides (DESCENT §2.2): it must
+## be TALLER than the tallest island the generator can make (ruling 4, "all
+## islands smaller than the wind band" — `_test_dive_seal` holds that against
+## `IslandGen.R_MAX`), and short enough that you can very nearly frame it, because
+## a band you cannot see the far side of reads as a void rather than as a wall.
+## 0.07 × 64,038 px = 4,483 px at 8×, against a 2,944 px tallest island.
+const BAND_RUNGS := 0.07
+
+## THE AIRSTREAM, px/s at scale 1 (the world multiplies by `world_scale`, the
+## idiom every speed in this file uses). TUNED, not derived: the stock starter on
+## a full DOWN stick must cross a band for about 30 % of `dive_ship_integrity`
+## (DESCENT §3.3's X ≈ 32 %), which at `SEAL_GRIND × 6 sites` = 300 hp/s means a
+## crossing of ~3 s, which means the band's 4,483 px must be flown at ~1,500 px/s
+## — i.e. the down stick's 1,920 px/s less this stream's 8× value. MEASURED in
+## `scale_startup_test`; read that crossing check before retuning.
+const SEAL_AIR_SPEED := 55.0
+
+## How far the felt airstream may swing with a hull's build. The clamp is what
+## keeps the band a WALL for a raft and a TOLLBOOTH for a dart instead of either
+## a teleport or a formality (DESCENT §10.8 — this is the dial that compresses
+## the spread if the dart proves too strong).
+const SEAL_SPEED_MIN := 0.25
+const SEAL_SPEED_MAX := 2.0
+
+## The committed starter's ballistic coefficient β = mass / beam_px, MEASURED at
+## the shipped 8× (`mass` 63,218.3 / `solid_bounds.size.x` 1,536 px = 41.16).
+## DESCENT §4.3 estimated 40.8 from BlockDB's mass table; this is the real hull.
+## β scales linearly with `world_scale` (mass ∝ cells ∝ scale², beam ∝ scale), so
+## `beta_ref_at` converts it and the 1× legacy suites still see the arithmetic.
+const BETA_REF := 41.16
+const BETA_REF_SCALE := 8.0
+
+## The starter's beam at 8×, the yardstick `seal_sites` counts against, and how
+## many grinding sites that beam is worth. Sites scale with BEAM rather than with
+## cell count because the wind is an area effect and the measure the toll uses
+## must be the measure the force uses — one number, two consequences (§3.2).
+const BEAM_REF := 1536.0
+const SEAL_SITES := 6
+const SEAL_SITES_MIN := 3
+const SEAL_SITES_MAX := 12
+
+## Structural hp per site per second. 6 × 50 = 300 hp/s for the stock hull —
+## three hull cells a second, on six faces, which is the owner's "blocks can be
+## destroyed VISIBLY slowly in any direction" almost literally. Hovering inside is
+## death by division: 3,000 / 300 = 10 s.
+const SEAL_GRIND := 50.0
+
+## What a BODY pays per second inside a band. `StatDB.BASE_HEALTH` is 100 and a
+## run has one life, so 5.6 s inside is fatal — but the airstream throws a body
+## out long before that. A hard, survivable, unmistakable "no" (§3.5).
+const SEAL_BODY_TOLL := 18.0
+
+
+## Does depth `d` have a seal UNDER it? Depths 2..DEPTHS-1 do: depth 1 carries no
+## garrison at all (`garrison_count` returns 0 below 2, the den's clock does not
+## run there, and the first drop off the launch deck must stay unhurried), and
+## the floor has nothing below it to gate. Six seals in a shipped run — the count
+## falls out of the model that was already there.
+static func has_seal(d: int) -> bool:
+	return d >= 2 and d <= DEPTHS - 1
+
+
+## The altitude fraction the band under depth `d` is CENTRED on: exactly the
+## boundary between depth `d` and `d + 1`, which `depth_of` already rounds at. The
+## seal is the depth boundary made physical — crossing the band and becoming
+## depth d+1 are the same event, so the HUD's depth readout flips in the frame the
+## wind lets go of you.
+static func seal_altitude(d: int) -> float:
+	return depth_altitude(d) - rung_frac() * 0.5
+
+
+## The band under depth `d` as [top_frac, bottom_frac] — altitude fractions, top
+## first (the higher number). Zero-height for a depth with no seal, so a caller
+## that forgets `has_seal` contains nothing rather than everything.
+static func seal_band(d: int) -> Array:
+	if not has_seal(d):
+		return [0.0, 0.0]
+	var mid := seal_altitude(d)
+	var half := BAND_RUNGS * rung_frac() * 0.5
+	return [mid + half, mid - half]
+
+
+## Which depth's seal band the altitude fraction `a` is inside, or 0 for none.
+## The bands are half a rung apart and 0.07 rungs tall, so at most one can ever
+## contain a point — this is an exact answer, not a nearest match.
+static func seal_at(a: float) -> int:
+	for d in range(2, DEPTHS):
+		var b := seal_band(d)
+		if a <= float(b[0]) and a >= float(b[1]):
+			return d
+	return 0
+
+
+## THE AIRSTREAM A HULL FEELS, as a multiple of `SEAL_AIR_SPEED` (ruling 3, "mass
+## beats it"). `beta` is the hull's own mass per pixel of beam and `ref` the
+## starter's at the same world scale, so the stock hull feels exactly 1.0 and a
+## dart four times as dense per beam feels the floor. STRICTLY DECREASING in β
+## between the clamps, which is the ruling stated as an assertion.
+static func seal_speed_for(beta: float, ref := BETA_REF) -> float:
+	if beta <= 0.0:
+		return SEAL_SPEED_MAX
+	return clampf(ref / beta, SEAL_SPEED_MIN, SEAL_SPEED_MAX)
+
+
+## `BETA_REF` converted to a world scale (it was measured at 8×).
+static func beta_ref_at(world_scale: float) -> float:
+	return BETA_REF * maxf(world_scale, 0.001) / BETA_REF_SCALE
+
+
+## How many cells the grind chews at once, for a hull of beam `beam_px` measured
+## against `beam_ref` (the starter's beam at the same scale). Floored at 3 so a
+## dart still pays something, capped at 12 so a barge is not simply deleted.
+static func seal_sites(beam_px: float, beam_ref := BEAM_REF) -> int:
+	if beam_ref <= 0.0:
+		return SEAL_SITES_MIN
+	return clampi(int(round(float(SEAL_SITES) * beam_px / beam_ref)),
+		SEAL_SITES_MIN, SEAL_SITES_MAX)
+
+
+## EVERY standing-garrison key of depth `d`, across the whole ring — the roster
+## one seal is locked to. Pure: the map room can price a seal with no world.
+static func depth_keys(sv: int, d: int, tile_widths: float) -> Array:
+	var out: Array = []
+	for tile in RING.size():
+		for row in tile_garrison(sv, tile, d, tile_widths):
+			out.append(String((row as Dictionary)["key"]))
+	return out
+
+
+# --- The seal's live half ---------------------------------------------------
+
+## Garrison entries this run has KILLED, by `garrison_key`. Permanent, and the
+## only thing a seal reads. Killed ≠ despawned: the wake cull unmarks a SPAWNED
+## entry (above) and never writes here, so flying away from a fight can never
+## deadlock a door (DESCENT §2.4).
+var garrison_killed := {}
+
+
+func garrison_is_killed(key: String) -> bool:
+	return garrison_killed.has(key)
+
+
+func mark_garrison_killed(key: String) -> void:
+	if key == "":
+		return   # a surge picket carries no key — the F2 verb never counts (§2.4)
+	garrison_killed[key] = true
+
+
+## [killed, total] for depth `d`'s garrison — what the HUD counts down and what
+## `seal_open` decides on.
+func seal_progress(sv: int, d: int, tile_widths: float) -> Array:
+	var keys := depth_keys(sv, d, tile_widths)
+	var dead := 0
+	for k in keys:
+		if garrison_killed.has(String(k)):
+			dead += 1
+	return [dead, keys.size()]
+
+
+## Is the band under depth `d` DEAD? True when every standing-garrison entry of
+## that depth is killed — and true for a depth that never had a seal, so "is
+## there anything in my way" is one question everywhere.
+func seal_open(sv: int, d: int, tile_widths: float) -> bool:
+	if not has_seal(d):
+		return true
+	var p := seal_progress(sv, d, tile_widths)
+	return int(p[0]) >= int(p[1])
