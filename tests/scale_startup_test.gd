@@ -53,6 +53,15 @@ func _initialize() -> void:
 		"the ship is genuinely 8x (%d blocks)" % local.blocks.size())
 	_ok(local.lift_ratio() > 0.9 and local.lift_ratio() < 1.4,
 		"the 8x starter keeps its trim (%.2f)" % local.lift_ratio())
+	# THE OTHER TWO MODES KEEP THEIR PHYSICS (the standing owner ruling). The
+	# rate controller and the air floor are the DIVE's flight model, stamped by
+	# `_tick_dive` and cleared by `end_dive`; an expedition hull flies the
+	# shipped binary hover in the shipped air, which is what the legacy suites
+	# pin. If either of these is ever true at boot, every one of them is lying.
+	_ok(not local.rate_control,
+		"outside a run the vertical stick is raw thrust, as it always was")
+	_ok(is_zero_approx(local.air_density_floor),
+		"...and the sky is the sky (no air floor)")
 
 	var p = world.get("player")
 	_ok(p != null, "a player character exists")
@@ -393,23 +402,36 @@ func _check_dive_scene_boots() -> void:
 	# not even funny"). The thin-air floor was stamped on the player's hull
 	# alone; a picket's props were strangled by the real density and it simply
 	# fell. The dive tick now stamps every listed VESSEL — give it a tick, then
-	# every surged vessel must carry the same floor the player's hull gets.
+	# every surged vessel must carry the same floor the player's hull gets, AND
+	# the same rate-controlled stick (which is what replaced the pursuit's
+	# velocity write — DESIGN_DIVE_REVIEW §2.2).
 	for i in 3:
 		await w.get_tree().physics_frame
 	var floored := 0
+	var sticked := 0
 	var vessels := 0
 	for sid in (w.get("_dive_surged") as Array):
 		var hull := instance_from_id(sid) as Ship
 		if hull == null or not is_instance_valid(hull) or hull.creature_kind != "":
 			continue
 		vessels += 1
-		if is_equal_approx(hull.thrust_density_floor,
-				Tunables.get_num("dive_thrust_density_floor")):
+		if is_equal_approx(hull.air_density_floor,
+				Tunables.get_num("dive_air_floor")):
 			floored += 1
+		if hull.rate_control and is_equal_approx(hull.dive_rate_max,
+				Tunables.get_num("dive_dive_rate") * 8.0):
+			sticked += 1
 	_ok(vessels > 0 and floored == vessels,
 		"every surged vessel breathes the floored air (%d of %d)" % [floored, vessels])
+	_ok(vessels > 0 and sticked == vessels,
+		"...and flies the same rate-controlled stick you do (%d of %d)"
+			% [sticked, vessels])
 
 	await _check_dive_garrison_materializes(w, pl, run, cx)
+	# LAST, deliberately: this one runs six real seconds of world, which would
+	# advance the run out from under the garrison checks above (they measure a
+	# live world with nothing awaited between the set-up and the assertion).
+	await _check_dive_picket_holds_its_rung(w, pl, cx)
 
 	w.queue_free()
 	await process_frame
@@ -601,6 +623,82 @@ func _check_dive_seam_is_seamless(w: Node, pl, rect: Rect2, ring_w: float,
 ##      back the moment the garrison stopped going through `_dive_spawn_picket`;
 ##   4. the wake cull does not un-mark what it freed: a cleared sky stays
 ##      cleared, and the surge itself is born beyond the horizon now.
+## A PICKET WHOSE DRIVER IS DEAD MUST STILL SIT IN THE SKY (owner: "enemy
+## turrets just fall to their deaths"; DESIGN_DIVE_REVIEW §2.3 + §1.3).
+##
+## Two of the three causes meet here, and only an 8x run can see either. A hull
+## with no driver stops being ticked by `_enemy_pilot`, but `thrust_input` keeps
+## whatever the AI last asked for — forever — so a crewman shot at the panel
+## used to leave the ship pushing in that direction until it hit something. And
+## even centred, a picket at depth 2 was holding itself up on props and balloons
+## in air of density 0.23, which it structurally cannot do.
+##
+## So: jam the stick the way a dying driver did, take the driver away, and give
+## it three real seconds at depth 2 with nobody near it. The run's own stamps
+## (the air floor, the rate-controlled stick) are the only thing holding it up.
+func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
+	var picket: Ship = null
+	for sid in (w.get("_dive_surged") as Array):
+		var hull := instance_from_id(sid) as Ship
+		if hull == null or not is_instance_valid(hull) or hull.faction != 1 				or hull.creature_kind != "" or not hull.has_helm():
+			continue
+		picket = hull
+		break
+	_ok(picket != null, "a crewed picket to leave alone at depth 2")
+	if picket == null:
+		return
+	# MEASURED, and it is the round's one uncomfortable number: at the SHIPPED
+	# air floor of 0.5 (the review's first number) neither the starter nor a picket could hold a rung — they are
+	# balloon ships, and half density leaves their buoyancy at roughly half their
+	# weight while their lift props are worth a sixth of it. The engines were
+	# deliberately not retuned (owner's call), so the STICK is measured in air a
+	# hull can actually fly in, and the shortfall is reported as a number instead
+	# of being tuned away in the dark. Reset at the end of the check.
+	Tunables.set_value("dive_air_floor", 0.85)
+	# Depth 2's altitude, a long way from the body — this is the review's own
+	# one-minute check ("spawn a hulk at depth 2 with no player nearby").
+	var rung_y: float = float(w.call("dive_altitude_y", DiveRun.depth_altitude(2)))
+	picket.global_position = Vector2(cx + 9000.0, rung_y)
+	picket.linear_velocity = Vector2.ZERO
+	await w.get_tree().physics_frame
+	# JAM THE STICK, then kill the driver: exactly the sequence a shell through
+	# the panel produces.
+	picket.net_set_controls(0.4, -1.0)
+	_ok(not is_zero_approx(picket.thrust_input.y),
+		"its stick is jammed hard down, the way a dying driver left it")
+	for npc in (w.get("_npcs") as Array):
+		if npc != null and is_instance_valid(npc) and npc.get("ship") == picket:
+			npc.queue_free()
+	var y0: float = picket.global_position.y
+	for i in 180:
+		await w.get_tree().physics_frame
+	var centred_fall: float = picket.global_position.y - y0
+	_ok(is_zero_approx(picket.thrust_input.y),
+		"a dead driver leaves the stick CENTRED, not frozen (%.2f)"
+			% picket.thrust_input.y)
+	# THE COUNTERFACTUAL, on the same hull, from the same spot. The world centres
+	# a driverless stick exactly ONCE (the guard in `_enemy_pilot`), so jamming
+	# it again here reproduces the old behaviour without touching the code — and
+	# the comparison is honest whatever this seed's picket is trimmed like, which
+	# an absolute "it must not sink" number would not be.
+	picket.global_position = Vector2(picket.global_position.x, rung_y)
+	picket.linear_velocity = Vector2.ZERO
+	picket.net_set_controls(0.4, -1.0)
+	await w.get_tree().physics_frame
+	_ok(not is_zero_approx(picket.thrust_input.y),
+		"...and the world does not fight a stick set on purpose (one centring, not a loop)")
+	for i in 180:
+		await w.get_tree().physics_frame
+	var jammed_fall: float = picket.global_position.y - rung_y
+	_ok(centred_fall < jammed_fall * 0.7,
+		"a centred picket keeps its rung far better than a jammed one (%.0f px vs %.0f in 3 s)"
+			% [centred_fall, jammed_fall])
+	_ok(picket.air_density_at(picket.global_position.y) >= Tunables.get_num("dive_air_floor") - 0.001,
+		"...in the run's floored air (%.2f at depth 2, real air 0.23)"
+			% picket.air_density_at(picket.global_position.y))
+	Tunables.reset_all()
+
+
 func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
 	if pl == null or not is_instance_valid(pl) or run == null:
 		_ok(false, "a body and a run to garrison around")
@@ -1061,18 +1159,100 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		Input.action_release("ship_right")
 		var dx: float = starter.global_position.x - x0
 		# 800 -> 4000 (owner 2026-09-01, "extremely slow in every way"): the root
-		# was dive_thrust_density_floor strangling the props in the thin start air
-		# (0.15). Raised to 0.40, the same hull covers ~9,500 px here (peak
-		# ~4,000 px/s, a ring tile in ~4 s). This bound GUARDS the floor — drop it
-		# back toward 0.15 and this reddens instead of the owner finding out in play.
+		# was the air the props breathe, strangled in the thin start air (0.15).
+		# The floor is `dive_air_floor` now (0.85, and LIFT feels it too), and the
+		# same hull covers ~11,700 px here — `tools/lateral_probe.gd` measures
+		# 5,030 px/s peak, a ring tile in 3 s. This bound GUARDS the floor: drop
+		# it back toward 0.15 and this reddens instead of the owner finding out
+		# in play.
 		_ok(dx > 4000.0,
 			"four seconds of full right moves the starter briskly (%.0f px)" % dx)
 		_ok(starter.power_supply() >= starter.active_draw() * 0.95,
 			"...without browning out (supply %.0f vs draw %.0f)"
 				% [starter.power_supply(), starter.active_draw()])
+
+		# THE AIR FLOOR IS REAL AUTHORITY (DESIGN_DIVE_REVIEW §1.3). Measured on
+		# this hull at the deck: weight 501,652,476, buoyancy at the shipped
+		# floor 264,929,280 — so a neutral stick with the floor OFF is a very
+		# different fall from one with it on. This is the whole of slice 2 in
+		# one comparison, and it is scale-only: at 1x the deck does not exist.
+		var floored_sink := await _neutral_sink(world, starter, Tunables.get_num("dive_air_floor"))
+		var vacuum_sink := await _neutral_sink(world, starter, 0.0)
+		_ok(floored_sink < vacuum_sink * 0.8,
+			"the air floor buys real altitude authority (sinks %.0f px/s vs %.0f in the vacuum)"
+				% [floored_sink, vacuum_sink])
+
+		# THE VERTICAL STICK COMMANDS A SPEED (DESIGN_DIVE_REVIEW §3.2). Three
+		# claims about the hull the owner actually flies, inside a run.
+		#
+		# MEASURED FIRST, per the round's brief: at the review's first floor (0.5) the
+		# starter could not hover at the deck at all, and no controller could make
+		# it. It is a balloon ship — buoyancy 264,929,280 against a weight of
+		# 501,652,476 leaves its lift props a deficit of 236,723,196 to find,
+		# and at full deflection they produce 81,920,000: 35% of it. The stick
+		# saturates and the hull sinks. Break-even for this hull is a floor of
+		# 0.72; a comfortable hover wants ~0.8 — which is why the SHIPPED default is
+		# 0.85. The engines were deliberately NOT retuned (owner's call); the
+		# controller is measured at the shipped floor, set explicitly so an F2 edit
+		# cannot leak in.
+		_ok(starter.rate_control,
+			"in a run the starter's vertical stick commands a rate")
+		Tunables.set_value("dive_air_floor", 0.85)
+		var want_down: float = Tunables.get_num("dive_dive_rate") * 8.0
+		var want_up: float = Tunables.get_num("dive_climb_rate") * 8.0
+		# Linear damping takes its cut of any commanded rate: at HOVER_DAMP 2.0
+		# against the hull's damp of 0.4 the controller settles at 2/2.4 of what
+		# it was asked for, which is why these bounds are a third rather than a
+		# tenth. The number in the message is the one that matters.
+		Input.action_press("ship_down")
+		for i in 180:
+			await world.get_tree().physics_frame
+		var vy_down: float = starter.linear_velocity.y
+		Input.action_release("ship_down")
+		# The retired `dive_descent_max` was 240 px/s at 1x and this is the same
+		# number — the felt cap survived; it is the stick's own scale now rather
+		# than a per-tick write into `linear_velocity`.
+		_ok(absf(vy_down - want_down) < want_down * 0.35,
+			"holding DOWN settles at the rate it asks for (%.0f px/s, asked %.0f)"
+				% [vy_down, want_down])
+		# NEUTRAL: the controller's v_target is 0, which is term-for-term the
+		# hover that has always shipped.
+		for i in 90:
+			await world.get_tree().physics_frame
+		var hold_y0: float = starter.global_position.y
+		for i in 120:
+			await world.get_tree().physics_frame
+		var drift: float = absf(starter.global_position.y - hold_y0)
+		_ok(drift < 900.0,
+			"a NEUTRAL stick holds altitude for two seconds (drifted %.0f px)" % drift)
+		# UP: a real climb, at the rate the lever names.
+		var up_y0: float = starter.global_position.y
+		Input.action_press("ship_up")
+		for i in 180:
+			await world.get_tree().physics_frame
+		var vy_up: float = starter.linear_velocity.y
+		Input.action_release("ship_up")
+		_ok(starter.global_position.y < up_y0 - 1000.0,
+			"holding UP actually climbs (rose %.0f px in 3 s)"
+				% (up_y0 - starter.global_position.y))
+		_ok(absf(-vy_up - want_up) < want_up * 0.35,
+			"...at the rate it asks for (%.0f px/s, asked %.0f)" % [-vy_up, want_up])
+		Tunables.reset_all()
 		pl.disembark()
 	world.call("end_dive")
 	await world.get_tree().physics_frame
+
+
+## Neutral-stick sink rate, px/s, with the run's air floor set to `floor_v`.
+## Two seconds is enough: the hull is at terminal within one. Leaves the lever
+## where it found it is the CALLER's job — both uses here are followed by an
+## explicit set or a reset_all.
+func _neutral_sink(world: Node, hull, floor_v: float) -> float:
+	Tunables.set_value("dive_air_floor", floor_v)
+	hull.linear_velocity = Vector2.ZERO
+	for i in 120:
+		await world.get_tree().physics_frame
+	return hull.linear_velocity.y
 
 
 func _ok(condition: bool, detail: String) -> void:

@@ -414,8 +414,9 @@ static func draw_weight(card: Dictionary) -> int:
 # --- THE BLAST (the "explode" effect) ---------------------------------------
 #
 # Pure geometry, kept here rather than in the world, because the world cannot be
-# named in a test (its `Net` autoload poisons the compile graph — see DiveRun's
-# DESCENT_BLEED comment). The world's job is only to turn its live Ships into
+# named in a test (its `Net` autoload poisons the compile graph — the trap
+# `pause_menu.gd` and `title_screen.gd` both carry scars from). The world's job
+# is only to turn its live Ships into
 # rows and hand the caught ones to the damage plumbing it already has.
 
 ## How far `p` lies from rectangle `r` — 0 when the rectangle contains it. Used

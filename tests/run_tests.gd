@@ -101,6 +101,7 @@ func _initialize() -> void:
 	await _test_ride_mine_front_cells_lead_the_travel()
 	await _test_taming_bar_scales_with_creature_tier()
 	await _test_enemy_flees_when_outmatched()
+	await _test_wander_never_touches_the_vertical_stick()
 	await _test_layout_comments_never_eat_hull_rows()
 	await _test_scaffold_wreck_still_collides()
 	await _test_hulk_is_a_real_ship()
@@ -544,6 +545,25 @@ func _test_air_density() -> void:
 		"floor density at the ceiling")
 	var mid := s.air_density_at(Ship.CEILING_Y * 0.5)
 	_check(mid > Ship.MIN_AIR_DENSITY and mid < 1.0, "density falls monotonically between")
+
+	# THE DIVE'S AIR FLOOR (DESIGN_DIVE_REVIEW §1.3). The run's deck sits at
+	# altitude frac 0.860 of the world, which is y = -212,337 px at 8x — air of
+	# density 0.05, the clamp, where balloons hold up 5% of their rating. The
+	# floor lives in `air_density_at` itself, so LIFT and THRUST read one number.
+	# `_make_ship` builds at scale 1, so the deck is expressed as the same
+	# multiple of THIS ship's ceiling: 212,337 / 192,000 = 1.106 of it — the run
+	# starts ABOVE where the air column even begins, which is why it is clamped.
+	var deck_y := Ship.CEILING_Y * 1.106
+	_check_approx(s.air_density_at(deck_y), Ship.MIN_AIR_DENSITY, 0.001,
+		"unfloored, the Dive's deck is near-vacuum (%.3f)" % s.air_density_at(deck_y))
+	s.air_density_floor = 0.5
+	_check_approx(s.air_density_at(deck_y), 0.5, 0.001,
+		"floored at 0.5, the deck is breathable air (%.3f)" % s.air_density_at(deck_y))
+	_check_approx(s.air_density_at(Ship.SEA_LEVEL_Y), 1.0, 0.001,
+		"...and the floor never THINS the deep — sea level is still 1.0")
+	s.air_density_floor = 0.0
+	_check_approx(s.air_density_at(deck_y), Ship.MIN_AIR_DENSITY, 0.001,
+		"0 is the lever off, and the vacuum comes back")
 	s.queue_free()
 	await process_frame
 
@@ -4401,39 +4421,26 @@ func _test_dive_run() -> void:
 	_check(not DiveRun.helm_in_reach(Rect2(), Vector2.ZERO, m),
 		"a hull with no bounds offers no helm")
 
-	# HOW FAST A RUN LETS A HULL FALL (owner 2026-08-30: "it falls too fast").
-	# Measured before the fix: 6,704 px/s terminal against a screen 4,200 px tall
-	# — more than a screen and a half every second — and a NEUTRAL stick still
-	# sinking at 2,389, so the stick meant nothing.
-	var base := Tunables.get_num("dive_descent_max") * 8.0
-	_check(base > 0.0, "the descent cap is a live F2 lever (%.0f px/s at 8x)" % base)
-	_check(DiveRun.descent_cap(base, -1.0) == base,
-		"driving down gets the full cap")
-	_check(DiveRun.descent_cap(base, 0.0) < base * 0.5,
-		"...and letting go is a much slower drift (%.0f vs %.0f)"
-			% [DiveRun.descent_cap(base, 0.0), base])
-	_check(DiveRun.descent_cap(base, 1.0) == DiveRun.descent_cap(base, 0.0),
-		"...climbing is not a descent, so it reads as the drift cap")
-	# THE BLEED MUST ACTUALLY BEAT GRAVITY. An eased cap settles where the bleed
-	# balances the hull's own downward acceleration, and the first cut (bleed 4)
-	# settled a THOUSAND px/s over the number — a cap in name only. 4,200 px/s²
-	# is the measured acceleration of the shipped hull driving down at 8x.
-	var settle := DiveRun.settles_at(base, 4200.0)
-	_check(settle < base * 1.25,
-		"the eased cap settles near the number, not far over it (%.0f vs %.0f)"
-			% [settle, base])
-	# ...and the bleed itself: downward only, never past the cap, never upward.
-	_check(is_equal_approx(DiveRun.bleed_descent(base * 0.5, base, 0.016), base * 0.5),
-		"a hull under the cap is left alone")
-	_check(is_equal_approx(DiveRun.bleed_descent(-3000.0, base, 0.016), -3000.0),
-		"...and a CLIMBING hull is never touched (the climb is the extraction)")
-	var bled := DiveRun.bleed_descent(base * 3.0, base, 0.016)
-	_check(bled < base * 3.0 and bled > base,
-		"a hull over the cap eases toward it rather than snapping (%.0f)" % bled)
-	_check(DiveRun.bleed_descent(base * 3.0, base, 10.0) == base,
-		"...and a long frame lands exactly on the cap, never under it")
-	_check(is_equal_approx(DiveRun.bleed_descent(9000.0, 0.0, 0.016), 9000.0),
-		"a cap of 0 is the lever turned off, not a hull pinned at zero")
+	# THE VERTICAL STICK COMMANDS A SPEED (DESIGN_DIVE_REVIEW §3.2), replacing
+	# the descent cap this block used to pin (`descent_cap` / `bleed_descent` /
+	# `settles_at` / `descent_depth_mult`, all retired with it). That cap eased
+	# `linear_velocity.y` toward a limit every tick — a velocity write into a
+	# rigid body — and it existed only because a hull sank at 2,389 px/s on a
+	# NEUTRAL stick in air of density 0.05. Both halves are levers now, and these
+	# are the numbers the mode is flown on.
+	_check(Tunables.get_bool("dive_rate_control"),
+		"a run's vertical stick commands a SPEED by default")
+	var sink_rate := Tunables.get_num("dive_dive_rate")
+	var climb_rate := Tunables.get_num("dive_climb_rate")
+	_check(is_equal_approx(sink_rate, 240.0),
+		"...and the descent it asks for is the retired cap's own number (%.0f px/s at 1x)"
+			% sink_rate)
+	_check(climb_rate > 0.0 and climb_rate < sink_rate,
+		"...while the climb is real but slower than the fall (%.0f vs %.0f)"
+			% [climb_rate, sink_rate])
+	_check(sink_rate * 8.0 < 4200.0,
+		"at 8x a full-down stick stays inside one screen a second (%.0f px/s)"
+			% (sink_rate * 8.0))
 
 	# THE CORRIDOR LEANS; IT MUST NEVER STEER. Owner 2026-08-30: "my propeller
 	# thrust seems way nerfed, even sideways" - and it was not the props. The
@@ -4451,19 +4458,18 @@ func _test_dive_run() -> void:
 	_check(DiveRun.corridor_push(2.0) > DiveRun.corridor_push(1.0),
 		"straying further does lean harder, up to the cap")
 
-	# THE TOP OF THE LADDER IS THIN AIR (owner: "a little too slow between layers
-	# 1 and 2, then 2 & 3"). One cap for the whole shaft made the shallow rungs a
-	# commute - they are the emptiest part of a run.
-	_check(DiveRun.descent_depth_mult(1) > DiveRun.descent_depth_mult(DiveRun.DEPTHS),
-		"the shallow rungs fall faster than the deep ones")
-	_check(is_equal_approx(DiveRun.descent_depth_mult(DiveRun.DEPTHS), 1.0),
-		"...and the floor is the cap itself, undiluted")
-	var thickening := 999.0
-	for d in range(1, DiveRun.DEPTHS + 1):
-		var mult := DiveRun.descent_depth_mult(d)
-		_check(mult <= thickening + 0.0001,
-			"the deep only ever thickens (depth %d, x%.2f)" % [d, mult])
-		thickening = mult
+	# THE DIVE IS FLOWN IN AIR (DESIGN_DIVE_REVIEW §1.3, owner call 1). This
+	# replaces the thin-air descent multiplier that used to be pinned here: the
+	# ladder no longer opens fast because the air is a vacuum — the run floors
+	# the density instead, so a trimmed hull hovers at every rung.
+	var air_floor := Tunables.get_num("dive_air_floor")
+	_check(is_equal_approx(air_floor, 0.85),
+		"the run floors the air where the shipped hull can hover (%.2f; 0.5 measured short, break-even 0.72)" % air_floor)
+	_check(air_floor > Ship.MIN_AIR_DENSITY * 4.0,
+		"...which is far more than the deck's real air (%.2f vs %.2f)"
+			% [air_floor, Ship.MIN_AIR_DENSITY])
+	_check(air_floor < 1.0,
+		"...and less than sea level, so the deep still thickens over the ladder")
 
 	# BOOM (owner: "they should do DAMAGE on collision"). The lever, and that its
 	# default actually means something.
@@ -6319,6 +6325,50 @@ func _test_enemy_flees_when_outmatched() -> void:
 	ship.queue_free()
 	ship2.queue_free()
 	target.queue_free()
+	await _step(3)
+
+
+## AN IDLING PICKET MUST NOT FLY ITSELF INTO THE GROUND (DESIGN_DIVE_REVIEW
+## §2.1 — the owner's "enemy turrets just fall to their deaths"). The wander fed
+## WANDER_INPUT on BOTH axes every tick, and `Ship._physics_process` engages the
+## altitude hold only while the vertical stick is EXACTLY neutral. So an idling
+## hull had the hold switched off on every frame of its life and was holding
+## itself up on 8% of its lift props in air the Dive thins to 5% — it could not,
+## and it sank into the slabs. Wander is horizontal now; the sky is the hold's
+## job. (Break-the-fix: restore `to.normalized() * WANDER_INPUT` and the first
+## check reddens.)
+func _test_wander_never_touches_the_vertical_stick() -> void:
+	_t("an idling driver leaves the altitude to the hold")
+	var cells := {}
+	for x in 3:
+		for y in 3:
+			cells[Vector2i(x, y)] = BlockDB.Type.HULL
+	cells[Vector2i(1, 1)] = BlockDB.Type.HELM
+	var ship := _make_ship(cells)
+	ship.position = Vector2(-70000, 0)
+	ship.capture_blueprint()
+	var ai := ShipAI.new()
+	ai.ship = ship
+	# HOME IS OFF TO ONE SIDE **AND** ABOVE: the vertical offset is exactly what
+	# the old code turned into a permanent non-zero y.
+	ai.home = ship.global_position + Vector2(600.0, -600.0)
+	var worst_y := 0.0
+	var best_x := 0.0
+	for i in 40:
+		ai.tick(1.0 / 60.0, null, 700.0)
+		worst_y = maxf(worst_y, absf(ship.thrust_input.y))
+		best_x = maxf(best_x, absf(ship.thrust_input.x))
+		await physics_frame
+	_check(is_zero_approx(worst_y),
+		"40 ticks of wander leave the vertical stick dead centre (worst %.4f)" % worst_y)
+	_check(best_x > 0.0,
+		"...while it still potters horizontally (peak throttle %.3f)" % best_x)
+	# ...and dead centre is what the hold needs: the assist gate is
+	# `is_zero_approx(thrust_input.y)`, so this is the fix stated as the engine
+	# states it.
+	_check(is_zero_approx(ship.thrust_input.y),
+		"which is exactly the gate Ship._physics_process opens the hold on")
+	ship.queue_free()
 	await _step(3)
 
 

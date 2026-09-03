@@ -289,16 +289,37 @@ const _REGISTRY := [
 	{"id": "dive_scrap_radius", "label": "Dive: scrap (XP) absorption radius, px at 1x",
 		"group": "World", "kind": KIND_FLOAT, "default": 120.0, "min": 0.0,
 		"max": 600.0, "step": 10.0},                             # world.dive_scrap_radius
-	# Prop thrust multiplies by air density and the run starts in THIN air
-	# (altitude 0.86) — measured, the props were strangled ~10x at the deck. The
-	# run floors the density the PROPS feel (never the lift). 0 = off.
-	# 0.8 was a 16x overshoot (deck air MEASURES ~0.05): the starter hit
-	# 3,260 px/s in ONE SECOND and obliterated itself on the deck wall. 0.15 is
-	# ~3x the deck's real air — brisk (~1,700 px/s terminal), survivable, and
-	# past the shallow rungs the REAL density overtakes the floor anyway.
-	{"id": "dive_thrust_density_floor", "label": "Dive: min air density the props feel (0 = off)",
-		"group": "World", "kind": KIND_FLOAT, "default": 0.40, "min": 0.0,
-		"max": 1.0, "step": 0.05},                               # Ship.thrust_density_floor
+	# THE DIVE IS FLOWN IN AIR (DESIGN_DIVE_REVIEW §1.3, owner call 1 = 0.5).
+	# The run starts at altitude 0.86, where the real density is 0.05: balloons
+	# hold 5% of their rating and props are strangled tenfold, so every hull —
+	# yours and theirs — falls. v0.115.0 floored the PROPS' share alone (0.40),
+	# which left lift and thrust in different atmospheres and is why a trimmed
+	# hull still sank on a neutral stick. The floor now sits in `air_density_at`
+	# itself, so LIFT feels it too: a trimmed hull hovers at every rung, and the
+	# deep still thickens over the ladder. 0 = off.
+	# 0.5 was the review's first number and it was MEASURED short: the starter is
+	# a balloon ship, and at half density its lift props cover 35% of the
+	# remaining deficit — break-even is 0.72, a confident hover ~0.8. 0.85 is
+	# where the approved behaviour ("a trimmed hull hovers on a neutral stick")
+	# is actually true of the shipped hull (scale_startup measures it).
+	{"id": "dive_air_floor", "label": "Dive: min air density hulls feel (lift AND props; 0 = off)",
+		"group": "World", "kind": KIND_FLOAT, "default": 0.85, "min": 0.0,
+		"max": 1.0, "step": 0.05},                               # Ship.air_density_floor
+	# THE VERTICAL STICK COMMANDS A RATE in a run (DESIGN_DIVE_REVIEW §3.2). Off
+	# restores the shipped binary hover — the stick as a raw prop input, the
+	# assist only at dead neutral — which is what the other two modes always fly.
+	{"id": "dive_rate_control", "label": "Dive: the vertical stick commands a SPEED (off = raw thrust)",
+		"group": "World", "kind": KIND_BOOL, "default": true},   # Ship.rate_control
+	# What full deflection asks for, px/s at scale 1 (x8 in the shipped world).
+	# The DOWN number is the retired `dive_descent_max` (240), so the felt cap
+	# survives the change — it is just the stick's own scale now instead of a
+	# velocity write bleeding a rigid body toward a limit.
+	{"id": "dive_climb_rate", "label": "Dive: climb the stick asks for (px/s at 1x)",
+		"group": "World", "kind": KIND_FLOAT, "default": 120.0, "min": 0.0,
+		"max": 900.0, "step": 10.0},                             # Ship.climb_rate_max
+	{"id": "dive_dive_rate", "label": "Dive: descent the stick asks for (px/s at 1x)",
+		"group": "World", "kind": KIND_FLOAT, "default": 240.0, "min": 0.0,
+		"max": 900.0, "step": 10.0},                             # Ship.dive_rate_max
 	# The closing sky's strength, a multiplier on DiveRun.CEILING_PUSH (400
 	# px/s²@1×/rung, capped at 3 rungs ≈ 10× the props). 1.0 = the shipped rail;
 	# 0 turns the ceiling off entirely for A/B play.
@@ -333,16 +354,7 @@ const _REGISTRY := [
 	{"id": "creature_ram_damage", "label": "A creature's body hits a ship this much harder",
 		"group": "World", "kind": KIND_FLOAT, "default": 4.0,
 		"min": 1.0, "max": 12.0, "step": 0.5},   # Ship._apply_pending_impacts
-	# HOW FAST A RUN LETS A HULL FALL, px/s at scale 1 (x8 in the shipped world).
-	# The owner's "it falls too fast": measured terminal was 6,704 px/s against a
-	# screen 4,200 px tall — more than a screen and a half every second. 300 puts
-	# it at 2,400 px/s, about a screen every 1.7 s, which is a descent you can
-	# read. 0 turns the hold off and gives back the old plunge.
-	# 300 -> 240 (owner 2026-08-31: "it's kind of too fast going down").
-	{"id": "dive_descent_max", "label": "Dive: fastest a hull may fall (px/s at 1x, 0 = off)",
-		"group": "World", "kind": KIND_FLOAT, "default": 240.0,
-		"min": 0.0, "max": 900.0, "step": 25.0},   # world._dive_hold_the_descent
-	{"id": "dive_assistant", "label": "Dive: the assistant mans the repair station",
+{"id": "dive_assistant", "label": "Dive: the assistant mans the repair station",
 		"group": "World", "kind": KIND_BOOL, "default": true},
 		# world._dive_post_the_assistant — off = no station, no crew, X-wand only
 	# FALL DAMAGE (owner 2026-08-30, "as with the Source"). A multiplier on what

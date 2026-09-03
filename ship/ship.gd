@@ -375,10 +375,9 @@ var impact_damage_mult := 1.0
 
 ## A RUN-SCOPED MULTIPLIER ON THE VERTICAL STICK'S DOWNWARD RATE (Lead Keel's
 ## `dive_rate` dial), stamped and reset exactly like `impact_damage_mult` above.
-## Multiplies `dive_rate_max` — the rate stick that arrives with the dive-feel
-## physics branch (review §3.2); until that lands this is a stamped number with
-## no reader, which is deliberate: the card and its wiring ship together, and the
-## multiply is one line at the merge.
+## Multiplies `dive_rate_max` at the world's stamp site (`_tick_dive`): the card
+## scales the speed the DOWN stick asks for under the rate controller (review
+## §3.2), never the climb.
 var dive_rate_mult := 1.0
 
 ## WRECK HUSK (owner 2026-09-02: ships "just explode and disappear when their
@@ -492,17 +491,37 @@ var thrust_input := Vector2.ZERO
 ## physics), and it deliberately does NOT scale the power draw: the card is a
 ## free upgrade, not a brownout trap.
 var thrust_mult := 1.0
-## Run-scoped FLOOR on the air density the propellers feel (the Dive's second
-## dial, 0 = off = everywhere outside a run). Prop thrust multiplies by air
-## density, and the Dive STARTS at altitude 0.86 — air thin enough to strangle
-## the props roughly tenfold, which read as "sideways movement is extremely
-## clumsy / the ship is basically unmovable" (owner 2026-08-31). In a run the
-## world floors the density the props feel (never the lift — buoyancy stays the
-## mode's own physics); outside a run nothing changes.
-var thrust_density_floor := 0.0
+## Run-scoped FLOOR on the air density this hull feels AT ALL — lift and props
+## together (0 = off = everywhere outside a run). The Dive starts at altitude
+## 0.86, where the real density is 0.05: balloons hold up 5% of their rating and
+## the props are strangled tenfold, so every hull in the run — yours and theirs —
+## simply falls. v0.115.0 floored only the PROPS' share, which left the two
+## halves of one flight model breathing different atmospheres (DESIGN_DIVE_REVIEW
+## §1.2). The floor now sits in `air_density_at` itself: one number, both halves,
+## a trimmed hull hovers on a neutral stick at every rung, and the deep still
+## thickens 0.85 → 1.0 over the ladder (0.5 was measured short — the starter's
+## props cover a third of its half-density deficit; see the Tunables row).
+## Outside a run nothing changes.
+var air_density_floor := 0.0
 ## Gates the altitude hold only (rotation needs no assist — the upright
 ## rule is unconditional). False on wreckage: a dead hull does not trim.
 var assist_enabled := true
+
+## THE VERTICAL STICK COMMANDS A RATE, NOT A FORCE (DESIGN_DIVE_REVIEW §3.2) —
+## a run-scoped MODE, off everywhere else. Off, the stick is a raw prop input and
+## the altitude hold is the binary neutral-stick assist that has always shipped:
+## the expedition and the sandbox keep their physics, which is the standing owner
+## ruling. On, the same controller runs continuously — neutral stick asks for
+## 0 px/s (bit-for-bit the old hover), a held stick asks for a velocity and the
+## props deliver it. That one change deletes the descent cap (the stick's own
+## down-scale IS the cap, and it arrives as a controller settling instead of a
+## velocity write into a rigid body) and gives the AI a vertical command it can
+## actually fly (combat/ship_ai.gd).
+var rate_control := false
+## px/s the stick asks for at full deflection, ALREADY scaled for this world
+## (the world stamps `Tunables × world_scale`). Only read when `rate_control`.
+var climb_rate_max := 0.0
+var dive_rate_max := 0.0
 
 ## Peer id allowed to fly this ship. 0 means nobody — wreckage, derelicts.
 var pilot_peer := 1
@@ -2009,7 +2028,11 @@ static func _greedy_rects(remaining: Dictionary) -> Array[Rect2i]:
 func air_density_at(y: float) -> float:
 	# The air column stretches with the world scale — otherwise an 8× arena
 	# tops out in near-vacuum and ships stall a few lengths off the deck.
-	return clampf(inverse_lerp(CEILING_Y * scale_unit, SEA_LEVEL_Y, y), MIN_AIR_DENSITY, 1.0)
+	# `air_density_floor` is the Dive's stamp (see the field): the run raises the
+	# whole sky's floor rather than patching one consumer of it, so LIFT and
+	# THRUST always agree about what air this hull is in.
+	return maxf(clampf(inverse_lerp(CEILING_Y * scale_unit, SEA_LEVEL_Y, y),
+		MIN_AIR_DENSITY, 1.0), air_density_floor)
 
 
 ## Footprint normalisation (see BlockDB.FOOTPRINT_8X): per-cell
@@ -2107,7 +2130,24 @@ func _physics_process(delta: float) -> void:
 	# deficits and damp vertical drift.
 	var hover_needed := 0.0
 	_hover_engaged = false
-	if assist_enabled and is_zero_approx(thrust_input.y) and _total_vthrust > 0.0:
+	if rate_control and assist_enabled and _total_vthrust > 0.0:
+		# THE RATE CONTROLLER (DESIGN_DIVE_REVIEW §3.2). The stick names a
+		# vertical speed and the props make up whatever lift cannot hold, plus
+		# whatever it takes to reach that speed. At neutral this is the branch
+		# below, term for term (v_target 0), which is why the dead-zone below is
+		# still the neutral case's gate.
+		var target_up := thrust_input.y * (climb_rate_max if thrust_input.y > 0.0
+			else dive_rate_max)
+		var deficit_up := weight - minf(lift_capacity, weight)
+		var v_up := -(linear_velocity.y - wind.y)
+		hover_needed = deficit_up + (target_up - v_up) * mass * HOVER_DAMP
+		# Engaged whenever the controller is DRIVING, so the v-props are billed
+		# for the power exactly as a manual input is. The dead-zone survives
+		# where it always was: a neutral stick with nothing to correct stays
+		# quiet rather than trickling force forever.
+		_hover_engaged = (absf(hover_needed) > HOVER_MIN_FORCE
+			if is_zero_approx(thrust_input.y) else true)
+	elif assist_enabled and is_zero_approx(thrust_input.y) and _total_vthrust > 0.0:
 		var deficit_up := weight - minf(lift_capacity, weight)
 		# Drift is damped relative to the AIR, not the world (owner: the
 		# engines have no idea where world-x,y is). In still air these are
@@ -2137,14 +2177,15 @@ func _physics_process(delta: float) -> void:
 	# revisit — per-block application is what made handling emergent.)
 	apply_central_force(Vector2.UP
 		* _total_lift * BlockDB.LIFT_PER_MASS * density * lift_factor * scale_unit)
-	var prop_density := maxf(density, thrust_density_floor)
+	# `density` is already floored for a hull in a run (see air_density_floor):
+	# props and lift read the same number, so there is no prop-only atmosphere.
 	if not is_zero_approx(v_input) and _total_vthrust > 0.0:
 		apply_central_force(Vector2.UP
-			* _total_vthrust * prop_norm * v_input * ratio * prop_density * scale_unit
+			* _total_vthrust * prop_norm * v_input * ratio * density * scale_unit
 			* thrust_mult)
 	if not is_zero_approx(thrust_input.x) and _total_hthrust > 0.0:
 		apply_central_force(facing
-			* _total_hthrust * prop_norm * thrust_input.x * ratio * prop_density * scale_unit
+			* _total_hthrust * prop_norm * thrust_input.x * ratio * density * scale_unit
 			* thrust_mult)
 
 
@@ -2195,7 +2236,10 @@ func wash_accel_at(global_pos: Vector2) -> Vector2:
 		var jet := Vector2.ZERO
 		if prop["vertical"]:
 			var v := thrust_input.y
-			if _hover_engaged:
+			# Only a NEUTRAL stick lets the hover speak for the jet: under rate
+			# control the assist is engaged while driving too, and the jet must
+			# follow the direction the props are actually pushing.
+			if _hover_engaged and is_zero_approx(v):
 				v = 1.0  # trimming props blow too — hover is real thrust
 			if is_zero_approx(v):
 				continue
@@ -2236,7 +2280,10 @@ func is_in_near_wash(global_pos: Vector2, frac: float) -> bool:
 		var jet := Vector2.ZERO
 		if prop["vertical"]:
 			var v := thrust_input.y
-			if _hover_engaged:
+			# Only a NEUTRAL stick lets the hover speak for the jet: under rate
+			# control the assist is engaged while driving too, and the jet must
+			# follow the direction the props are actually pushing.
+			if _hover_engaged and is_zero_approx(v):
 				v = 1.0
 			if is_zero_approx(v):
 				continue
