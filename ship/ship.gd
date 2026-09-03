@@ -358,6 +358,29 @@ var creature_kind := ""
 var hull_integrity := 0.0
 var hull_integrity_max := 0.0
 
+## HOW MUCH OF `hull_integrity_max` THE RUN'S CARDS PAID FOR (v0.140.0). The Dive
+## deck's flat `max_hp` channel raises the POOL while you are aboard, and the
+## world stamps it every tick — so, exactly like `Player.bonus_max_health`, the
+## applied total is remembered here and only the DIFFERENCE is ever added. 0
+## outside a run; `world.end_dive` clears it with the pool.
+var card_integrity_bonus := 0.0
+
+## A RUN-SCOPED MULTIPLIER ON WHAT A CRASH COSTS THIS HULL (Thick Skin's
+## `fall_damage_taken` dial, stamped on the local ship each dive tick and reset by
+## end_dive — the same idiom `thrust_mult` uses). 1.0 always outside a run, so
+## every existing collision, crush and severing test sees exactly the shipped
+## bill. At the helm "a landing" is the HULL hitting a slab, not your boots
+## hitting a floor, so the card that discounts one has to discount the other.
+var impact_damage_mult := 1.0
+
+## A RUN-SCOPED MULTIPLIER ON THE VERTICAL STICK'S DOWNWARD RATE (Lead Keel's
+## `dive_rate` dial), stamped and reset exactly like `impact_damage_mult` above.
+## Multiplies `dive_rate_max` — the rate stick that arrives with the dive-feel
+## physics branch (review §3.2); until that lands this is a stamped number with
+## no reader, which is deliberate: the card and its wiring ship together, and the
+## multiply is one line at the merge.
+var dive_rate_mult := 1.0
+
 ## WRECK HUSK (owner 2026-09-02: ships "just explode and disappear when their
 ## health bar reaches 0. I think it might make sense to have a slightly cleaner
 ## method other than just 'poof, gone'. Perhaps the background tiles necessary
@@ -873,6 +896,7 @@ func strip_to_husk() -> int:
 	# pool is what keeps world._dive_watch_integrity from exploding it forever.
 	hull_integrity = 0.0
 	hull_integrity_max = 0.0
+	card_integrity_bonus = 0.0   # the pool is gone; so is what the cards paid for it
 	menders_running = false
 	thrust_input = Vector2.ZERO
 	rebuild()
@@ -2472,6 +2496,11 @@ func _process(delta: float) -> void:
 		var available: float = (impact["impulse"] \
 				- Tunables.get_num("impact_damage_threshold") * _unit3()) \
 			* Tunables.get_num("impact_damage_scale") / unit2
+		# THICK SKIN, at the helm (v0.140.0). The whole crush BUDGET is discounted,
+		# not just the first cell's bite — which also means a softened hull keeps
+		# less punch-through momentum below, so a discounted crash stops you rather
+		# than carrying you through. 1.0 on every hull outside a run.
+		available *= maxf(impact_damage_mult, 0.0)
 		# BOOM (owner 2026-08-30: "whales aren't quite vicious or a threat - easy
 		# to avoid and overcome. they should do DAMAGE on collision: BOOM!").
 		#
@@ -2902,6 +2931,39 @@ func _mark_redraw() -> void:
 func _mark_redraw_cell(cell: Vector2i) -> void:
 	redraw_marks += 1
 	_invalidate_sector_of(cell)
+
+
+## PUT POINTS BACK IN THE POOL (v0.140.0) — `damage_cell`'s only twin, and the
+## reason the Dive's mending cards became real. `damage_cell` stays the one place
+## the pool DRAINS; this is the one place it REFILLS, and nothing else should ever
+## write `hull_integrity` directly.
+##
+## No-op on an unarmed hull (`hull_integrity_max` 0 — every ship outside a run),
+## so the expedition, the sandbox and every existing repair test are untouched.
+func mend_integrity(amount: float) -> void:
+	if amount <= 0.0 or hull_integrity_max <= 0.0:
+		return
+	hull_integrity = minf(hull_integrity_max, hull_integrity + amount)
+
+
+## RAISE THE POOL'S CEILING BY WHAT THE RUN'S CARDS BOUGHT, and mend the
+## difference on the spot. The exact contract `Player.grant_bonus_health` has, for
+## exactly the same reason: the world stamps it EVERY TICK, so the same value
+## twice must do nothing at all, and a card that widened your ceiling while
+## leaving you as close to death would read as a downgrade mid-fight.
+##
+## Shrinking (the run ending) only trims — it never mends, and it never takes the
+## pool below zero, so a hull that outlives a run is simply disarmed.
+func grant_bonus_integrity(bonus: float) -> void:
+	if hull_integrity_max <= 0.0:
+		return   # unarmed: there is no pool to widen
+	var want := maxf(bonus, 0.0)
+	if is_equal_approx(want, card_integrity_bonus):
+		return
+	var gained := want - card_integrity_bonus
+	card_integrity_bonus = want
+	hull_integrity_max = maxf(0.0, hull_integrity_max + gained)
+	hull_integrity = clampf(hull_integrity + maxf(gained, 0.0), 0.0, hull_integrity_max)
 
 
 func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
@@ -3532,7 +3594,15 @@ func repair_cell(cell: Vector2i, amount: float) -> bool:
 		if blocks[cell]["hp"] >= max_hp:
 			return false
 		var was := shade_bucket(blocks[cell]["hp"], max_hp)
+		# MENDED BLOCKS REFUND THE POOL (owner call 5, review §4.2 item 3). The
+		# exact mirror of `damage_cell`'s drain: hp REALLY restored to a cell —
+		# never the amount asked for — goes back into an armed hull's integrity.
+		# Without this the pool was a one-way ratchet, and the repair station, the
+		# X wand, Field Medic and the outpost patch were all mending blocks on a
+		# ship that was still dying (DESCENT §3.4).
+		var restored := minf(amount, max_hp - float(blocks[cell]["hp"]))
 		blocks[cell]["hp"] = minf(blocks[cell]["hp"] + amount, max_hp)
+		mend_integrity(restored)
 		# The wand heals in per-tick sips; only a visible lightening step is
 		# worth a repaint — and only of this cell's own sector (phase B).
 		if shade_bucket(blocks[cell]["hp"], max_hp) != was:
@@ -3553,6 +3623,9 @@ func repair_cell(cell: Vector2i, amount: float) -> bool:
 		set_block(cell, type)
 		blocks[cell]["hp"] = minf(amount, max_hp)
 		_mark_redraw()
+	# A resurrected cell is hp back on the ship exactly like a mended one, so it
+	# refunds the pool the same way (see the branch above).
+	mend_integrity(minf(amount, max_hp))
 	return true
 
 

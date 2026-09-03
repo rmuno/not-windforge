@@ -22,15 +22,24 @@ extends RefCounted
 ## EFFECT VOCABULARY, so a card row stays declarative and the world's interpreter
 ## stays a small closed set:
 ##   mods:  {dial_key: multiplier}          — multiplied into an existing number
-##     dials wired today: "weapon_damage" (player sidearm), "turret_damage" (your
-##     ship's guns), "fire_rate" (sidearm interval — <1 is FASTER), "hull_repair"
-##     (the Dive assistant's mend rate), "thrust" (your hull's propeller force —
+##     dials wired today: "damage" (WHATEVER YOU ARE FIRING — the turret volley at
+##     the helm, the sidearm on foot), "fire_rate" (the interval between trigger
+##     pulls, at the helm AND on foot — <1 is FASTER), "hull_repair" (the Dive
+##     assistant's mend rate), "thrust" (your hull's propeller force —
 ##     `Ship.thrust_mult`, stamped on the local ship each dive tick, reset by
-##     end_dive), "move_speed" (your legs — `Player.run_speed_mult`, stamped the
-##     same way), "grapple_range" / "grapple_speed" (`Player.hook_range_mult` /
-##     `hook_speed_mult`, stamped the same way), "fall_damage_taken" (the bill for
-##     a landing — <1 is SOFTER; `Player.fall_damage_mult`).
+##     end_dive), "dive_rate" (how fast the vertical stick takes you DOWN —
+##     `Ship.dive_rate_mult`, stamped the same way), "fall_damage_taken" (the bill
+##     for a hard arrival — <1 is SOFTER; `Player.fall_damage_mult` on foot AND
+##     `Ship.impact_damage_mult` for the hull's collision crush).
 ##     STAGED (model supports, world not yet): "grapple", "ride".
+##
+##     v0.140.0 MERGED `weapon_damage` + `turret_damage` INTO `damage`, and gave
+##     `fire_rate` the helm's volley cadence (review §4.2 item 1). A committed run
+##     is flown from the helm, so a deck that only buffed the SIDEARM was buffing a
+##     gun the run never fires: seventeen of twenty-six cards bought a resource the
+##     helm does not spend. One dial, applied at whichever trigger your finger is
+##     actually on, is the fix — and it deletes a whole card (Honed Edge was Heavy
+##     Shells wearing the other dial's name).
 ##   adds:  {dial_key: amount}               — ADDED to an existing number
 ##     A second, deliberately tiny channel (v0.134.0). Some numbers are not
 ##     sensibly a percentage: the owner asked for "+25 max HP (flat)", and a
@@ -38,20 +47,20 @@ extends RefCounted
 ##     for every character. Multipliers stay the default — `adds` exists for the
 ##     handful of dials where a flat number is what the card actually promises.
 ##     dials wired today: "max_hp" (`Player.bonus_max_health`; taking the card
-##     HEALS the difference, so +25 max at 40/100 reads 65/125).
+##     HEALS the difference, so +25 max at 40/100 reads 65/125 — and, while you
+##     are at the helm, HULL_PER_BODY_HP times that on the run's integrity pool).
 ##   flags: ["flag_name"]                    — a RULE turned on, not a number moved
 ##     The third channel, and the smallest (v0.134.0). Some cards do not scale
 ##     anything: they lift a restriction or arm a one-shot. A flag is held or it
 ##     is not, and the world asks `_dive_flag("x")`.
-##     flags wired today: "grapple_free_fire" (the hook is fired from your own
-##     moving frame, so it works at full reach even in free fall — see
-##     `Player.hook_step`), "second_heart" (the first lethal blow of a run leaves
+##     flags wired today: "second_heart" (the first lethal blow of a run leaves
 ##     you at 1 HP instead; the run model spends it once — `DiveRun.spend_second_heart`).
 ##   procs: [{on, effect, amount}]           — fired when the world emits `on`
 ##     events wired today: "kill" (a creature died to you), "hit" (your shot landed
 ##     on an enemy), "land" (you reached a new depth). STAGED: "attack", "hurt".
-##     effects wired today: "coins" (+amount to the pot), "heal" (+amount HP to the
-##     player), "lifesteal" (heal amount× the damage dealt), "explode" (the hit
+##     effects wired today: "coins" (+amount to the pot), "heal" (+amount HP to
+##     WHAT YOU ARE — see HULL_PER_BODY_HP), "lifesteal" (heal amount× the damage
+##     dealt, through the same sink), "explode" (the hit
 ##     detonates: amount× the damage dealt again to every enemy within
 ##     BLAST_RADIUS_PX × world_scale of the struck hull), "ricochet" (the hit
 ##     BOUNCES to the nearest OTHER enemy within RICOCHET_RADIUS_PX × world_scale
@@ -78,19 +87,55 @@ extends RefCounted
 ##     spends. (They no longer draw CARDS: since v0.137.0 XP is SCRAP, a physical
 ##     drop swept off a corpse rather than a share of the coins — the two channels
 ##     are separate now, see DiveRun.credit_kill.)
-##   * move_speed × going shipless — the run is legal without a hull, and legs are
-##     the only engine a shipless run has (Light Boots, Sea Legs).
 ##   * ricochet × lifesteal/explode — a BOUNCE IS A REAL HIT (world._dive_ricochet
 ##     re-fires the hit event on it), so Ricochet Rounds turns one trigger pull
 ##     into two Sanguine Tide heals or two Cluster Shells detonations. Deliberate;
 ##     the loop guard is that a bounce never bounces again.
-##   * max_hp × fall_damage_taken × grapple — the SURVIVAL build the deck was
-##     missing. Fall damage is charged on the speed you ACTUALLY LAND AT, so a
-##     grapple that works while you are falling (Harpooneer's Arm) is already the
-##     game's own answer to a long drop; Thick Skin pays the rest of the bill.
+##   * max_hp × fall_damage_taken × lifesteal — the SURVIVAL build, pointed at the
+##     thing that actually dies in a run: the HULL. Iron Ribs and Thick Skin widen
+##     the integrity pool, the leech cards refill it out of the guns, and
+##     fall_damage_taken discounts what a slab costs you on the way down.
+##   * damage × dive_rate — Lead Keel buys the descent the ten-minute cap wants,
+##     and the only thing that makes going fast survivable is killing fast.
+##
+## THE DECK POINTS AT THE HULL (v0.140.0, review §4.2). The deck was authored when
+## the run's life was the player's three lives; v0.111.0 moved the run's life to
+## the hull's integrity pool and the deck never followed, so a 45% lifesteal on a
+## body at full health was a blank card. Now every heal-family effect lands on
+## WHAT YOU ARE — the pool while you are at the helm, the body when you are not.
 
 ## Rarity tiers, weakest first. Display order in the codex, too.
 const RARITIES := ["common", "uncommon", "epic", "legendary"]
+
+## WHICH SYSTEM A CARD BUYS — a closed list, one word per row, painted as a chip
+## on the picker (review §4.3: "say which system, first"). The player's real
+## question at the draft is *"does this matter at the helm?"*, and colour already
+## answers rarity, not that. Parity-tested exactly like DIALS: a row naming a
+## system outside this set is a chip the picker cannot paint.
+const SYSTEMS := ["guns", "hull", "flight", "pot"]
+
+## HOW MANY POINTS OF THE RUN'S INTEGRITY POOL ONE BODY POINT IS WORTH.
+##
+## EVERY flat heal-family effect in this catalog is authored in BODY units (+25,
+## +40, +50) and the world multiplies by this when the mend lands on the HULL
+## instead — `world._dive_heal_player` for the heal procs, `Ship.grant_bonus_integrity`
+## for the `max_hp` addend. Authored one way and converted at the sink, rather
+## than two numbers per card: a row that had to state both would drift the moment
+## either pool is retuned, and the description would be the thing that lied.
+##
+## WHY TEN AND NOT THIRTY. The two pools stand at 100 (the body) and 3,000
+## (`dive_ship_integrity`), so PARITY would be thirty. Ten is deliberately a third
+## of that: these numbers were tuned against a 100-point body, and at parity the
+## four flat/heal cards would roughly TRIPLE a run's life between them. At ten,
+## Iron Ribs is +8% of the pool where it is +25% of a body — a real card, not the
+## run. The cards meant to carry a long descent are the leeches, which refill the
+## pool out of the guns and so scale with how well you are actually fighting.
+##
+## NOT applied to lifesteal: a leech card's amount is a fraction of the DAMAGE
+## dealt, and damage is already in the pool's own units (`Ship.damage_cell` drains
+## integrity one-for-one by the structural hp it destroys). See
+## `world._dive_lifesteal` for the dimensional argument.
+const HULL_PER_BODY_HP := 10.0
 
 ## How much a tier multiplies a card's own `weight` in the draw. Commons dominate
 ## the offer; a legendary is a run you will remember. The card's `weight` still
@@ -132,93 +177,97 @@ const RICOCHET_RADIUS_PX := 280.0
 const CHAIN_HOPS := 2
 
 ## The deck. Order is display order within the draft. Keep procs' effect/amount in
-## the closed vocabulary above and the rarity in RARITIES, or the world silently
-## ignores them and `_test_dive_cards` reddens on the parity check.
+## the closed vocabulary above, the rarity in RARITIES and the system in SYSTEMS,
+## or the world silently ignores them and `_test_dive_cards` reddens on the
+## parity check.
+##
+## HULL NUMBERS ARE SHOWN, BODY NUMBERS ARE AUTHORED. Every heal-family row below
+## carries the BODY figure (`adds`/`amount`), and its `desc` states the HULL figure
+## first — that is HULL_PER_BODY_HP times it, and it is the number that matters,
+## because a committed run is flown from the helm and the hull is what dies there.
 const CATALOG := [
 	# --- COMMON (white) — the plain multipliers. The spine of a run's curve ---
-	{"id": "honed_edge", "name": "Honed Edge", "rarity": "common", "weight": 10,
-		"desc": "Your sidearm hits 35% harder.",
-		"mods": {"weapon_damage": 1.35}, "procs": []},
-	{"id": "heavy_shells", "name": "Heavy Shells", "rarity": "common", "weight": 10,
-		"desc": "Your ship's guns hit 35% harder.",
-		"mods": {"turret_damage": 1.35}, "procs": []},
-	{"id": "quick_hands", "name": "Quick Hands", "rarity": "common", "weight": 8,
-		"desc": "Your sidearm fires 25% faster.",
+	{"id": "heavy_shells", "name": "Heavy Shells", "rarity": "common",
+		"system": "guns", "weight": 10,
+		"desc": "Guns hit 35% harder.",
+		"mods": {"damage": 1.35}, "procs": []},
+	{"id": "quick_hands", "name": "Quick Hands", "rarity": "common",
+		"system": "guns", "weight": 8,
+		"desc": "Guns fire 25% faster.",
 		"mods": {"fire_rate": 0.80}, "procs": []},
-	{"id": "field_medic", "name": "Field Medic", "rarity": "common", "weight": 7,
-		"desc": "Your repair station mends 60% faster.",
+	{"id": "field_medic", "name": "Field Medic", "rarity": "common",
+		"system": "hull", "weight": 7,
+		"desc": "Repair station mends 60% faster.",
 		"mods": {"hull_repair": 1.60}, "procs": []},
-	{"id": "trimmed_sails", "name": "Trimmed Sails", "rarity": "common", "weight": 8,
-		"desc": "Your propellers push 30% harder.",
+	{"id": "trimmed_sails", "name": "Trimmed Sails", "rarity": "common",
+		"system": "flight", "weight": 8,
+		"desc": "Thrust +30%.",
 		"mods": {"thrust": 1.30}, "procs": []},
-	# The owner's own ask, verbatim: "+10% player move speed".
-	{"id": "light_boots", "name": "Light Boots", "rarity": "common", "weight": 9,
-		"desc": "You run 10% faster.",
-		"mods": {"move_speed": 1.10}, "procs": []},
-	{"id": "bounty_hunter", "name": "Bounty Hunter", "rarity": "common", "weight": 8,
-		"desc": "Kills drop 10 extra coins.",
+	{"id": "bounty_hunter", "name": "Bounty Hunter", "rarity": "common",
+		"system": "pot", "weight": 8,
+		"desc": "Every kill: +10 coins.",
 		"mods": {}, "procs": [{"on": "kill", "effect": "coins", "amount": 10}]},
-	# Small, but coins are XP — so this quietly draws you more cards, which is the
-	# cheapest synergy in the deck and the one that teaches the rule.
-	{"id": "pickpocket", "name": "Pickpocket", "rarity": "common", "weight": 7,
-		"desc": "Hits shake 3 coins loose.",
+	{"id": "pickpocket", "name": "Pickpocket", "rarity": "common",
+		"system": "pot", "weight": 7,
+		"desc": "Every hit: +3 coins.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "coins", "amount": 3}]},
 
 	# The `adds` channel's first row, and the reason it exists: the owner asked
 	# for "+25 max HP (flat, not %)". Taking it MENDS the difference on the spot —
 	# a card that raises your ceiling and leaves you as hurt as you were would read
-	# as a downgrade in the middle of a fight.
-	{"id": "iron_constitution", "name": "Iron Ribs", "rarity": "common", "weight": 9,
-		"desc": "+25 max health, mended on the spot.",
+	# as a downgrade in the middle of a fight. Since v0.140.0 the ceiling it raises
+	# is the HULL's while you are at the helm (×10, HULL_PER_BODY_HP).
+	{"id": "iron_constitution", "name": "Iron Ribs", "rarity": "common",
+		"system": "hull", "weight": 9,
+		"desc": "+250 hull (+25 on foot), mended on the spot.",
 		"mods": {}, "adds": {"max_hp": 25.0}, "procs": []},
-	# ONE CARD, BOTH NUMBERS (owner: "grapple range should probably also have hook
-	# speed attached to it"). Range on its own is a hook that takes longer to reach
-	# the same wall — a nerf wearing a buff.
-	{"id": "long_line", "name": "Long Line", "rarity": "common", "weight": 8,
-		"desc": "Your grapple reaches 40% further and flies 40% faster.",
-		"mods": {"grapple_range": 1.40, "grapple_speed": 1.40}, "procs": []},
 
 	# --- UNCOMMON (blue) — stronger, or two systems at once ------------------
-	{"id": "vampiric_rounds", "name": "Leech Line", "rarity": "uncommon", "weight": 8,
-		"desc": "Hits heal you 8% of the damage.",
+	{"id": "vampiric_rounds", "name": "Leech Line", "rarity": "uncommon",
+		"system": "hull", "weight": 8,
+		"desc": "Hits mend 8% of the damage into the hull.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "lifesteal", "amount": 0.08}]},
-	{"id": "second_wind", "name": "Second Wind", "rarity": "uncommon", "weight": 7,
-		"desc": "Reaching a new depth heals you 40 health.",
+	{"id": "second_wind", "name": "Second Wind", "rarity": "uncommon",
+		"system": "hull", "weight": 7,
+		"desc": "New depth: +400 hull (+40 on foot).",
 		"mods": {}, "procs": [{"on": "land", "effect": "heal", "amount": 40}]},
-	{"id": "hair_trigger", "name": "Hair Trigger", "rarity": "uncommon", "weight": 7,
-		"desc": "Your sidearm fires 32% faster.",
+	{"id": "hair_trigger", "name": "Hair Trigger", "rarity": "uncommon",
+		"system": "guns", "weight": 7,
+		"desc": "Guns fire 32% faster.",
 		"mods": {"fire_rate": 0.68}, "procs": []},
-	{"id": "field_surgeon", "name": "Field Surgeon", "rarity": "uncommon", "weight": 7,
-		"desc": "Kills mend you 25 health.",
+	{"id": "field_surgeon", "name": "Field Surgeon", "rarity": "uncommon",
+		"system": "hull", "weight": 7,
+		"desc": "Kill: +250 hull (+25 on foot).",
 		"mods": {}, "procs": [{"on": "kill", "effect": "heal", "amount": 25}]},
-	{"id": "sea_legs", "name": "Sea Legs", "rarity": "uncommon", "weight": 6,
-		"desc": "You run 25% faster; your propellers push 15% harder.",
-		"mods": {"move_speed": 1.25, "thrust": 1.15}, "procs": []},
-
-	# THE RESTRICTION, LIFTED. The hook is a world-space projectile that does NOT
-	# inherit your velocity, and HOOK_SPEED (900) is exactly MAX_FALL (900) — so a
-	# body at terminal velocity firing straight down separates from its own hook at
-	# 0 px/s and the line simply hangs at your boots. This card fires the hook from
-	# YOUR frame instead (Player.hook_step's `carry`), so it separates at full speed
-	# in every direction whatever you are doing. See `Player.hook_separation_speed`.
-	{"id": "harpooneers_arm", "name": "Harpooneer's Arm", "rarity": "uncommon", "weight": 7,
-		"desc": "Your grapple fires at full strength in any direction, even falling.",
-		"mods": {}, "flags": ["grapple_free_fire"], "procs": []},
 	# Both channels on one row, which is the point of it: a flat pool and a
-	# multiplier on what the ground charges you.
-	{"id": "thick_skin", "name": "Thick Skin", "rarity": "uncommon", "weight": 6,
-		"desc": "+50 max health; landings hurt 15% less.",
+	# multiplier on what a hard arrival charges you. Since v0.140.0 the discount
+	# covers the HULL's collision crush too (`Ship.impact_damage_mult`) — at the
+	# helm, "a landing" is the hull hitting a slab, not your boots hitting a floor.
+	{"id": "thick_skin", "name": "Thick Skin", "rarity": "uncommon",
+		"system": "hull", "weight": 6,
+		"desc": "+500 hull (+50 on foot); impacts and landings hurt 15% less.",
 		"mods": {"fall_damage_taken": 0.85}, "adds": {"max_hp": 50.0}, "procs": []},
+	# THE FLIGHT SLOT THE DECK WAS MISSING (review §4.4: thrust, a descent
+	# control, a boost). Thrust cards buy the climb; nothing bought the DIVE, and
+	# the run is on a clock — so the one card that spends the clock is a card that
+	# makes going down a choice rather than a wait.
+	{"id": "lead_keel", "name": "Lead Keel", "rarity": "uncommon",
+		"system": "flight", "weight": 7,
+		"desc": "Dive 35% faster.",
+		"mods": {"dive_rate": 1.35}, "procs": []},
 
 	# --- EPIC (purple) — build-defining. Pure upside, bigger numbers ----------
-	{"id": "full_sail", "name": "Full Sail", "rarity": "epic", "weight": 8,
-		"desc": "Your propellers push 75% harder.",
+	{"id": "full_sail", "name": "Full Sail", "rarity": "epic",
+		"system": "flight", "weight": 8,
+		"desc": "Thrust +75%.",
 		"mods": {"thrust": 1.75}, "procs": []},
-	{"id": "broadside", "name": "Broadside", "rarity": "epic", "weight": 7,
-		"desc": "Your ship's guns hit 90% harder; your sidearm 40%.",
-		"mods": {"turret_damage": 1.90, "weapon_damage": 1.40}, "procs": []},
-	{"id": "blood_engine", "name": "Hungry Engine", "rarity": "epic", "weight": 6,
-		"desc": "You fire 15% faster; hits heal you 20% of the damage.",
+	{"id": "broadside", "name": "Broadside", "rarity": "epic",
+		"system": "guns", "weight": 7,
+		"desc": "Guns hit 90% harder.",
+		"mods": {"damage": 1.90}, "procs": []},
+	{"id": "blood_engine", "name": "Hungry Engine", "rarity": "epic",
+		"system": "guns", "weight": 6,
+		"desc": "Guns fire 15% faster; hits mend 20% of the damage into the hull.",
 		"mods": {"fire_rate": 0.85},
 		"procs": [{"on": "hit", "effect": "lifesteal", "amount": 0.20}]},
 
@@ -226,21 +275,25 @@ const CATALOG := [
 	# target, so lifesteal and Cluster Shells both chain off it — deliberate, and
 	# the reason this is an epic rather than an uncommon. The loop guard is one
 	# rule: a ricochet never ricochets (world._dive_in_ricochet).
-	{"id": "ricochet_rounds", "name": "Ricochet Rounds", "rarity": "epic", "weight": 6,
+	{"id": "ricochet_rounds", "name": "Ricochet Rounds", "rarity": "epic",
+		"system": "guns", "weight": 6,
 		"desc": "Shots bounce to the nearest other enemy for 50% of the damage.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "ricochet", "amount": 0.50}]},
 
 	# --- LEGENDARY (orange) — the run you tell someone about -----------------
-	{"id": "cluster_shells", "name": "Cluster Shells", "rarity": "legendary", "weight": 8,
+	{"id": "cluster_shells", "name": "Cluster Shells", "rarity": "legendary",
+		"system": "guns", "weight": 8,
 		"desc": "Hits detonate: 60% of the damage again to everything nearby.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "explode", "amount": 0.60}]},
-	{"id": "kings_ransom", "name": "Prize Money", "rarity": "legendary", "weight": 6,
-		"desc": "Kills drop 120 extra coins; hits shake 12 loose.",
+	{"id": "kings_ransom", "name": "Prize Money", "rarity": "legendary",
+		"system": "pot", "weight": 6,
+		"desc": "Every kill: +120 coins; every hit: +12.",
 		"mods": {}, "procs": [
 			{"on": "kill", "effect": "coins", "amount": 120},
 			{"on": "hit", "effect": "coins", "amount": 12}]},
-	{"id": "sanguine_tide", "name": "Leech Rig", "rarity": "legendary", "weight": 5,
-		"desc": "Hits heal you 45% of the damage.",
+	{"id": "sanguine_tide", "name": "Leech Rig", "rarity": "legendary",
+		"system": "hull", "weight": 5,
+		"desc": "Hits mend 45% of the damage into the hull.",
 		"mods": {}, "procs": [{"on": "hit", "effect": "lifesteal", "amount": 0.45}]},
 	# IT CARRIES ITS OWN FIRST BOUNCE (design call, v0.134.0). A legendary that
 	# does nothing unless you already drew a particular epic is a legendary that
@@ -248,17 +301,20 @@ const CATALOG := [
 	# complete card on its own. Holding Ricochet Rounds too is not double-dipping:
 	# the world takes the MAX of the ricochet amounts and fires ONE sequence
 	# (world._dive_apply_procs), so the pair is an upgrade, never two bounces.
-	{"id": "chain_lightning", "name": "Skip Shot", "rarity": "legendary", "weight": 5,
+	{"id": "chain_lightning", "name": "Skip Shot", "rarity": "legendary",
+		"system": "guns", "weight": 5,
 		"desc": "Shots bounce for 50%, then twice more for 35% each.",
 		"mods": {}, "procs": [
 			{"on": "hit", "effect": "ricochet", "amount": 0.50},
 			{"on": "hit", "effect": "chain", "amount": 0.35}]},
 	# ONE LIFE, ONCE FORGIVEN. The run's one-life rule (DiveRun.perish_aboard) is
 	# untouched — this card is spent BEFORE the death path is reached, so the
-	# second lethal blow of a run still ends it. Run-scoped state, like everything
-	# else a card does: it does not survive `end_dive`.
-	{"id": "second_heart", "name": "Second Heart", "rarity": "legendary", "weight": 4,
-		"desc": "The first killing blow each run leaves you at 1 health instead.",
+	# second lethal blow of a run still ends it. It guards the BODY, which is why
+	# it is a hull card rather than a rule of its own: on a committed run the body
+	# only dies once the hull has already stopped protecting it.
+	{"id": "second_heart", "name": "Second Heart", "rarity": "legendary",
+		"system": "hull", "weight": 4,
+		"desc": "The first killing blow of a run leaves your body at 1 health.",
 		"mods": {}, "flags": ["second_heart"], "procs": []},
 ]
 
@@ -268,16 +324,20 @@ const CATALOG := [
 const EVENTS := ["kill", "hit", "land", "attack", "hurt"]
 const EFFECTS := ["coins", "heal", "lifesteal", "explode", "ricochet", "chain"]
 ## Dial keys a `mods` entry may name (mirrors the world's `_dive_mod` call sites).
-const DIALS := ["weapon_damage", "turret_damage", "fire_rate", "hull_repair",
-	"thrust", "move_speed", "grapple_range", "grapple_speed", "fall_damage_taken",
-	"grapple", "ride"]
+## `damage` and `fire_rate` are ONE dial each across both triggers (v0.140.0) —
+## the merge that made the gun cards work at the helm; `move_speed`,
+## `grapple_range` and `grapple_speed` went out with the legs/grapple cards
+## (owner call, review §4.2 item 4: they buy a resource a committed run does not
+## spend, so they leave the Dive's draw rather than sit in it as blanks).
+const DIALS := ["damage", "fire_rate", "hull_repair", "thrust", "dive_rate",
+	"fall_damage_taken", "grapple", "ride"]
 ## Dial keys an `adds` entry may name (the world's `_dive_add` call sites). A
 ## separate list, not a corner of DIALS, because the two channels compose
 ## differently — a missing multiplier is 1.0 and a missing addend is 0.0, and a
 ## key in the wrong one would silently do nothing at all.
 const ADDS := ["max_hp"]
 ## Rule switches a `flags` entry may name (the world's `_dive_flag` call sites).
-const FLAGS := ["grapple_free_fire", "second_heart"]
+const FLAGS := ["second_heart"]
 
 
 ## The whole deck's size — the denominator of "N of M taken" in the gallery.
@@ -303,6 +363,43 @@ static func color_of(id: String) -> Color:
 
 static func rarity_label(rarity: String) -> String:
 	return String(RARITY_LABEL.get(rarity, rarity.to_upper()))
+
+
+## WHICH SYSTEM a card buys ("guns"/"hull"/"flight"/"pot"). Defaults to "hull" so
+## an un-tagged row is still legal data — the suite is what insists every shipped
+## row names one, exactly as it does for rarity.
+static func system_of(id: String) -> String:
+	return String(by_id(id).get("system", "hull"))
+
+
+## The chip the picker paints, upper-cased. One place, so the picker and the
+## gallery cannot spell a system two ways.
+static func system_label(id: String) -> String:
+	return system_of(id).to_upper()
+
+
+## THE STACKED TOTAL — "(×1.82 with what you hold)", or "" for a card with no
+## `mods` (review §4.3: "show the stacked total"). The PRODUCT rule is the best
+## thing about the deck and it is completely invisible at the picker: a second
+## Heavy Shells reads as another +35% when it is really 1.35² = +82%.
+##
+## The dial reported is the card's FIRST `mods` key. Every shipped multi-dial row
+## is a headline number plus a rider (Hungry Engine's cadence, Thick Skin's
+## discount), and the headline is what the row is authored to lead with — so
+## "first key" is the card's own emphasis, not an arbitrary pick.
+##
+## Pure and static so the world can precompute it into the draft row and the HUD
+## can stay a painter (world-decides/layer-paints).
+static func stack_text(held: Array, id: String) -> String:
+	var mods: Dictionary = by_id(id).get("mods", {})
+	if mods.is_empty():
+		return ""
+	var key := ""
+	for k in mods:
+		key = String(k)
+		break
+	var total := modifier(held, key) * float(mods[key])
+	return "(×%.2f with what you hold)" % total
 
 
 ## What a card actually weighs in the draw: its own bias times its tier's. Never
@@ -480,6 +577,7 @@ static func gallery_rows(taken_set: Dictionary) -> Array:
 				"id": String(cd["id"]),
 				"name": String(cd["name"]),
 				"desc": String(cd.get("desc", "")),
+				"system": String(cd.get("system", "hull")),
 				"rarity": String(tier),
 				"rarity_label": rarity_label(String(tier)),
 				"color": rarity_color(String(tier)),

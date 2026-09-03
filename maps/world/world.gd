@@ -1177,9 +1177,14 @@ func end_dive() -> void:
 	# mortality is the RUN'S rule, so a kept hull is disarmed and un-scorched.
 	if is_instance_valid(local_ship):
 		local_ship.thrust_mult = 1.0
+		local_ship.dive_rate_mult = 1.0
+		local_ship.impact_damage_mult = 1.0
 		local_ship.thrust_density_floor = 0.0
 		local_ship.hull_integrity_max = 0.0
 		local_ship.hull_integrity = 0.0
+		# The cards' slice of the pool goes with the pool — leaving the stamp set
+		# would have the next run's first tick believe it had already been paid.
+		local_ship.card_integrity_bonus = 0.0
 		local_ship.modulate = Color.WHITE
 		local_ship.physics_material_override = null   # the stock keel comes back
 	# ...and so does your body: every card dial stamped on it is run-scoped like the
@@ -1187,11 +1192,7 @@ func end_dive() -> void:
 	# The pool shrinks LAST (grant_bonus_health trims `health` to the smaller max),
 	# which is why it is not simply an assignment.
 	if is_instance_valid(player):
-		player.run_speed_mult = 1.0
-		player.hook_range_mult = 1.0
-		player.hook_speed_mult = 1.0
 		player.fall_damage_mult = 1.0
-		player.hook_carries_body = false
 		player.grant_bonus_health(0.0)
 	dive = null
 	_dive_shipless = 0.0
@@ -1699,11 +1700,22 @@ func try_buy_stock(index: int) -> bool:
 ## paid for instead of held. Restores toward the blueprint exactly like the wand
 ## and the repair station do — nothing new can be built, only mended.
 const DIVE_PATCH_AMOUNT := 400.0
+
+## ...AND IT MENDS THE POOL (DESIGN_DESCENT §10.5, owner call 5). The block sweep
+## above already refunds integrity for the hp it really restores (Ship.repair_cell),
+## but a patch bought at an outpost has to be worth buying on a hull that is
+## structurally whole and merely worn down — so it carries a flat top-up on top.
+## 900 of 3,000 is a rung's worth of wear: it buys you further down, never a fresh
+## run. ADDITIVE to the sweep's refund on purpose; a patch on a chewed-up hull is
+## the better buy, which is the shape a repair item should have.
+const DIVE_PATCH_INTEGRITY := 900.0
+
 func _dive_patch_hull() -> void:
 	if not is_instance_valid(local_ship):
 		return
 	for cell in local_ship.blueprint_map().keys():
 		local_ship.repair_cell(cell as Vector2i, DIVE_PATCH_AMOUNT)
+	local_ship.mend_integrity(DIVE_PATCH_INTEGRITY)
 	local_ship.rebuild()
 
 
@@ -2215,6 +2227,21 @@ func _tick_dive(delta: float) -> void:
 	# never loses it. end_dive resets it — a hull that outlives the run flies stock.
 	if is_instance_valid(local_ship):
 		local_ship.thrust_mult = _dive_mod("thrust")
+		# Lead Keel. Multiplies `dive_rate_max`, the rate stick that arrives with
+		# the dive-feel physics branch (review §3.2) — stamped here now so the card
+		# and its wiring ship together.
+		local_ship.dive_rate_mult = _dive_mod("dive_rate")
+		# Thick Skin, ON THE HULL: at the helm "a landing" is the ship hitting a
+		# slab (Ship.impact_damage_mult), not your boots hitting a floor.
+		local_ship.impact_damage_mult = _dive_mod("fall_damage_taken")
+		# ...and the flat pool the cards bought. Not an assignment:
+		# `grant_bonus_integrity` mends the difference the frame the ceiling grows
+		# and does nothing on the thousand ticks after that — exactly the contract
+		# the body's `grant_bonus_health` has below. The addend is authored in BODY
+		# units on the card row, so it converts here; the call is a no-op until the
+		# hull is ARMED, which is what keeps it off an uncommitted candidate.
+		local_ship.grant_bonus_integrity(
+			_dive_add("max_hp") * DiveCards.HULL_PER_BODY_HP)
 		# The thin-air fix (see Ship.thrust_density_floor): the run floors the
 		# density the props feel, so the hull answers the stick at every rung.
 		local_ship.thrust_density_floor = Tunables.get_num("dive_thrust_density_floor")
@@ -2232,21 +2259,17 @@ func _tick_dive(delta: float) -> void:
 		var hull := instance_from_id(sid) as Ship
 		if hull != null and is_instance_valid(hull) and hull.creature_kind == "":
 			hull.thrust_density_floor = floor_v
-	# The "move_speed" card dial (Light Boots, Sea Legs) — the LEGS' twin of the
-	# thrust stamp above, and stamped for exactly the same reasons. It matters most
-	# on a shipless run, where your legs are the only engine you have left.
+	# THE BODY'S OWN CARD DIALS — the hull stamp's twin above, and stamped for
+	# exactly the same reasons (a card taken mid-fall applies the same frame; a
+	# helm rebind never loses it). Two left since v0.140.0: the legs and grapple
+	# dials went out with their cards (review §4.2 item 4), and what remains is
+	# what a SHIPLESS run still spends — your body's own pool and the bill a
+	# landing charges it.
 	if is_instance_valid(player):
-		player.run_speed_mult = _dive_mod("move_speed")
-		# The rest of the body's card dials, stamped the same way and for the same
-		# reasons (a card taken mid-fall applies the same frame). Long Line's two
-		# numbers, Thick Skin's landing discount, Harpooneer's Arm's rule switch...
-		player.hook_range_mult = _dive_mod("grapple_range")
-		player.hook_speed_mult = _dive_mod("grapple_speed")
 		player.fall_damage_mult = _dive_mod("fall_damage_taken")
-		player.hook_carries_body = _dive_flag("grapple_free_fire")
-		# ...and the ADDITIVE channel. Not an assignment: `grant_bonus_health`
-		# mends the difference the frame the pool grows, and does nothing on the
-		# thousand ticks after that (it is idempotent by design).
+		# The ADDITIVE channel. Not an assignment: `grant_bonus_health` mends the
+		# difference the frame the pool grows, and does nothing on the thousand
+		# ticks after that (it is idempotent by design).
 		player.grant_bonus_health(_dive_add("max_hp"))
 	_dive_hold_the_descent(delta)
 	_dive_nudge_if_stuck(delta)
@@ -3358,7 +3381,7 @@ func _dive_apply_procs(event: String, damage := 0.0) -> void:
 			"heal":
 				_dive_heal_player(float(pd.get("amount", 0.0)))
 			"lifesteal":
-				_dive_heal_player(damage * float(pd.get("amount", 0.0)))
+				_dive_lifesteal(damage * float(pd.get("amount", 0.0)))
 			"explode":
 				# Cluster Shells. Only a hit carries a place to go off at, so on any
 				# other event `_dive_hit_at` is unset and the blast is a no-op.
@@ -3548,11 +3571,49 @@ func _dive_ricochet(damage: float, first: float, chain: float) -> int:
 	return struck
 
 
-## Heal the player up to their pool — the sink for heal/lifesteal procs.
+## ARE YOU FLYING THE RUN'S ARMED HULL RIGHT NOW? The one question every mend in
+## the deck asks (v0.140.0, review §4.2 item 2): at the helm the thing that dies
+## is the hull's integrity pool, and on foot it is your body.
+func _dive_at_the_helm() -> bool:
+	return player != null and is_instance_valid(player) and player.is_piloting() \
+		and is_instance_valid(local_ship) and local_ship.hull_integrity_max > 0.0
+
+
+## HEAL THE THING YOU ARE — the sink for the deck's FLAT heals (Second Wind,
+## Field Surgeon). The amount is authored in BODY units on the card row, so
+## landing it on the hull converts by `DiveCards.HULL_PER_BODY_HP` (the body's
+## 100 against the pool's 3,000: one body point is ten pool points).
+##
+## Before v0.111.0 the run's life WAS the body's, and this healed it; the run's
+## life moved to the hull and the deck did not follow, which is why a 40-health
+## mend read as a blank card for two arcs.
 func _dive_heal_player(hp: float) -> void:
-	if hp <= 0.0 or player == null or not is_instance_valid(player):
+	if hp <= 0.0:
+		return
+	if _dive_at_the_helm():
+		local_ship.mend_integrity(hp * DiveCards.HULL_PER_BODY_HP)
+		return
+	if player == null or not is_instance_valid(player):
 		return
 	player.health = minf(player.max_health, player.health + hp)
+
+
+## THE LIFESTEAL SINK, and why it is not the one above. A leech card's amount is a
+## FRACTION OF THE DAMAGE DEALT, and damage is already in the pool's own units —
+## `Ship.damage_cell` drains `hull_integrity` one-for-one by the structural hp it
+## really destroys. So "8% of the damage" lands on the hull AS IS: converting it
+## by HULL_PER_BODY_HP would multiply a hull-unit number by the body/hull ratio
+## and make Leech Rig mend 450% of every hit. On foot it heals the body exactly as
+## it always did, which is what makes the card's one number honest in both places.
+func _dive_lifesteal(amount: float) -> void:
+	if amount <= 0.0:
+		return
+	if _dive_at_the_helm():
+		local_ship.mend_integrity(amount)
+		return
+	if player == null or not is_instance_valid(player):
+		return
+	player.health = minf(player.max_health, player.health + amount)
 
 
 ## Take the `index`-th (1-based) card from the current draft offer. The world's
@@ -3639,13 +3700,17 @@ func debug_grant_card_draft() -> void:
 	_notify("A card draft is waiting — press 1, 2 or 3.")
 
 
-## Debug (F2): deal the v0.134.0 SURVIVAL SUITE straight into the run's hand.
-## The seven cards it names change rules a random draft cannot be relied on to
-## hand you — a bounce, a reprieve, a grapple that works in free fall — and all
-## of them want to be felt in the same run to be judged. Grants only; the ids are
-## checked by `grant_card`, so a retired one is silently skipped.
-const DEBUG_CARD_SUITE := ["iron_constitution", "long_line", "harpooneers_arm",
-	"thick_skin", "ricochet_rounds", "chain_lightning", "second_heart"]
+## Debug (F2): deal the SURVIVAL SUITE straight into the run's hand. The cards it
+## names change rules a random draft cannot be relied on to hand you — a widened
+## pool, a softer crash, a mend that comes out of the guns, a bounce, a reprieve —
+## and all of them want to be felt in the SAME run to be judged. Grants only; the
+## ids are checked by `grant_card`, so a retired one is silently skipped.
+##
+## Re-pointed at the hull in v0.140.0 with the deck itself: the grapple pair it
+## used to deal left the Dive's draw, and Leech Rig / Second Wind took their place
+## because "does the pool actually come back?" is the question this round asks.
+const DEBUG_CARD_SUITE := ["iron_constitution", "thick_skin", "second_wind",
+	"sanguine_tide", "ricochet_rounds", "chain_lightning", "second_heart"]
 
 
 func debug_grant_card_suite() -> void:
@@ -5064,8 +5129,13 @@ func _handle_shooting(delta: float) -> void:
 			# Brownout STRETCHES the cadence (an underpowered ship fires slower);
 			# the F2 fire-rate lever SHORTENS it. The personal GRACE perk does not
 			# reach the ship's guns — that is the sidearm's (Player.turret_interval).
+			# THE `fire_rate` CARD DIAL REACHES THE HELM (v0.140.0, review §4.2
+			# item 1): it was the sidearm's interval only, so Quick Hands bought a
+			# gun a committed run never fires. Same factor, same place in the
+			# arithmetic as the sidearm below; 1.0 outside a run.
 			_turret_cooldown = Player.turret_interval(
-				TURRET_COOLDOWN, ratio, Tunables.get_num("fire_rate_mult"))
+				TURRET_COOLDOWN, ratio, Tunables.get_num("fire_rate_mult")) \
+				* _dive_mod("fire_rate")
 		return
 
 	if _shoot_cooldown > 0.0:
@@ -5076,11 +5146,13 @@ func _handle_shooting(delta: float) -> void:
 	# floor's carry is positional, see player.gd), so the platform term has
 	# to be added back in — otherwise a pellet fired while riding a fast
 	# deck is left behind by the ship and thumps into its own hull.
-	# Dive card: Honed Edge multiplies the pellet's damage (_dive_mod is 1.0 outside
-	# a run, so ordinary play is byte-identical).
+	# Dive card: the `damage` dial multiplies WHATEVER YOU ARE FIRING (v0.140.0) —
+	# the pellet here, the shell at the helm. One dial, one card, and it works
+	# wherever your finger is. (_dive_mod is 1.0 outside a run, so ordinary play is
+	# byte-identical.)
 	_spawn_shot(player.global_position, aim,
 		900.0 * player._scale_mult,
-		Tunables.get_num("sidearm_damage") * _dive_mod("weapon_damage"),
+		Tunables.get_num("sidearm_damage") * _dive_mod("damage"),
 		0, player._scale_mult,
 		player.SIZE.x * 0.9, SIDEARM_MASS,
 		player.velocity + player.get_platform_velocity(), player)
@@ -5193,9 +5265,10 @@ func _spawn_shot(from: Vector2, toward: Vector2, speed: float, dmg: float,
 ## own infrastructure.
 func _fire_turrets(ship: Ship, aim: Vector2, speed_mult := 1.0) -> bool:
 	var fired := false
-	# Dive card Heavy Shells buffs YOUR ship's guns only — gated on local_ship so an
-	# enemy's turrets are never boosted by your deck. 1.0 outside a run.
-	var dmg_mult := _dive_mod("turret_damage") if ship == local_ship else 1.0
+	# The `damage` card dial buffs YOUR ship's guns only — gated on local_ship so an
+	# enemy's turrets are never boosted by your deck. 1.0 outside a run. Same dial
+	# as the sidearm since v0.140.0: it follows the trigger, not the weapon.
+	var dmg_mult := _dive_mod("damage") if ship == local_ship else 1.0
 	for cluster in ship._glyph_clusters:
 		if cluster["key"] != "T":
 			continue

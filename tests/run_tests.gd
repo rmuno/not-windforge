@@ -75,7 +75,8 @@ func _initialize() -> void:
 	await _test_wreck_husk()
 	_test_dive_blast()
 	_test_dive_card_suite()
-	_test_grapple_card_dials()
+	_test_survival_card_dials()
+	_test_no_scale_on_pixels()
 	_test_creature_log()
 	_test_card_log()
 	await _test_hull_integrity()
@@ -115,6 +116,7 @@ func _initialize() -> void:
 	await _test_pendulum_swings_freely()
 	await _test_ramming_plows_through()
 	await _test_gasbags_shrug_off_soft_collisions()
+	await _test_impact_damage_mult()
 	await _test_damage_numbers_coalesce_per_source()
 	await _test_combat_damage_floats_a_number()
 	await _test_restitution_transfers_more_momentum()
@@ -1974,10 +1976,10 @@ func _test_card_log() -> void:
 
 	# --- The taken set: new-once, idempotent, guarded -----------------------
 	var log := DiveCards.new()
-	_check(log.count() == 0 and not log.has("honed_edge"), "a fresh card log is empty")
-	_check(log.mark("honed_edge"), "taking a card for the first time is NEW")
-	_check(not log.mark("honed_edge"), "taking it again in a later run is not new")
-	_check(log.has("honed_edge") and log.count() == 1, "the card is in the log")
+	_check(log.count() == 0 and not log.has("heavy_shells"), "a fresh card log is empty")
+	_check(log.mark("heavy_shells"), "taking a card for the first time is NEW")
+	_check(not log.mark("heavy_shells"), "taking it again in a later run is not new")
+	_check(log.has("heavy_shells") and log.count() == 1, "the card is in the log")
 	_check(not log.mark("not_a_card") and not log.mark(""),
 		"an unknown or empty id never marks")
 	_check(log.count() == 1, "...and the failed marks left the count alone")
@@ -1985,11 +1987,16 @@ func _test_card_log() -> void:
 	# --- Dict round-trip, and a retired card is dropped ---------------------
 	log.mark("sanguine_tide")
 	var back := DiveCards.from_dict(log.to_dict())
-	_check(back.has("honed_edge") and back.has("sanguine_tide") and back.count() == 2,
+	_check(back.has("heavy_shells") and back.has("sanguine_tide") and back.count() == 2,
 		"a card log round-trips through to_dict/from_dict")
-	var stale := DiveCards.from_dict({"honed_edge": true, "cut_from_the_deck": true})
-	_check(stale.count() == 1 and not stale.has("cut_from_the_deck"),
-		"a card since cut from the deck is ignored, not counted")
+	# "honed_edge" is not a made-up id: it is a card the v0.140.0 dial merge really
+	# CUT, so this is the actual case a returning player's profile presents — a
+	# log written by an older build, naming a row the deck no longer has.
+	var stale := DiveCards.from_dict(
+		{"heavy_shells": true, "honed_edge": true, "cut_from_the_deck": true})
+	_check(stale.count() == 1 and not stale.has("cut_from_the_deck")
+			and not stale.has("honed_edge"),
+		"a card since cut from the deck is dropped, not counted")
 
 	# --- The profile carries it (pure half) ---------------------------------
 	var prof := Profile.new()
@@ -2068,15 +2075,15 @@ func _test_card_log() -> void:
 			untaken_named = false
 	_check(untaken_named, "with nothing taken, every card is still named (no ??? wall)")
 	# ...and the taken flag follows the set, not the catalog.
-	var lit := DiveCards.gallery_rows({"honed_edge": true})
+	var lit := DiveCards.gallery_rows({"heavy_shells": true})
 	var lit_n := 0
 	for r in lit:
 		if bool((r as Dictionary)["taken"]):
 			lit_n += 1
-			_check(String((r as Dictionary)["id"]) == "honed_edge",
+			_check(String((r as Dictionary)["id"]) == "heavy_shells",
 				"the lit row is the one that was taken")
 	_check(lit_n == 1, "exactly one row lights for a one-card log")
-	_check(DiveCards.taken_count({"honed_edge": true, "cut_from_the_deck": true}) == 1,
+	_check(DiveCards.taken_count({"heavy_shells": true, "honed_edge": true}) == 1,
 		"the header's count ignores a card no longer in the deck")
 	# Every row carries the picker's own colour for its tier — the in-run card and
 	# the gallery tile cannot drift apart, because they read one table.
@@ -2118,6 +2125,96 @@ func _test_hull_integrity() -> void:
 	_check(not s.blocks.has(Vector2i(2, 0)), "the overkilled block is destroyed per-cell")
 	_check(is_equal_approx(s.hull_integrity, pool_before - remaining),
 		"...but the pool drains only by the hp that existed (%.0f, not 9999)" % remaining)
+
+	# --- MENDED BLOCKS REFUND THE POOL (owner call 5, v0.140.0) ---------------
+	# The pool was a one-way ratchet: the station, the X wand, Field Medic and the
+	# outpost patch all mended BLOCKS on a ship that went on dying anyway
+	# (DESCENT §3.4). The refund is `damage_cell`'s exact mirror — hp really
+	# restored, never the amount asked for.
+	var mend_pool := s.hull_integrity
+	var mended := s.repair_cell(Vector2i(1, 0), 5.0)
+	_check(mended and is_equal_approx(s.hull_integrity, mend_pool + 5.0),
+		"repairing 5 hp of a damaged cell puts 5 back in the pool (%.0f -> %.0f)"
+			% [mend_pool, s.hull_integrity])
+	# A wand sweep asks for far more than the cell can take; only what LANDS is
+	# refunded, or a hull could be mended to full off one damaged block.
+	var hp_left: float = BlockDB.max_hp(s.blocks[Vector2i(1, 0)]["type"]) \
+		- float(s.blocks[Vector2i(1, 0)]["hp"])
+	mend_pool = s.hull_integrity
+	s.repair_cell(Vector2i(1, 0), 9999.0)
+	_check(is_equal_approx(s.hull_integrity, mend_pool + hp_left),
+		"...and an overlong sweep refunds only the %.0f hp it could actually restore"
+			% hp_left)
+	# Dragging the wand over intact hull does nothing at all — no work, no refund.
+	mend_pool = s.hull_integrity
+	_check(not s.repair_cell(Vector2i(1, 0), 50.0)
+			and is_equal_approx(s.hull_integrity, mend_pool),
+		"mending a whole block is not work, and refunds nothing")
+	# THE CEILING HOLDS. A hull mended past its pool would be a run that got
+	# STRONGER by being shot and patched, which is the loop this must not open.
+	s.hull_integrity = s.hull_integrity_max
+	s.damage_cell(Vector2i(0, 0), 30.0)
+	s.repair_cell(Vector2i(0, 0), 9999.0)
+	_check(s.hull_integrity <= s.hull_integrity_max,
+		"the refund never lifts the pool over its own max (%.0f/%.0f)"
+			% [s.hull_integrity, s.hull_integrity_max])
+	# An UNARMED hull — every ship outside a run — mends blocks and grows no pool.
+	var plain := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HULL,
+	}, true)
+	plain.damage_cell(Vector2i(0, 0), 20.0)
+	plain.repair_cell(Vector2i(0, 0), 20.0)
+	_check(is_zero_approx(plain.hull_integrity) and is_zero_approx(plain.hull_integrity_max),
+		"an unarmed hull refunds nothing, because it has no pool to refund into")
+	plain.queue_free()
+
+	# --- THE FLAT CARDS WIDEN THE POOL (v0.140.0), idempotently ---------------
+	# The world stamps this EVERY TICK, exactly like Player.grant_bonus_health, so
+	# "the same value twice does nothing" is the load-bearing half of the contract.
+	s.hull_integrity_max = 3000.0
+	s.hull_integrity = 1200.0
+	s.card_integrity_bonus = 0.0
+	s.grant_bonus_integrity(250.0)
+	_check(is_equal_approx(s.hull_integrity_max, 3250.0)
+			and is_equal_approx(s.hull_integrity, 1450.0),
+		"Iron Ribs widens the pool AND mends the difference (%.0f/%.0f)"
+			% [s.hull_integrity, s.hull_integrity_max])
+	s.grant_bonus_integrity(250.0)
+	s.grant_bonus_integrity(250.0)
+	_check(is_equal_approx(s.hull_integrity, 1450.0),
+		"...and stamping the same total again mends nothing (a tick is not a heal)")
+	s.grant_bonus_integrity(750.0)
+	_check(is_equal_approx(s.hull_integrity_max, 3750.0)
+			and is_equal_approx(s.hull_integrity, 1950.0),
+		"a second HP card adds only its own slice (%.0f/%.0f)"
+			% [s.hull_integrity, s.hull_integrity_max])
+	# A whole hull that gains ceiling is capped, never over the line.
+	s.hull_integrity = s.hull_integrity_max
+	s.grant_bonus_integrity(1000.0)
+	_check(is_equal_approx(s.hull_integrity, s.hull_integrity_max),
+		"a whole hull ends up whole, not over its own max")
+	# Shrinking (the run ending) trims and never mends.
+	s.grant_bonus_integrity(0.0)
+	_check(is_equal_approx(s.hull_integrity_max, 3000.0)
+			and s.hull_integrity <= 3000.0 and s.hull_integrity > 0.0,
+		"ending the run puts the ceiling back and leaves the hull flying (%.0f/%.0f)"
+			% [s.hull_integrity, s.hull_integrity_max])
+	# And an UNARMED hull is never widened by a card — that is what keeps the
+	# stamp off an uncommitted candidate sitting at the launch deck.
+	var candidate := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL}, true)
+	candidate.grant_bonus_integrity(500.0)
+	_check(is_zero_approx(candidate.hull_integrity_max),
+		"an unarmed hull cannot be widened by a card")
+	candidate.queue_free()
+
+	# --- mend_integrity is the only refill, and it clamps --------------------
+	s.hull_integrity = 100.0
+	s.mend_integrity(-50.0)
+	_check(is_equal_approx(s.hull_integrity, 100.0), "a negative mend is a no-op")
+	s.mend_integrity(1.0e9)
+	_check(is_equal_approx(s.hull_integrity, s.hull_integrity_max),
+		"a huge mend fills the pool and stops there")
+
 	s.queue_free()
 	await process_frame
 
@@ -2150,12 +2247,18 @@ func _test_dive_cards() -> void:
 		for f in (cd.get("flags", []) as Array):
 			if not DiveCards.FLAGS.has(String(f)):
 				ok = false
+		# THE SYSTEM CHIP is closed exactly like the dials (v0.140.0): the picker
+		# paints the word straight through, so a row naming a system outside the
+		# set is a chip nobody can read — and, worse, a card whose "does this
+		# matter at the helm?" answer is a typo.
+		if not DiveCards.SYSTEMS.has(String(cd.get("system", ""))):
+			ok = false
 		for p in (cd.get("procs", []) as Array):
 			var pd := p as Dictionary
 			if not DiveCards.EVENTS.has(String(pd.get("on", ""))) \
 					or not DiveCards.EFFECTS.has(String(pd.get("effect", ""))):
 				ok = false   # a proc on an event/effect the world cannot apply
-	_check(ok, "every card has a unique id/name and stays in the DIAL/ADD/FLAG/EVENT/EFFECT vocabulary")
+	_check(ok, "every card has a unique id/name and stays in the DIAL/ADD/FLAG/EVENT/EFFECT/SYSTEM vocabulary")
 	# A card that changes NOTHING is a blank the draft can still offer you — the
 	# worst possible pick, and invisible without this.
 	var inert := 0
@@ -2185,10 +2288,27 @@ func _test_dive_cards() -> void:
 	_check(tiers.size() == DiveCards.RARITIES.size(),
 		"all four tiers are actually stocked (%d)" % tiers.size())
 	# "I don't want a bazillion cards" — the deck stays a hand you can hold.
-	# The owner-approved suite (v0.134.0) took it from 19 to 26; the band moved
-	# with it rather than being deleted, because "small" is still the rule.
-	_check(DiveCards.CATALOG.size() >= 24 and DiveCards.CATALOG.size() <= 30,
+	# 19 -> 26 with the v0.134.0 suite, then back to 22 in v0.140.0 when the five
+	# rows that bought a resource a committed run does not spend were cut (review
+	# §4.4 put the shape after the cut at ~18). The band moves with the deck
+	# rather than being deleted, because "small" is still the rule.
+	_check(DiveCards.CATALOG.size() >= 18 and DiveCards.CATALOG.size() <= 26,
 		"the deck stays small and meaningful (%d cards)" % DiveCards.CATALOG.size())
+	# EVERY SYSTEM IS STOCKED. A deck with an empty system is a chip the player
+	# learns to ignore, and it is how a whole build (flight, say) could quietly
+	# vanish from the draft without anything reddening.
+	var systems := {}
+	for c in DiveCards.CATALOG:
+		var sys := String((c as Dictionary).get("system", ""))
+		systems[sys] = int(systems.get(sys, 0)) + 1
+	_check(systems.size() == DiveCards.SYSTEMS.size(),
+		"all four systems are stocked (%d)" % systems.size())
+	# ...and the deck still points where the review pointed it: a committed run is
+	# flown from the helm, so guns + hull must be the bulk of what you draw.
+	var at_the_helm := int(systems.get("guns", 0)) + int(systems.get("hull", 0))
+	_check(at_the_helm * 2 > DiveCards.CATALOG.size(),
+		"most of the deck buys the guns or the hull (%d of %d)"
+			% [at_the_helm, DiveCards.CATALOG.size()])
 	# Every tier has its own colour and its own name; a duplicate would make the
 	# picker's whole colour language a lie.
 	var colours := {}
@@ -2196,7 +2316,7 @@ func _test_dive_cards() -> void:
 		colours[DiveCards.rarity_color(String(tier))] = true
 	_check(colours.size() == DiveCards.RARITIES.size(),
 		"each tier paints a DISTINCT colour")
-	_check(DiveCards.color_of("honed_edge") == DiveCards.RARITY_COLOR["common"]
+	_check(DiveCards.color_of("heavy_shells") == DiveCards.RARITY_COLOR["common"]
 			and DiveCards.color_of("cluster_shells") == DiveCards.RARITY_COLOR["legendary"],
 		"a card's colour follows its tier")
 	# Rarity must strictly ORDER the draw weight, or "rarer" means nothing.
@@ -2208,7 +2328,7 @@ func _test_dive_cards() -> void:
 	_check(descending, "each tier is strictly rarer than the one below it")
 	# ...and a card's own weight still biases WITHIN its tier (that is why the
 	# tier is a multiplier and not a replacement).
-	_check(DiveCards.draw_weight(DiveCards.by_id("honed_edge"))
+	_check(DiveCards.draw_weight(DiveCards.by_id("heavy_shells"))
 			> DiveCards.draw_weight(DiveCards.by_id("field_medic")),
 		"a heavy common still outdraws a light one inside the same tier")
 	_check(DiveCards.draw_weight(DiveCards.by_id("pickpocket"))
@@ -2240,19 +2360,35 @@ func _test_dive_cards() -> void:
 	_check(n_leg * 10 < n_common,
 		"a legendary is an event, not a Tuesday (%d vs %d commons)" % [n_leg, n_common])
 
-	# --- The two new wirings this round added --------------------------------
-	_check(DiveCards.DIALS.has("move_speed"),
-		"the move_speed dial (the owner's +10%% legs) is in the vocabulary")
+	# --- THE MERGED DIALS (v0.140.0, review §4.2 item 1) ---------------------
+	# `damage` and `fire_rate` follow the TRIGGER, not the weapon: at the helm
+	# that is the turret volley, on foot the sidearm. The old pair is gone, and
+	# the parity walk above is what stops a card naming one of them out of habit.
+	for d in ["damage", "fire_rate", "dive_rate"]:
+		_check(DiveCards.DIALS.has(String(d)),
+			"the %s dial is in the vocabulary" % d)
+	for gone in ["weapon_damage", "turret_damage", "move_speed",
+			"grapple_range", "grapple_speed"]:
+		_check(not DiveCards.DIALS.has(String(gone)),
+			"the retired %s dial is out of the vocabulary" % gone)
+	_check(not DiveCards.FLAGS.has("grapple_free_fire"),
+		"...and the grapple's rule switch went with its card")
+	for cut in ["honed_edge", "light_boots", "sea_legs", "long_line",
+			"harpooneers_arm"]:
+		_check(not DiveCards.is_known(String(cut)),
+			"'%s' is cut from the deck" % cut)
 	_check(DiveCards.EFFECTS.has("explode"),
 		"the explode effect (the owner's legendary) is in the vocabulary")
-	_check(is_equal_approx(DiveCards.modifier(["light_boots"], "move_speed"), 1.10),
-		"Light Boots multiplies move_speed 1.10")
-	_check(is_equal_approx(DiveCards.modifier([], "move_speed"), 1.0),
-		"...and no cards means 1.0, so ordinary play walks exactly as before")
+	_check(is_equal_approx(DiveCards.modifier(["heavy_shells"], "damage"), 1.35),
+		"Heavy Shells multiplies damage 1.35")
+	_check(is_equal_approx(DiveCards.modifier([], "damage"), 1.0),
+		"...and no cards means 1.0, so ordinary play shoots exactly as before")
 	# The synergies the deck was built around must actually compose.
-	_check(is_equal_approx(DiveCards.modifier(["light_boots", "sea_legs"], "move_speed"),
-			1.10 * 1.25),
-		"two leg cards stack multiplicatively (the ballpit rule)")
+	_check(is_equal_approx(DiveCards.modifier(["heavy_shells", "broadside"], "damage"),
+			1.35 * 1.90),
+		"two gun cards stack multiplicatively (the ballpit rule)")
+	_check(is_equal_approx(DiveCards.modifier(["lead_keel"], "dive_rate"), 1.35),
+		"Lead Keel multiplies dive_rate 1.35")
 	_check(DiveCards.modifier(["trimmed_sails", "full_sail"], "thrust") > 2.2,
 		"Trimmed Sails + Full Sail is a genuinely different ship (%.2fx)"
 			% DiveCards.modifier(["trimmed_sails", "full_sail"], "thrust"))
@@ -2276,9 +2412,9 @@ func _test_dive_cards() -> void:
 		"a draft never offers a card you already hold")
 
 	# --- Modifiers multiply; procs filter by event ----------------------------
-	_check(is_equal_approx(DiveCards.modifier(["honed_edge"], "weapon_damage"), 1.35),
-		"Honed Edge multiplies weapon_damage 1.35")
-	_check(is_equal_approx(DiveCards.modifier([], "weapon_damage"), 1.0),
+	_check(is_equal_approx(DiveCards.modifier(["broadside"], "damage"), 1.90),
+		"Broadside multiplies damage 1.90")
+	_check(is_equal_approx(DiveCards.modifier([], "damage"), 1.0),
 		"no cards means a 1.0 modifier (ordinary play is untouched)")
 	_check(is_equal_approx(DiveCards.modifier(["quick_hands"], "fire_rate"), 0.80),
 		"Quick Hands shortens fire_rate below 1.0")
@@ -2307,8 +2443,8 @@ func _test_dive_cards() -> void:
 		"the card is held, the debt is paid, the offer clears")
 
 	# The held card's effect reaches the run's modifier/proc queries.
-	run.cards = ["honed_edge", "bounty_hunter"]
-	_check(is_equal_approx(run.modifier("weapon_damage"), 1.35), "run.modifier reads the held deck")
+	run.cards = ["heavy_shells", "bounty_hunter"]
+	_check(is_equal_approx(run.modifier("damage"), 1.35), "run.modifier reads the held deck")
 	_check(run.procs_for("kill").size() == 1, "run.procs_for reads the held deck")
 
 	# add_draft owes a non-XP draft (the opening hand / an outpost grant).
@@ -2340,7 +2476,7 @@ func _test_dive_cards() -> void:
 	# THE PAINTER GETS RARITY AS PLAIN DATA (world-decides/layer-paints): the
 	# picker must never ask the catalog what colour a card is.
 	var r3 := DiveRun.new()
-	r3.draft = ["honed_edge", "cluster_shells"]
+	r3.draft = ["heavy_shells", "cluster_shells"]
 	var view := r3.draft_view()
 	_check(view.size() == 2 and (view[0] as Dictionary).has("rarity")
 			and (view[0] as Dictionary).has("rarity_label")
@@ -2349,6 +2485,38 @@ func _test_dive_cards() -> void:
 	_check(String((view[1] as Dictionary)["rarity"]) == "legendary"
 			and (view[1] as Dictionary)["color"] == DiveCards.RARITY_COLOR["legendary"],
 		"...and the legendary on offer comes through orange")
+
+	# --- THE PICKER'S TWO NEW FIELDS (review §4.3), decided in the model ------
+	# The chip and the stacked total answer the two questions the picker could
+	# not: "does this matter at the helm?" and "what does this ACTUALLY come out
+	# to?". Both arrive finished, because the HUD is a painter.
+	_check(String((view[0] as Dictionary)["system"]) == "guns"
+			and String((view[0] as Dictionary)["system_label"]) == "GUNS",
+		"a draft row carries its system and the chip's finished word")
+	_check(String((view[0] as Dictionary)["stack"]) == "(×1.35 with what you hold)",
+		"...and, holding nothing, the stacked total is the card's own number (%s)"
+			% String((view[0] as Dictionary)["stack"]))
+	_check(String((view[1] as Dictionary)["stack"]) == "",
+		"a card that multiplies nothing shows no stacked total")
+	# THE PRODUCT RULE, MADE VISIBLE — the whole point of the field. A second gun
+	# card is not "another +35%", it is ×1.82, and nothing on screen said so.
+	r3.cards = ["heavy_shells"]
+	var stacked := r3.draft_view()
+	_check(String((stacked[0] as Dictionary)["stack"]) == "(×1.82 with what you hold)",
+		"...and with one Heavy Shells held it reads the PRODUCT (%s)"
+			% String((stacked[0] as Dictionary)["stack"]))
+	# ...and the number printed is the number the world multiplies by, not a
+	# second arithmetic that could drift from it.
+	_check(is_equal_approx(DiveCards.modifier(["heavy_shells", "heavy_shells"], "damage"),
+			1.35 * 1.35),
+		"the printed product is the modifier's own product")
+	# Every system word is stored lower-case and painted upper, one way only.
+	var chips_ok := true
+	for sysname in DiveCards.SYSTEMS:
+		if String(sysname) != String(sysname).to_lower():
+			chips_ok = false
+	_check(chips_ok and DiveCards.system_label("iron_constitution") == "HULL",
+		"systems are stored lower-case and painted upper, in one place")
 
 
 ## SCRAP — XP as a physical, collectable drop (owner 2026-09-02, "separate, a la
@@ -2619,32 +2787,61 @@ func _test_dive_blast() -> void:
 ## here; the world-level halves — a bounce that really reaches a second hull, a
 ## Second Heart that really survives a lethal shot — are in world_startup_test.gd.
 func _test_dive_card_suite() -> void:
-	_t("THE CARD SUITE: flat HP, the grapple pair, the bounce and the reprieve")
+	_t("THE CARD SUITE: flat HP, the hull conversion, the bounce and the reprieve")
 
-	# --- The seven rows are really in the deck, at the rarities approved -------
+	# --- The survival rows are really in the deck, at the rarities approved ----
 	var approved := {
-		"iron_constitution": "common", "long_line": "common",
-		"harpooneers_arm": "uncommon", "thick_skin": "uncommon",
-		"ricochet_rounds": "epic",
+		"iron_constitution": "common", "field_medic": "common",
+		"thick_skin": "uncommon", "second_wind": "uncommon",
+		"lead_keel": "uncommon", "ricochet_rounds": "epic",
 		"chain_lightning": "legendary", "second_heart": "legendary",
+		"sanguine_tide": "legendary",
 	}
 	for id in approved:
 		_check(DiveCards.is_known(String(id)), "the deck carries '%s'" % id)
 		_check(DiveCards.rarity_of(String(id)) == String(approved[id]),
 			"...at the approved rarity (%s: %s)" % [id, DiveCards.rarity_of(String(id))])
-	_check(DiveCards.CATALOG.size() == 26,
-		"the deck is the owner's 26 (%d)" % DiveCards.CATALOG.size())
-	# The gallery is the deck: a new card that never reaches the title's page is
-	# a card the player can never learn exists.
+	# The gallery is the deck: a card that never reaches the title's page is a
+	# card the player can never learn exists. Counted against the CATALOG rather
+	# than a written-down number, so a cut or an addition cannot orphan a row.
 	var gal := {}
 	for r in DiveCards.gallery_rows({}):
 		gal[String((r as Dictionary)["id"])] = true
-	_check(gal.size() == 26, "the gallery covers all 26 rows (%d)" % gal.size())
+	_check(gal.size() == DiveCards.CATALOG.size(),
+		"the gallery covers every row in the deck (%d)" % gal.size())
 	var all_galleried := true
 	for id in approved:
 		if not gal.has(String(id)):
 			all_galleried = false
-	_check(all_galleried, "...including every one of the seven new cards")
+	_check(all_galleried, "...including every one of the survival cards")
+	# ...and the gallery carries the system chip too, so the title's page can
+	# group by what a card buys the day the owner asks for it.
+	var chipped := true
+	for r in DiveCards.gallery_rows({}):
+		if not DiveCards.SYSTEMS.has(String((r as Dictionary).get("system", ""))):
+			chipped = false
+	_check(chipped, "every gallery row carries a system inside the closed set")
+
+	# --- THE BODY/HULL CONVERSION (v0.140.0, review §4.2 item 2) --------------
+	# One number turns every heal-family card from "a blank at the helm" into the
+	# survival build the mode was missing, so it is worth pinning what it means.
+	_check(DiveCards.HULL_PER_BODY_HP > 1.0,
+		"a body point is worth more than one pool point (%.0f)"
+			% DiveCards.HULL_PER_BODY_HP)
+	var parity: float = Tunables.get_num("dive_ship_integrity") / 100.0
+	_check(DiveCards.HULL_PER_BODY_HP < parity,
+		"...but deliberately UNDER parity (%.0fx of a possible %.0fx), so the flat"
+			% [DiveCards.HULL_PER_BODY_HP, parity]
+			+ " cards cannot triple a run's life between them")
+	# Iron Ribs is the card the description quotes: +25 body, +250 hull.
+	_check(is_equal_approx(
+			DiveCards.addend(["iron_constitution"], "max_hp") * DiveCards.HULL_PER_BODY_HP,
+			250.0),
+		"Iron Ribs is the +250 hull its own description promises")
+	_check(DiveCards.desc_of("iron_constitution").contains("250")
+			and DiveCards.desc_of("second_wind").contains("400")
+			and DiveCards.desc_of("thick_skin").contains("500"),
+		"...and every hull card's text states the HULL number, not the body one")
 
 	# --- THE `adds` CHANNEL: flat, and it SUMS ---------------------------------
 	_check(DiveCards.ADDS.has("max_hp"), "max_hp is in the ADDS vocabulary")
@@ -2662,33 +2859,33 @@ func _test_dive_card_suite() -> void:
 	# A flat card leaves the multiplicative channel alone, and the reverse.
 	_check(is_equal_approx(DiveCards.modifier(["iron_constitution"], "max_hp"), 1.0),
 		"an `adds` card moves no multiplier")
-	_check(is_zero_approx(DiveCards.addend(["honed_edge"], "weapon_damage")),
+	_check(is_zero_approx(DiveCards.addend(["heavy_shells"], "damage")),
 		"...and a `mods` card contributes no addend")
 
 	# --- THE `flags` CHANNEL: a rule, held or not ------------------------------
-	for f in ["grapple_free_fire", "second_heart"]:
-		_check(DiveCards.FLAGS.has(String(f)), "'%s' is in the FLAGS vocabulary" % f)
-	_check(not DiveCards.has_flag([], "grapple_free_fire"),
-		"no cards means no flag (ordinary play grapples stock)")
-	_check(DiveCards.has_flag(["harpooneers_arm"], "grapple_free_fire"),
-		"Harpooneer's Arm raises grapple_free_fire")
-	_check(not DiveCards.has_flag(["harpooneers_arm"], "second_heart"),
-		"...and only that one — a flag is not a blanket")
-	_check(DiveCards.has_flag(["second_heart", "harpooneers_arm"], "second_heart"),
+	# One flag left: `grapple_free_fire` went out with Harpooneer's Arm (v0.140.0).
+	_check(DiveCards.FLAGS.has("second_heart"),
+		"'second_heart' is in the FLAGS vocabulary")
+	_check(DiveCards.FLAGS.size() == 1,
+		"...and it is the only rule switch the deck still raises (%d)"
+			% DiveCards.FLAGS.size())
+	_check(not DiveCards.has_flag([], "second_heart"),
+		"no cards means no flag (ordinary play has no reprieve)")
+	_check(DiveCards.has_flag(["second_heart"], "second_heart"),
+		"Second Heart raises its own flag")
+	_check(not DiveCards.has_flag(["thick_skin"], "second_heart"),
+		"...and only that card does — a flag is not a blanket")
+	_check(DiveCards.has_flag(["thick_skin", "second_heart"], "second_heart"),
 		"a flag is found wherever it sits in the hand")
 
-	# --- LONG LINE: one card, BOTH numbers (the owner's explicit ask) ---------
-	for d in ["grapple_range", "grapple_speed", "fall_damage_taken"]:
-		_check(DiveCards.DIALS.has(String(d)), "the %s dial is in the vocabulary" % d)
-	_check(is_equal_approx(DiveCards.modifier(["long_line"], "grapple_range"), 1.40)
-			and is_equal_approx(DiveCards.modifier(["long_line"], "grapple_speed"), 1.40),
-		"Long Line moves range AND hook speed together (both 1.40)")
-	_check(is_equal_approx(DiveCards.modifier([], "grapple_range"), 1.0)
-			and is_equal_approx(DiveCards.modifier([], "grapple_speed"), 1.0),
-		"...and both are 1.0 with no card, so ordinary play grapples exactly as before")
+	# --- THICK SKIN: one card, BOTH channels ---------------------------------
+	_check(DiveCards.DIALS.has("fall_damage_taken"),
+		"the fall_damage_taken dial is in the vocabulary")
 	_check(DiveCards.modifier(["thick_skin"], "fall_damage_taken") < 1.0,
-		"Thick Skin softens a landing (%.2fx)"
+		"Thick Skin softens a hard arrival (%.2fx)"
 			% DiveCards.modifier(["thick_skin"], "fall_damage_taken"))
+	_check(is_equal_approx(DiveCards.modifier([], "fall_damage_taken"), 1.0),
+		"...and it is 1.0 with no card, so ordinary play crashes exactly as before")
 
 	# --- THE BOUNCE's arithmetic ----------------------------------------------
 	_check(DiveCards.EFFECTS.has("ricochet") and DiveCards.EFFECTS.has("chain"),
@@ -2778,25 +2975,31 @@ func _test_dive_card_suite() -> void:
 
 	# --- The run's own addend/flag queries ------------------------------------
 	var run := DiveRun.new()
-	_check(is_zero_approx(run.addend("max_hp")) and not run.flag("grapple_free_fire"),
+	_check(is_zero_approx(run.addend("max_hp")) and not run.flag("second_heart"),
 		"a fresh run adds nothing and raises no flag")
 	run.grant_card("iron_constitution")
 	run.grant_card("thick_skin")
-	run.grant_card("harpooneers_arm")
+	run.grant_card("second_heart")
 	_check(is_equal_approx(run.addend("max_hp"), 75.0),
 		"run.addend sums the held deck (%.0f)" % run.addend("max_hp"))
-	_check(run.flag("grapple_free_fire"), "run.flag reads the held deck")
+	_check(is_equal_approx(run.addend("max_hp") * DiveCards.HULL_PER_BODY_HP, 750.0),
+		"...which is +750 on the pool while you are at the helm")
+	_check(run.flag("second_heart"), "run.flag reads the held deck")
 
 
-## THE GRAPPLE'S DIALS AND THE RESTRICTION HARPOONEER'S ARM LIFTS (v0.134.0).
+## THE BODY'S SURVIVAL DIALS, AND THE HOOK TRAP THE PROJECT ALREADY PAID FOR.
 ##
-## The restriction is arithmetic, not a rule: the hook is a WORLD-SPACE
-## projectile that does not inherit the body's velocity, and `HOOK_SPEED` (900)
-## is exactly `MAX_FALL` (900). A body at terminal velocity firing straight down
-## therefore separates from its own hook at ZERO px/s — the line hangs at your
-## boots and never reaches anything. This pins the before and the after.
-func _test_grapple_card_dials() -> void:
-	_t("THE GRAPPLE CARDS: reach, hook speed, and firing while you fall")
+## The grapple CARDS left the Dive's draw in v0.140.0 (review §4.2 item 4) and
+## took `hook_range_mult` / `hook_speed_mult` / `hook_carries_body` with them. The
+## arithmetic below survives them deliberately: the hook is a WORLD-SPACE
+## projectile that does not inherit the body's velocity, and `HOOK_SPEED` (900) is
+## exactly `MAX_FALL` (900) — so a body at terminal velocity firing straight down
+## separates from its own hook at ZERO px/s and the line hangs at your boots.
+## `hook_step`'s `carry` argument is this project's recorded answer to that trap,
+## and the ship-harpoon card the review floats would re-arm it in one line. Losing
+## the proof with the card would mean rediscovering the bug.
+func _test_survival_card_dials() -> void:
+	_t("THE BODY'S CARD DIALS: the hook trap, the flat pool, the landing bill")
 
 	var p := Player.new()
 	# The two numbers are the same number, which is the whole bug.
@@ -2843,25 +3046,17 @@ func _test_grapple_card_dials() -> void:
 			== Vector2(0.0, (900.0 + p.MAX_FALL) * d),
 		"carried, the body's own displacement rides along")
 
-	# --- LONG LINE really moves the body's grapple numbers ---------------------
-	var reach := float(p.call("_hook_range"))
-	var speed := float(p.call("_hook_speed"))
-	_check(is_equal_approx(reach, p.HOOK_MAX_RANGE) and is_equal_approx(speed, p.HOOK_SPEED),
-		"outside a run the multipliers are 1.0 and the hook is stock")
-	p.hook_range_mult = 1.40
-	p.hook_speed_mult = 1.40
-	_check(is_equal_approx(float(p.call("_hook_range")), reach * 1.40),
-		"Long Line's range dial reaches 40%% further (%.0f -> %.0f px)"
-			% [reach, float(p.call("_hook_range"))])
-	_check(is_equal_approx(float(p.call("_hook_speed")), speed * 1.40),
-		"...and the hook flies 40%% faster (%.0f -> %.0f px/s)"
-			% [speed, float(p.call("_hook_speed"))])
-	# The dials survive the world-scale multiply — they are ratios, not distances.
+	# --- NOTHING MULTIPLIES THE HOOK ANY MORE (v0.140.0) ----------------------
+	# The pair of dials that used to ride these is gone with Long Line; what is
+	# pinned now is that the hook is exactly the shipped number in a run and out
+	# of one, at any world scale.
+	_check(is_equal_approx(float(p.call("_hook_range")), p.HOOK_MAX_RANGE)
+			and is_equal_approx(float(p.call("_hook_speed")), p.HOOK_SPEED),
+		"the hook is stock reach and stock speed, in a run or out of one")
 	var big := Player.new()
 	big.scale_body(8.0)
-	big.hook_range_mult = 1.40
-	_check(is_equal_approx(float(big.call("_hook_range")), big.HOOK_MAX_RANGE * 1.40),
-		"the range dial is a ratio, so it survives the 8x world untouched")
+	_check(is_equal_approx(float(big.call("_hook_range")), big.HOOK_MAX_RANGE),
+		"...and the 8x body's hook is its own scaled reach, undecorated")
 	big.free()
 
 	# --- THICK SKIN's flat pool, and the mend that comes with it --------------
@@ -7302,6 +7497,72 @@ func _test_ramming_plows_through() -> void:
 
 	soft.queue_free()
 	wall.queue_free()
+	await process_frame
+
+
+## THICK SKIN AT THE HELM (v0.140.0, review §4.2 item 2). The card's
+## `fall_damage_taken` dial used to bill only the BODY, and a committed run is
+## flown from the helm — where "a landing" is the hull hitting a slab. Same card,
+## same number, now also on `Ship.impact_damage_mult`.
+##
+## Driven through `_crush`, the same injected-impact helper the gasbag and ram
+## tests use, so what is measured is the real crush walk rather than arithmetic
+## restated in a test.
+func _test_impact_damage_mult() -> void:
+	_t("THE HULL'S CRASH DISCOUNT: impact_damage_mult scales the crush")
+
+	# One long row, so the crush has somewhere to walk and the bite is countable
+	# in whole cells. Budget solved back through _process's conversion, as in the
+	# gasbag test: available = (impulse - THRESHOLD) * SCALE.
+	var cells := {}
+	for x in 8:
+		cells[Vector2i(x, 0)] = BlockDB.Type.HULL
+	var impulse := Ship.IMPACT_DAMAGE_THRESHOLD + 600.0 / Ship.IMPACT_DAMAGE_SCALE
+
+	var stock := _make_ship(cells, true)
+	_check(is_equal_approx(stock.impact_damage_mult, 1.0),
+		"a hull outside a run pays the shipped bill (1.0x)")
+	await _crush(stock, impulse)
+	var stock_lost := 8 - stock.blocks.size()
+	_check(stock_lost > 0, "the crash really bit the stock hull (%d cells)" % stock_lost)
+
+	var tough := _make_ship(cells, true)
+	tough.impact_damage_mult = 0.85
+	await _crush(tough, impulse)
+	var tough_lost := 8 - tough.blocks.size()
+	_check(tough_lost <= stock_lost,
+		"Thick Skin never makes a crash WORSE (%d vs %d cells)"
+			% [tough_lost, stock_lost])
+
+	# A discount you can actually see: at a quarter price the same crash has to
+	# leave meaningfully more hull standing, or the dial is decoration.
+	var armoured := _make_ship(cells, true)
+	armoured.impact_damage_mult = 0.25
+	await _crush(armoured, impulse)
+	var armoured_lost := 8 - armoured.blocks.size()
+	_check(armoured_lost < stock_lost,
+		"a quarter-price crash chews visibly less hull (%d vs %d cells)"
+			% [armoured_lost, stock_lost])
+
+	# ...and the drain the pool sees follows the bite, because the crush bills
+	# through `damage_cell` like everything else — one damage path, not two.
+	var pooled := _make_ship(cells, true)
+	pooled.hull_integrity_max = 5000.0
+	pooled.hull_integrity = 5000.0
+	pooled.impact_damage_mult = 0.25
+	await _crush(pooled, impulse)
+	var soft_drain := 5000.0 - pooled.hull_integrity
+	var pooled_full := _make_ship(cells, true)
+	pooled_full.hull_integrity_max = 5000.0
+	pooled_full.hull_integrity = 5000.0
+	await _crush(pooled_full, impulse)
+	var full_drain := 5000.0 - pooled_full.hull_integrity
+	_check(soft_drain < full_drain,
+		"...and the integrity pool drains less for it (%.0f vs %.0f)"
+			% [soft_drain, full_drain])
+
+	for sh in [stock, tough, armoured, pooled, pooled_full]:
+		(sh as Ship).queue_free()
 	await process_frame
 
 
@@ -12875,3 +13136,137 @@ func _test_web_key_aliases() -> void:
 	for target: int in targets:
 		_check(not raw_keys.has(target),
 			"%s is not a raw key world.gd already reads" % OS.get_keycode_string(target))
+
+## THE EIGHTFOLD FAMILY, GREPPED (review §6.2 item 1).
+##
+## Two coordinate conventions live in this tree: authored CELLS and world PIXELS.
+## `upscale_cells` is the border between them, and every bug in this family is the
+## same mistake — a quantity that is ALREADY in pixels multiplied by the world
+## scale a second time. By the docs' own count it has cost four rounds on the
+## launch deck, one on the drafting table's exports and one on the intro, and it
+## is invisible at 1× (where `world_scale` is 1) which is exactly why it keeps
+## reaching the owner's 8× session instead of a test.
+##
+## So this reads the tree as TEXT rather than as behaviour. `solid_bounds` and
+## `global_position` are pixel-valued by construction, so an accessor chain off
+## one of them multiplied directly by `world_scale` / `scale_unit` is the bug,
+## every time, with no context needed.
+##
+## THE REGEX IS TIGHT ON PURPOSE. It matches only where the scale multiplies the
+## PIXEL EXPRESSION ITSELF — `hull.solid_bounds.size.x * world_scale`. It does not
+## match a separate term being scaled beside one, which is legitimate and common:
+##
+##     ship.solid_bounds.grow(Ship.CELL * 4.0 * float(world_scale))   # cells → px
+##     player.global_position + Vector2(0.0, -200.0 * world_scale)    # an offset
+##     Airspace.gravity_scale_at(global_position) * scale_unit        # not px at all
+##
+## All three are in the tree today and all three are correct; a rule that reddened
+## on them would be turned off within a round, which is worse than no rule.
+##
+## `# px-ok` on the line opts out. There is nothing using it today, and the right
+## response to a hit is to FIX the line or tighten the pattern — an opt-out on a
+## true positive is the family shipping again with a comment on it.
+const PX_SCAN_DIRS := ["res://maps", "res://ship", "res://player", "res://combat",
+	"res://modes", "res://terrain", "res://net"]
+const PX_OPT_OUT := "# px-ok"
+
+func _test_no_scale_on_pixels() -> void:
+	_t("THE EIGHTFOLD FAMILY: no world scale applied to a pixel quantity")
+
+	# One pattern, one pass. `(\.name)*` walks the accessor chain (`.size.x`,
+	# `.end.y`), `(\(\))?` allows a no-arg call on the end of it
+	# (`.size.length()`), and then the multiply has to come IMMEDIATELY — which is
+	# what keeps `Ship.CELL * world_scale` sitting beside a `solid_bounds` off the
+	# hook.
+	var rx := RegEx.create_from_string(
+		"(solid_bounds|global_position)(\\.[A-Za-z_0-9]+)*(\\(\\))?"
+		+ "\\s*\\*\\s*(float\\(world_scale\\)|self\\.world_scale"
+		+ "|world_scale\\b|scale_unit\\b)")
+	_check(rx != null, "the eightfold pattern compiles")
+	if rx == null:
+		return
+
+	var files: Array[String] = []
+	for dir in PX_SCAN_DIRS:
+		_px_collect(String(dir), files)
+	# A scan that silently found nothing would pass forever, which is the one way
+	# a lint test can be worse than no lint test.
+	_check(files.size() > 20,
+		"the scan actually walked the tree (%d .gd files)" % files.size())
+
+	var hits: Array[String] = []
+	for path in files:
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f == null:
+			continue
+		var n := 0
+		while not f.eof_reached():
+			var line := f.get_line()
+			n += 1
+			if line.contains(PX_OPT_OUT):
+				continue
+			if rx.search(line) != null:
+				hits.append("%s:%d  %s" % [path, n, line.strip_edges()])
+		f.close()
+	for h in hits:
+		print("  EIGHTFOLD: %s" % h)
+	_check(hits.is_empty(),
+		"nothing multiplies a pixel quantity by the world scale (%d hit(s))"
+			% hits.size())
+
+	# The rule is only worth anything if it would actually catch the bug, and a
+	# regex nobody has seen fail is a regex that matches nothing. Both halves are
+	# pinned here: the shapes that ARE the family, and the shapes that merely look
+	# like it and are correct.
+	var bad := [
+		"var w := hull.solid_bounds.size.x * world_scale",
+		"var b := ship.solid_bounds * float(world_scale)",
+		"var at := body.global_position * world_scale",
+		"var h = other.solid_bounds.size.y*scale_unit",
+		"var d := beast.solid_bounds.size.length() * world_scale",
+		"push(node.global_position * self.world_scale)",
+	]
+	var caught := true
+	for line in bad:
+		if rx.search(String(line)) == null:
+			caught = false
+			print("  MISSED: %s" % line)
+	_check(caught, "the pattern catches every shape of the bug (%d)" % bad.size())
+
+	var good := [
+		"var blast: Rect2 = ship.solid_bounds.grow(Ship.CELL * 4.0 * float(world_scale))",
+		"var r := beast.solid_bounds.size.length() * 0.5 + Ship.CELL * world_scale",
+		"_pickups.add(player.global_position + Vector2(0.0, -200.0 * world_scale),",
+		"gravity_scale = Airspace.gravity_scale_at(global_position) * scale_unit",
+		"var w := hull.solid_bounds.size.x * 0.5",
+		"var reach := DiveCards.BLAST_RADIUS_PX * world_scale",
+	]
+	var quiet := true
+	for line in good:
+		if rx.search(String(line)) != null:
+			quiet = false
+			print("  FALSE POSITIVE: %s" % line)
+	_check(quiet, "...and stays quiet on the legitimate shapes beside it (%d)" % good.size())
+
+
+## Every `.gd` under `dir`, recursively, appended to `out`. DirAccess rather than
+## a ResourceLoader walk: these files are being read as TEXT, and compiling them
+## to find them would be both slower and (for a `class_name` script) a compile
+## the suite does not want (CODEMAP §4).
+func _px_collect(dir: String, out: Array[String]) -> void:
+	var d := DirAccess.open(dir)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var name := d.get_next()
+	while name != "":
+		if name.begins_with("."):
+			name = d.get_next()
+			continue
+		var path := "%s/%s" % [dir, name]
+		if d.current_is_dir():
+			_px_collect(path, out)
+		elif name.ends_with(".gd"):
+			out.append(path)
+		name = d.get_next()
+	d.list_dir_end()

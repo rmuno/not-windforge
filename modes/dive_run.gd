@@ -731,7 +731,8 @@ func addend(key: String) -> float:
 	return DiveCards.addend(cards, key)
 
 
-## Is rule `flag` switched on by a held card? (Harpooneer's Arm, Second Heart.)
+## Is rule `flag` switched on by a held card? (Second Heart is the only one left
+## since the grapple cards left the Dive's draw.)
 func flag(name: String) -> bool:
 	return DiveCards.has_flag(cards, name)
 
@@ -835,9 +836,16 @@ func card_names() -> Array:
 
 
 ## The current draft offer as painter-ready rows, empty when nothing is on offer:
-## [{id, name, desc, rarity, rarity_label, color}, ...]. The RARITY travels as
-## plain data + a finished Colour so the picker never reaches into the catalog to
-## work out what colour a card is (world-decides/layer-paints).
+## [{id, name, desc, system, system_label, stack, rarity, rarity_label, color},
+## ...]. The RARITY travels as plain data + a finished Colour so the picker never
+## reaches into the catalog to work out what colour a card is
+## (world-decides/layer-paints).
+##
+## `system` and `stack` are the review's two picker fixes (§4.3), and both are
+## decided HERE rather than in the HUD: the chip is a catalog lookup, and the
+## stacked total needs the HELD deck — neither is something a painter is allowed
+## to reach for. `stack` arrives finished ("(×1.82 with what you hold)") or empty
+## for a card that multiplies nothing.
 func draft_view() -> Array:
 	var out: Array = []
 	for id in draft:
@@ -845,6 +853,9 @@ func draft_view() -> Array:
 		var tier := DiveCards.rarity_of(cid)
 		out.append({"id": cid, "name": DiveCards.name_of(cid),
 			"desc": DiveCards.desc_of(cid),
+			"system": DiveCards.system_of(cid),
+			"system_label": DiveCards.system_label(cid),
+			"stack": DiveCards.stack_text(cards, cid),
 			"rarity": tier, "rarity_label": DiveCards.rarity_label(tier),
 			"color": DiveCards.rarity_color(tier)})
 	return out

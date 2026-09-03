@@ -371,46 +371,47 @@ func dismount() -> void:
 	velocity = Vector2.ZERO
 
 
-## A DIVE CARD's multiplier on these legs (Light Boots, Sea Legs). Stamped on the
-## body by `world._tick_dive` every tick — the same idiom `Ship.thrust_mult` uses
-## for the propeller card, and for the same reason: a card taken mid-run applies
-## the same frame, and nothing outside a run ever writes it. `world.end_dive`
-## puts it back to 1.0, so ordinary play is byte-identical.
-var run_speed_mult := 1.0
-
 ## Effective walk speed: the base feel times the GRACE move-speed perk (1.0 with
-## no perk, so an un-invested character walks exactly as before), times the run's
-## card multiplier (1.0 outside a Dive).
+## no perk, so an un-invested character walks exactly as before).
+##
+## The Dive's `move_speed` card multiplier is GONE (v0.140.0, review §4.2 item 4):
+## a committed run is flown from the helm, so legs were a resource the run does not
+## spend, and Light Boots / Sea Legs left the draw taking their dial with them.
 func _move_speed() -> float:
-	return SPEED * (stats.move_speed_mult() if stats != null else 1.0) * run_speed_mult
+	return SPEED * (stats.move_speed_mult() if stats != null else 1.0)
 
 
-# --- THE REST OF THE DIVE-CARD STAMPS (v0.134.0) ----------------------------
+# --- THE BODY'S DIVE-CARD STAMPS --------------------------------------------
 #
-# All five follow `run_speed_mult` exactly: a plain field nothing outside a run
-# ever writes, stamped by `world._tick_dive` every tick and put back by
+# Both follow the idiom `Ship.thrust_mult` uses: a plain field nothing outside a
+# run ever writes, stamped by `world._tick_dive` every tick and put back by
 # `world.end_dive`. Defaults are the identity, so ordinary play is byte-identical
-# and every one of them is 1.0 / 0.0 / false in the expedition and the sandbox.
+# and both read 1.0 / 0.0 in the expedition and the sandbox.
+#
+# THERE WERE FIVE. `run_speed_mult`, `hook_range_mult`, `hook_speed_mult` and
+# `hook_carries_body` retired in v0.140.0 along with the legs/grapple cards that
+# were their only writers. `hook_step`'s `carry` ARGUMENT outlives them on
+# purpose: it is pure, separately tested, and it is this project's recorded answer
+# to the HOOK_SPEED == MAX_FALL trap — so it stays ready for the ship-harpoon card
+# the review floats (§4.2 item 4) rather than being rediscovered from scratch.
 
-## Long Line's two numbers. Dimensionless, so they survive `scale_body` untouched.
-var hook_range_mult := 1.0
-var hook_speed_mult := 1.0
-## Harpooneer's Arm. See `hook_step` for what it actually lifts.
-var hook_carries_body := false
-## Thick Skin's half of the bill for a landing (multiplied into the F2 dial).
+## Thick Skin's half of the bill for a landing (multiplied into the F2 dial). Its
+## hull twin is `Ship.impact_damage_mult` — one card, billed in both the places a
+## run can arrive somewhere too fast.
 var fall_damage_mult := 1.0
 ## Iron Constitution / Thick Skin. Flat px of pool, ADDED to whatever GRIT gives.
 ## Never assign this directly — `grant_bonus_health` heals the difference.
 var bonus_max_health := 0.0
 
 
-## The hook's speed and reach right now, card multipliers included.
+## The hook's speed and reach right now. Plain constants since v0.140.0 — the two
+## card multipliers that used to ride them left with Long Line.
 func _hook_speed() -> float:
-	return HOOK_SPEED * maxf(hook_speed_mult, 0.01)
+	return HOOK_SPEED
 
 
 func _hook_range() -> float:
-	return HOOK_MAX_RANGE * maxf(hook_range_mult, 0.01)
+	return HOOK_MAX_RANGE
 
 
 ## The whole health pool: what GRIT buys, plus what the run's cards granted.
@@ -908,11 +909,11 @@ func _wrapped_len() -> float:
 func _update_hook(delta: float) -> void:
 	match _hook_state:
 		HookState.FLYING:
-			# `hook_step` carries the body's own motion into the flight when
-			# Harpooneer's Arm is held — see its comment for the restriction that
-			# lifts. Stock (carry false) this is the original line exactly.
+			# `hook_step` can carry the body's own motion into the flight (see its
+			# comment for the restriction that lifts). No card raises it today, so
+			# this is the original line exactly.
 			var next := _hook_pos + hook_step(_hook_dir, _hook_speed(), delta,
-				velocity, hook_carries_body)
+				velocity, false)
 			if _try_latch(_hook_pos, next):
 				return
 			_hook_pos = next
@@ -925,10 +926,11 @@ func _update_hook(delta: float) -> void:
 			if back.length() <= _hook_speed() * delta * 1.5:
 				_hook_state = HookState.IDLE
 				return
-			# Carried on the way home too, or a falling body would out-run its own
-			# retracting hook and the line would take seconds to clear.
+			# Carried on the way home too when anything ever raises it, or a falling
+			# body would out-run its own retracting hook and the line would take
+			# seconds to clear.
 			var next := _hook_pos + hook_step(back.normalized(), _hook_speed(), delta,
-				velocity, hook_carries_body)
+				velocity, false)
 			if _try_latch(_hook_pos, next):
 				return
 			_hook_pos = next

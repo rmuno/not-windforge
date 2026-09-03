@@ -285,21 +285,21 @@ func _initialize() -> void:
 				and (node as Label).text.contains("Cluster Shells"):
 			codex_wall = true
 	_ok(not codex_wall, "the page is tiles, not one Label holding the whole codex")
-	# ...and 19 tiles have to fit a 720p window, so the grid lives in a scroll box.
+	# ...and the whole deck has to fit a 720p window, so the grid lives in a scroll box.
 	var scrolled := false
 	for node in _walk(orphan):
 		if node is ScrollContainer:
 			scrolled = true
 	_ok(scrolled, "the gallery scrolls, so the deck cannot run off a 720p screen")
 	# THE TAKEN SET LIGHTS TILES. This is the whole feature: what YOU drafted.
-	orphan.set("cards_taken", {"honed_edge": true})
+	orphan.set("cards_taken", {"heavy_shells": true})
 	orphan.call("_go", TitleScreen.Page.CARDS)
 	var relit: Array = orphan.call("card_tiles")
 	var lit_ids: Array = []
 	for t in relit:
 		if bool((t as Dictionary)["taken"]):
 			lit_ids.append(String((t as Dictionary)["id"]))
-	_ok(lit_ids == ["honed_edge"],
+	_ok(lit_ids == ["heavy_shells"],
 		"a taken card lights exactly its own tile (%s)" % ", ".join(PackedStringArray(lit_ids)))
 	_ok(relit.size() == DiveCards.CATALOG.size(),
 		"...and the rest of the deck is still shown, dimmed, not hidden")

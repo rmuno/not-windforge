@@ -182,12 +182,12 @@ func _draw_draft(d: Dictionary) -> void:
 	var total := float(cards.size()) * cw + float(maxi(0, cards.size() - 1)) * gap
 	var x0 := view.x * 0.5 - total * 0.5
 	var top := view.y * 0.66
-	var ch := 84.0 * s
-	# A dim banner so the choice reads as a deliberate pause.
+	var ch := 104.0 * s
+	# A dim banner so the choice reads as a deliberate pause. ("The world holds its
+	# breath" used to sit under the cards; it went in v0.140.0 — the pause is
+	# VISIBLE, and the line was taking the space the stacked total now uses.)
 	draw_string(font, Vector2(view.x * 0.5 - 90.0 * s, top - 14.0 * s),
 		"CHOOSE A CARD!", HORIZONTAL_ALIGNMENT_LEFT, -1, hs, _INK)
-	draw_string(font, Vector2(view.x * 0.5 - 90.0 * s, top + 96.0 * s),
-		"(the world holds its breath)", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _DIM)
 	for i in cards.size():
 		var card := cards[i] as Dictionary
 		var cx := x0 + float(i) * (cw + gap)
@@ -202,7 +202,16 @@ func _draw_draft(d: Dictionary) -> void:
 		var rare := String(card.get("rarity", "common")) != "common"
 		draw_rect(box, Color(tint, 0.85 if rare else 0.55), false,
 			(2.0 if rare else 1.0) * s)
-		draw_string(font, Vector2(cx + 10.0 * s, top + fs * 1.4),
+		# THE SYSTEM CHIP, above the name (review §4.3: "say which system, first").
+		# The question a player actually asks at the picker is *does this matter at
+		# the helm?*, and colour is already spent answering rarity. Small, tinted,
+		# and first — GUNS / HULL / FLIGHT / POT. The word arrives finished in the
+		# draft row; this layer never asks the catalog what system a card is.
+		var chip := String(card.get("system_label", ""))
+		if not chip.is_empty():
+			draw_string(font, Vector2(cx + 10.0 * s, top + fs * 1.05),
+				chip, HORIZONTAL_ALIGNMENT_LEFT, -1, 10 * s, Color(tint, 0.9))
+		draw_string(font, Vector2(cx + 10.0 * s, top + fs * 2.5),
 			"[%d]  %s" % [i + 1, String(card.get("name", ""))],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, hs, tint)
 		# The tier, named, right-aligned on the title line — the word and the
@@ -212,12 +221,21 @@ func _draw_draft(d: Dictionary) -> void:
 		if not tier_label.is_empty():
 			draw_string(font, Vector2(cx + cw - 10.0 * s
 					- font.get_string_size(tier_label, HORIZONTAL_ALIGNMENT_LEFT,
-						-1, fs).x, top + fs * 1.4),
+						-1, fs).x, top + fs * 2.5),
 				tier_label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(tint, 0.75))
 		# The description wraps inside the card width.
-		draw_multiline_string(font, Vector2(cx + 10.0 * s, top + fs * 3.0),
+		draw_multiline_string(font, Vector2(cx + 10.0 * s, top + fs * 4.0),
 			String(card.get("desc", "")), HORIZONTAL_ALIGNMENT_LEFT,
 			cw - 20.0 * s, fs, -1, _INK)
+		# THE STACKED TOTAL, pinned to the bottom of the card so a wrapped
+		# description never walks over it. The PRODUCT rule is the best thing about
+		# the deck and it was completely invisible — a second Heavy Shells reads as
+		# another +35% when it is really ×1.82. Precomputed by DiveRun.draft_view
+		# off the held hand; empty for a card that multiplies nothing.
+		var stack := String(card.get("stack", ""))
+		if not stack.is_empty():
+			draw_string(font, Vector2(cx + 10.0 * s, top + ch - fs * 0.55),
+				stack, HORIZONTAL_ALIGNMENT_LEFT, -1, 11 * s, Color(tint, 0.8))
 
 
 ## THE LEDGER — the run-over screen. A centred plate over whatever the world is
