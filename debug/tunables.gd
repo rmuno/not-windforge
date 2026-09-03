@@ -227,13 +227,11 @@ const _REGISTRY := [
 		"group": "World", "kind": KIND_FLOAT, "default": 2.0, "min": 0.0,
 		"max": 8.0, "step": 0.25},   # world.edge_marker_range_px — 0 silences them, like the toggle
 	# --- THE DIVE (Q-G, the roguelite mode) ---------------------------------
-	# The one number that sets the mode's pulse: how often a depth's den attacks
-	# once its arrival grace has run out. Everything else about the run shape is
-	# structural and lives in modes/dive_run.gd (the ladder, the coin table, the
-	# extraction premium) — those are design, not taste.
-	{"id": "dive_surge_period", "label": "Dive: seconds between a depth's attacks",
-		"group": "World", "kind": KIND_FLOAT, "default": 45.0, "min": 5.0,
-		"max": 180.0, "step": 5.0},   # world._tick_dive -> DiveRun.advance
+	# (`dive_surge_period` RETIRED in v0.141.0 with the timer surge itself —
+	# owner call 6, DESIGN_DIVE_REVIEW §5.3: a 45-second clock spawning hunters
+	# past the horizon is the sourceless ring-spawn DESIGN.md §4 forbids. A run's
+	# pressure is its standing garrison plus the chase; `world._dive_surge` is an
+	# F2 BUTTON now, and the lever below is the only number it still reads.)
 	# How far AHEAD of you a surge arrives, in seconds of your current travel.
 	# The measured dive is ~1,950 px/s and a kraken closes far slower, so a
 	# picket spawned abeam is scenery — this is what puts it in your path.
@@ -320,12 +318,14 @@ const _REGISTRY := [
 	{"id": "dive_dive_rate", "label": "Dive: descent the stick asks for (px/s at 1x)",
 		"group": "World", "kind": KIND_FLOAT, "default": 240.0, "min": 0.0,
 		"max": 900.0, "step": 10.0},                             # Ship.dive_rate_max
-	# The closing sky's strength, a multiplier on DiveRun.CEILING_PUSH (400
-	# px/s²@1×/rung, capped at 3 rungs ≈ 10× the props). 1.0 = the shipped rail;
-	# 0 turns the ceiling off entirely for A/B play.
-	{"id": "dive_ceiling_mult", "label": "Dive: closing-sky push (0 = off, 1 = shipped)",
+	# The closing sky's strength, a multiplier on DiveRun.CEILING_LEASH_SPEED
+	# (150 px/s@1× per rung over, capped at 2 rungs). It is a DOWNDRAFT now, not
+	# a force: at a rung over it runs 1,200 px/s against a 960 px/s climb (you
+	# sink at 240), at a quarter rung 300 (you climb out at 660) — a leash, not a
+	# rail (owner call 2). 0 turns the closing sky off entirely for A/B play.
+	{"id": "dive_ceiling_mult", "label": "Dive: closing-sky LEASH (0 = off, 1 = shipped)",
 		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,
-		"max": 4.0, "step": 0.1},                                # world._dive_hold_the_ceiling
+		"max": 4.0, "step": 0.1},                                # world._dive_weather
 	# A run's hull rides a near-frictionless keel (the slab pin: holding DOWN on
 	# a landing pinned the hull and sideways thrust lost to friction). 1.0 would
 	# restore the stock keel inside runs too.
@@ -339,7 +339,7 @@ const _REGISTRY := [
 		"group": "World", "kind": KIND_BOOL, "default": true},   # world._tick_dive / _dive_hold_the_ring
 	{"id": "dive_zone_wind_mult", "label": "Dive: zone wind strength (1 = shipped)",
 		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,
-		"max": 4.0, "step": 0.1},                                # world._dive_hold_the_ring
+		"max": 4.0, "step": 0.1},                                # world._dive_weather
 	# 12 was authored blind and measured at 133 s per tile for the upgraded
 	# starter (509 px/s lateral) — a ring nobody would ever cross. 3 ≈ 33 s per
 	# tile: the flanks are a commitment, not a career.

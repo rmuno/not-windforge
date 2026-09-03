@@ -53,6 +53,14 @@ const SEA_LEVEL_Y := 0.0
 const CEILING_Y := -24000.0
 const MIN_AIR_DENSITY := 0.05
 
+## The hull's aerodynamic drag, set on every ship in `_ready` (the why is there).
+## Named because the WIND TERM divides by it: a steady `mass · damp · wind` force
+## holds equilibrium exactly at `wind` px/s, so any weather authored as an
+## acceleration converts to an airstream SPEED by dividing by this. `DiveRun`
+## mirrors the number as `AIR_DAMP` (it is a pure model and must not reach into a
+## Node class); `_test_dive_weather` reddens if the two ever drift.
+const AIR_DAMP := 0.4
+
 ## --- Upright rule (owner spec 2026-08-20, source fidelity) ---------------
 ## Ships are ALWAYS upright, regardless of configuration — a lone block no
 ## less than a battleship. The original never banks or tumbles, and every
@@ -523,6 +531,23 @@ var rate_control := false
 var climb_rate_max := 0.0
 var dive_rate_max := 0.0
 
+## THE RUN'S WEATHER, AS ONE VECTOR (DESIGN_DIVE_REVIEW §3.2, slice 5). World
+## px/s — an AIRSTREAM VELOCITY, not a force: the world stamps it every tick
+## (`world._dive_weather`) and `_physics_process` feeds it through the very same
+## `mass · linear_damp · wind` term `Airspace` has always used, so the hull is
+## CARRIED by the air rather than shoved through it.
+##
+## That composition is the whole point, and it is why the ring's lean and the
+## closing sky stopped being two force sites. The rate controller measures its
+## `v_up` relative to `wind.y`, so a stick commands a speed RELATIVE TO THE AIR:
+## in a 1,200 px/s downdraft a 960 px/s climb is a fall you are slowing, and in a
+## 300 px/s one it is a climb you win. A LEASH by construction — the closing sky
+## needs no cap of its own to stop being a rail (owner call 2, review §3.3).
+##
+## Reset to ZERO by `world.end_dive` like every other run stamp: outside a run
+## the only weather is `Airspace`'s.
+var extra_wind := Vector2.ZERO
+
 ## Peer id allowed to fly this ship. 0 means nobody — wreckage, derelicts.
 var pilot_peer := 1
 
@@ -736,7 +761,7 @@ func _ready() -> void:
 	# (thrust / (damp × mass)) instead of an absurd ~1,360, and an unpiloted
 	# ship coasts to walking pace in a few seconds — momentum > drag, as the
 	# owner specified — rather than carrying its crew for a minute.
-	linear_damp = 0.4
+	linear_damp = AIR_DAMP
 	angular_damp = 1.0
 	# Collisions transfer momentum like pool balls, not putty (owner 2026-08-23:
 	# "whale collision against ship still doesn't seem to transfer all the
@@ -918,6 +943,10 @@ func strip_to_husk() -> int:
 	card_integrity_bonus = 0.0   # the pool is gone; so is what the cards paid for it
 	menders_running = false
 	thrust_input = Vector2.ZERO
+	# ...and out of the run's books is out of the run's WEATHER. A husk leaves
+	# `_dive_surged`, so nothing stamps `extra_wind` on it again — left set, the
+	# last downdraft it flew in would blow the wreck forever.
+	extra_wind = Vector2.ZERO
 	rebuild()
 	return doomed.size()
 
@@ -2094,14 +2123,25 @@ func _physics_process(delta: float) -> void:
 	net_position = position
 	net_rotation = rotation
 
-	var wind := Vector2.ZERO
-	if Airspace.active():
+	# ONE WIND VECTOR (DESIGN_DIVE_REVIEW §3.2). The airstream the hull is in is
+	# the world's circulation plus whatever the run stamped on `extra_wind`, and
+	# both arrive through the SAME term — which is what makes the Dive's weather
+	# compose with the rate controller for free (see `extra_wind`).
+	#
+	# DELIBERATELY OUTSIDE THE `Airspace.active()` GATE: `Airspace.bounds` is
+	# generation-only and EMPTY IN FLIGHT (see map_view.gd, hazards.gd), so
+	# `active()` is false in every live scene and a term inside the gate would
+	# never run in the Dive at all. `wind_at` already returns ZERO when inactive,
+	# so composing them here costs nothing and the gate keeps only what genuinely
+	# needs live bounds (gravity and the hard ceiling).
+	var wind := extra_wind + Airspace.wind_at(global_position)
+	if not wind.is_zero_approx():
 		# Wind drags the hull toward the airstream's velocity. Godot's linear
 		# damping decelerates at damp·v, so a steady force of mass·damp·wind
 		# holds equilibrium exactly at wind speed: still air keeps today's
 		# behaviour, and a dead ship in a stream ends up travelling with it.
-		wind = Airspace.wind_at(global_position)
 		apply_central_force(mass * linear_damp * wind)
+	if Airspace.active():
 		gravity_scale = Airspace.gravity_scale_at(global_position) * scale_unit
 		# The hard ceiling: the sky just ends. No damage, no bounce — upward
 		# motion stops and the forces above keep it pinned until it descends.

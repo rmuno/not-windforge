@@ -10,8 +10,10 @@ extends SceneTree
 ##
 ## This is a PROBE, not a test: it measures, it does not assert. The numbers it
 ## prints are the ones nothing but arithmetic has judged — how long a depth
-## takes at ship speed, whether `dive_surge_period` is the right pulse, whether
-## a run fits the owner's ten minutes.
+## takes at ship speed, how many PICKETS a depth actually puts in your way now
+## that the timer surge is retired (v0.141.0) and a depth's garrison is
+## `surge_count(d)` around its landing column, whether a run fits the owner's
+## ten minutes.
 ##
 ## Names no `class_name` as a type on purpose: doing that inside a --script file
 ## compiles that script before the autoloads exist (CODEMAP §4).
@@ -96,6 +98,10 @@ func _initialize() -> void:
 	var log_lines: Array[String] = []
 	var closest := INF
 	var engaged := 0
+	## Hostile instance id -> the depth it first came within engagement range at,
+	## and the tally per depth. See the booking site in the loop below.
+	var met_ids := {}
+	var met_by_depth := {}
 	var hp0 := 0.0
 	var hull0 = world.get("local_ship")
 	if hull0 != null and is_instance_valid(hull0):
@@ -163,7 +169,7 @@ func _initialize() -> void:
 			last_depth = d
 			depth_started = t
 		_count_enemy_fire()
-		# THREAT: did anything actually reach us? A surge that never closes is
+		# THREAT: did anything actually reach us? A garrison you never met is
 		# a spawn count, not a fight.
 		for sh in fleet.ships():
 			if not is_instance_valid(sh) or sh.faction == 0 or sh.is_carcass():
@@ -172,6 +178,14 @@ func _initialize() -> void:
 			closest = minf(closest, dd)
 			if dd < 4000.0 * 8.0:
 				engaged += 1
+				# PICKETS MET PER DEPTH (v0.141.0). With the timer surge retired,
+				# "how many did the sky actually put in your way" is THE pacing
+				# number, and it is a count of BODIES, not of events. Each
+				# hostile is booked once, at the depth where it first closed.
+				var hid: int = sh.get_instance_id()
+				if not met_ids.has(hid):
+					met_ids[hid] = d
+					met_by_depth[d] = int(met_by_depth.get(d, 0)) + 1
 		beat += STEP
 		if beat >= 30.0:
 			beat = 0.0
@@ -193,19 +207,28 @@ func _initialize() -> void:
 		hp1 = float(hull1.blocks.size())
 	print("\nTHREAT: nearest hostile ever %.0f px | frames with one within 4k*8: %d"
 		% [closest, engaged])
+	# THE GARRISON, AS MET (v0.141.0). The model says a depth is worth
+	# `DiveRun.surge_count(d)` pickets around its landing column; this is how many
+	# of them a real descent actually flew into.
+	var met_line := ""
+	var met_total := 0
+	for dd2 in range(1, 9):
+		var got := int(met_by_depth.get(dd2, 0))
+		met_total += got
+		met_line += "d%d:%d " % [dd2, got]
+	print("PICKETS MET: %s| total %d distinct hostiles" % [met_line, met_total])
 	# THE COMBAT SCORECARD (Q-O): what the fight actually did, in numbers.
-	var run3 = world.get("dive")
-	var surges_n := 1
-	if run3 != null:
-		surges_n = maxi(int(run3.get("surges")), 1)
+	# Per-picket, not per-surge: the surge timer is retired, so the denominator
+	# that means something is how many hostiles actually reached us.
+	var per_n := maxi(met_total, 1)
 	var hull3 = world.get("local_ship")
 	var integ := "unarmed"
 	if hull3 != null and is_instance_valid(hull3) and hull3.hull_integrity_max > 0.0:
 		integ = "%.0f/%.0f" % [hull3.hull_integrity, hull3.hull_integrity_max]
-	print("COMBAT: enemy shells fired %d | hits on us %d (%.0f%% of shells) | damage %.0f (%.0f per surge) | integrity %s"
+	print("COMBAT: enemy shells fired %d | hits on us %d (%.0f%% of shells) | damage %.0f (%.0f per picket met) | integrity %s"
 		% [enemy_shots, hits_taken,
 			(100.0 * float(hits_taken) / float(maxi(enemy_shots, 1))),
-			damage_taken, damage_taken / float(surges_n), integ])
+			damage_taken, damage_taken / float(per_n), integ])
 	print("HULL:   %.0f blocks -> %.0f (%.0f lost)" % [hp0, hp1, hp0 - hp1])
 	print("GEAR:   %s" % _gear(hull1))
 	print("\n--- the descent ---")

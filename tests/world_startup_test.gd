@@ -2571,8 +2571,10 @@ func _check_dive(world: Node, fleet) -> void:
 	if st != null:
 		var d := st as Dictionary
 		var shaped := true
+		# ("surge_in" retired with the timer surge in v0.141.0 — there is no clock
+		# left to count down. "surges" stays: the F2 verb still books one.)
 		for key in ["depth", "deepest", "pot", "kills", "elapsed", "outcome",
-				"depths", "depth_label", "surge_in"]:
+				"depths", "depth_label", "surges"]:
 			shaped = shaped and d.has(key)
 		_ok(shaped, "dive_status carries the whole run in plain values")
 		_ok(int(d.get("depth", 0)) == 1 and String(d.get("outcome", "x")) == "",
@@ -3115,25 +3117,39 @@ func _check_dive(world: Node, fleet) -> void:
 			float(world.call("dive_altitude_y",
 				DiveRun.ceiling_at(DiveRun.depth_altitude(3)))) - rung_px)
 		pl.velocity = Vector2.ZERO
-		world.call("_dive_hold_the_ceiling", 0.5)
+		# `_dive_hold_the_ceiling` retired in v0.141.0: the closing sky is one
+		# term of `_dive_weather` now, which stamps every hull's `extra_wind` and
+		# pushes the on-foot body from the very same vector. Same assertion, at
+		# the site it moved to.
+		world.call("_dive_weather", 0.5)
 		_ok(pl.velocity.y > 0.0,
 			"above the closed sky, the air shoves a body DOWN (vy %.0f)" % pl.velocity.y)
-		# ...and below the ceiling it does not touch you.
+		# ...and below the ceiling the sky lets go: what is left is the TILE's own
+		# lean, and the updraft a run starts in never pushes down.
 		pl.global_position = Vector2(was_at.x,
 			float(world.call("dive_altitude_y", DiveRun.depth_altitude(3))))
 		pl.velocity = Vector2.ZERO
-		world.call("_dive_hold_the_ceiling", 0.5)
-		_ok(is_zero_approx(pl.velocity.y),
-			"below the ceiling the sky leaves you alone")
+		world.call("_dive_weather", 0.5)
+		_ok(pl.velocity.y <= 0.0,
+			"below the ceiling the closing sky lets go (vy %.0f)" % pl.velocity.y)
 		pl.global_position = was_at
 		# --- THE WIND RING (owner experiment 2026-08-31) --------------------
 		# Standing in the centre tile, the updraft leans a body UP; standing a
-		# lap away, the loop brings you home from the other side.
+		# lap away, the loop brings you home from the other side. The LEAN moved
+		# to `_dive_weather` in v0.141.0 (one airstream, one site); the WRAP is
+		# still `_dive_hold_the_ring`'s own job.
 		if bool(Tunables.get_bool("dive_zones_enabled")):
 			_ok(String(world.call("dive_status")["zone"]) == "UPDRAFT",
 				"the run starts in the UPDRAFT tile")
 			pl.velocity = Vector2.ZERO
-			world.call("_dive_hold_the_ring", 0.5)
+			# BELOW THE CLOSED SKY, or the two terms are being weighed against
+			# each other rather than the tile's lean being read. (`was_at` is the
+			# launch deck, which for a run whose low-water mark is depth 3 is a
+			# long way above the ceiling — that composition is exactly right, and
+			# it is what the two checks above just measured.)
+			pl.global_position = Vector2(was_at.x,
+				float(world.call("dive_altitude_y", DiveRun.depth_altitude(3))))
+			world.call("_dive_weather", 0.5)
 			_ok(pl.velocity.y < 0.0,
 				"the centre tile's wind pushes a body UP (vy %.0f)" % pl.velocity.y)
 			# The loop: step past the ring's edge and arrive from the other side.

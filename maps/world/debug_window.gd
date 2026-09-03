@@ -259,6 +259,15 @@ func _build_spawn_tab() -> void:
 		func() -> void:
 			if world != null:
 				world.get_tree().change_scene_to_file("res://maps/dive/dive_1x.tscn"))
+	# THE SURGE, NOW A VERB AND NOTHING ELSE (v0.141.0, owner call 6). The
+	# 45-second timer that used to fire this is retired — a run's population is
+	# its standing garrison — so this button is the only way a wave of hunters
+	# arrives, which is exactly what the owner needs to A/B "garrison alone"
+	# against "garrison plus pressure". No-op outside a live run.
+	_action_button(box, "DIVE: SEND A SURGE (hunters fly in from past the horizon)",
+		func() -> void:
+			if world != null and world.has_method("_dive_surge"):
+				world.call("_dive_surge"))
 	_action_button(box, "Plant a Dive OUTPOST beside you (K trades at it)",
 		func() -> void:
 			if world != null and world.has_method("_plant_outpost"):

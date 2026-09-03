@@ -146,13 +146,10 @@ func _draw_gauge(d: Dictionary) -> void:
 			"hull %d%%" % int(round(hull_frac * 100.0)),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
 			_ALARM if hull_frac < 0.34 else _INK)
-	# The den's clock. Only shown when it is close enough to mean something —
-	# a permanent countdown would be a nag, and the screen is meant to be calm.
-	var into := float(d.get("surge_in", 99.0))
-	if into <= 10.0:
-		draw_string(font, Vector2(x - 52.0 * s, y + fs * 2.8),
-			"they come: %.0f" % maxf(into, 0.0),
-			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _ALARM)
+	# (The den's "they come: 7" countdown lived here. Retired with the timer surge
+	# in v0.141.0 — owner call 6: there is no clock to count down, because the
+	# sky's population is standing in it already. One fewer thing on a screen that
+	# is meant to be calm.)
 
 	# THE CARD XP BAR + held count (Q-L), tucked under the coin/clock stack. The
 	# bar fills toward the next draft; the count says how strong this run has got.
