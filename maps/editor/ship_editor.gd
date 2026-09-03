@@ -406,6 +406,11 @@ func _open_row(index: int) -> void:
 	if edit.load_path(path):
 		ShipEdit.carry_text = ""   # the carried sheet is superseded
 		_say("%s is on the table" % path)
+	elif ShipLayout.file_scale(FileAccess.get_file_as_string(path)) > 1:
+		# An F2 `export_ship` file: already at the world’s granularity, so editing
+		# it here and saving it as a default would be the eightfold family.
+		_say("%s is an UPSCALED export (scale %d) — the table edits authored 1× files only. F2-spawn it in a world instead."
+			% [path, ShipLayout.file_scale(FileAccess.get_file_as_string(path))])
 	else:
 		_say("%s did not parse — nothing loaded" % path)
 	_after_load()

@@ -315,11 +315,20 @@ func _apply_boot_mode() -> void:
 func _spawn_try_ship(path: String) -> void:
 	if path == "" or player == null or not is_instance_valid(player):
 		return
-	var cells := ShipLayout.load_cells(path)
+	var text := FileAccess.get_file_as_string(path)
+	var cells := ShipLayout.parse(text)
 	if cells.is_empty():
 		_notify("that blueprint did not parse — nothing to try")
 		return
-	var meta := ShipLayout.load_meta(path)
+	# Same granularity guard as the launch deck: a `scale N` file is already at
+	# that granularity and must not be upscaled again (the eightfold family).
+	var fs := maxi(1, ShipLayout.file_scale(text))
+	if world_scale % fs != 0:
+		_notify("that .ship is scale %d — this world is %d, and %d does not divide it"
+			% [fs, world_scale, fs])
+		return
+	var up := world_scale / fs
+	var meta := ShipLayout.parse_meta(text)
 	var kind := String(meta.get("kind", "vessel"))
 	var at := player.global_position
 	var body: Ship = null
@@ -339,7 +348,7 @@ func _spawn_try_ship(path: String) -> void:
 	elif kind == "nest":
 		at += Vector2(TRY_CREATURE_GAP * float(world_scale), 0.0)
 		body = fleet.spawn_ship_from_cells(
-			ShipLayout.upscale_cells(cells, world_scale), at, 0, 0.0,
+			ShipLayout.upscale_cells(cells, up), at, 0, 0.0,
 			float(world_scale), 2, {"is_nest": true})
 		if body != null:
 			body.freeze = true
@@ -350,7 +359,7 @@ func _spawn_try_ship(path: String) -> void:
 		# rewrites of the deck), faction 0, helm boardable, its own width to one
 		# side so it is not spawned on top of you.
 		body = fleet.spawn_ship_from_cells(
-			ShipLayout.upscale_cells(cells, world_scale),
+			ShipLayout.upscale_cells(cells, up),
 			at, 0, 0.0, float(world_scale), 0)
 		if body != null:
 			body.bounty = int(meta.get("bounty", -1))
@@ -1550,15 +1559,24 @@ func _moor_saved_candidates(at: Vector2, start_index: int) -> int:
 		if _dive_berth_taken.size() >= berths.size():
 			break
 		var path := String(entry)
-		var meta := ShipLayout.load_meta(path)
+		var text := FileAccess.get_file_as_string(path)
+		var meta := ShipLayout.parse_meta(text)
 		var kind := String(meta.get("kind", "vessel"))
 		if kind != "vessel" and kind != "":
 			continue
-		var cells := ShipLayout.load_cells(path)
+		var cells := ShipLayout.parse(text)
 		if cells.is_empty():
 			continue   # unreadable / not a blueprint — never break the boot
+		# GRANULARITY, not shape. `user://ships` already holds F2 `export_ship`
+		# files, which carry a `scale` header because they were serialized out of
+		# a live 8× world. Upscaling one of those AGAIN is the eightfold family,
+		# and it would land here as "my saved ship is a hundred thousand pixels
+		# wide" — the exact bug that cost the launch deck four rewrites.
+		var fs := maxi(1, ShipLayout.file_scale(text))
+		if world_scale % fs != 0:
+			continue
 		var hull := fleet.spawn_ship_from_cells(
-			ShipLayout.upscale_cells(cells, world_scale), at, 0, 0.0,
+			ShipLayout.upscale_cells(cells, world_scale / fs), at, 0, 0.0,
 			float(world_scale), 0)
 		if hull == null:
 			continue
@@ -5064,9 +5082,13 @@ func export_ship() -> String:
 	for cell in local_ship.blocks:
 		types[cell] = int(local_ship.blocks[cell]["type"])
 	var text := ShipLayout.serialize(types, world_scale)
-	if not DirAccess.dir_exists_absolute("user://ships"):
-		DirAccess.make_dir_recursive_absolute("user://ships")
-	var path := "user://ships/built_%d.ship" % int(Time.get_unix_time_from_system())
+	# THE SAME SHELF THE DRAFTING TABLE SAVES TO, through the same redirectable
+	# name (Q-T): these files are launch-deck candidates now, and a suite writing
+	# into the owner’s real `user://ships` would put scratch hulls on their deck.
+	if not DirAccess.dir_exists_absolute(ShipLayout.user_dir):
+		DirAccess.make_dir_recursive_absolute(ShipLayout.user_dir)
+	var path := ShipLayout.user_dir.path_join(
+		"built_%d.ship" % int(Time.get_unix_time_from_system()))
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f != null:
 		f.store_string(text)

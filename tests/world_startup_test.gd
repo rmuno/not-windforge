@@ -345,6 +345,10 @@ func _initialize() -> void:
 	# what the world does NOT build when the intro picked the Dive.
 	await _check_dive_boots_streamlined()
 
+	# ...and one more separate boot, for the same reason: the drafting table's
+	# TRY IT is a world-boot verb, so the only honest test of it boots a world.
+	await _check_try_it_boots()
+
 	# (The third boot here — THE SHIPYARD, builder mode — was retired with the
 	# mode itself (owner 2026-09-01: "the midair shipyard is ridiculous"). The
 	# ship builder is now the DRAFTING TABLE, its own scene with no world to
@@ -364,6 +368,82 @@ func _initialize() -> void:
 ##
 ## Both halves are pinned, because "the other modes remain as they are" is half
 ## the ruling: a DIVE boot builds no ecology, and an EXPEDITION boot still does.
+## THE DRAFTING TABLE'S "TRY IT" (owner arc Q-T, 2026-09-02). The table writes
+## the sheet to a scratch file, sets `GameMode.try_path` and changes scene; the
+## world spawns that file THROUGH ITS OWN SPAWN FUNCTIONS — which is the whole
+## claim, because a preview down its own code path would be a preview of a
+## different game. Two boots, one per branch of the split:
+##
+##   a CREATURE file spawns as itself, faction 2, alive;
+##   a VESSEL file spawns frozen and faction 0, with a helm you can take.
+##
+## Plus the two properties that make the button safe: the world is the QUIET boot
+## (nobody else's content around the one thing you came to look at), and the path
+## is TAKEN, so a reset cannot spawn it a second time.
+func _check_try_it_boots() -> void:
+	var packed: PackedScene = load("res://maps/scale_test/scale_test.tscn")
+	if packed == null:
+		_ok(false, "the try-it check can load a world")
+		return
+
+	# --- A CREATURE -----------------------------------------------------------
+	GameMode.pending = GameMode.SANDBOX
+	GameMode.try_path = "res://tests/fixtures/header_creature.ship"
+	var w: Node = packed.instantiate()
+	root.add_child(w)
+	for i in 10:
+		await process_frame
+	var f = w.get("fleet")
+	var tried: Ship = null
+	var wild := 0
+	for ship in (f.call("ships") as Array):
+		if not is_instance_valid(ship):
+			continue
+		if (ship as Ship).creature_kind != "":
+			wild += 1
+			if is_equal_approx((ship as Ship).shared_health_max, 1234.0):
+				tried = ship as Ship
+	_ok(tried != null, "TRY IT on a creature file spawns that creature")
+	if tried != null:
+		_ok(tried.faction == 2 and tried.creature_kind == "critter",
+			"...as wildlife, with the brain its `kind` header names")
+		_ok(tried.bounty == 7, "...carrying its headers (bounty %d)" % tried.bounty)
+	_ok(wild == 1,
+		"...into a QUIET world — the design is the only creature in it (%d)" % wild)
+	_ok(GameMode.try_path == "",
+		"...and the path was TAKEN, so a reset cannot spawn it twice")
+	w.queue_free()
+	await process_frame
+
+	# --- A VESSEL -------------------------------------------------------------
+	GameMode.pending = GameMode.SANDBOX
+	GameMode.try_path = "res://ships/hulk.ship"
+	var w2: Node = packed.instantiate()
+	root.add_child(w2)
+	for i in 10:
+		await process_frame
+	var f2 = w2.get("fleet")
+	var moored: Ship = null
+	for ship in (f2.call("ships") as Array):
+		var sh := ship as Ship
+		if not is_instance_valid(sh) or sh.is_nest or sh.creature_kind != "":
+			continue
+		if sh.faction == 0 and sh.bounty == 35:
+			moored = sh
+	_ok(moored != null, "TRY IT on a VESSEL file spawns a hull beside you")
+	if moored != null:
+		_ok(moored.freeze, "...moored frozen, so it cannot climb away while you walk to it")
+		_ok(not moored.helm_cells.is_empty(), "...with a boardable helm")
+		var pl2 = w2.get("player")
+		if pl2 != null and is_instance_valid(pl2):
+			_ok(absf(moored.global_position.x - pl2.global_position.x) < 40000.0,
+				"...and near enough to reach (%.0f px)"
+					% absf(moored.global_position.x - pl2.global_position.x))
+	w2.queue_free()
+	await process_frame
+	GameMode.pending = GameMode.EXPEDITION
+
+
 func _check_dive_boots_streamlined() -> void:
 	var packed: PackedScene = load("res://maps/scale_test/scale_test.tscn")
 	if packed == null:

@@ -663,7 +663,23 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	# Depth 2's altitude, a long way from the body — this is the review's own
 	# one-minute check ("spawn a hulk at depth 2 with no player nearby").
 	var rung_y: float = float(w.call("dive_altitude_y", DiveRun.depth_altitude(2)))
-	picket.global_position = Vector2(cx + 9000.0, rung_y)
+	var spot := Vector2(cx + 9000.0, rung_y)
+	# CLEAR AIR, GUARANTEED (2026-09-02). This spot is a fixed offset from the
+	# centre line, and whether an island is generated there depends on where the
+	# run put its landings — so the check flaked the moment anything changed the
+	# deck's geometry (a saved candidate, Q-T), measuring a hull resting on rock
+	# instead of a hull holding a rung. Generate the neighbourhood, THEN carve it:
+	# a region generated afterwards is repainted under the body (DECISIONS
+	# 2026-08-30, the landing-shelf bug).
+	var terr = w.get("terrain")
+	if terr != null:
+		IslandGen.ensure_generated(terr, int(w.get("world_seed")), [spot], 14000.0, 64)
+		var cp: float = maxf(terr.cell_px(), 1.0)
+		var half := 12000.0
+		terr.fill_rect(Rect2i(terr.world_to_cell(spot - Vector2(half, half)),
+			Vector2i(int(half * 2.0 / cp), int(half * 2.0 / cp))), TerrainDB.Type.AIR)
+		terr.flush_rebuilds()
+	picket.global_position = spot
 	picket.linear_velocity = Vector2.ZERO
 	await w.get_tree().physics_frame
 	# JAM THE STICK, then kill the driver: exactly the sequence a shell through
@@ -686,7 +702,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	# it again here reproduces the old behaviour without touching the code — and
 	# the comparison is honest whatever this seed's picket is trimmed like, which
 	# an absolute "it must not sink" number would not be.
-	picket.global_position = Vector2(picket.global_position.x, rung_y)
+	picket.global_position = Vector2(spot.x, rung_y)
 	picket.linear_velocity = Vector2.ZERO
 	picket.net_set_controls(0.4, -1.0)
 	await w.get_tree().physics_frame
@@ -1151,6 +1167,14 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 	if saved != null:
 		_ok(saved.faction == 0 and not saved.is_nest and saved.has_helm(),
 			"...as a faction-0 hull with a helm")
+		# AT ITS TRUE SIZE. The fixture is 8 authored cells across, so at 8x it is
+		# 8 x Ship.CELL x 8 = 1024 px. Upscaling a file that is ALREADY at the
+		# world's granularity (an F2 `export_ship`, which carries a `scale`
+		# header) would put an 8192 px hull here instead - the eightfold family,
+		# in the one directory a player can drop any file into.
+		_ok(absf(saved.solid_bounds.size.x - 8.0 * Ship.CELL * 8.0) < Ship.CELL * 8.0,
+			"...at its authored granularity, not upscaled twice (%.0f px beam)"
+				% saved.solid_bounds.size.x)
 		# UNDER A HATCH, not merely nearby: the hull’s own centre lines up with a
 		# berth centre. That is the whole geometry the deck exists for, and it is
 		# the number four rewrites of it got wrong.
