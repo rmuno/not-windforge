@@ -504,6 +504,21 @@ func _encode_diffs() -> PackedInt32Array:
 ## so a zoom change re-scans exactly once.
 var primary_range_px := 0.0
 
+## THE CAP ON THAT RADIUS, in world px — how far out the primary tier is allowed
+## to stream at the most extreme zoom. The world sets it from the MAX-ZOOM
+## horizon (owner rule since v0.128.0: everything active is bounded by "the
+## boundary of all active players as if they were using a ship's MAX ZOOM"), so
+## the streamer and the spawn rules are capped by the same frame.
+##
+## It exists because the cap used to be the magic `20 * subdiv / 8` chunks —
+## 10,240 px at the shipped subdiv 4, well INSIDE the 14,321 px half-width of a
+## max-zoom frame. Wheel all the way out and the ground stopped ~70% of the way
+## to the screen edge and streamed in as you moved, which is the owner's
+## "terrain to load in half way on the screen". 0 = not set: the old constant
+## still governs, which is what headless tools and the unit suite (no camera, no
+## world) run on.
+var primary_cap_px := 0.0
+
 
 func _primary_promote_r() -> int:
 	if primary_range_px > 0.0:
@@ -511,8 +526,11 @@ func _primary_promote_r() -> int:
 		# coarse minimum — and capped: an extreme wheel-zoom-out showing half
 		# the world cannot promote thousands of chunks (beyond the cap the far
 		# terrain simply isn't streamed; that far out is the map's job).
+		var cap := 20 * maxi(subdiv, 1) / 8
+		if primary_cap_px > 0.0:
+			cap = int(ceil(primary_cap_px / chunk_px())) + 1
 		return clampi(int(ceil(primary_range_px / chunk_px())) + 1,
-			PROMOTE_RADIUS, 20 * maxi(subdiv, 1) / 8)
+			PROMOTE_RADIUS, maxi(cap, PROMOTE_RADIUS))
 	# Fallback: ~9/16ths of the old px range (past the default pilot zoom-out).
 	return maxi(PROMOTE_RADIUS, roundi(9.0 * subdiv / 8.0))
 

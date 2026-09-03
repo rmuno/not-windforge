@@ -131,9 +131,10 @@ const _REGISTRY := [
 	# --- Dormancy (owner 2026-08-25: let more things exist while far away) ---
 	{"id": "dormancy_enabled", "label": "Distance dormancy (far bodies leave physics)",
 		"group": "World", "kind": KIND_BOOL, "default": true},   # world._update_dormancy
-	{"id": "dormant_range_px", "label": "Dormancy range (px; wakes at 80%)",
+	{"id": "dormant_range_px",
+		"label": "Dormancy range (px; floored at the max-zoom horizon; wakes at 80%)",
 		"group": "World", "kind": KIND_FLOAT, "default": 12000.0,
-		"min": 2000.0, "max": 60000.0, "step": 500.0},           # world._update_dormancy
+		"min": 2000.0, "max": 60000.0, "step": 500.0},           # world._update_dormancy — FLOORED at max_view_horizon_px()*1.1 (~18,075 px at the shipped constants), so this lever can only RAISE it: nothing inside a max-zoom frame may sleep (owner 2026-09-02)
 	{"id": "dormant_tick_seconds", "label": "Dormant tick (s)", "group": "World",
 		"kind": KIND_FLOAT, "default": 3.0, "min": 0.5, "max": 30.0, "step": 0.5},
 	{"id": "dormant_max_awake", "label": "Max bodies simulated at once (0 = no cap)",
@@ -340,6 +341,15 @@ const _REGISTRY := [
 	{"id": "dive_zone_wind_mult", "label": "Dive: zone wind strength (1 = shipped)",
 		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,
 		"max": 4.0, "step": 0.1},                                # world._dive_weather
+	# HOW WIDE A DRAFT IS (owner 2026-09-02: "the vertical wind bands could be a
+	# bit wider … the expanse of this wind draft could semi camouflage the
+	# teleporting bit"). 1.0 with the quarter-tile blend is exactly the old hard
+	# per-tile switch's felt width; 2.0 carries the downdraft a full tile past the
+	# seam either way, so the crossing happens inside the wind rather than beside
+	# it. See DiveRun.draft_strength.
+	{"id": "dive_draft_band_tiles", "label": "Dive: draft band width (ring tiles)",
+		"group": "World", "kind": KIND_FLOAT, "default": 2.0, "min": 1.0,
+		"max": 6.0, "step": 0.5},                                # world.dive_draft_at
 	# 12 was authored blind and measured at 133 s per tile for the upgraded
 	# starter (509 px/s lateral) — a ring nobody would ever cross. 3 ≈ 33 s per
 	# tile: the flanks are a commitment, not a career.

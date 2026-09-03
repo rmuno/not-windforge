@@ -970,6 +970,75 @@ static func zone_offset(i: int) -> float:
 	return float(t - n) if t > n / 2 else float(t)
 
 
+## Half the width of the draft's soft edge, in tile widths (see `draft_strength`).
+const DRAFT_BLEND_TILES := 0.25
+
+
+## THE DRAFTS ARE A FIELD, NOT A TILE (owner 2026-09-02: *"the vertical wind
+## bands could be a bit wider - I think they're getting shortened by the teleport
+## mechanism. The hope was that the expanse of this wind draft could semi
+## camouflage the teleporting bit"*).
+##
+## Nothing was shortening them. `zone_kind(zone_index(x))` is a HARD per-tile
+## switch, so a draft was exactly ONE tile wide (33,792 px at the shipped
+## numbers) with a cliff edge at ±0.5 tiles — and the downdraft IS the seam tile,
+## half of it hanging off each end of the ring, so the strongest thing near the
+## wrap line stopped dead half a tile short of it on both sides. A cliff edge is
+## also the worst possible camouflage for a seam: what the owner asked for is a
+## draft that spans the crossing, so there is no moment of "no wind, then wind".
+##
+## So: distance to the nearest UP or DOWN tile CENTRE, the SHORT way round the
+## ring; full strength inside the band, smoothstepped to nothing over a quarter
+## tile either side of it. `band_tiles` 1.0 reproduces today's felt width (full
+## strength out to ±0.25, gone by ±0.75 — one tile of support); 2.0, the shipped
+## default, carries the downdraft a full tile past the seam in both directions.
+##
+## PURE, and returns the kind alongside the strength because the caller needs
+## both: `weather_wind` multiplies the ring term by the strength, and the HUD
+## names the sky you are in. An empty kind means calm — the same "unknown kind is
+## no wind" convention `zone_wind_of` already keeps, so a ring with no drafts in
+## it at all falls out for free.
+static func draft_strength(x_off_tiles: float, band_tiles: float) -> Dictionary:
+	var n := RING.size()
+	var best_kind := ""
+	var best_d := INF
+	for i in n:
+		var kind := zone_kind(i)
+		if is_zero_approx(zone_wind_of(kind)):
+			continue   # the rocks have no draft to be near
+		# The short way round, in tile widths — the ring is a circle, so the tile
+		# at +6 is also the tile at -6 and a point just past the seam is INSIDE
+		# the seam tile's band, not a whole ring away from it.
+		var d := absf(wrapf(x_off_tiles - zone_offset(i) + float(n) * 0.5,
+			0.0, float(n)) - float(n) * 0.5)
+		if d < best_d:
+			best_d = d
+			best_kind = kind
+	if best_kind == "":
+		return {"kind": "", "strength": 0.0}
+	# A quarter tile of blend either side of the band's own half-width, so the
+	# edge is a slope you fly through rather than a line you cross.
+	var half := maxf(band_tiles, 0.0) * 0.5
+	var s := 1.0 - smoothstep(half - DRAFT_BLEND_TILES, half + DRAFT_BLEND_TILES,
+		best_d)
+	if s <= 0.0:
+		return {"kind": "", "strength": 0.0}
+	return {"kind": best_kind, "strength": s}
+
+
+## What the HUD calls the sky at this point. The tile's own name where no draft
+## reaches (THE ROCKS), the draft's name where one CLEARLY does — half strength
+## is the line, so the label changes where the air starts to be the story rather
+## than at the first whisper of it.
+static func draft_label(x_off_tiles: float, band_tiles: float) -> String:
+	var draft := draft_strength(x_off_tiles, band_tiles)
+	if float(draft["strength"]) > 0.5:
+		match String(draft["kind"]):
+			"up": return "UPDRAFT"
+			"down": return "DOWNDRAFT"
+	return zone_label(zone_index(x_off_tiles))
+
+
 ## THE RING, UNROLLED FOR A VIEWER (the MAP ROOM's spine).
 ##
 ## RING.size() + 1 columns, left to right, in the sketch's own order: the seam

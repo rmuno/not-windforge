@@ -3294,6 +3294,106 @@ func _test_dive_weather() -> void:
 			< climb * 4.0,
 		"the capped leash is a few times the climb, not the ten-fold rail it replaced")
 
+	_test_dive_draft_band()
+
+
+## THE DRAFT IS A FIELD (owner 2026-09-02: *"the vertical wind bands could be a
+## bit wider - I think they're getting shortened by the teleport mechanism. The
+## hope was that the expanse of this wind draft could semi camouflage the
+## teleporting bit"*).
+##
+## Nothing was shortening them — `zone_kind(zone_index(x))` was a hard per-tile
+## switch, so a draft was one tile wide with a cliff edge, and the downdraft (the
+## SEAM tile) stopped half a tile short of the wrap line on both sides. The band
+## is now a distance to the nearest draft's CENTRE, the short way round, which is
+## what lets it span the crossing.
+func _test_dive_draft_band() -> void:
+	_t("THE DRAFT BAND: a field with a soft edge, and it goes round the ring")
+	var blend := DiveRun.DRAFT_BLEND_TILES
+
+	# --- BAND 1.0 IS TODAY'S FELT WIDTH ------------------------------------
+	var at_up := DiveRun.draft_strength(0.0, 1.0)
+	_check(String(at_up["kind"]) == "up"
+			and is_equal_approx(float(at_up["strength"]), 1.0),
+		"at the updraft's own centre the band is at full strength")
+	_check(is_zero_approx(float(DiveRun.draft_strength(0.5 + blend, 1.0)["strength"]))
+			and is_zero_approx(
+				float(DiveRun.draft_strength(-0.5 - blend, 1.0)["strength"])),
+		"...and gone by ±%.2f tiles either side — one tile of support, as before"
+			% (0.5 + blend))
+	_check(String(DiveRun.draft_strength(0.5 + blend, 1.0)["kind"]) == "",
+		"a strength of zero names no kind at all (the calm convention)")
+
+	# --- THE BAND LEVER ACTUALLY WIDENS IT ----------------------------------
+	# Band 2.0: full strength out to 0.75 tiles, gone by 1.25 — so a hull a whole
+	# tile out, standing in the ADJACENT ROCK TILE, still feels the draft.
+	_check(is_equal_approx(
+			float(DiveRun.draft_strength(1.0 - blend, 2.0)["strength"]), 1.0),
+		"at band 2.0 the draft is still at full strength ±0.75 tiles out")
+	_check(is_zero_approx(float(DiveRun.draft_strength(1.0 + blend, 2.0)["strength"])),
+		"...and gone by ±1.25 — 2.5 tiles of support against 1.0's one")
+	var one_out := DiveRun.draft_strength(1.0, 2.0)
+	_check(String(one_out["kind"]) == "up" and float(one_out["strength"]) > 0.0,
+		"a full tile out — the next tile along — still feels it at band 2.0 (%.2f)"
+			% float(one_out["strength"]))
+	_check(is_zero_approx(float(DiveRun.draft_strength(1.0, 1.0)["strength"])),
+		"...and feels nothing at band 1.0, which is the whole difference")
+
+	# --- MONOTONE: no ripples in the blend ----------------------------------
+	var last := 2.0
+	var monotone := true
+	for i in 41:
+		var d := float(i) / 40.0 * 1.5      # 0 → 1.5 tiles from the updraft's centre
+		var s := float(DiveRun.draft_strength(d, 2.0)["strength"])
+		if s > last + 0.0001:
+			monotone = false
+		last = s
+	_check(monotone, "the blend falls off monotonically — no ripple in the edge")
+	_check(is_equal_approx(float(DiveRun.draft_strength(0.4, 2.0)["strength"]),
+			float(DiveRun.draft_strength(-0.4, 2.0)["strength"])),
+		"...and is symmetric about the tile's centre")
+
+	# --- THE SHORT WAY ROUND (the seam) -------------------------------------
+	# The downdraft IS the seam tile, centred at ±6 tiles. A point just PAST +6 is
+	# a whisker from its centre, not a whole ring away — this is the claim that
+	# makes the draft span the crossing instead of stopping at it.
+	var n := float(DiveRun.RING.size())
+	var seam := n * 0.5
+	var just_past := DiveRun.draft_strength(seam + 0.1, 2.0)
+	var just_short := DiveRun.draft_strength(seam - 0.1, 2.0)
+	_check(String(just_past["kind"]) == "down"
+			and is_equal_approx(float(just_past["strength"]), 1.0),
+		"a whisker PAST the seam is deep inside the downdraft, not outside the ring")
+	_check(is_equal_approx(float(just_past["strength"]),
+			float(just_short["strength"])),
+		"...exactly as strongly as a whisker short of it — the wrap changes nothing")
+	# ...and the wrapped image of a point reads identically, which is the property
+	# the seamless crossing rests on.
+	var here := DiveRun.draft_strength(seam - 0.4, 2.0)
+	var lap := DiveRun.draft_strength(seam - 0.4 - n, 2.0)
+	_check(String(here["kind"]) == String(lap["kind"])
+			and is_equal_approx(float(here["strength"]), float(lap["strength"])),
+		"a point and its image one circumference away are the same weather")
+
+	# --- THE HUD STILL NAMES THE SKY ----------------------------------------
+	_check(DiveRun.draft_label(0.0, 2.0) == "UPDRAFT"
+			and DiveRun.draft_label(seam, 2.0) == "DOWNDRAFT",
+		"the HUD names a draft you are standing in")
+	_check(DiveRun.draft_label(3.0, 2.0) == "THE ROCKS",
+		"...and the rocks where no draft reaches")
+	_check(DiveRun.draft_label(1.0 - blend, 2.0) == "UPDRAFT",
+		"...and the band's own width, not the tile line, decides which (%.2f tiles out)"
+			% (1.0 - blend))
+
+	# --- AND THE WIND ITSELF SCALES WITH IT ---------------------------------
+	# The world multiplies `zone_mult` by the strength, so half a band is half a
+	# lean. Stated here because that composition is the only wiring the fix has.
+	var full := DiveRun.weather_wind("down", 0.0, 1.0, 1.0).y
+	var half_str := DiveRun.weather_wind("down", 0.0, 0.5, 1.0).y
+	_check(is_equal_approx(half_str, full * 0.5),
+		"half the band's strength is half the lean (%.1f of %.1f px/s@1x)"
+			% [half_str, full])
+
 
 ## THE SEAM YOU CANNOT SEE (owner 2026-09-01: *"Looping around through the world
 ## seems to make such a mess - it literally teleports the player. could it be a

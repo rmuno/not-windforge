@@ -230,6 +230,11 @@ func _initialize() -> void:
 	# so every check above it would otherwise be counting a world it rearranged.
 	await _check_dive_deck_at_8x(world)
 
+	# ...and AFTER even that, because it is the most destructive check in the file:
+	# it generates ground across a whole max-zoom frame and runs the dormancy scan
+	# by hand. Nothing above it would survive being measured afterwards.
+	await _check_max_zoom_reaches_the_frame(world)
+
 	# ...and LAST OF ALL, a SECOND, SEPARATE boot: the Dive's own scene. It
 	# cannot share the world above, because the whole point of it is the world
 	# that world is NOT.
@@ -238,6 +243,130 @@ func _initialize() -> void:
 	await _check_dive_scene_boots()
 
 	_finish()
+
+
+## "AS IF THEY WERE USING A SHIP'S MAX ZOOM" (the standing owner rule since
+## v0.128.0), applied to the two radii that never learned it — owner 2026-09-02:
+## *"The 'max zoom as if on ship' doesn't seem to be fully recognized - if I zoom
+## out as much as possible I can see that creatures toward the edge of the screen
+## are updating super slow (per the 'far away, delay updates' process). But this
+## also causes terrain to load in half way on the screen."*
+##
+## Both numbers were authored before the rule and both were SHORTER than the
+## frame they have to cover:
+##   * dormancy slept at `dormant_range_px` = 12,000 px, against a max-zoom
+##     half-diagonal of ~16,432 — bodies in plain sight left the simulation and
+##     moved on the 3 s dormant tick;
+##   * terrain's promote radius capped at `20 * subdiv / 8` chunks = 10,240 px at
+##     subdiv 4, against a max-zoom half-WIDTH of ~14,321 — the ground stopped
+##     ~70% of the way to the screen edge.
+##
+## Here rather than in the 1× suite for the usual reason: every number in it is a
+## screen-scale distance (CODEMAP §2), and at scale 1 the frame is 8× smaller
+## than the constants and both bugs are invisible.
+func _check_max_zoom_reaches_the_frame(w: Node) -> void:
+	var terrain = w.get("terrain")
+	var pl = w.get("player")
+	if terrain == null or pl == null or not is_instance_valid(pl):
+		_ok(false, "a world with a player and terrain to measure")
+		return
+	var half_w: float = float(w.call("max_view_width_px")) * 0.5
+	var horizon: float = float(w.call("max_view_horizon_px"))
+	var cpx: float = float(terrain.call("chunk_px"))
+	print("    ~ max-zoom frame: half-width %.0f px, half-diagonal %.0f px, chunk %.0f px"
+		% [half_w, horizon, cpx])
+	Tunables.reset_all()
+
+	# --- DORMANCY: nothing inside the widest frame may sleep ----------------
+	var at: Vector2 = pl.global_position
+	var probe: Ship = w.call("debug_spawn", "critter",
+		at + Vector2(half_w * 0.9, 0.0))
+	_ok(probe != null, "a creature at 0.9 x the max-zoom half-width (%.0f px out)"
+		% (half_w * 0.9))
+	if probe != null and is_instance_valid(probe):
+		probe.freeze = true
+		# The decision scan runs on its own cadence; give it several periods.
+		for i in 4:
+			w.call("_update_dormancy", 0.5)
+		_ok(not probe.dormant,
+			"...is STILL SIMULATED, not ticking every 3 s (dormancy's floor is the frame)")
+		# ...and the feature still works: well outside the frame, it sleeps.
+		probe.global_position = at + Vector2(horizon * 3.0, 0.0)
+		for i in 4:
+			w.call("_update_dormancy", 0.5)
+		_ok(probe.dormant,
+			"...while three horizons out it sleeps, so the feature still pays for itself")
+		probe.queue_free()
+		await process_frame
+
+	# --- TERRAIN: the ground reaches the frame's edge ------------------------
+	# `primary_range_px` is stamped here rather than by winding the camera, because
+	# the camera is hard-locked and re-derives its zoom every frame. This IS the
+	# number `_stream_terrain` writes at max zoom-out: half the widest frame.
+	var target_x := at.x + half_w * 0.9
+	IslandGen.ensure_generated(terrain, int(w.get("world_seed")),
+		[at, Vector2(target_x, at.y), Vector2(target_x, at.y - half_w),
+			Vector2(target_x, at.y + half_w)], half_w, 4096)
+	# MOST OF THIS WORLD IS SKY, and where an island happens to fall is the
+	# generator's business — so the probe is PLANTED rather than hunted for: a
+	# patch of stone exactly 12 chunks out, in the band between the old cap
+	# (10 chunks = 10,240 px) and the max-zoom frame's edge (14,322 px). That band
+	# IS the bug, and this makes the measurement independent of the world seed.
+	# `set_cell` is a generation write, not a dig: it is not recorded as an edit.
+	var home: Vector2i = terrain.call("chunk_of_cell",
+		terrain.call("world_to_cell", at))
+	var ground := home + Vector2i(12, 0)
+	var cell0 := ground * Terrain.CHUNK + Vector2i(4, 4)
+	terrain.call("fill_rect", Rect2i(cell0, Vector2i(8, 8)), TerrainDB.Type.STONE)
+	terrain.call("flush_rebuilds")
+	_ok((terrain.get("_chunks") as Dictionary).has(ground),
+		"a probe chunk of ground %.0f px out — past the old cap, inside the frame"
+			% (12.0 * cpx))
+	# Measured from that chunk's own altitude, so the only distance in play is the
+	# horizontal one the report is about.
+	var focus := Vector2(at.x, (float(ground.y) + 0.5) * cpx)
+
+	var old_live := await _drain_streaming(terrain, 0.0, focus, half_w)
+	var old_r: int = int(terrain.call("_primary_promote_r"))
+	var old_has: bool = (terrain.get("_live") as Dictionary).has(ground)
+	var new_live := await _drain_streaming(terrain, horizon + cpx, focus, half_w)
+	var new_r: int = int(terrain.call("_primary_promote_r"))
+	var new_has: bool = (terrain.get("_live") as Dictionary).has(ground)
+	print("    ~ live chunks at max zoom-out: %d (old cap r=%d = %.0f px) -> %d (max-zoom cap r=%d = %.0f px)"
+		% [old_live, old_r, float(old_r) * cpx, new_live, new_r, float(new_r) * cpx])
+	_ok(float(new_r) * cpx >= half_w,
+		"the promote radius now reaches the frame's own edge (%.0f px vs half-width %.0f)"
+			% [float(new_r) * cpx, half_w])
+	_ok(float(old_r) * cpx < half_w,
+		"...which the old %d-chunk cap did not (%.0f px - the owner's 'half way on the screen')"
+			% [old_r, float(old_r) * cpx])
+	_ok(new_has,
+		"A CHUNK WITH GROUND IN IT AT 0.9 x THE HALF-WIDTH IS LIVE after the drain")
+	_ok(not old_has,
+		"...and was NOT under the old cap, which is the report, reproduced")
+	_ok(new_live < 900,
+		"...and the live set is still a set, not the world (%d chunks)" % new_live)
+	Tunables.reset_all()
+
+
+## Run the streamer at a given `primary_cap_px` until its queue drains, and
+## report how many chunks ended up live. `update_streaming` promotes inside the
+## call, so this costs iterations, not seconds.
+func _drain_streaming(terrain, cap_px: float, focus: Vector2,
+		range_px: float) -> int:
+	for i in 2000:
+		# Re-stamped every pass: the world's own `_stream_terrain` runs on the
+		# frames this awaits and would put the live camera's numbers straight back.
+		terrain.set("primary_cap_px", cap_px)
+		terrain.set("primary_range_px", range_px)
+		var before: int = (terrain.get("_live") as Dictionary).size()
+		terrain.call("update_streaming", [focus], [])
+		if (terrain.get("_live") as Dictionary).size() == before \
+				and bool(terrain.get("_last_scan_drained")):
+			break
+		if i % 120 == 119:
+			await process_frame
+	return (terrain.get("_live") as Dictionary).size()
 
 
 ## THE DIVE'S OWN SCENE (owner 2026-09-01: "we just keep reusing the same world
@@ -388,6 +517,8 @@ func _check_dive_scene_boots() -> void:
 	# and a surge is born hostile and mortal.
 	if pl != null and is_instance_valid(pl):
 		await _check_dive_seam_is_seamless(w, pl, rect, ring_w, cx, terrain)
+		await _check_dive_seam_prewarms_the_mirror(w, pl, ring_w, cx, terrain)
+		_check_dive_draft_spans_the_seam(w, pl, tile_w, cx)
 		pl.global_position = Vector2(cx, pl.global_position.y)
 		pl.velocity = Vector2.ZERO
 	w.call("_dive_surge")
@@ -475,6 +606,195 @@ func _check_dive_scene_boots() -> void:
 	w.queue_free()
 	await process_frame
 
+
+## THE GROUND IS ALREADY THERE WHEN YOU ARRIVE (owner 2026-09-02: *"the borders
+## that make the world look like it loops are nearly there - it just glitches out
+## for a moment when traversing the threshold"*).
+##
+## The wrap was never the problem: `_check_dive_seam_is_seamless` above proves
+## every visible thing moves by one circumference in one frame and that the
+## ground repeats exactly. What glitched was the TERRAIN STREAMER — chunks are
+## nodes and colliders, promoted ONE per frame nearest-first, so after the shift
+## nothing on the far side was live and the ground filled in over tens of frames.
+##
+## The fix is to start earlier, not to promote faster: within a carry-width of
+## the seam, a focus's MIRROR one circumference away is a primary focus too. This
+## is the check that it pays — the far side is live BEFORE the crossing, and
+## still live the frame after it.
+func _check_dive_seam_prewarms_the_mirror(w: Node, pl, ring_w: float, cx: float,
+		terrain) -> void:
+	var carry: float = float(w.call("_dive_wrap_carry_px"))
+	var y: float = pl.global_position.y
+	# THE BAND ITSELF: half a carry-width short of the seam is already inside it.
+	var mid: Array = w.call("_ring_mirror_foci",
+		[Vector2(cx + ring_w * 0.5 - carry * 0.5, y)])
+	_ok(mid.size() == 1
+			and is_equal_approx((mid[0] as Vector2).x,
+				cx + ring_w * 0.5 - carry * 0.5 - ring_w),
+		"a body half a carry-width from the seam asks for the far side too (%.0f px away)"
+			% ring_w)
+	# ...and the measurement itself is taken on the approach, a few hundred px
+	# short of the wrap line, so the ground it pre-warms is the ground it lands on.
+	var stand := Vector2(cx + ring_w * 0.5 - 600.0, y)
+	var mirrors: Array = w.call("_ring_mirror_foci", [stand])
+	_ok(mirrors.size() == 1
+			and is_equal_approx((mirrors[0] as Vector2).x, stand.x - ring_w),
+		"...and so does one on the very lip of the seam")
+	_ok((w.call("_ring_mirror_foci", [Vector2(cx, y)]) as Array).is_empty(),
+		"...and a body at the ring's centre asks for nothing extra")
+
+	# The mirror neighbourhood has to exist as DATA before it can be promoted —
+	# the same lazy generation the streamer's own pass does, run to completion here
+	# so the measurement is about PROMOTION, not about generation.
+	var mirror_x := stand.x - ring_w
+	IslandGen.ensure_generated(terrain, int(w.get("world_seed")),
+		[stand, Vector2(mirror_x, y)], carry, 4096)
+	# ...and the ground itself is PLANTED rather than hunted for. The dive rolls a
+	# fresh seed every run, so whether an island happens to fall at the seam at the
+	# altitude the body is standing at is a coin toss — and this check is about
+	# PROMOTION, not about where islands land (the ground's periodicity is proved
+	# by `_check_dive_seam_is_seamless` above). A strip of stone either side of the
+	# wrap line, one circumference apart, so the world stays periodic while it is
+	# measured. `fill_rect` is a generation write: it is not recorded as a dig.
+	var cpx: float = float(terrain.call("chunk_px"))
+	var lap := roundi(ring_w / cpx)
+	_ok(absf(float(lap) * cpx - ring_w) < 1.0,
+		"the circumference is a whole number of chunks (%d × %.0f px)" % [lap, cpx])
+	var ground: Vector2i = terrain.call("chunk_of_cell",
+		terrain.call("world_to_cell", Vector2(mirror_x, y)))
+	for k in 3:
+		var c := ground + Vector2i(k - 1, 0)
+		for side in [0, lap]:
+			var cell0 := Vector2i(c.x + side, c.y) * Terrain.CHUNK + Vector2i(4, 4)
+			terrain.call("fill_rect", Rect2i(cell0, Vector2i(8, 8)),
+				TerrainDB.Type.STONE)
+	terrain.call("flush_rebuilds")
+	var fly_y := (float(ground.y) + 0.5) * cpx
+	stand.y = fly_y
+	var mirror := Vector2(mirror_x, fly_y)
+
+	# Now run the world's REAL focus tick until the queue drains, and count what
+	# the MIRROR pre-warmed: chunks holding data within the primary radius of it.
+	var before_live: int = (terrain.get("_live") as Dictionary).size()
+	var cam = w.get("camera")
+	for i in 1200:
+		# Re-seated each pass: the body is a live CharacterBody2D and this is a
+		# claim about where the streamer looks, not about where gravity takes it.
+		pl.global_position = stand
+		pl.velocity = Vector2.ZERO
+		if cam != null and is_instance_valid(cam):
+			cam.global_position = stand
+		w.call("_stream_terrain")
+		if bool(terrain.get("_last_scan_drained")):
+			break
+		if i % 120 == 119:
+			await process_frame
+	var warmed := _live_chunks_near(terrain, mirror)
+	_ok(int(warmed["data"]) > 0,
+		"there is ground within a promote radius of the mirror point (%d chunks)"
+			% int(warmed["data"]))
+	_ok(int(warmed["live"]) == int(warmed["data"]),
+		"THE FAR SIDE IS LIVE BEFORE THE WRAP: %d of %d mirror chunks promoted"
+			% [int(warmed["live"]), int(warmed["data"])])
+	print("    ~ the mirror pre-warms %d chunks (world live %d -> %d)"
+		% [int(warmed["live"]), before_live,
+			(terrain.get("_live") as Dictionary).size()])
+	# The scan-skip cache must survive the extra focus: with the queue drained and
+	# nothing moving, a frame near the seam is still a no-op. Otherwise the mirror
+	# would have bought a smooth crossing with a permanent per-frame scan.
+	var scans_before: int = int(terrain.get("scan_count"))
+	for i in 5:
+		pl.global_position = stand
+		w.call("_stream_terrain")
+	_ok(int(terrain.get("scan_count")) - scans_before <= 1,
+		"...and a still world near the seam still skips its scans (%d in 5 frames)"
+			% (int(terrain.get("scan_count")) - scans_before))
+
+	# ...and CROSS. The frame after the wrap the same ground is under you and
+	# still live — which is exactly the frame that used to show bare sky.
+	pl.global_position = Vector2(cx + ring_w * 0.5 + 600.0, fly_y)
+	if cam != null and is_instance_valid(cam):
+		cam.global_position = pl.global_position
+	w.call("_dive_hold_the_ring", 0.016)
+	_ok(pl.global_position.x < cx, "the body crossed the seam")
+	w.call("_stream_terrain")
+	# Two chunks in from the promote radius: the OUTERMOST ring always streams in
+	# as you keep flying — that is the streamer working, at one chunk a frame, on
+	# ground that is off screen. The claim the owner's report is about is the
+	# ground you are actually over, and that has to be there already.
+	var after := _live_chunks_near(terrain, pl.global_position, -2)
+	_ok(int(after["data"]) > 0 and int(after["live"]) == int(after["data"]),
+		"...and the ground around it is STILL LIVE the very next frame (%d of %d)"
+			% [int(after["live"]), int(after["data"])])
+
+
+## Chunks within the primary promote radius of `at` that hold data, and how many
+## of those are live. The two numbers the pre-warm claim is made of.
+func _live_chunks_near(terrain, at: Vector2, grow: int = 0) -> Dictionary:
+	var r: int = maxi(int(terrain.call("_primary_promote_r")) + grow, 1)
+	var cell: Vector2i = terrain.call("world_to_cell", at)
+	var home: Vector2i = terrain.call("chunk_of_cell", cell)
+	var chunks := terrain.get("_chunks") as Dictionary
+	var live_set := terrain.get("_live") as Dictionary
+	var data := 0
+	var live := 0
+	for dy in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			var c := home + Vector2i(dx, dy)
+			if not chunks.has(c):
+				continue
+			data += 1
+			if live_set.has(c):
+				live += 1
+	return {"data": data, "live": live}
+
+
+## THE DRAFT SPANS THE CROSSING (owner 2026-09-02: *"the vertical wind bands
+## could be a bit wider ... The hope was that the expanse of this wind draft
+## could semi camouflage the teleporting bit"*).
+##
+## The pure half lives in `run_tests._test_dive_draft_band`; this is the claim in
+## REAL PIXELS, which is why it is here: a hull a whole ring tile past the
+## downdraft's centre — standing in the next tile along — feels the draft at the
+## shipped band of 2.0 and feels nothing at 1.0.
+func _check_dive_draft_spans_the_seam(w: Node, pl, tile_w: float, cx: float) -> void:
+	var run = w.get("dive")
+	if run == null:
+		return
+	var was_deepest: int = int(run.get("deepest"))
+	run.set("deepest", 2)   # the ring is only the sky once you have been down
+	var seam := cx + tile_w * float(DiveRun.RING.size()) * 0.5
+	var y: float = pl.global_position.y
+	var at_centre: Vector2 = w.call("dive_weather_at", Vector2(seam, y))
+	_ok(at_centre.y > 0.0,
+		"the downdraft at the seam pushes DOWN (%.0f px/s)" % at_centre.y)
+
+	var one_tile_out := Vector2(seam - tile_w, y)
+	Tunables.set_value("dive_draft_band_tiles", 2.0)
+	var wide: Vector2 = w.call("dive_weather_at", one_tile_out)
+	Tunables.set_value("dive_draft_band_tiles", 1.0)
+	var narrow: Vector2 = w.call("dive_weather_at", one_tile_out)
+	Tunables.set_value("dive_draft_band_tiles", 2.0)
+	_ok(wide.y > 0.0,
+		"a hull a WHOLE TILE past its centre (%.0f px, the next tile along) still feels it at band 2.0 (%.0f px/s)"
+			% [tile_w, wide.y])
+	_ok(is_zero_approx(narrow.y),
+		"...and feels nothing at band 1.0 — which is exactly the old hard tile edge")
+	# The felt width, in the pixels the owner actually flies through.
+	var reach := (1.0 + DiveRun.DRAFT_BLEND_TILES) * 2.0 * tile_w
+	print("    ~ ring tile %.0f px; draft support band 2.0 = %.0f px (+/-%.0f), band 1.0 = %.0f px"
+		% [tile_w, reach, reach * 0.5,
+			(0.5 + DiveRun.DRAFT_BLEND_TILES) * 2.0 * tile_w])
+	# ...and the SEAM itself is inside the band from both sides, which is the
+	# camouflage the owner asked for: you cross while the wind is already on you.
+	var just_before: Vector2 = w.call("dive_weather_at",
+		Vector2(seam - tile_w * 0.6, y))
+	var just_after: Vector2 = w.call("dive_weather_at",
+		Vector2(seam - tile_w * 0.6 - tile_w * float(DiveRun.RING.size()), y))
+	_ok(just_before.y > 0.0 and just_before.is_equal_approx(just_after),
+		"the wind either side of the wrap line is the same wind (%.0f px/s)"
+			% just_before.y)
+	run.set("deepest", was_deepest)
 
 ## THE SEAM YOU CANNOT SEE (owner 2026-09-01: *"Looping around through the world
 ## seems to make such a mess - it literally teleports the player. could it be a

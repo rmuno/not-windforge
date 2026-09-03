@@ -1154,7 +1154,8 @@ func edge_marker_targets() -> Array:
 		var td2 := focus.distance_squared_to(_trainer.global_position)
 		if td2 <= range2:
 			out.append({"pos": _trainer.global_position, "kind": "dock",
-				"dist": sqrt(td2), "color": Color(0.95, 0.86, 0.45)})
+				"dist": sqrt(td2), "color": Color(0.95, 0.86, 0.45),
+				"id": _trainer.get_instance_id()})
 
 	# PLACES you have found. A place you BROKE gets no arrow — the map keeps that
 	# record; the edge is for things that still want your attention.
@@ -1166,7 +1167,8 @@ func edge_marker_targets() -> Array:
 		if sd2 > range2:
 			continue
 		out.append({"pos": sp, "kind": "site", "dist": sqrt(sd2),
-			"color": SpawnSites.kind_color(site["kind"])})
+			"color": SpawnSites.kind_color(site["kind"]),
+			"id": "site:%s" % str(site.get("coord", sp))})
 
 	# THE NEXT LANDING DOWN. In a run this is the one thing you must be able to
 	# find, so it ignores the range gate the rest of the markers obey and keeps a
@@ -1174,8 +1176,17 @@ func edge_marker_targets() -> Array:
 	# steps. Reuses the "site" icon: it IS a place.
 	if dive != null and dive.outcome == "" and dive.depth < DiveRun.DEPTHS:
 		var lp := dive_landing_pos(dive.depth + 1)
+		# THE COPY OF IT THAT IS ACTUALLY NEAREST. In a ring the landing exists once
+		# per lap, and the raw position is the one near the centre line: a run at the
+		# seam would be pointed the long way round, and the arrow would FLIP the
+		# instant the wrap fired. Ring-nearest, so it points the same way either side
+		# of the crossing and the seam has one less tell.
+		lp.x = RingSpace.nearest_x(lp.x, focus.x)
 		out.append({"pos": lp, "kind": "site", "dist": focus.distance_to(lp),
-			"color": Color(0.62, 0.86, 0.78), "near_min": 0.55})
+			"color": Color(0.62, 0.86, 0.78), "near_min": 0.55,
+			# A stable key, so the fade-in ramp does not restart the marker at zero
+			# alpha every time the wrap moves the world under it.
+			"id": "landing:%d" % (dive.depth + 1)})
 
 	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return float(a["dist"]) < float(b["dist"]))
@@ -2466,12 +2477,19 @@ func dive_weather_at(pos: Vector2) -> Vector2:
 	# do this only because the hover assist fought it to a standstill, which is
 	# exactly the double-counting on the vertical axis this round deleted. Once
 	# you have been down, the ring is the sky at every altitude, deck included.
+	#
+	# THE DRAFT IS A FIELD (v0.143.0, the owner's "the vertical wind bands could be
+	# a bit wider"): the kind is no longer the tile you are standing in but the
+	# nearest draft's, and the multiplier carries its STRENGTH — 1 in the band,
+	# smoothstepped to nothing at its edge. A hull half a tile past the downdraft
+	# therefore still rides some of it, which is what lets the draft span the seam
+	# instead of stopping half a tile short of it on both sides.
 	var kind := ""
 	var zone_mult := 0.0
 	if Tunables.get_bool("dive_zones_enabled") and dive.deepest > 1:
-		var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
-		kind = DiveRun.zone_kind(DiveRun.zone_index((pos.x - cx) / _dive_tile_w()))
-		zone_mult = Tunables.get_num("dive_zone_wind_mult")
+		var draft := dive_draft_at(pos)
+		kind = String(draft["kind"])
+		zone_mult = Tunables.get_num("dive_zone_wind_mult") * float(draft["strength"])
 	# ...and the closing sky, gated on `deepest > 1` exactly as the old force was,
 	# so the launch deck stays an unhurried place.
 	var over := 0.0
@@ -2863,6 +2881,15 @@ func _dive_native_world_px() -> Rect2:
 ## middle. Identical arithmetic for every non-dive scene, so nothing moves there.
 func map_world_rect() -> Rect2:
 	return _world_rect
+
+
+## The DRAFT at one world point: `{kind, strength}` (see `DiveRun.draft_strength`).
+## One place where the tile offset is computed, so the wind, the HUD label and any
+## future map painting can never disagree about where the band reaches.
+func dive_draft_at(pos: Vector2) -> Dictionary:
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	return DiveRun.draft_strength((pos.x - cx) / _dive_tile_w(),
+		Tunables.get_num("dive_draft_band_tiles"))
 
 
 ## Which ring tile the player is in right now (0 = the updraft you start in).
@@ -3900,7 +3927,19 @@ func dive_status() -> Variant:
 	out["headline"] = DiveRun.outcome_line(out)
 	# Hull integrity (v0.111.0): the committed hull's pool as a fraction, or -1
 	# when no armed hull is flying (shipless, or pre-commit).
-	out["zone"] = DiveRun.zone_label(dive_zone()) 		if Tunables.get_bool("dive_zones_enabled") else ""
+	# THE SKY YOU ARE IN, by the DRAFT rather than by the tile line: the bands are
+	# wider than one tile now, so "am I in the downdraft" is a question about the
+	# field, not about which twelfth of the ring your x rounds to.
+	var draft_x := 0.0
+	if player != null and is_instance_valid(player):
+		var dcx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+		draft_x = (player.global_position.x - dcx) / _dive_tile_w()
+	var band := Tunables.get_num("dive_draft_band_tiles")
+	out["zone"] = ""
+	if Tunables.get_bool("dive_zones_enabled"):
+		out["zone"] = DiveRun.draft_label(draft_x, band)
+	# ...and how wide the bands are, so the map room could paint them one day.
+	out["draft_band_tiles"] = band
 	out["hull_frac"] = -1.0
 	if is_instance_valid(local_ship) and local_ship.hull_integrity_max > 0.0:
 		out["hull_frac"] = clampf(
@@ -4468,6 +4507,14 @@ func _stream_terrain() -> void:
 	if camera != null and is_instance_valid(camera):
 		var half: Vector2 = get_viewport_rect().size * 0.5 / camera.zoom
 		terrain.primary_range_px = maxf(half.x, half.y)
+	# ...and the CAP on that range is the MAX-ZOOM frame, not a magic chunk count
+	# (owner 2026-09-02: "if I zoom out as much as possible … this also causes
+	# terrain to load in half way on the screen"). Terrain's own fallback cap was
+	# `20 * subdiv / 8` chunks = 10,240 px at subdiv 4, under the ~14,321 px
+	# half-width of a max-zoom frame, so the widest view was clipped by a constant
+	# that never learned the zoom rule. One chunk of margin past the horizon, the
+	# same margin the radius itself carries.
+	terrain.primary_cap_px = max_view_horizon_px() + terrain.chunk_px()
 	# TIERED (the subdiv-8 lag fix): the PLAYER (+ their ship — the camera)
 	# streams render-range terrain; every OTHER ship gets only a collision
 	# bubble. See Terrain.update_streaming.
@@ -4484,6 +4531,9 @@ func _stream_terrain() -> void:
 				primary.append(ship.global_position)
 			else:
 				secondary.append(ship.global_position)
+	# THE FAR SIDE OF THE SEAM IS A PRIMARY FOCUS TOO, from a carry-width out.
+	# See `_ring_mirror_foci` — this is the fix for the wrap's visible hiccup.
+	primary.append_array(_ring_mirror_foci(primary))
 	# Lazy generation runs ahead of promotion: regions whose islands could
 	# reach any focus generate first (amortized), so a chunk always promotes
 	# with its data present. Budget 2/frame — a fresh area trickles in over a
@@ -4518,6 +4568,49 @@ func _stream_terrain() -> void:
 			else terrain.chunk_px() * terrain.subdiv * 2.0) * GEN_LOOKAHEAD,
 			max_view_width_px()))
 	terrain.update_streaming(primary, secondary)
+
+
+## THE FAR SIDE OF THE SEAM, PRE-WARMED (owner 2026-09-02: the looping borders
+## "just glitch out for a moment when traversing the threshold").
+##
+## The wrap itself is already invisible: everything in frame moves by exactly one
+## circumference in one frame (`_dive_wrap_ring`), and the terrain DATA is
+## periodic, so the ground at x IS the ground at x ± period. What is not instant
+## is the LIVE terrain — chunks are nodes and colliders, and they are promoted
+## ONE per frame, nearest-first (`Terrain.PROMOTE_PER_CALL`, which is 1 because a
+## promote is a full chunk rebuild and two a frame was a measured stutter). After
+## a 400,000 px shift nothing on the far side is live, so the ground filled in a
+## chunk a frame for tens of frames. That gap is the glitch, and it is a
+## STREAMING problem, not a wrap problem.
+##
+## So do not promote faster — start EARLIER. Once a primary focus is within one
+## carry-width of the seam (the same `_dive_wrap_carry_px` bubble the wrap
+## itself moves), its MIRROR POINT one circumference the other way is added as a
+## full primary focus. The far side then promotes incrementally over the seconds
+## you spend flying at the seam, and is already live the frame the wrap fires.
+##
+## Demotion needs no special case: the instant after the wrap, the side you came
+## from is the mirror of where you now are, so it is still held — the hysteresis
+## falls out of the same rule, and a body pacing back and forth over the line
+## never thrashes. Empty (and free) in every world that is not a ring.
+func _ring_mirror_foci(points: Array) -> Array:
+	var out: Array = []
+	if not RingSpace.active() or points.is_empty():
+		return out
+	var ring_w := RingSpace.period
+	# How far from the ring's centre a focus has to be before its mirror is worth
+	# streaming: anything nearer than this is more than a carry-width from either
+	# seam, and the far side cannot come into frame before it is asked for again.
+	var edge := ring_w * 0.5 - _dive_wrap_carry_px()
+	for p_v in points:
+		var p: Vector2 = p_v
+		var off := p.x - RingSpace.centre
+		if absf(off) <= edge:
+			continue
+		# The image on the OTHER side of the nearer seam — the ground that is about
+		# to be underneath this focus.
+		out.append(Vector2(p.x - signf(off) * ring_w, p.y))
+	return out
 
 
 ## How much wider than the visible half-extent terrain generates (`_stream_terrain`).
@@ -5736,7 +5829,20 @@ func _update_dormancy(delta: float) -> void:
 		return
 
 	var points := Dormancy.foci(self)
-	var sleep_at := Tunables.get_num("dormant_range_px")
+	# FLOORED AT THE MAX-ZOOM HORIZON (owner 2026-09-02: "the 'max zoom as if on
+	# ship' doesn't seem to be fully recognized - if I zoom out as much as possible
+	# I can see that creatures toward the edge of the screen are updating super
+	# slow"). The lever's 12,000 px predates the max-zoom rule and is SHORTER than
+	# the ~16,432 px half-diagonal of a max-zoom frame, so bodies plainly on screen
+	# were out of the simulation and moving on the 3 s dormant tick. The standing
+	# rule (v0.128.0) is "the boundary of all active players as if they were using
+	# a ship's MAX ZOOM"; this is that boundary plus a tenth of margin, so a body
+	# must be genuinely OFF the widest frame the game can show before it may sleep.
+	# The lever still RAISES the range — it can no longer lower it below the view.
+	# `dormant_max_awake` is untouched: that is the physics bound, and a crowd in
+	# frame is still capped by it.
+	var sleep_at := maxf(Tunables.get_num("dormant_range_px"),
+		max_view_horizon_px() * 1.1)
 	# HYSTERESIS: wake closer in than you sleep out, or a body hovering on the
 	# boundary flips every scan — and each flip is a physics-space entry, the
 	# one thing this feature exists to avoid.
