@@ -22,6 +22,11 @@ func _initialize() -> void:
 	# a full run used to wipe the real bestiary + card gallery. Redirect first,
 	# before anything can touch disk.
 	Profile.path = "user://profile_test.json"
+	# ...and the same for the player's SAVED SHIPS shelf (Q-T): the drafting
+	# table writes there and the Dive's launch deck moors what it finds there, so
+	# a suite pointed at the real directory would both litter it and let the
+	# owner's own saved hulls change what the tests measure.
+	ShipLayout.user_dir = "user://ships_test_unit"
 	print("\n=== not-windforge test suite ===\n")
 
 	await _test_mass_and_centre_of_mass()
@@ -62,7 +67,9 @@ func _initialize() -> void:
 	_test_backdrop_is_calm()
 	_test_dive_run()
 	_test_ship_serialize()
+	_test_ship_meta()
 	_test_ship_edit()
+	_test_ship_table_files()
 	await _test_ship_editor_screen()
 	_test_dive_ring()
 	_test_ring_space()
@@ -3771,6 +3778,231 @@ func _test_ship_serialize() -> void:
 		"an open door exports as an authored (closed) door")
 
 	_check(ShipLayout.serialize({}) == "", "an empty grid exports nothing")
+
+
+## THE HEADER VOCABULARY (Q-T): `key value` lines that carry what the spawn code
+## used to hard-code. Three claims, and the third is the dangerous one:
+##
+##   1. every key round-trips, typed;
+##   2. a key this build has never heard of round-trips UNTOUCHED;
+##   3. A HEADER LINE IS NEVER EATEN AS A GRID ROW. That is the hulk's old scar
+##      (`# ` vs `#`-as-hull, which spawned the enemy with no floor, no engine and
+##      no helm) in a new place, so it is pinned twice: once on a crafted file,
+##      and once as CELL-COUNT PARITY against a reproduction of the pre-header
+##      parser over every stock blueprint in the repo.
+func _test_ship_meta() -> void:
+	_t("ShipLayout: the .ship header vocabulary")
+
+	var text := "# a comment\nname Bandit Cutter\nkind whale\nhealth 1234\ntame 2\n" \
+		+ "tint 0.900 0.200 0.100\nrole gunboat\nbounty 35\nnotes two decks\n" \
+		+ "future_key whatever it says\norigin 1 1\n###\n#H#\n###\n"
+	var meta := ShipLayout.parse_meta(text)
+	_check(String(meta.get("name", "")) == "Bandit Cutter", "a free-text name survives its spaces")
+	_check(String(meta.get("kind", "")) == "whale", "kind reads back")
+	_check(is_equal_approx(float(meta.get("health", 0.0)), 1234.0), "health is a float")
+	_check(int(meta.get("tame", -1)) == 2, "tame is an int")
+	_check(int(meta.get("bounty", -1)) == 35, "bounty is an int")
+	_check(typeof(meta.get("tint")) == TYPE_COLOR
+		and is_equal_approx((meta["tint"] as Color).r, 0.9), "tint is a Color")
+	_check(String(meta.get("notes", "")) == "two decks", "notes survive")
+	_check(String(meta.get("future_key", "")) == "whatever it says",
+		"an UNKNOWN key is kept as raw text")
+	_check(not meta.has("origin") and not meta.has("scale"),
+		"origin/scale stay the format's own — never meta")
+
+	# The grid is untouched by any of it.
+	var cells := ShipLayout.parse(text)
+	_check(cells.size() == 9, "the grid is the grid: 9 cells, no header eaten as a row (%d)"
+		% cells.size())
+	_check(int(cells.get(Vector2i(0, 0), -1)) == BlockDB.Type.HELM,
+		"...and `origin` still places it (the helm is at the origin)")
+
+	# Round-trip through serialize, unknown key included.
+	var back := ShipLayout.parse_meta(ShipLayout.serialize(cells, 1, meta))
+	_check(back.size() == meta.size(), "every header survives a serialize (%d of %d)"
+		% [back.size(), meta.size()])
+	_check(String(back.get("name", "")) == "Bandit Cutter"
+		and int(back.get("bounty", -1)) == 35
+		and String(back.get("future_key", "")) == "whatever it says",
+		"...values and all, unknown keys included")
+	_check(ShipLayout.parse(ShipLayout.serialize(cells, 1, meta)).size() == cells.size(),
+		"...and the grid still parses to the same cells with headers on it")
+	_check(ShipLayout.serialize(cells, 1, {}).find("name") < 0,
+		"no meta, no header lines — a headerless file stays byte-shaped as it was")
+
+	# THE CLASSIFIER: what is a header and what is a row.
+	_check(ShipLayout.meta_split("name My Ship").size() == 2, "`key value` is a header")
+	_check(ShipLayout.meta_split("###H###").is_empty(), "a row of blocks is not")
+	_check(ShipLayout.meta_split("vvvvvv").is_empty(),
+		"...nor a row of the one LOWERCASE glyph ('v' propellers)")
+	_check(ShipLayout.meta_split("WWMMWW").is_empty(), "...nor a creature's row")
+	_check(ShipLayout.meta_split("Name Capitalised").is_empty(),
+		"a capitalised first token is not a key")
+
+	# PARITY OVER THE WHOLE REPO. `_legacy_cell_count` is the parser as it stood
+	# before headers existed; every stock file that carries no headers must parse
+	# to exactly what it parsed to then.
+	var checked := 0
+	for path in ShipEdit.ship_files("res://ships"):
+		var p := String(path)
+		var f := FileAccess.open(p, FileAccess.READ)
+		if f == null:
+			continue
+		var body := f.get_as_text()
+		f.close()
+		if not ShipLayout.parse_meta(body).is_empty():
+			continue   # hulk.ship, the worked example — pinned separately below
+		checked += 1
+		_check(ShipLayout.parse(body).size() == _legacy_cell_count(body),
+			"%s parses to the same %d cells it always did"
+				% [p.get_file(), _legacy_cell_count(body)])
+	_check(checked >= 20, "...across every headerless stock blueprint (%d files)" % checked)
+
+	# ships/hulk.ship IS the worked example (kind vessel / role gunboat /
+	# bounty 35). 1712 is its cell count from before the headers were added —
+	# measured on the previous revision of the file, not derived from the current
+	# one, so this catches a header being eaten as a row rather than agreeing
+	# with it.
+	var hulk := ShipLayout.load_cells("res://ships/hulk.ship")
+	_check(hulk.size() == 1712,
+		"the hulk still parses to its 1712 pre-header cells (%d)" % hulk.size())
+	var hmeta := ShipLayout.load_meta("res://ships/hulk.ship")
+	_check(String(hmeta.get("kind", "")) == "vessel"
+		and String(hmeta.get("role", "")) == "gunboat"
+		and int(hmeta.get("bounty", -1)) == 35,
+		"...and carries kind/role/bounty as the worked example")
+	# The bounty it declares is exactly what the coin table already paid, so the
+	# example moved a number into the file it describes and changed nothing.
+	_check(DiveRun.coins_for("hulk", 1, int(hmeta["bounty"])) == DiveRun.coins_for("hulk", 1),
+		"...worth exactly what DiveRun.KIND_COIN already said")
+
+
+## The `.ship` parser AS IT STOOD before the header vocabulary: skip `# `/`#`
+## comments, `scale`, `origin` and blanks; everything else is a grid row. Used to
+## prove the meta pass changed nothing, which is a claim that has to be made
+## against the OLD rules rather than the new ones.
+func _legacy_cell_count(text: String) -> int:
+	var n := 0
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges(false, true)
+		if line == "#" or line.begins_with("# "):
+			continue
+		if line.begins_with("scale") or line.begins_with("origin"):
+			continue
+		if line.strip_edges() == "":
+			continue
+		for i in line.length():
+			if ShipLayout.CHARS.has(line[i]):
+				n += 1
+	return n
+
+
+## THE TABLE OPENS AND SAVES ANY FILE (Q-T): the file list, the per-kind palette
+## and FYI panel, and the save-as round trip through the redirected `user://`.
+func _test_ship_table_files() -> void:
+	_t("the drafting table's file list, palettes and save-as")
+
+	# --- The list ------------------------------------------------------------
+	var rows := ShipEdit.file_rows()
+	var by_path := {}
+	for row in rows:
+		by_path[String((row as Dictionary)["path"])] = row
+	_check(by_path.has("res://ships/starter.ship"), "the list holds the starter")
+	_check(by_path.has("res://ships/whale.ship") and by_path.has("res://ships/kraken_b.ship")
+		and by_path.has("res://ships/basilisk.ship") and by_path.has("res://ships/critter.ship"),
+		"...and every creature file")
+	_check(by_path.has("res://ships/nest_roost.ship") and by_path.has("res://ships/dive_deck.ship"),
+		"...the nests and the launch deck")
+	_check(by_path.has("res://ships/drafts/starter_owner_draft_1.ship"),
+		"...and RECURSES into ships/drafts")
+	var hulk_row: Dictionary = by_path["res://ships/hulk.ship"]
+	_check(String(hulk_row["name"]) == "Patrol Cutter" and String(hulk_row["kind"]) == "vessel",
+		"a row is labelled by its `name` header and its kind")
+	var whale_row: Dictionary = by_path["res://ships/whale.ship"]
+	_check(String(whale_row["name"]) == "whale" and String(whale_row["kind"]) == "vessel",
+		"a headerless file falls back to its basename, and reads as a vessel until told otherwise")
+
+	# --- Opening one, and the palette that follows ---------------------------
+	var e := ShipEdit.new()
+	_check(e.load_path("res://ships/whale.ship"), "whale.ship opens on the table")
+	_check(e.cells.size() == ShipLayout.load_cells("res://ships/whale.ship").size(),
+		"...cell for cell")
+	# The stock whale has no `kind` yet (the owner adds headers on the table, not
+	# in a code round), so the palette is chosen from the kind the SHEET carries.
+	e.meta["kind"] = "whale"
+	var pal := ShipEdit.palette_for(e.kind())
+	_check(pal.has(BlockDB.Type.BLUBBER) and pal.has(BlockDB.Type.MEAT)
+		and pal.has(BlockDB.Type.SHELL), "a creature palette paints flesh")
+	_check(not pal.has(BlockDB.Type.ENGINE) and not pal.has(BlockDB.Type.HELM)
+		and not pal.has(BlockDB.Type.GASBAG),
+		"...and cannot paint an engine, a helm or a gasbag into a whale")
+	_check(ShipEdit.palette_for("vessel").has(BlockDB.Type.ENGINE),
+		"a vessel keeps the whole vessel palette")
+	_check(ShipEdit.palette_for("nest").has(BlockDB.Type.STRUT),
+		"a nest gets the STRUT back — nest_eyrie/hive are authored with it")
+	_check(ShipEdit.palette_for("anything else").has(BlockDB.Type.ENGINE),
+		"an unknown kind falls through to the vessel palette")
+
+	# --- The creature FYI panel ---------------------------------------------
+	var ctext := e.stats_text()
+	_check(ctext.contains("floats"), "the whale's panel says it floats")
+	_check(ctext.contains("one connected piece"), "...and that it is one body")
+	_check(not ctext.contains("no helm"),
+		"...and never asks a whale for a helm (the vessel panel's line)")
+	var cs := e.creature_stats()
+	_check(int(cs["pieces"]) == 1 and bool(cs["floats"]),
+		"the plain values agree (%d piece, trim %.2f)" % [int(cs["pieces"]), float(cs["trim"])])
+	# Two cells with a gap between them is two bodies, and the game cannot spawn
+	# that — FYI, out loud, never a refusal.
+	var split := ShipEdit.new()
+	split.meta["kind"] = "kraken"
+	split.cells = {Vector2i(0, 0): BlockDB.Type.MEAT, Vector2i(5, 0): BlockDB.Type.MEAT}
+	_check(split.piece_count() == 2, "a gap makes two pieces")
+	_check(split.stats_text().contains("SEPARATE PIECES"), "...and the panel says so")
+
+	# --- Save as, into the redirected user:// shelf -------------------------
+	var out := ShipEdit.new()
+	out.cells = {Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HELM}
+	out.meta = {"name": "Test Skiff", "kind": "vessel", "bounty": 12,
+		"notes": "written by the suite"}
+	var path := ShipEdit.user_path_for("Test Skiff")
+	_check(path == ShipLayout.user_dir.path_join("Test_Skiff.ship"),
+		"a typed name becomes a safe file name (%s)" % path)
+	_check(ShipEdit.safe_basename("../../etc/passwd") == "etcpasswd",
+		"...with nothing left in it that could walk out of the directory")
+	_check(out.save_to(path), "save-as writes it")
+	_check(ShipEdit.last_path == path, "...and it is the open file now")
+	var listed := ShipEdit.file_rows()
+	var found := false
+	for row in listed:
+		if String((row as Dictionary)["path"]) == path:
+			found = true
+			_check(String((row as Dictionary)["source"]) == "user",
+				"...listed on the player's own shelf")
+	_check(found, "the list shows it after a save")
+
+	# The headers came back with it — the round trip the owner edits through.
+	var reopened := ShipEdit.new()
+	_check(reopened.load_path(path), "it opens again")
+	_check(String(reopened.meta.get("name", "")) == "Test Skiff"
+		and int(reopened.meta.get("bounty", -1)) == 12
+		and String(reopened.meta.get("notes", "")) == "written by the suite",
+		"...with every header intact")
+	_check(reopened.cells.size() == 2, "...and both cells")
+
+	# The scratch file TRY IT writes is NOT a listed blueprint (nor, in the Dive,
+	# a candidate): a leading underscore is the convention, one rule, one reader.
+	_check(out.save_to(ShipEdit.try_file(), false), "TRY IT's scratch file writes")
+	_check(ShipEdit.last_path == path, "...without becoming the open file")
+	var still := ShipEdit.file_rows()
+	var scratch := false
+	for row in still:
+		if String((row as Dictionary)["path"]) == ShipEdit.try_file():
+			scratch = true
+	_check(not scratch, "...and never shows up in the list")
+
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(ShipEdit.try_file()))
 
 
 ## THE DRAFTING TABLE'S MODEL (Q-Q): painting, mirroring, undo, the 1×-only

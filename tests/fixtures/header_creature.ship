@@ -1,0 +1,21 @@
+# A FIXTURE CREATURE, not shipped content (Q-T, 2026-09-02). The world suite
+# spawns this through the real creature spawn path and reads its pool back: the
+# whole claim of the header vocabulary is that a `.ship` file can now carry what
+# the spawn code used to hard-code, and 1234 is a number no constant in the game
+# has, so a pass here cannot be a coincidence.
+#
+# It is deliberately TINY and deliberately ONE CONNECTED PIECE — a disconnected
+# body severs on its first rebuild and stops being the thing under test.
+name Test Minnow
+kind critter
+health 1234
+tame 1
+tint 0.900 0.200 0.200
+bounty 7
+role fixture
+notes spawned by tests/world_startup_test.gd
+origin 3 1
+
+.WWWW.
+WWMMWW
+.WWWW.

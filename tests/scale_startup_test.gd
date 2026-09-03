@@ -17,6 +17,11 @@ func _initialize() -> void:
 	# a full run used to wipe the real bestiary + card gallery. Redirect first,
 	# before anything can touch disk.
 	Profile.path = "user://profile_test.json"
+	# ...and the SAVED SHIPS shelf (Q-T). This suite is the one that actually
+	# SEEDS it: a saved vessel is a launch-deck candidate now, and the deck is 8×
+	# geometry, which the legacy 1× suite structurally cannot see (CODEMAP §2).
+	ShipLayout.user_dir = "user://ships_test_scale"
+	_seed_saved_ships()
 	print("\n=== 8x default startup ===\n")
 
 	# 8x IS the main scene now (owner verdict 2026-08-18); this boots the
@@ -1133,19 +1138,67 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 	_ok(top_gap < 2000.0,
 		"...with its deck visible below your feet, not off-screen (%.0f px down)"
 			% top_gap)
+
+	# A SAVED SHIP IS A CANDIDATE (Q-T). `_seed_saved_ships` wrote Test_Skiff.ship
+	# into the redirected `user://ships` before this world booted; the deck must
+	# have moored it under a hatch, with its helm takeable, and must have ignored
+	# the garbage file sitting beside it.
+	var saved: Ship = null
+	for hull in fleet.ships():
+		if is_instance_valid(hull) and (hull as Ship).bounty == 4242:
+			saved = hull as Ship
+	_ok(saved != null, "the player’s saved ship is moored on the launch deck")
+	if saved != null:
+		_ok(saved.faction == 0 and not saved.is_nest and saved.has_helm(),
+			"...as a faction-0 hull with a helm")
+		# UNDER A HATCH, not merely nearby: the hull’s own centre lines up with a
+		# berth centre. That is the whole geometry the deck exists for, and it is
+		# the number four rewrites of it got wrong.
+		var mid := saved.global_position.x + saved.solid_bounds.position.x \
+			+ saved.solid_bounds.size.x * 0.5
+		var best := INF
+		for b in (world.call("dive_berth_positions") as Array):
+			best = minf(best, absf(float((b as Dictionary)["pos"].x) - mid))
+		_ok(best < Ship.CELL * 8.0 * 2.0,
+			"...centred under a hatch (%.0f px off the berth centre)" % best)
+		_ok(saved.global_position.y > pl.global_position.y,
+			"...and below the walkway, where you drop through to it")
+		# BOARDABLE — the point of the whole feature is diving with the ship you
+		# designed, and a candidate you cannot take the helm of is scenery.
+		var was: Vector2 = pl.global_position
+		pl.global_position = saved.to_global(saved.local_pos_of(saved.helm_cells[0]))
+		await world.get_tree().physics_frame
+		_ok(pl.board(saved, saved.helm_cells[0]), "...and its helm is boardable")
+		pl.disembark()
+		pl.global_position = was
+		await world.get_tree().physics_frame
+	# The garbage file cost a candidate and nothing else: with both berths taken
+	# by the starter and the saved skiff, the Loft was never needed.
+	var helmed := 0
+	for hull in fleet.ships():
+		var h := hull as Ship
+		if is_instance_valid(h) and h.faction == 0 and not h.is_nest \
+				and h.creature_kind == "" and not h.is_carcass() and h.has_helm():
+			helmed += 1
+	_ok(helmed == 2,
+		"an unparseable file in user://ships is skipped in silence (%d candidates, not 3)"
+			% helmed)
 	# THE STARTER CAN ACTUALLY FLY THE MODE (owner 2026-08-31: "can you use
 	# the default starter ship in dive mode in a test? It's impossible to move
 	# sideways"). Board the NON-Loft candidate — the starter — and hold full
 	# right for three real seconds: it must cover ground and must not brown-out
 	# doing it. The native-8× file measured 94 px/s peak here; the 1×-authored,
 	# upscaled, upgraded ship measures ~500.
-	var loft = world.get("_dive_loft")
+	# THE BIGGEST CANDIDATE IS THE STARTER. It used to be "the first one that is
+	# not the Loft", which stopped being an identification the moment a PLAYER’S
+	# saved ship could be moored beside it (Q-T) — and the failure would have been
+	# the flight numbers below quietly measuring somebody’s eight-cell skiff.
 	var starter = null
 	for s2 in fleet.ships():
-		if not is_instance_valid(s2) or s2.faction != 0 or s2.creature_kind != "" 				or s2.is_carcass() or s2.is_nest or s2 == loft or not s2.has_helm():
+		if not is_instance_valid(s2) or s2.faction != 0 or s2.creature_kind != "" 				or s2.is_carcass() or s2.is_nest or not s2.has_helm():
 			continue
-		starter = s2
-		break
+		if starter == null or s2.blocks.size() > starter.blocks.size():
+			starter = s2
 	_ok(starter != null, "the starter is moored on the deck")
 	if starter != null and pl != null and is_instance_valid(pl):
 		pl.global_position = starter.to_global(starter.local_pos_of(starter.helm_cells[0]))
@@ -1253,6 +1306,50 @@ func _neutral_sink(world: Node, hull, floor_v: float) -> float:
 	for i in 120:
 		await world.get_tree().physics_frame
 	return hull.linear_velocity.y
+
+
+## THE PLAYER’S SAVED SHIPS, as the Dive will find them (Q-T). Two files:
+##
+##   Test_Skiff.ship — a small, legal vessel with a helm. `bounty 4242` is its
+##     FINGERPRINT: a saved hull has no name on the body, and finding it by block
+##     count would be a test that passes for the wrong reason the first time
+##     somebody edits the starter. The bounty header rides to `Ship.bounty`, so
+##     one number both identifies the hull and proves a header survived mooring.
+##
+##   broken.ship — garbage. `user://ships` is a directory a player can put
+##     anything in, and the boot of a run is the worst place to raise it: it must
+##     cost a candidate, never the run.
+##
+## Written fresh every time, into the redirected directory, so a stale file from
+## an earlier run can never change what this suite measures.
+func _seed_saved_ships() -> void:
+	var dir := ShipLayout.user_dir
+	if not DirAccess.dir_exists_absolute(dir):
+		DirAccess.make_dir_recursive_absolute(dir)
+	var d := DirAccess.open(dir)
+	if d != null:
+		d.list_dir_begin()
+		var entry := d.get_next()
+		while entry != "":
+			if not d.current_is_dir():
+				DirAccess.remove_absolute(
+					ProjectSettings.globalize_path(dir.path_join(entry)))
+			entry = d.get_next()
+		d.list_dir_end()
+	_write_user_ship("Test_Skiff.ship",
+		"# a suite fixture, not shipped content\n"
+		+ "name Test Skiff\nkind vessel\nbounty 4242\norigin 4 1\n\n"
+		+ "GGGGGGGG\n##H##E##\n")
+	_write_user_ship("broken.ship", "{\"not\": \"a ship\"}\nnothing here\n")
+
+
+func _write_user_ship(basename: String, body: String) -> void:
+	var f := FileAccess.open(ShipLayout.user_dir.path_join(basename), FileAccess.WRITE)
+	if f == null:
+		print("    FAIL could not seed %s" % basename)
+		return
+	f.store_string(body)
+	f.close()
 
 
 func _ok(condition: bool, detail: String) -> void:

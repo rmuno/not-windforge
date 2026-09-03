@@ -17,6 +17,10 @@ func _initialize() -> void:
 	# a full run used to wipe the real bestiary + card gallery. Redirect first,
 	# before anything can touch disk.
 	Profile.path = "user://profile_test.json"
+	# ...and the SAVED SHIPS shelf (Q-T): the Dive's launch deck moors what it
+	# finds there, so every suite gets its own empty scratch directory rather
+	# than the owner's real one (or another suite's fixtures).
+	ShipLayout.user_dir = "user://ships_test_world"
 	print("\n=== world startup (legacy 1x scene) ===\n")
 
 	# 8x is the shipped default (maps/world/world.tscn); this suite keeps
@@ -316,6 +320,7 @@ func _initialize() -> void:
 	await _check_debug_window(world, fleet)
 	await _check_repair_station(world, fleet)
 	_check_boss(world, fleet)
+	await _check_creature_headers(world, fleet)
 	await _check_loft_ship(world, fleet)
 	await _check_lava_core(world, fleet)
 	await _check_sandbox(world, fleet)
@@ -401,6 +406,57 @@ func _check_dive_boots_streamlined() -> void:
 		"...while an EXPEDITION boot still gets its whole ecology (%d)" % full_wild)
 	full.queue_free()
 	await process_frame
+
+
+## THE HEADER VOCABULARY, THROUGH THE REAL SPAWN PATH (owner arc Q-T, 2026-09-02).
+##
+## `tests/fixtures/header_creature.ship` names a pool of 1234 — a number no
+## constant in this game has — plus a kind, a taming tier, a tint and a bounty.
+## The claim is that a `.ship` file can now carry what the spawn code used to
+## hard-code, and the only way to test that claim is to spawn the file through
+## the function the game spawns creatures with, not through a parser.
+##
+## The second half is the half that protects everything else: a file with NO
+## headers must still spawn exactly as it did before headers existed. That is the
+## whole safety argument for the override layer, and it is asserted here rather
+## than asserted in prose.
+func _check_creature_headers(world: Node, fleet) -> void:
+	var pl = world.get("player")
+	var at: Vector2 = (pl.global_position if pl != null else Vector2.ZERO) \
+		+ Vector2(1400.0, -260.0)
+	var body = world.call("_spawn_one_critter", at,
+		"res://tests/fixtures/header_creature.ship")
+	_ok(body != null, "a creature file with headers spawns through the real path")
+	if body == null:
+		return
+	_ok(is_equal_approx(body.shared_health_max, 1234.0),
+		"`health 1234` IS the creature's pool (%.0f)" % body.shared_health_max)
+	_ok(is_equal_approx(body.shared_health, 1234.0), "...and it spawns full")
+	_ok(body.creature_kind == "critter", "`kind critter` chose the brain")
+	_ok(body.tame_level == 1, "`tame 1` set the taming tier")
+	_ok(body.bounty == 7, "`bounty 7` rides on the body")
+	_ok(absf(body.body_tint.r - 0.9) < 0.01 and absf(body.body_tint.g - 0.2) < 0.01,
+		"`tint` painted it (%.2f %.2f %.2f)"
+			% [body.body_tint.r, body.body_tint.g, body.body_tint.b])
+	# What the bounty is FOR: a Dive kill pays the blueprint's own price.
+	_ok(DiveRun.coins_for("critter", 1, body.bounty) == 7,
+		"...and a depth-1 kill pays it (%d)" % DiveRun.coins_for("critter", 1, body.bounty))
+
+	# THE HEADERLESS CASE, which is every stock file: nothing changed.
+	var stock = world.call("_spawn_one_critter", at + Vector2(900.0, 0.0))
+	_ok(stock != null, "the stock critter still spawns")
+	if stock != null:
+		_ok(is_equal_approx(stock.shared_health_max, world.CRITTER_HEALTH),
+			"...on the code's own constant, untouched (%.0f)" % stock.shared_health_max)
+		_ok(stock.tame_level == 1 and stock.creature_kind == "critter",
+			"...with the tier and brain it always had")
+		_ok(stock.bounty == -1,
+			"...and NO bounty, so DiveRun.KIND_COIN still decides what it is worth")
+		_ok(DiveRun.coins_for("critter", 1, stock.bounty)
+			== DiveRun.coins_for("critter", 1), "...which is the same coin it always paid")
+		stock.queue_free()
+	body.queue_free()
+	await world.get_tree().physics_frame
 
 
 ## The owner's Blueprint-Loft test ship spawns on demand (F2), upscaled so it is

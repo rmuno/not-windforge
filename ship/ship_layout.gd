@@ -215,18 +215,25 @@ static func _meta_line(key: String, value: Variant) -> String:
 			return "%s %s" % [key, String.num(f, 4)]
 		TYPE_INT:
 			return "%s %d" % [key, int(value)]
-	return "%s %s" % [key, String(value)]
+	return "%s %s" % [key, str(value)]
 
 
 ## The header block for `meta`, in canonical order: the known vocabulary first
 ## (META_KEYS order), then anything else alphabetically. Empty values are
 ## dropped — a blank `name ` line is noise, not information.
-static func meta_lines(meta: Dictionary) -> Array:
-	var out: Array = []
+## A PackedStringArray and not an Array, so `serialize` can append the lines
+## straight into its typed `Array[String]` without a per-line String() cast —
+## which is not even legal on a value that is already a String (Godot 4: "Invalid
+## call 'String' constructor").
+static func meta_lines(meta: Dictionary) -> PackedStringArray:
+	var out := PackedStringArray()
 	if meta.is_empty():
 		return out
 	for key in META_KEYS:
-		if meta.has(key) and String(meta[key]) != "":
+		# `str`, never `String(...)`: the values here are Variants of several
+		# types, and the String() CONSTRUCTOR refuses some of them at runtime
+		# (Godot 4: "Invalid call 'String' constructor"). str() converts anything.
+		if meta.has(key) and str(meta[key]) != "":
 			out.append(_meta_line(key, meta[key]))
 	var extra: Array = []
 	for key in meta:
@@ -343,7 +350,7 @@ static func serialize(cells: Dictionary, scale := 1, meta := {}) -> String:
 	var lines: Array[String] = []
 	lines.append("# exported from the game (workshop shipyard)")
 	for line in meta_lines(meta):
-		lines.append(String(line))
+		lines.append(str(line))
 	if scale > 1:
 		lines.append("scale %d" % scale)
 	lines.append("origin %d %d" % [-lo.x, -lo.y])
