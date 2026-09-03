@@ -2767,23 +2767,28 @@ func _check_dive(world: Node, fleet) -> void:
 	world.call("end_dive")
 
 	# --- THE CARDS REACH THE WORLD (owner 2026-09-01, rarities + synergies) --
-	# Two wirings the unit suite structurally cannot see, because both of them
-	# only exist once there are real bodies: the `move_speed` dial has to reach
-	# the LEGS, and Cluster Shells' blast has to reach a SECOND hull.
+	# Wirings the unit suite structurally cannot see, because they only exist
+	# once there are real bodies: the `thrust` / `dive_rate` dials have to reach
+	# the HULL, and Cluster Shells' blast has to reach a SECOND hull.
 	world.call("begin_dive")
 	await _dive_take_a_hull(world, fleet)
 	var carded = world.get("dive")
 	if carded != null and pl != null and is_instance_valid(pl):
-		var stock_walk: float = pl.call("_move_speed")
-		_ok(is_equal_approx(pl.run_speed_mult, 1.0),
-			"a run with no leg card leaves your walk untouched (%.2fx)" % pl.run_speed_mult)
-		carded.grant_card("light_boots")
-		world.call("_tick_dive", 0.016)
-		_ok(pl.run_speed_mult > 1.0,
-			"the move_speed card is stamped on the body each tick (%.2fx)" % pl.run_speed_mult)
-		_ok(float(pl.call("_move_speed")) > stock_walk,
-			"...and the body really walks faster (%.0f -> %.0f px/s)"
-				% [stock_walk, float(pl.call("_move_speed"))])
+		var hull_now = world.get("local_ship")
+		if hull_now != null and is_instance_valid(hull_now):
+			_ok(is_equal_approx(hull_now.thrust_mult, 1.0)
+					and is_equal_approx(hull_now.dive_rate_mult, 1.0)
+					and is_equal_approx(hull_now.impact_damage_mult, 1.0),
+				"a run with no flight cards leaves the hull entirely stock")
+			carded.grant_card("trimmed_sails")
+			carded.grant_card("lead_keel")
+			world.call("_tick_dive", 0.016)
+			_ok(hull_now.thrust_mult > 1.0,
+				"the thrust card is stamped on the hull each tick (%.2fx)"
+					% hull_now.thrust_mult)
+			_ok(is_equal_approx(hull_now.dive_rate_mult, 1.35),
+				"...and Lead Keel's dive_rate rides beside it (%.2fx)"
+					% hull_now.dive_rate_mult)
 
 		# THE BLAST. Two hulks side by side, a shell into the first, and the
 		# SECOND one has to lose plating — that is the whole legendary.
@@ -2885,9 +2890,13 @@ func _check_dive(world: Node, fleet) -> void:
 		_ok(after_run.cards.count() >= 1,
 			"the card log survives the run that earned it (%d taken)"
 				% after_run.cards.count())
-	if pl != null and is_instance_valid(pl):
-		_ok(is_equal_approx(pl.run_speed_mult, 1.0),
-			"ending the run puts your legs back to stock (%.2fx)" % pl.run_speed_mult)
+	var stock_after = world.get("local_ship")
+	if stock_after != null and is_instance_valid(stock_after):
+		_ok(is_equal_approx(stock_after.thrust_mult, 1.0)
+				and is_equal_approx(stock_after.dive_rate_mult, 1.0)
+				and is_equal_approx(stock_after.impact_damage_mult, 1.0)
+				and is_zero_approx(stock_after.card_integrity_bonus),
+			"ending the run puts every hull dial back to stock")
 
 	# --- THE DIVE HAS NO INTERIORS (owner 2026-08-30) -----------------------
 	# Three things have to be true together, or "leaving the ship still has you
@@ -3356,48 +3365,140 @@ func _check_dive_survival(world: Node, fleet) -> void:
 		_ok(false, "the survival check has a live run")
 		return
 
-	# --- The stamps: every body dial the cards move, on the real body --------
-	_ok(is_equal_approx(pl.hook_range_mult, 1.0) and is_equal_approx(pl.hook_speed_mult, 1.0)
-			and not pl.hook_carries_body and is_zero_approx(pl.bonus_max_health)
-			and is_equal_approx(pl.fall_damage_mult, 1.0),
-		"a run with no survival cards leaves the body entirely stock")
+	var hull = world.get("local_ship")
+	if hull == null or not is_instance_valid(hull):
+		_ok(false, "the survival check has a hull to mend")
+		return
+
+	# --- The stamps: every dial the cards move, on the real body and hull -----
+	_ok(is_zero_approx(pl.bonus_max_health)
+			and is_equal_approx(pl.fall_damage_mult, 1.0)
+			and is_zero_approx(hull.card_integrity_bonus)
+			and is_equal_approx(hull.impact_damage_mult, 1.0),
+		"a run with no survival cards leaves the body and the hull entirely stock")
 	var stock_pool: float = pl.max_health
 	pl.health = stock_pool * 0.4
 	var hurt_at: float = pl.health
+	var stock_hull: float = hull.hull_integrity_max
+	hull.hull_integrity = stock_hull * 0.4
+	var hull_at: float = hull.hull_integrity
 	# Dealt through the F2 button the owner playtests with, not by hand — so the
 	# standing order ("a feature F2 cannot reach is invisible") is pinned too, and
 	# a typo in its id list reddens here rather than in a play session.
 	world.call("debug_grant_card_suite")
 	var dealt := true
-	for id in ["iron_constitution", "long_line", "harpooneers_arm", "thick_skin",
-			"ricochet_rounds", "chain_lightning", "second_heart"]:
+	var f2_suite: Array = world.get_script().get_script_constant_map().get(
+		"DEBUG_CARD_SUITE", [])
+	_ok(not f2_suite.is_empty(), "F2's survival suite names cards (%d)" % f2_suite.size())
+	for id in f2_suite:
 		if not run.cards.has(String(id)):
 			dealt = false
-	_ok(dealt, "F2's survival-suite button deals all seven cards into the hand (%d held)"
+	_ok(dealt, "F2's survival-suite button deals every card it names into the hand (%d held)"
 		% run.cards.size())
 	world.call("_tick_dive", 0.016)
-	_ok(pl.hook_range_mult > 1.0 and pl.hook_speed_mult > 1.0,
-		"Long Line's two dials are stamped on the body each tick (%.2fx / %.2fx)"
-			% [pl.hook_range_mult, pl.hook_speed_mult])
-	_ok(float(pl.call("_hook_range")) > pl.HOOK_MAX_RANGE
-			and float(pl.call("_hook_speed")) > pl.HOOK_SPEED,
-		"...and the grapple really reaches further and flies faster (%.0f px / %.0f px/s)"
-			% [float(pl.call("_hook_range")), float(pl.call("_hook_speed"))])
-	_ok(pl.hook_carries_body,
-		"Harpooneer's Arm lifts the free-fall restriction on the body itself")
 	_ok(pl.fall_damage_mult < 1.0,
-		"Thick Skin softens the landing bill (%.2fx)" % pl.fall_damage_mult)
+		"Thick Skin softens the landing bill on foot (%.2fx)" % pl.fall_damage_mult)
+	_ok(hull.impact_damage_mult < 1.0,
+		"...and the SAME card softens the hull's crash bill (%.2fx)"
+			% hull.impact_damage_mult)
 	_ok(is_equal_approx(pl.max_health, stock_pool + 75.0),
-		"the flat HP cards raise the real pool (%.0f -> %.0f)" % [stock_pool, pl.max_health])
+		"the flat HP cards raise the real body pool (%.0f -> %.0f)"
+			% [stock_pool, pl.max_health])
 	_ok(is_equal_approx(pl.health, hurt_at + 75.0),
 		"...and MEND the difference, so you are not left as close to death (%.0f -> %.0f)"
 			% [hurt_at, pl.health])
+	# THE HULL IS YOUR HP WHILE ABOARD (v0.140.0): the same two cards widen the
+	# run's integrity pool by HULL_PER_BODY_HP times as much, and mend it.
+	_ok(is_equal_approx(hull.hull_integrity_max,
+			stock_hull + 75.0 * DiveCards.HULL_PER_BODY_HP),
+		"...and the pool by ten times that (%.0f -> %.0f)"
+			% [stock_hull, hull.hull_integrity_max])
+	_ok(is_equal_approx(hull.hull_integrity,
+			hull_at + 75.0 * DiveCards.HULL_PER_BODY_HP),
+		"...mending the difference on the hull too (%.0f -> %.0f)"
+			% [hull_at, hull.hull_integrity])
 	# Stamped every tick, and idempotent: ticking again must not heal you again.
 	var settled: float = pl.health
+	var settled_hull: float = hull.hull_integrity
 	world.call("_tick_dive", 0.016)
 	world.call("_tick_dive", 0.016)
-	_ok(is_equal_approx(pl.health, settled),
-		"the stamp is idempotent — a hundred ticks is not a hundred heals")
+	_ok(is_equal_approx(pl.health, settled)
+			and is_equal_approx(hull.hull_integrity, settled_hull),
+		"the stamps are idempotent — a hundred ticks is not a hundred heals")
+
+	# --- HEAL THE THING YOU ARE (review §4.2 item 2) ------------------------
+	# The whole point of the round, and it only exists here: at the helm a heal
+	# proc has to land on the POOL, and on foot on the BODY. Driven through
+	# `_dive_heal_player`, the sink every heal/lifesteal proc actually calls.
+	# TAKE THE HELM FOR REAL. `_dive_take_a_hull` commits the run and then steps
+	# off (the launch deck's own sequence), and "at the helm" is precisely the
+	# condition this branch turns on — so board it the way E does.
+	if not pl.is_piloting() and not hull.helm_cells.is_empty():
+		pl.global_position = hull.to_global(hull.local_pos_of(hull.helm_cells[0]))
+		pl.board(hull, hull.helm_cells[0])
+		await world.get_tree().physics_frame
+	hull.hull_integrity = hull.hull_integrity_max * 0.5
+	pl.health = pl.max_health * 0.5
+	var pool_before: float = hull.hull_integrity
+	var body_before: float = pl.health
+	_ok(pl.is_piloting(), "the survival check is really at the helm")
+	world.call("_dive_heal_player", 25.0)
+	_ok(is_equal_approx(hull.hull_integrity,
+			pool_before + 25.0 * DiveCards.HULL_PER_BODY_HP),
+		"a +25 heal at the helm mends the HULL by 250 (%.0f -> %.0f)"
+			% [pool_before, hull.hull_integrity])
+	_ok(is_equal_approx(pl.health, body_before),
+		"...and leaves the body exactly where it was")
+	# A leech card is a fraction of the DAMAGE, already in the pool's own units,
+	# so it lands one-for-one — the dimensional argument in _dive_lifesteal.
+	pool_before = hull.hull_integrity
+	world.call("_dive_lifesteal", 40.0)
+	_ok(is_equal_approx(hull.hull_integrity, pool_before + 40.0),
+		"lifesteal lands on the pool one-for-one (%.0f -> %.0f)"
+			% [pool_before, hull.hull_integrity])
+	# ...and neither ever overfills it.
+	hull.hull_integrity = hull.hull_integrity_max
+	world.call("_dive_heal_player", 9999.0)
+	_ok(is_equal_approx(hull.hull_integrity, hull.hull_integrity_max),
+		"a whole hull cannot be mended over its own max")
+	# ON FOOT the body is what dies again, and it is what mends.
+	pl.disembark()
+	await world.get_tree().physics_frame
+	_ok(not pl.is_piloting(), "...and stepping off the helm really lands you on foot")
+	pl.health = pl.max_health * 0.5
+	body_before = pl.health
+	pool_before = hull.hull_integrity
+	world.call("_dive_heal_player", 25.0)
+	_ok(is_equal_approx(pl.health, body_before + 25.0),
+		"off the helm the same heal mends the BODY by 25 (%.0f -> %.0f)"
+			% [body_before, pl.health])
+	_ok(is_equal_approx(hull.hull_integrity, pool_before),
+		"...and the hull's pool is left alone")
+
+	# --- MENDED BLOCKS REFUND THE POOL, against the real hull ----------------
+	# The unit suite pins the arithmetic; what only exists here is that the
+	# REPAIR PATH the game actually runs (the wand's per-cell call, and the
+	# outpost patch) reaches it on a hull the world built.
+	var target: Vector2i = hull.blocks.keys()[0]
+	hull.damage_cell(target, 40.0)
+	var drained: float = hull.hull_integrity
+	hull.repair_cell(target, 40.0)
+	_ok(hull.hull_integrity > drained,
+		"mending a real hull cell puts points back in the run's pool (%.0f -> %.0f)"
+			% [drained, hull.hull_integrity])
+	# THE OUTPOST PATCH (DESCENT §10.5): +900 on top of whatever the sweep mends.
+	hull.hull_integrity = hull.hull_integrity_max * 0.25
+	var patched_from: float = hull.hull_integrity
+	world.call("_dive_patch_hull")
+	_ok(hull.hull_integrity >= patched_from + 900.0,
+		"the outpost patch mends at least its +900 (%.0f -> %.0f)"
+			% [patched_from, hull.hull_integrity])
+
+	# The death checks below run ON FOOT, which is where they have always run:
+	# Second Heart guards the BODY, and the one-life rule is what ends the run.
+	# Leaving the body glued to a helm would also hand the next check a player
+	# whose every teleport drags a ship with it.
+	pl.health = pl.max_health
 
 	# --- SECOND HEART: once, and then never again this run -------------------
 	world.call("_watch_player_death")
@@ -3414,10 +3515,15 @@ func _check_dive_survival(world: Node, fleet) -> void:
 		"...and it ends the run for real (outcome '%s')" % String(run.outcome))
 
 	world.call("end_dive")
-	_ok(is_equal_approx(pl.hook_range_mult, 1.0) and is_equal_approx(pl.hook_speed_mult, 1.0)
-			and not pl.hook_carries_body and is_equal_approx(pl.fall_damage_mult, 1.0)
+	_ok(is_equal_approx(pl.fall_damage_mult, 1.0)
 			and is_zero_approx(pl.bonus_max_health),
 		"ending the run puts every body dial back to stock")
+	if is_instance_valid(hull):
+		_ok(is_equal_approx(hull.impact_damage_mult, 1.0)
+				and is_equal_approx(hull.dive_rate_mult, 1.0)
+				and is_zero_approx(hull.card_integrity_bonus)
+				and is_zero_approx(hull.hull_integrity_max),
+			"...and the hull is disarmed, un-carded and flying stock again")
 	_ok(is_equal_approx(pl.max_health, stock_pool),
 		"...and the health pool with them (%.0f)" % pl.max_health)
 	# Leave the body whole for whatever runs after this.

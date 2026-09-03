@@ -285,11 +285,13 @@ func _build_spawn_tab() -> void:
 		func() -> void:
 			if world != null and world.has_method("debug_spawn_scrap"):
 				world.call("debug_spawn_scrap"))
-	# THE SURVIVAL SUITE (v0.134.0). The seven new cards change things a draft
-	# cannot be relied on to hand you — a bounce, a reprieve, a grapple that works
-	# in free fall — so one button deals the whole suite into the run's hand.
+	# THE SURVIVAL SUITE. These cards change things a draft cannot be relied on to
+	# hand you — a widened pool, a softer crash, a mend that comes out of the guns,
+	# a bounce, a reprieve — so one button deals the whole suite into the run's
+	# hand. Re-pointed at the HULL in v0.140.0 with the deck itself (world.gd's
+	# DEBUG_CARD_SUITE is the list).
 	# STANDING ORDER: a feature the owner cannot reach through F2 is invisible.
-	_action_button(box, "DIVE CARD: deal the survival suite (the 7 new cards)",
+	_action_button(box, "DIVE CARD: deal the survival suite (hull, bounce, reprieve)",
 		func() -> void:
 			if world != null and world.has_method("debug_grant_card_suite"):
 				world.call("debug_grant_card_suite"))

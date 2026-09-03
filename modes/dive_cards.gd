@@ -8,7 +8,7 @@ extends RefCounted
 ##
 ## THE COHESION THE OWNER ASKED FOR ("lots of systems, little cohesion"): a card is
 ## not a new mechanic. It is EITHER a passive MULTIPLIER on a dial that already
-## exists (weapon damage, turret damage, fire rate, mending) OR a PROC wired to an
+## exists (damage, fire rate, thrust, mending) OR a PROC wired to an
 ## in-game EVENT that already fires (onKill, onHit, onLand). So adding a card is a
 ## DATA ROW here, and the world's existing combat/kill/landing sites just ask "what
 ## do my cards do on this event?". Nothing new to maintain; the scattered systems
@@ -59,10 +59,10 @@ extends RefCounted
 ##     events wired today: "kill" (a creature died to you), "hit" (your shot landed
 ##     on an enemy), "land" (you reached a new depth). STAGED: "attack", "hurt".
 ##     effects wired today: "coins" (+amount to the pot), "heal" (+amount HP to
-##     WHAT YOU ARE — see HULL_PER_BODY_HP), "lifesteal" (heal amount× the damage
-##     dealt, through the same sink), "explode" (the hit
-##     detonates: amount× the damage dealt again to every enemy within
-##     BLAST_RADIUS_PX × world_scale of the struck hull), "ricochet" (the hit
+##     WHAT YOU ARE — see HULL_PER_BODY_HP), "lifesteal" (mend amount× the damage
+##     dealt into whatever you are — the pool at the helm, the body on foot),
+##     "explode" (the hit detonates: amount× the damage dealt again to every
+##     enemy within BLAST_RADIUS_PX × world_scale of the struck hull), "ricochet" (the hit
 ##     BOUNCES to the nearest OTHER enemy within RICOCHET_RADIUS_PX × world_scale
 ##     for amount× the damage), "chain" (the bounce keeps going, CHAIN_HOPS more
 ##     times at amount× the damage each).
@@ -80,9 +80,10 @@ extends RefCounted
 ## you can feel in the first ten seconds or writes a build around a SYNERGY that
 ## already exists in the vocabulary:
 ##   * fire_rate × explode — more trigger pulls, more blasts (Cluster Shells wants
-##     Quick Hands / Hair Trigger / Blood Engine).
-##   * fire_rate × lifesteal — Sanguine Tide turns a fast gun into a health bar.
-##   * coins × the outpost counter — Pickpocket and King's Ransom buy the Aether
+##     Quick Hands / Hair Trigger / Hungry Engine).
+##   * fire_rate × lifesteal — Leech Rig turns a fast gun into the hull's own
+##     repair crew.
+##   * coins × the outpost counter — Pickpocket and Prize Money buy the Aether
 ##     Lung and the hull patches sooner, and the pot is the only money a landing
 ##     spends. (They no longer draw CARDS: since v0.137.0 XP is SCRAP, a physical
 ##     drop swept off a corpse rather than a share of the coins — the two channels
@@ -616,7 +617,7 @@ static func codex_text() -> String:
 	# Grouped by tier, weakest first — the same order (and the same names) the
 	# picker paints, so the page reads as the deck's own ladder. ONE LINE PER
 	# CARD: the title panel is a plain VBox with no scroll, and at two lines a
-	# nineteen-card deck runs off the bottom of a 720p window.
+	# deck of this size runs off the bottom of a 720p window.
 	for tier in RARITIES:
 		var tier_cards: Array = []
 		for c in CATALOG:
