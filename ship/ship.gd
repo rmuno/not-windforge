@@ -477,7 +477,9 @@ var thrust_mult := 1.0
 ## halves of one flight model breathing different atmospheres (DESIGN_DIVE_REVIEW
 ## §1.2). The floor now sits in `air_density_at` itself: one number, both halves,
 ## a trimmed hull hovers on a neutral stick at every rung, and the deep still
-## thickens 0.5 → 1.0 over the ladder. Outside a run nothing changes.
+## thickens 0.85 → 1.0 over the ladder (0.5 was measured short — the starter's
+## props cover a third of its half-density deficit; see the Tunables row).
+## Outside a run nothing changes.
 var air_density_floor := 0.0
 ## Gates the altitude hold only (rotation needs no assist — the upright
 ## rule is unconditional). False on wreckage: a dead hull does not trim.

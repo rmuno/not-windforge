@@ -4268,8 +4268,8 @@ func _test_dive_run() -> void:
 	# ladder no longer opens fast because the air is a vacuum — the run floors
 	# the density instead, so a trimmed hull hovers at every rung.
 	var air_floor := Tunables.get_num("dive_air_floor")
-	_check(is_equal_approx(air_floor, 0.5),
-		"the run floors the air at half density (%.2f)" % air_floor)
+	_check(is_equal_approx(air_floor, 0.85),
+		"the run floors the air where the shipped hull can hover (%.2f; 0.5 measured short, break-even 0.72)" % air_floor)
 	_check(air_floor > Ship.MIN_AIR_DENSITY * 4.0,
 		"...which is far more than the deck's real air (%.2f vs %.2f)"
 			% [air_floor, Ship.MIN_AIR_DENSITY])

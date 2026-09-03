@@ -648,7 +648,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	if picket == null:
 		return
 	# MEASURED, and it is the round's one uncomfortable number: at the SHIPPED
-	# air floor (0.5) neither the starter nor a picket can hold a rung — they are
+	# air floor of 0.5 (the review's first number) neither the starter nor a picket could hold a rung — they are
 	# balloon ships, and half density leaves their buoyancy at roughly half their
 	# weight while their lift props are worth a sixth of it. The engines were
 	# deliberately not retuned (owner's call), so the STICK is measured in air a
@@ -1160,7 +1160,7 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		var dx: float = starter.global_position.x - x0
 		# 800 -> 4000 (owner 2026-09-01, "extremely slow in every way"): the root
 		# was the air the props breathe, strangled in the thin start air (0.15).
-		# The floor is `dive_air_floor` now (0.5, and LIFT feels it too), and the
+		# The floor is `dive_air_floor` now (0.85, and LIFT feels it too), and the
 		# same hull covers ~11,700 px here — `tools/lateral_probe.gd` measures
 		# 5,030 px/s peak, a ring tile in 3 s. This bound GUARDS the floor: drop
 		# it back toward 0.15 and this reddens instead of the owner finding out
@@ -1176,7 +1176,7 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		# floor 264,929,280 — so a neutral stick with the floor OFF is a very
 		# different fall from one with it on. This is the whole of slice 2 in
 		# one comparison, and it is scale-only: at 1x the deck does not exist.
-		var floored_sink := await _neutral_sink(world, starter, 0.5)
+		var floored_sink := await _neutral_sink(world, starter, Tunables.get_num("dive_air_floor"))
 		var vacuum_sink := await _neutral_sink(world, starter, 0.0)
 		_ok(floored_sink < vacuum_sink * 0.8,
 			"the air floor buys real altitude authority (sinks %.0f px/s vs %.0f in the vacuum)"
@@ -1185,16 +1185,16 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		# THE VERTICAL STICK COMMANDS A SPEED (DESIGN_DIVE_REVIEW §3.2). Three
 		# claims about the hull the owner actually flies, inside a run.
 		#
-		# MEASURED FIRST, per the round's brief: at the SHIPPED floor (0.5) the
-		# starter cannot hover at the deck at all, and no controller could make
+		# MEASURED FIRST, per the round's brief: at the review's first floor (0.5) the
+		# starter could not hover at the deck at all, and no controller could make
 		# it. It is a balloon ship — buoyancy 264,929,280 against a weight of
 		# 501,652,476 leaves its lift props a deficit of 236,723,196 to find,
 		# and at full deflection they produce 81,920,000: 35% of it. The stick
 		# saturates and the hull sinks. Break-even for this hull is a floor of
-		# 0.72; a comfortable hover wants ~0.8. The engines were deliberately
-		# NOT retuned (owner's call), so the CONTROLLER is measured here with
-		# the air a hull needs to have authority at all, and the shortfall is
-		# reported as a number instead of being tuned away in the dark.
+		# 0.72; a comfortable hover wants ~0.8 — which is why the SHIPPED default is
+		# 0.85. The engines were deliberately NOT retuned (owner's call); the
+		# controller is measured at the shipped floor, set explicitly so an F2 edit
+		# cannot leak in.
 		_ok(starter.rate_control,
 			"in a run the starter's vertical stick commands a rate")
 		Tunables.set_value("dive_air_floor", 0.85)

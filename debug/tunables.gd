@@ -296,9 +296,14 @@ const _REGISTRY := [
 	# which left lift and thrust in different atmospheres and is why a trimmed
 	# hull still sank on a neutral stick. The floor now sits in `air_density_at`
 	# itself, so LIFT feels it too: a trimmed hull hovers at every rung, and the
-	# deep still thickens 0.5 -> 1.0 over the ladder. 0 = off.
+	# deep still thickens over the ladder. 0 = off.
+	# 0.5 was the review's first number and it was MEASURED short: the starter is
+	# a balloon ship, and at half density its lift props cover 35% of the
+	# remaining deficit — break-even is 0.72, a confident hover ~0.8. 0.85 is
+	# where the approved behaviour ("a trimmed hull hovers on a neutral stick")
+	# is actually true of the shipped hull (scale_startup measures it).
 	{"id": "dive_air_floor", "label": "Dive: min air density hulls feel (lift AND props; 0 = off)",
-		"group": "World", "kind": KIND_FLOAT, "default": 0.5, "min": 0.0,
+		"group": "World", "kind": KIND_FLOAT, "default": 0.85, "min": 0.0,
 		"max": 1.0, "step": 0.05},                               # Ship.air_density_floor
 	# THE VERTICAL STICK COMMANDS A RATE in a run (DESIGN_DIVE_REVIEW §3.2). Off
 	# restores the shipped binary hover — the stick as a raw prop input, the
