@@ -12,6 +12,14 @@ extends CanvasLayer
 ## no UI change. Each row edits Tunables live; a `note` ("next spawn") marks
 ## levers that only apply on the next spawn/rebuild (pod count, whale health).
 ##
+## BRIEF, NOT HIDDEN (owner 2026-09-05: "TOO MUCH INFORMATION EVERYWHERE… use a
+## tooltip for the TMI bits"). Every row shows a short label in one fixed column
+## (so the sliders line up) and carries the registry's `tip` as the tooltip on
+## both halves; every button is an imperative verb with its explanation in its
+## tooltip; the perf readout is one line with the whole cost picture behind it.
+## Nothing is behind a fold — the owner playtests through this window, so one
+## glance still shows every lever and every verb it has.
+##
 ## The Spawn / Player tabs call real methods on the world (debug_spawn,
 ## debug_grant_money, …); the Perf tab surfaces the live counts + the existing
 ## whale diagnostic toggle. Everything routes through the world so this node holds
@@ -38,6 +46,10 @@ const _ACCENT := Color(0.55, 0.82, 0.55)
 ## instead of getting its own auto-tab — see _build (a same-named second tab
 ## collapsed to an unreadable "@ScrollContainer@NN" title).
 const PLAYER_TAB := "Player"
+## One label column for every lever row, so the sliders line up down the tab.
+## Labels are capped at 28 characters in the registry and clipped here, so this
+## width is a promise the rows cannot break.
+const LABEL_W := 172.0
 
 
 func _ready() -> void:
@@ -80,7 +92,10 @@ func _process(delta: float) -> void:
 	_perf_age += delta
 	if _perf_age < PERF_SAMPLE:
 		return
-	_perf_label.text = _perf_text(_perf_age)
+	# The tooltip carries the detail; the label is the one line read at a glance.
+	# `_perf_text` advances the rate counters, so it runs ONCE per sample.
+	_perf_label.tooltip_text = _perf_text(_perf_age)
+	_perf_label.text = _perf_line()
 	_perf_age = 0.0
 
 
@@ -89,7 +104,7 @@ func _process(delta: float) -> void:
 func _build() -> void:
 	var panel := PanelContainer.new()
 	panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT, Control.PRESET_MODE_MINSIZE, 16)
-	panel.custom_minimum_size = Vector2(460, 560)
+	panel.custom_minimum_size = Vector2(500, 560)
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = _BG
 	sb.border_color = _BORDER
@@ -110,22 +125,22 @@ func _build() -> void:
 	outer.add_child(title)
 
 	_tabs = TabContainer.new()
-	_tabs.custom_minimum_size = Vector2(436, 500)
+	_tabs.custom_minimum_size = Vector2(476, 500)
 	_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	outer.add_child(_tabs)
 
-	# Spawn first — the owner's headline ask ("spawn enemies on demand").
+	# Player, Spawn, then one tab per Tunables group in registry order (Dive,
+	# Combat, World, Whale — the Dive first because that is what the owner
+	# playtests), then Perf. "Player" is the exception in the loop: it is folded
+	# into the Player tab so the movement-feel levers and the player cheats share
+	# ONE tab — and so a second TabContainer child named "Player" never collides
+	# into an unreadable "@ScrollContainer@NN" tab title (the F2 bug, 2026-08-27).
+	_build_player_tab()
 	_build_spawn_tab()
-	# One tab per Tunables group (Whale, Combat, World, ...), built from the
-	# registry. "Player" is the exception: it is folded into the Player tab below
-	# so the movement-feel levers and the player cheats share ONE tab — and so a
-	# second TabContainer child named "Player" never collides into an unreadable
-	# "@ScrollContainer@NN" tab title (the owner's F2 bug, 2026-08-27).
 	for group in Tunables.groups():
 		if group == PLAYER_TAB:
 			continue
 		_build_lever_tab(group)
-	_build_player_tab()
 	_build_perf_tab()
 
 
@@ -151,16 +166,20 @@ func _build_lever_tab(group: String) -> void:
 
 func _build_lever_row(box: VBoxContainer, row: Dictionary) -> void:
 	var id: String = row["id"]
+	var tip: String = str(row.get("tip", ""))
 	var line := HBoxContainer.new()
 	line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	line.add_theme_constant_override("separation", 8)
 
+	# The label is SHORT and clipped to one column width; everything the old long
+	# label used to spell out is the tooltip now. A Label ignores the mouse by
+	# default in Godot 4, so the filter is what makes its tooltip reachable.
 	var name_label := Label.new()
-	var label_text: String = row["label"]
-	if row.has("note"):
-		label_text += "  (%s)" % row["note"]
-	name_label.text = label_text
-	name_label.custom_minimum_size = Vector2(210, 0)
+	name_label.text = str(row["label"])
+	name_label.custom_minimum_size = Vector2(LABEL_W, 0)
+	name_label.clip_text = true
+	name_label.tooltip_text = tip
+	name_label.mouse_filter = Control.MOUSE_FILTER_STOP
 	name_label.add_theme_color_override("font_color", _FG)
 	name_label.add_theme_font_size_override("font_size", 12)
 	line.add_child(name_label)
@@ -168,6 +187,7 @@ func _build_lever_row(box: VBoxContainer, row: Dictionary) -> void:
 	if row["kind"] == Tunables.KIND_BOOL:
 		var check := CheckBox.new()
 		check.button_pressed = Tunables.get_bool(id)
+		check.tooltip_text = tip
 		check.toggled.connect(func(on: bool) -> void: Tunables.set_value(id, on))
 		_controls[id] = check
 		line.add_child(check)
@@ -177,10 +197,11 @@ func _build_lever_row(box: VBoxContainer, row: Dictionary) -> void:
 		slider.max_value = float(row["max"])
 		slider.step = float(row["step"])
 		slider.value = Tunables.get_num(id)
+		slider.tooltip_text = tip
 		slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		slider.custom_minimum_size = Vector2(150, 0)
+		slider.custom_minimum_size = Vector2(120, 0)
 		var value_label := Label.new()
-		value_label.custom_minimum_size = Vector2(64, 0)
+		value_label.custom_minimum_size = Vector2(52, 0)
 		value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		value_label.add_theme_color_override("font_color", _ACCENT)
 		value_label.add_theme_font_size_override("font_size", 12)
@@ -193,176 +214,214 @@ func _build_lever_row(box: VBoxContainer, row: Dictionary) -> void:
 		line.add_child(slider)
 		line.add_child(value_label)
 
+	# `note` rides the END of the row, dim — it says WHEN a change lands, which
+	# is not part of the lever's name.
+	if row.has("note"):
+		var note := Label.new()
+		note.text = str(row["note"])
+		note.add_theme_color_override("font_color", _MUTED)
+		note.add_theme_font_size_override("font_size", 10)
+		line.add_child(note)
+
 	box.add_child(line)
 
 
 func _build_spawn_tab() -> void:
 	var box := _add_tab("Spawn")
-	_hint(box, "Spawns near the player (authority / single-player).")
-	_action_button(box, "Spawn hulk (bandit)", func() -> void: _spawn("hulk"))
-	_action_button(box, "Spawn whale (random variant)", func() -> void: _spawn("whale"))
-	_action_button(box, "Spawn critter (small tameable)", func() -> void: _spawn("critter"))
-	_action_button(box, "Spawn KRAKEN (deep hunter!)", func() -> void: _spawn("kraken"))
-	_action_button(box, "Spawn BASILISK (spits fire)", func() -> void: _spawn("basilisk"))
-	_action_button(box, "Spawn the CITY-WHALE BOSS (the Leviathan Arcology)",
+	_hint(box, "Everything here lands just to port of you (authority / single-player).")
+
+	_section(box, "SPAWN")
+	_action_button(box, "Spawn hulk",
+		"A bandit hulk — hostile, and what most fights in the sky are made of.",
+		func() -> void: _spawn("hulk"))
+	_action_button(box, "Spawn whale", "One whale of a random variant.",
+		func() -> void: _spawn("whale"))
+	_action_button(box, "Spawn critter", "A small tameable critter.",
+		func() -> void: _spawn("critter"))
+	_action_button(box, "Spawn kraken", "A deep hunter — what a kraken den fields.",
+		func() -> void: _spawn("kraken"))
+	_action_button(box, "Spawn basilisk", "The top-band fire-spitter.",
+		func() -> void: _spawn("basilisk"))
+	_action_button(box, "Spawn the city-whale boss",
+		"The Leviathan Arcology: the city-whale BOSS.",
 		func() -> void: _spawn("boss"))
-	_action_button(box, "Spawn whale CARCASS (corpse-airship bench)", func() -> void: _spawn("carcass"))
-	# The creature log / bestiary (title-screen workshop, step 1): reveal or wipe
-	# the met-creatures record so the title page is playtestable without hunting
-	# the whole roster first (standing order — a feature F2 cannot reach is invisible).
-	_action_button(box, "BESTIARY: reveal every creature (fills the title log)",
-		func() -> void:
-			if world != null and world.has_method("debug_reveal_creatures"):
-				world.call("debug_reveal_creatures"))
-	_action_button(box, "BESTIARY: forget all creatures (wipe the log)",
-		func() -> void:
-			if world != null and world.has_method("debug_forget_creatures"):
-				world.call("debug_forget_creatures"))
-	_action_button(box, "Spawn MY LOFT SHIP beside you (board it / grapple it)",
+	_action_button(box, "Spawn whale carcass",
+		"A corpse-airship bench — the hull a salvaged ship gets built out of.",
+		func() -> void: _spawn("carcass"))
+	_action_button(box, "Spawn my Loft ship",
+		"Spawns the ship saved in the Blueprint Loft beside you. Board it or grapple it.",
 		func() -> void: _spawn("loft"))
 	# Paste a .ship from the Blueprint Loft and fly it straight away — no file
 	# round-trip (owner 2026-08-27). Upscaled 8x + spawned beside you, faction 0.
-	_hint(box, "…or paste a .ship from the Blueprint Loft and spawn it:")
+	_hint(box, "…or paste a .ship and spawn that:")
 	var paste := TextEdit.new()
 	paste.placeholder_text = "paste .ship text here (origin line + glyph rows)…"
 	paste.custom_minimum_size = Vector2(0, 96)
 	paste.add_theme_font_size_override("font_size", 11)
 	box.add_child(paste)
-	_action_button(box, "Spawn PASTED .ship beside you", func() -> void:
-		if world != null and not paste.text.strip_edges().is_empty():
-			world.call("debug_spawn_text", paste.text, _spawn_pos()))
-	# Fire is not a spawnable body, but it is a thing the owner has to be able
-	# to CAUSE on demand to playtest it at all (standing order: a feature F2
-	# cannot reach is invisible).
-	_action_button(box, "SET FIRE to the nearest ship (X douses it)",
-		func() -> void: _ignite())
-	# Ecology (Q-C): shove the deep's ascendancy up so the kraken surge is
-	# playtestable without hunting a whole pod first. +0.25 = one band per press.
-	_action_button(box, "STIR THE DEEP (+ecology: krakens surge worldwide)",
+	_action_button(box, "Spawn pasted .ship",
+		"Spawns the .ship text above beside you: upscaled to the world, faction 0, no file round-trip.",
 		func() -> void:
-			if world != null and world.has_method("debug_stir_deep"):
-				world.call("debug_stir_deep", 0.25))
-	# THE DIVE (Q-G): start a run without going back to the boot chooser, so the
-	# mode is playtestable from inside a live world (standing order — a feature
-	# F2 cannot reach is invisible).
-	_action_button(box, "START A DIVE (roguelite run: 8 depths down)",
+			if world != null and not paste.text.strip_edges().is_empty():
+				world.call("debug_spawn_text", paste.text, _spawn_pos()))
+
+	# THE DIVE (Q-G). Every verb a run has, reachable from inside a live world:
+	# standing order — a feature F2 cannot reach is invisible.
+	_section(box, "DIVE")
+	_action_button(box, "Start a dive",
+		"Begins a roguelite run — eight depths down — without going back to the boot chooser.",
 		func() -> void:
 			if world != null and world.has_method("begin_dive"):
 				world.call("begin_dive"))
-	# THE 1x DIVE EXPERIMENT (owner 2026-09-01: "way too much lag... Let me try
-	# the 1x mode in dive"). The same dive-native boot at world_scale 1 — a
-	# 64th of the blocks per ship — so the owner can FEEL whether block volume
-	# is the frame's cost. Known trade from the earlier probe: the starter's
-	# authority comes from the 8x scale pipeline, so 1x flies slow relative to
-	# its world. A diagnostic door, not (yet) a mode.
-	_action_button(box, "TRY THE 1x DIVE (lag experiment — 1/64th the blocks)",
+	_action_button(box, "Try the 1x dive",
+		"The same dive boot at world scale 1, a 64th of the blocks per ship — a lag experiment, not a mode. The starter flies slow relative to its world there.",
 		func() -> void:
 			if world != null:
 				world.get_tree().change_scene_to_file("res://maps/dive/dive_1x.tscn"))
-	# THE SURGE, NOW A VERB AND NOTHING ELSE (v0.141.0, owner call 6). The
-	# 45-second timer that used to fire this is retired — a run's population is
-	# its standing garrison — so this button is the only way a wave of hunters
-	# arrives, which is exactly what the owner needs to A/B "garrison alone"
-	# against "garrison plus pressure". No-op outside a live run.
-	_action_button(box, "DIVE: SEND A SURGE (hunters fly in from past the horizon)",
+	# The 45-second timer that used to fire this is retired (v0.141.0): a run's
+	# pressure is its standing garrison, so this button is the only way a wave
+	# arrives — which is what A/Bs "garrison alone" against "garrison plus chase".
+	_action_button(box, "Send a surge",
+		"Flies a wave of hunters in from past the horizon, ahead of your travel. No-op outside a live run.",
 		func() -> void:
 			if world != null and world.has_method("_dive_surge"):
 				world.call("_dive_surge"))
-	_action_button(box, "Plant a Dive OUTPOST beside you (K trades at it)",
+	_action_button(box, "Plant a Dive outpost",
+		"Plants an outpost beside you; K opens its counter and 1-3 buy its stock.",
 		func() -> void:
 			if world != null and world.has_method("_plant_outpost"):
 				world.call("_plant_outpost", _spawn_pos()))
-	_action_button(box, "END the dive (abandon the run, no ledger)",
+	_action_button(box, "End the dive",
+		"Abandons the run where it stands — no ledger, no bank.",
 		func() -> void:
 			if world != null and world.has_method("end_dive"):
 				world.call("end_dive"))
-	# THE DIVE CARDS (Q-L): offer a draft, or pour in XP to trigger one, so the deck
-	# is playtestable without grinding kills. Both no-op outside a live run.
-	_action_button(box, "DIVE CARD: offer a draft (pick with 1/2/3)",
+
+	# THE DIVE CARDS (Q-L): the deck has to be playtestable without grinding kills.
+	_section(box, "CARDS")
+	_action_button(box, "Offer a card draft",
+		"Offers a draft; pick it with 1/2/3. No-op outside a live run.",
 		func() -> void:
 			if world != null and world.has_method("debug_grant_card_draft"):
 				world.call("debug_grant_card_draft"))
-	_action_button(box, "DIVE CARD: +100 run XP (fills the card bar)",
+	_action_button(box, "Add 100 run XP",
+		"Pours XP into the run so the card bar fills without grinding kills.",
 		func() -> void:
 			if world != null and world.has_method("debug_grant_dive_xp"):
 				world.call("debug_grant_dive_xp", 100))
-	# SCRAP (v0.137.0): XP is a physical drop now, so it needs a physical way to
-	# reach it. Drops a kraken's worth just outside the absorption radius — the
-	# thing being judged is the magnet catching as you close, and the radius lever
-	# ("Dive: scrap (XP) absorption radius") is a few rows up in this same group.
-	_action_button(box, "DIVE SCRAP: drop a cloud beside you (fly into it)",
+	_action_button(box, "Drop a scrap cloud",
+		"Drops a kraken's worth of scrap just outside the absorption radius — fly into it to judge the magnet. The radius is Dive → Scrap pickup radius.",
 		func() -> void:
 			if world != null and world.has_method("debug_spawn_scrap"):
 				world.call("debug_spawn_scrap"))
-	# THE SURVIVAL SUITE. These cards change things a draft cannot be relied on to
-	# hand you — a widened pool, a softer crash, a mend that comes out of the guns,
-	# a bounce, a reprieve — so one button deals the whole suite into the run's
-	# hand. Re-pointed at the HULL in v0.140.0 with the deck itself (world.gd's
-	# DEBUG_CARD_SUITE is the list).
-	# STANDING ORDER: a feature the owner cannot reach through F2 is invisible.
-	_action_button(box, "DIVE CARD: deal the survival suite (hull, bounce, reprieve)",
+	# These cards change what a draft cannot be relied on to hand you — a widened
+	# pool, a softer crash, a bounce, a reprieve — so one press deals the lot.
+	_action_button(box, "Deal the survival suite",
+		"Deals the whole survival hand at once: hull, bounce, reprieve (world.gd DEBUG_CARD_SUITE).",
 		func() -> void:
 			if world != null and world.has_method("debug_grant_card_suite"):
 				world.call("debug_grant_card_suite"))
-	# The CARD GALLERY on the title (the taken-cards log in the profile): fill it
-	# or wipe it — the same pair the bestiary has, so the page is playtestable
-	# without drafting the whole deck across a dozen runs. These work OUTSIDE a run
-	# too: the log is meta, not run state.
-	_action_button(box, "CARD GALLERY: reveal every card (fills the title gallery)",
+	# The title gallery is META, not run state — these two work outside a run.
+	_action_button(box, "Reveal every card",
+		"Fills the title screen's card gallery, so the page is playtestable without drafting the deck across a dozen runs.",
 		func() -> void:
 			if world != null and world.has_method("debug_reveal_cards"):
 				world.call("debug_reveal_cards"))
-	_action_button(box, "CARD GALLERY: forget every card (wipe the gallery)",
+	_action_button(box, "Forget every card", "Wipes the title card gallery back to empty.",
 		func() -> void:
 			if world != null and world.has_method("debug_forget_cards"):
 				world.call("debug_forget_cards"))
 
+	# The creature log (title-screen workshop, step 1).
+	_section(box, "BESTIARY")
+	_action_button(box, "Reveal every creature",
+		"Fills the title bestiary with the whole roster, so the page is playtestable without hunting it first.",
+		func() -> void:
+			if world != null and world.has_method("debug_reveal_creatures"):
+				world.call("debug_reveal_creatures"))
+	_action_button(box, "Forget all creatures", "Wipes the bestiary log back to nothing met.",
+		func() -> void:
+			if world != null and world.has_method("debug_forget_creatures"):
+				world.call("debug_forget_creatures"))
+
+	_section(box, "WORLD")
+	# Fire is not a spawnable body, but it has to be CAUSABLE on demand or it
+	# cannot be playtested at all.
+	_action_button(box, "Set the nearest ship alight",
+		"Lights the nearest burnable body near the spawn point. The X wand douses it.",
+		func() -> void: _ignite())
+	_action_button(box, "Stir the deep",
+		"+0.25 kraken ascendancy — one band per press, so the worldwide kraken surge is playtestable without hunting a whole pod.",
+		func() -> void:
+			if world != null and world.has_method("debug_stir_deep"):
+				world.call("debug_stir_deep", 0.25))
+
 
 func _build_player_tab() -> void:
 	var box := _add_tab(PLAYER_TAB)
-	_hint(box, "Cheats for the local player body.")
+
+	_section(box, "CHEATS")
 	# SANDBOX (owner 2026-08-28): the one-press "cut the fluff, play the meat"
-	# button — every gate open, nothing scarce, deep-air suffocation off. The full
-	# crafting game is one toggle away (World → Sandbox). Top of the tab: it is the
-	# fastest way to get into a focused session.
-	_action_button(box, "SANDBOX: kit me out — open every gate, nothing scarce",
+	# button. Top of the tab — it is the fastest way into a focused session.
+	_action_button(box, "Kit me out (sandbox)",
+		"Opens every gate and grants the loadout: nothing scarce, no deep-air suffocation. Flips World → Sandbox on.",
 		func() -> void:
 			if world != null and world.has_method("debug_sandbox_loadout"):
 				world.call("debug_sandbox_loadout"))
-	_action_button(box, "Grant $1000", func() -> void:
-		if world != null: world.call("debug_grant_money", 1000))
-	_action_button(box, "Heal to full", func() -> void:
-		if world != null: world.call("debug_heal_player"))
-	_action_button(box, "Grant 3 balloons of each size (B selects, Q tethers)",
+	_action_button(box, "Grant $1000", "Adds 1000 to your purse.",
+		func() -> void:
+			if world != null: world.call("debug_grant_money", 1000))
+	_action_button(box, "Heal to full", "Refills the local player body's health.",
+		func() -> void:
+			if world != null: world.call("debug_heal_player"))
+	_action_button(box, "Grant 3 of each balloon",
+		"Three crafted balloons of every size. B selects one, Q tethers it.",
 		func() -> void:
 			if world != null: world.call("debug_grant_balloons", 3))
-	_action_button(box, "Max all stats", func() -> void:
-		if world != null: world.call("debug_max_stats"))
-	_action_button(box, "EXPORT your ship as .ship (user://ships + clipboard)",
+	_action_button(box, "Max all stats", "Raises every character stat to its cap.",
+		func() -> void:
+			if world != null: world.call("debug_max_stats"))
+
+	_section(box, "SHIP")
+	_action_button(box, "Export my ship",
+		"Writes your hull to user://ships as a .ship blueprint and copies it to the clipboard.",
 		func() -> void:
 			if world != null and world.has_method("export_ship"):
 				world.call("export_ship"))
-	_action_button(box, "Bolt a REPAIR STATION onto your ship (E runs it)",
+	_action_button(box, "Bolt on a repair station",
+		"Adds a repair station block to your ship. E runs it.",
 		func() -> void:
 			if world != null: world.call("debug_add_mender"))
-	# The movement-FEEL levers (coyote/buffer/jump-cut) live in the "Player"
-	# Tunables group; their rows join this same tab, so everything player-facing
-	# is in one place and no duplicate "Player" tab is built (see _build above).
+
+	# The movement-FEEL levers (coyote/buffer/jump-cut/fall damage) live in the
+	# "Player" Tunables group; their rows join this same tab, so everything
+	# player-facing is in one place and no duplicate "Player" tab is built.
 	if Tunables.groups().has(PLAYER_TAB):
+		_section(box, "FEEL")
 		for row in Tunables.in_group(PLAYER_TAB):
 			_build_lever_row(box, row as Dictionary)
 
 
 func _build_perf_tab() -> void:
 	var box := _add_tab("Perf")
+	# ONE LINE, the rest in its tooltip (owner 2026-09-05). The whole cost picture
+	# is still sampled and still one hover away — it is just no longer a wall of
+	# numbers the eye has to wade through to read the frame rate.
 	_perf_label = Label.new()
 	_perf_label.add_theme_color_override("font_color", _FG)
 	_perf_label.add_theme_font_size_override("font_size", 13)
-	_perf_label.text = _perf_text()
+	_perf_label.mouse_filter = Control.MOUSE_FILTER_STOP
+	_perf_label.text = _perf_line()
+	_perf_label.tooltip_text = _perf_text()
 	box.add_child(_perf_label)
-	_action_button(box, "Toggle whale diagnostic (F3)", func() -> void:
-		if world != null: world.call("_toggle_whale_diag"))
-	_action_button(box, "Reset ALL tunables to defaults", func() -> void: _reset_all())
+	_hint(box, "Hover the line for the full cost picture.")
+	_action_button(box, "Toggle whale diagnostic",
+		"The same overlay F3 toggles: what the whale brains are thinking.",
+		func() -> void:
+			if world != null: world.call("_toggle_whale_diag"))
+	_action_button(box, "Reset all tunables",
+		"Puts every lever in every tab back to its shipped default.",
+		func() -> void: _reset_all())
 
 
 func _hint(box: VBoxContainer, text: String) -> void:
@@ -373,9 +432,23 @@ func _hint(box: VBoxContainer, text: String) -> void:
 	box.add_child(l)
 
 
-func _action_button(box: VBoxContainer, text: String, cb: Callable) -> void:
+## A dim section header. A LABEL, not a collapsible: F2 is a dev tool, and one
+## glance has to show everything it can do (owner 2026-09-05).
+func _section(box: VBoxContainer, text: String) -> void:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_color_override("font_color", _MUTED)
+	l.add_theme_font_size_override("font_size", 10)
+	box.add_child(l)
+
+
+## An action button: an imperative label (<= 28 chars, enforced by run_tests) and
+## the explanation that used to live inside it, as the tooltip. The tip comes
+## BEFORE the callable so a multi-line lambda can stay the last argument.
+func _action_button(box: VBoxContainer, text: String, tip: String, cb: Callable) -> void:
 	var b := Button.new()
 	b.text = text
+	b.tooltip_text = tip
 	b.pressed.connect(cb)
 	box.add_child(b)
 
@@ -434,6 +507,23 @@ func _fmt(id: String) -> String:
 	if absf(v - roundf(v)) < 0.0005:
 		return str(int(roundf(v)))
 	return "%.3f" % v
+
+
+## THE ONE LINE the Perf tab actually shows: frame rate, the physics millisecond
+## count that explains a hitch, how many ships are in the sim, and which build
+## this is (a bug report without the version is half a report). Everything else
+## `_perf_text` gathers is one hover away.
+func _perf_line() -> String:
+	var ships := 0
+	if world != null:
+		var fleet: Variant = world.get("fleet")
+		if fleet != null and is_instance_valid(fleet):
+			ships = (fleet.call("ships") as Array).size()
+	return "%d fps · %.1f ms phys · %d ships · v%s" % [
+		Engine.get_frames_per_second(),
+		Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0,
+		ships,
+		str(ProjectSettings.get_setting("application/config/version", "dev"))]
 
 
 ## The live cost picture, in the owner's own session. Everything here is

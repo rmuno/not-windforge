@@ -216,6 +216,7 @@ func _initialize() -> void:
 	await _test_tunables_get_set_reset_and_clamp()
 	await _test_a_system_reads_the_tunable()
 	await _test_whale_ai_reads_the_ram_tunable()
+	await _test_f2_labels_are_short_and_tipped()
 	await _test_debug_window_toggles_and_switches_tabs()
 	await _test_stats_default_raise_and_cap()
 	await _test_stat_perks_change_effects()
@@ -13522,6 +13523,80 @@ func _test_whale_ai_reads_the_ram_tunable() -> void:
 	await process_frame
 
 
+## THE F2 DECLUTTER (owner 2026-09-05: "TOO MUCH INFORMATION EVERYWHERE… use a
+## tooltip for the TMI bits, but keep it ALL brief"). The contract is a SHORT
+## label plus a tooltip that still carries the unit and what 0/off means — so the
+## test is length on one side and non-emptiness on the other. Without it the next
+## lever's author writes another sentence-long label and the tab drifts back.
+func _test_f2_labels_are_short_and_tipped() -> void:
+	_t("F2 registry: every lever has a short label and a real tooltip")
+
+	# One tab per group, Dive its own (19 dive levers were unfindable inside a
+	# 59-row World tab), in the order the window paints them.
+	_check(Tunables.groups() == ["Player", "Dive", "Combat", "World", "Whale"],
+		"five lever groups in tab order, Dive among them (%s)" % str(Tunables.groups()))
+
+	var longest_label := ""
+	var longest_tip := ""
+	var too_long: Array = []
+	var no_tip: Array = []
+	var stray_dive: Array = []
+	var by_group := {}
+	var dupes: Array = []
+	for row in Tunables.defs():
+		var id: String = row["id"]
+		var label: String = str(row.get("label", ""))
+		var tip: String = str(row.get("tip", ""))
+		var group: String = row["group"]
+		if label.is_empty() or label.length() > 28:
+			too_long.append("%s (%d)" % [id, label.length()])
+		if tip.strip_edges().length() < 20:
+			no_tip.append(id)
+		if label.length() > longest_label.length():
+			longest_label = label
+		if tip.length() > longest_tip.length():
+			longest_tip = tip
+		if id.begins_with("dive_") != (group == "Dive"):
+			stray_dive.append("%s in %s" % [id, group])
+		if not by_group.has(group):
+			by_group[group] = []
+		if (by_group[group] as Array).has(label):
+			dupes.append("%s: %s" % [group, label])
+		(by_group[group] as Array).append(label)
+
+	_check(too_long.is_empty(),
+		"every label is 1..28 chars — longest '%s' (%d)%s"
+			% [longest_label, longest_label.length(),
+				"" if too_long.is_empty() else " OVER: " + str(too_long)])
+	_check(no_tip.is_empty(),
+		"every lever carries a tooltip of real substance%s"
+			% ("" if no_tip.is_empty() else " — thin: " + str(no_tip)))
+	_check(dupes.is_empty(),
+		"no two levers in one group share a label%s"
+			% ("" if dupes.is_empty() else " — " + str(dupes)))
+	_check(stray_dive.is_empty(),
+		"the Dive group is exactly the dive_* levers%s"
+			% ("" if stray_dive.is_empty() else " — " + str(stray_dive)))
+	_check((by_group.get("Dive", []) as Array).size() >= 15,
+		"the Dive tab holds the run's levers (%d of them)"
+			% (by_group.get("Dive", []) as Array).size())
+	# The tooltip is where the TMI went, so it must not become the new wall: two
+	# sentences is the brief.
+	_check(longest_tip.length() <= 200,
+		"the longest tooltip is still two sentences (%d chars)" % longest_tip.length())
+
+
+## Every real action Button under `n`. A CheckBox IS a Button in Godot, and the
+## lever checkboxes are not action buttons, so they are filtered out.
+func _f2_action_buttons(n: Node) -> Array:
+	var out: Array = []
+	if n is Button and not (n is CheckBox):
+		out.append(n)
+	for c in n.get_children():
+		out.append_array(_f2_action_buttons(c))
+	return out
+
+
 func _test_debug_window_toggles_and_switches_tabs() -> void:
 	_t("debug window: toggle visibility + tab switching (state, not pixels)")
 	var win := DebugWindow.new()
@@ -13562,6 +13637,39 @@ func _test_debug_window_toggles_and_switches_tabs() -> void:
 	_check(win._controls.has("coyote_time") and win._controls.has("jump_cut"),
 		"the movement-feel levers are reachable inside it")
 
+	# THE TAB ORDER the owner playtests in (2026-09-05): the two tabs a session
+	# starts in, then the Dive, then the rest of the levers, then Perf.
+	_check(titles == ["Player", "Spawn", "Dive", "Combat", "World", "Whale", "Perf"],
+		"the tabs are in the owner's order (%s)" % str(titles))
+
+	# THE DECLUTTER, on the window's side: a button says a verb and explains
+	# itself in its tooltip; a lever row paints its tip on BOTH halves, so the
+	# hover lands wherever the pointer already is.
+	var buttons := _f2_action_buttons(win._tabs)
+	var longest_btn := ""
+	var over_btn: Array = []
+	var untipped: Array = []
+	for b in buttons:
+		var btn := b as Button
+		if btn.text.length() > longest_btn.length():
+			longest_btn = btn.text
+		if btn.text.length() > 28:
+			over_btn.append(btn.text)
+		if btn.tooltip_text.strip_edges().is_empty():
+			untipped.append(btn.text)
+	_check(buttons.size() >= 25,
+		"the window still offers every verb it had (%d buttons)" % buttons.size())
+	_check(over_btn.is_empty(),
+		"every button label is <= 28 chars — longest '%s' (%d)%s"
+			% [longest_btn, longest_btn.length(),
+				"" if over_btn.is_empty() else " OVER: " + str(over_btn)])
+	_check(untipped.is_empty(),
+		"every button explains itself in a tooltip%s"
+			% ("" if untipped.is_empty() else " — bare: " + str(untipped)))
+	var floor_ctl := win._controls.get("dive_air_floor") as Control
+	_check(floor_ctl != null and not floor_ctl.tooltip_text.strip_edges().is_empty(),
+		"a lever's control carries its tip (dive_air_floor)")
+
 	win.set_tab(2)
 	_check(win.active_tab() == 2, "set_tab switches the active tab")
 	win.set_tab(0)
@@ -13578,6 +13686,16 @@ func _test_debug_window_toggles_and_switches_tabs() -> void:
 	_check(cold.contains("chunk rebuilds") and cold.contains("ship rebuilds")
 			and cold.contains("repaints"),
 		"...and lists the three churn rates a stutter is actually made of")
+
+	# ...but the TAB shows one line of it (owner 2026-09-05). The wall is the
+	# tooltip now — still sampled, still one hover away, no longer in the way.
+	var line: String = win._perf_line()
+	_check(not line.contains("\n") and line.length() <= 60,
+		"the Perf tab shows ONE short line (%s)" % line)
+	_check(line.contains("fps") and line.contains("ships") and line.contains("v"),
+		"...naming fps, physics ms, ships and the build")
+	_check(win._perf_label.tooltip_text.contains("FPS:"),
+		"...with the whole cost picture behind its tooltip")
 
 	# The sampling gate: walking every ship and chunk is not a per-frame job
 	# (the project has paid for an observer effect once already).
