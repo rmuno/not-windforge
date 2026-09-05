@@ -526,10 +526,9 @@ static func _scan_ships(dir_path: String, out: Array) -> void:
 	d.list_dir_end()
 
 
-## One row per openable file: `{path, name, kind, source, label}`. The name is
-## the file's own `name` header when it has one and its basename when it does
-## not, so the stock files (which have neither, by design — the owner adds
-## headers on the table, not in a code round) still read as themselves.
+## One row per openable file: `{path, name, kind, group, source, label}`. The name
+## is the file's own `name` header when it has one and its basename when it does
+## not, so a headerless file still reads as itself.
 static func file_rows() -> Array:
 	var rows: Array = []
 	for path in ship_files(RES_SHIP_DIR):
@@ -548,7 +547,147 @@ static func row_for(path: String, source: String) -> Dictionary:
 	if k == "":
 		k = "vessel"
 	return {"path": path, "name": nm, "kind": k, "source": source,
+		"group": group_of(path, m, source),
 		"label": "%s  [%s]" % [nm, k]}
+
+
+# --- THE GROUPS (owner 2026-09-05) --------------------------------------------
+#
+# "For the workshop how about having different folder groups (or accordions, as
+# an idea) such that it isn't just a blob of names? It could be like ships,
+# creatures, bosses."
+#
+# Twenty-seven blueprints in one flat list is a blob. Every one of them already
+# knows what it is — from the folder it sits in, from its `kind` header, from
+# which shelf it came off — so the grouping is DERIVED rather than configured,
+# and the one configuration knob (`group <word>`) exists for the cases the
+# derivation cannot know: whale_leviathan is a `kind whale`, and it is also a
+# boss.
+
+## Display order. Anything not named here sorts alphabetically after these — a
+## `group <word>` nobody has heard of still gets a place, it just gets the last
+## one rather than an arbitrary one.
+const GROUP_ORDER := ["ships", "my ships", "drafts", "creatures", "bosses", "nests"]
+
+## The one thing a `kind` cannot tell us, and the shelf cannot either: a file's
+## own filing instruction. One word so it is a folder name and not a sentence.
+const GROUP_HEADER := "group"
+
+## Groups that start FOLDED. The accordion's whole point is that the list opens
+## on what you came for; nests and structures are the two shelves nobody opens
+## to design a ship. (A player's own toggle overrides this the moment they touch
+## one — see `group_collapsed`.)
+const DEFAULT_COLLAPSED := ["nests", "structures"]
+
+## WHICH ACCORDIONS ARE FOLDED, remembered across a TRY IT round trip. Static for
+## exactly the reason `last_path` and `carry_text` are: TRY IT changes scenes, and
+## coming back to a list you had just tidied, untidied, is the table forgetting
+## what you did. Written by the screen's collapse handler; absent means "whatever
+## DEFAULT_COLLAPSED says".
+static var group_collapsed := {}
+
+
+## Is `group` folded right now? The player's own toggle if they made one, the
+## default otherwise.
+static func group_is_collapsed(group: String) -> bool:
+	return bool(group_collapsed.get(group, DEFAULT_COLLAPSED.has(group)))
+
+
+## WHICH ACCORDION A FILE FALLS INTO. Highest precedence first:
+##
+##   1. THE FOLDER. `ships/bosses/x.ship` is in "bosses" — filing a file into a
+##      subdirectory is a decision already made on disk, and no header should be
+##      able to argue with the thing you can see in your file browser.
+##      `ships/drafts/` is this rule, not a special case.
+##   2. THE `group` HEADER. The blueprint's own instruction — the "settings you
+##      can add to the workshop" half of the ask.
+##   3. THE SHELF. A file on the player's own `user://ships` is "my ships",
+##      because "the ones I made" is the distinction a player actually wants,
+##      and it beats the kind default — but NOT the header, so a player who
+##      files a saved design under `group bosses` gets what they asked for.
+##   4. THE KIND. What the file already says it is. This is what makes the
+##      grouping work with no configuration at all.
+static func group_of(path: String, meta: Dictionary, source: String) -> String:
+	var folder := _subfolder_of(path, source)
+	if folder != "":
+		return folder
+	var tagged := normalise_group(String(meta.get(GROUP_HEADER, "")))
+	if tagged != "":
+		return tagged
+	if source == "user":
+		return "my ships"
+	return group_for_kind(String(meta.get("kind", "vessel")))
+
+
+## The group a `kind` header lands in with nothing else to go on. An unknown kind
+## goes where an unknown kind spawns: with the vessels.
+static func group_for_kind(kind: String) -> String:
+	match kind:
+		"whale_city":
+			return "bosses"
+		"whale", "kraken", "basilisk", "critter":
+			return "creatures"
+		"nest":
+			return "nests"
+	return "ships"
+
+
+## The FIRST directory component of `path` under its own shelf's root, or "" for
+## a file sitting directly on the shelf. `ships/drafts/a.ship` -> "drafts";
+## `ships/a.ship` -> "". Lower-cased, because the group name is compared, and
+## the display upper-cases it anyway.
+static func _subfolder_of(path: String, source: String) -> String:
+	var root := RES_SHIP_DIR if source == "res" else ShipLayout.user_dir
+	if not path.begins_with(root + "/"):
+		return ""
+	var rel := path.substr(root.length() + 1)
+	var slash := rel.find("/")
+	if slash <= 0:
+		return ""
+	return rel.substr(0, slash).to_lower()
+
+
+## A free-text header reduced to one lower-case word — the group IS a folder
+## name, and "the ones I fly on tuesdays" is not one. Shared by the READER
+## (`group_of`) and the drafting table's group FIELD, so what the player types
+## and what the file means can never drift apart.
+static func normalise_group(text: String) -> String:
+	var t := text.strip_edges().to_lower()
+	var sp := t.find(" ")
+	return t if sp < 0 else t.substr(0, sp)
+
+
+## EVERY FILE, FILED — `[{group, label, count, rows}]` in display order, where
+## `label` is what the accordion's spine reads ("CREATURES (14)"). Empty groups
+## simply do not appear: a heading over nothing is the blob problem with extra
+## steps.
+static func grouped_rows() -> Array:
+	var by_group := {}
+	for row in file_rows():
+		var g := String((row as Dictionary)["group"])
+		if not by_group.has(g):
+			by_group[g] = []
+		(by_group[g] as Array).append(row)
+	var ordered: Array = []
+	for g in GROUP_ORDER:
+		if by_group.has(g):
+			ordered.append(g)
+	var extra: Array = []
+	for g in by_group:
+		if not GROUP_ORDER.has(String(g)):
+			extra.append(String(g))
+	extra.sort()
+	ordered.append_array(extra)
+	var out: Array = []
+	for g in ordered:
+		var list: Array = by_group[g]
+		out.append({
+			"group": g,
+			"label": "%s (%d)" % [String(g).to_upper(), list.size()],
+			"count": list.size(),
+			"rows": list,
+		})
+	return out
 
 
 ## A file name the OS will actually accept, out of whatever the player typed.

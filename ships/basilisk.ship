@@ -25,6 +25,11 @@
 # drift too, but a body that does not want to fly away is the better half of
 # the fix.
 
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Basilisk
+kind basilisk
+
 origin 12 2
 
 .....WWWWW..KKK

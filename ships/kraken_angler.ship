@@ -2,6 +2,11 @@
 # Ram-plated body leads RIGHT; a huge gaping MAW trails LEFT,
 # throat-meat as the weak spot, a shell lure-stalk arcing over the head.
 # Sealed loot cavity in the belly.
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Angler Kraken
+kind kraken
+
 origin 10 4
 ......KKKKKKKK........
 .....KK......K........

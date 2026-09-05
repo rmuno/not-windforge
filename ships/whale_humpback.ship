@@ -30,6 +30,11 @@
 # and never touches the silhouette. Blubber is 59 of 78 cells (76%),
 # which is what keeps the carcass in the air.
 
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Humpback Whale
+kind whale
+
 origin 12 2
 
 WW..........WWWWW........

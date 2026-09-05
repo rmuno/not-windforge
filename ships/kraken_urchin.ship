@@ -2,6 +2,11 @@
 # Round armored ball bristling with short shell spikes
 # (top/bottom/left). Small meat mouth bared on the LEFT;
 # ram tip leads RIGHT. Sealed loot cavity at core.
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Urchin Kraken
+kind kraken
+
 origin 9 5
 .......K..K..K.......
 .......KKKKKKK.......

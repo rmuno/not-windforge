@@ -61,7 +61,15 @@ static var user_dir := "user://ships"
 ## Order here IS the order `serialize` writes them in. Values are TYPED on the
 ## way in (health/tame/bounty/tint), so a spawn site reads
 ## `meta.get("health", <today's constant>)` and gets a number, not a string.
-const META_KEYS := ["name", "kind", "health", "tame", "tint", "role", "bounty", "notes"]
+##
+## `group` (2026-09-05) is the odd one out: it is the only key NO spawn site
+## reads. It files the blueprint into an accordion on the drafting table
+## (`ShipEdit.group_of`) — free text, one word, lower-cased — answering the
+## owner's "different folder groups … such that it isn't just a blob of names".
+## It sits beside `kind` because `kind` is what it overrides: a file's group is
+## DERIVED from its kind unless the file says otherwise.
+const META_KEYS := ["name", "kind", "group", "health", "tame", "tint", "role",
+	"bounty", "notes"]
 
 ## The kinds a `kind` header may name: `vessel` plus every `creature_kind` the
 ## world spawns, plus `nest` for a site's structure. Free text is not refused — a
