@@ -14,7 +14,10 @@ extends Control
 ## so the table now:
 ##
 ##   · LISTS every blueprint under `res://ships` (drafts included) and the
-##     player's `ShipLayout.user_dir`, and opens any of them;
+##     player's `ShipLayout.user_dir`, and opens any of them — filed into
+##     ACCORDIONS since 2026-09-05 (owner: "different folder groups … such that
+##     it isn't just a blob of names"), one fold per group, remembered across a
+##     TRY IT round trip. Where a file goes is `ShipEdit.group_of`;
 ##   · SAVES — "save as" into `user://ships`, or overwrite the file that is open;
 ##   · carries the HEADER VOCABULARY (`ShipLayout.META_KEYS`) as editable fields,
 ##     which is what makes a creature file a whole creature rather than a
@@ -57,13 +60,22 @@ var _palette_buttons := {}
 var _painting := false
 var _erasing := false
 
-## The file list, and the rows behind it (same order).
-var _file_list: ItemList
-var _rows: Array = []
+## THE FILE LIST — a Tree, not an ItemList, since 2026-09-05 (owner: "different
+## folder groups (or accordions, as an idea) such that it isn't just a blob of
+## names"). One collapsible top-level item per group; a TreeItem's `collapsed`
+## flag IS the accordion, so there is no fold widget to write. `_groups` is
+## `ShipEdit.grouped_rows()` — the model decides the filing, this paints it.
+var _file_tree: Tree
+var _groups: Array = []
+## True while `refresh_files` is building the tree: setting `collapsed` on an
+## item emits `item_collapsed`, and a build would otherwise write the defaults
+## back over the player's own folds as if they had clicked them.
+var _building := false
 
 ## The header fields. Written into `edit.meta` on every edit.
 var _f_name: LineEdit
 var _f_kind: OptionButton
+var _f_group: LineEdit
 var _f_health: LineEdit
 var _f_tame: LineEdit
 var _f_bounty: LineEdit
@@ -141,15 +153,19 @@ func _build_files() -> Control:
 	title.add_theme_color_override("font_color", _COIN)
 	col.add_child(title)
 	var hint := Label.new()
-	hint.text = "  res://ships and your own\n  saved ships — click to open"
+	hint.text = "  res://ships and your own\n  saved ships — click to open\n  click a heading to fold it"
 	hint.add_theme_font_size_override("font_size", 11)
 	hint.add_theme_color_override("font_color", _DIM)
 	col.add_child(hint)
-	_file_list = ItemList.new()
-	_file_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_file_list.add_theme_font_size_override("font_size", 12)
-	_file_list.item_selected.connect(_open_row)
-	col.add_child(_file_list)
+	_file_tree = Tree.new()
+	_file_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_file_tree.add_theme_font_size_override("font_size", 12)
+	_file_tree.hide_root = true
+	_file_tree.columns = 1
+	_file_tree.allow_reselect = true   # re-opening the file you already have open
+	_file_tree.item_selected.connect(_on_file_selected)
+	_file_tree.item_collapsed.connect(_on_group_collapsed)
+	col.add_child(_file_tree)
 	_action(col, "refresh the list", refresh_files)
 	return col
 
@@ -249,6 +265,10 @@ func _build_side() -> Control:
 	_f_kind.item_selected.connect(func(_i: int) -> void: _write_meta())
 	col.add_child(_label_for("kind"))
 	col.add_child(_f_kind)
+	# The one filing knob (owner 2026-09-05): everything else about the list is
+	# derived, and this is for what derivation cannot know — a `kind whale` that
+	# is also a boss, a saved hull the player wants shelved somewhere else.
+	_f_group = _field(col, "group  (one word — its heading in the list)")
 	_f_health = _field(col, "health")
 	_f_tame = _field(col, "tame")
 	_f_bounty = _field(col, "bounty")
@@ -324,6 +344,9 @@ func _write_meta() -> void:
 	_set_meta_text("name", _f_name.text)
 	edit.meta["kind"] = String(ShipLayout.META_KINDS[_f_kind.selected]) \
 		if _f_kind.selected >= 0 else "vessel"
+	# A group is a folder name, so it is stored as one word, lower-cased — the
+	# same normalisation `ShipEdit.group_of` would do when reading it back.
+	_set_meta_text("group", ShipEdit.normalise_group(_f_group.text))
 	_set_meta_num("health", _f_health.text, false)
 	_set_meta_num("tame", _f_tame.text, true)
 	_set_meta_num("bounty", _f_bounty.text, true)
@@ -368,6 +391,7 @@ func _fill_fields() -> void:
 	_f_name.text = String(edit.meta.get("name", ""))
 	var k := edit.kind()
 	_f_kind.selected = maxi(0, ShipLayout.META_KINDS.find(k))
+	_f_group.text = String(edit.meta.get("group", ""))
 	_f_health.text = "" if not edit.meta.has("health") \
 		else "%.0f" % float(edit.meta["health"])
 	_f_tame.text = "" if not edit.meta.has("tame") else str(int(edit.meta["tame"]))
@@ -384,25 +408,63 @@ func _fill_fields() -> void:
 
 # --- The file list -----------------------------------------------------------
 
+## Rebuild the accordion from the model. The shelf marker the flat list used to
+## need (a "· " on the first user file) is gone: MY SHIPS is its own heading now,
+## which is the same fact said once instead of smuggled into a label.
 func refresh_files() -> void:
-	_rows = ShipEdit.file_rows()
-	if _file_list == null:
+	_groups = ShipEdit.grouped_rows()
+	if _file_tree == null:
 		return
-	_file_list.clear()
-	var last_source := ""
-	for row in _rows:
-		var d := row as Dictionary
-		var prefix := ""
-		if String(d["source"]) != last_source:
-			last_source = String(d["source"])
-			prefix = "· " if last_source == "user" else ""
-		_file_list.add_item("%s%s" % [prefix, String(d["label"])])
+	_building = true
+	_file_tree.clear()
+	var root_item := _file_tree.create_item()   # hidden; the groups hang off it
+	for entry in _groups:
+		var g := entry as Dictionary
+		var group_name := String(g["group"])
+		var head := _file_tree.create_item(root_item)
+		head.set_text(0, String(g["label"]))
+		head.set_custom_color(0, _COIN)
+		# A heading is not a blueprint: selecting one must do nothing at all, so
+		# it is not selectable in the first place. Clicking it still folds it —
+		# that is Tree's own behaviour on an unselectable parent, and it is the
+		# accordion.
+		head.set_selectable(0, false)
+		head.set_metadata(0, {"group": group_name})
+		head.collapsed = ShipEdit.group_is_collapsed(group_name)
+		for row in (g["rows"] as Array):
+			var d := row as Dictionary
+			var item := _file_tree.create_item(head)
+			item.set_text(0, String(d["label"]))
+			item.set_metadata(0, {"path": String(d["path"])})
+	_building = false
 
 
-func _open_row(index: int) -> void:
-	if index < 0 or index >= _rows.size():
+## A file row was clicked. Headings are unselectable, so anything that reaches
+## here with no `path` in its metadata is not a file and is simply ignored.
+func _on_file_selected() -> void:
+	var item := _file_tree.get_selected()
+	if item == null:
 		return
-	var path := String((_rows[index] as Dictionary)["path"])
+	var m: Variant = item.get_metadata(0)
+	if typeof(m) != TYPE_DICTIONARY or not (m as Dictionary).has("path"):
+		return
+	_open_row(String((m as Dictionary)["path"]))
+
+
+## A heading was folded or unfolded — remember it (statically, so TRY IT does not
+## reset the list). `_building` guards the construction pass, which sets
+## `collapsed` on every heading and would otherwise look like a hundred clicks.
+func _on_group_collapsed(item: TreeItem) -> void:
+	if _building or item == null:
+		return
+	var m: Variant = item.get_metadata(0)
+	if typeof(m) == TYPE_DICTIONARY and (m as Dictionary).has("group"):
+		ShipEdit.group_collapsed[String((m as Dictionary)["group"])] = item.collapsed
+
+
+func _open_row(path: String) -> void:
+	if path == "":
+		return
 	if edit.load_path(path):
 		ShipEdit.carry_text = ""   # the carried sheet is superseded
 		_say("%s is on the table" % path)

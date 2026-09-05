@@ -16,6 +16,11 @@
 # Keep it ONE connected piece: a nest is destroyed by taking half of it apart,
 # and a detached wing would fall away as its own wreck instead.
 
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Bandit Roost
+kind nest
+
 origin 5 3
 
 ..GGGGGG..

@@ -70,6 +70,7 @@ func _initialize() -> void:
 	_test_ship_meta()
 	_test_ship_edit()
 	_test_ship_table_files()
+	_test_ship_groups()
 	await _test_ship_editor_screen()
 	_test_dive_ring()
 	_test_dive_weather()
@@ -4103,12 +4104,17 @@ func _test_ship_meta() -> void:
 		var body := f.get_as_text()
 		f.close()
 		if not ShipLayout.parse_meta(body).is_empty():
-			continue   # hulk.ship, the worked example — pinned separately below
+			continue   # a headered file — the legacy parser would eat its headers
 		checked += 1
 		_check(ShipLayout.parse(body).size() == _legacy_cell_count(body),
 			"%s parses to the same %d cells it always did"
 				% [p.get_file(), _legacy_cell_count(body)])
-	_check(checked >= 20, "...across every headerless stock blueprint (%d files)" % checked)
+	# Only the drafts are headerless now (2026-09-05 gave every stock blueprint a
+	# `kind`), and the legacy parser cannot check a headered file — `name Patrol
+	# Cutter` contains a 'P'. STOCK_CELLS below is what replaced this reach:
+	# hard-numbered counts, measured on the revision BEFORE the headers landed.
+	_check(checked >= 3, "...across every headerless stock blueprint (%d files)" % checked)
+	_check_stock_cell_counts()
 
 	# ships/hulk.ship IS the worked example (kind vessel / role gunboat /
 	# bounty 35). 1712 is its cell count from before the headers were added —
@@ -4127,6 +4133,61 @@ func _test_ship_meta() -> void:
 	# example moved a number into the file it describes and changed nothing.
 	_check(DiveRun.coins_for("hulk", 1, int(hmeta["bounty"])) == DiveRun.coins_for("hulk", 1),
 		"...worth exactly what DiveRun.KIND_COIN already said")
+
+
+## EVERY STOCK BLUEPRINT'S CELL COUNT, HARD-NUMBERED. Measured on the revision
+## before the 2026-09-05 header pass (`kind`/`name`/`group` on every stock file),
+## so it is an OUTSIDE witness rather than a restatement of what the parser does
+## today: if one of those header lines is ever eaten as a grid row — the `#`-as-
+## hull scar in a new place, which is the failure this format keeps producing —
+## exactly one number here moves and the suite names the file.
+##
+## A new stock `.ship` belongs in this table. Deliberately not derived from a
+## directory walk: a count that regenerates itself pins nothing.
+const STOCK_CELLS := {
+	"res://ships/basilisk.ship": 56,
+	"res://ships/critter.ship": 14,
+	"res://ships/dive_deck.ship": 152,
+	"res://ships/drafts/starter_owner_draft_1.ship": 75,
+	"res://ships/drafts/starter_owner_draft_2.ship": 98,
+	"res://ships/drafts/starter_owner_draft_4.ship": 98,
+	"res://ships/hulk.ship": 1712,
+	"res://ships/kraken_angler.ship": 108,
+	"res://ships/kraken_b.ship": 159,
+	"res://ships/kraken_c.ship": 166,
+	"res://ships/kraken_nautilus.ship": 143,
+	"res://ships/kraken_urchin.ship": 113,
+	"res://ships/loft_test.ship": 251,
+	"res://ships/nest_den.ship": 33,
+	"res://ships/nest_eyrie.ship": 30,
+	"res://ships/nest_hive.ship": 22,
+	"res://ships/nest_roost.ship": 44,
+	"res://ships/starter.ship": 73,
+	"res://ships/whale.ship": 80,
+	"res://ships/whale_bowhead.ship": 99,
+	"res://ships/whale_bull.ship": 101,
+	"res://ships/whale_city.ship": 466,
+	"res://ships/whale_humpback.ship": 78,
+	"res://ships/whale_leviathan.ship": 127,
+	"res://ships/whale_manta.ship": 149,
+	"res://ships/whale_narwhal.ship": 102,
+	"res://ships/whale_sleek.ship": 64,
+}
+
+
+func _check_stock_cell_counts() -> void:
+	var wrong: Array = []
+	for path in STOCK_CELLS:
+		var got := ShipLayout.load_cells(String(path)).size()
+		if got != int(STOCK_CELLS[path]):
+			wrong.append("%s %d != %d" % [String(path).get_file(), got, int(STOCK_CELLS[path])])
+	_check(wrong.is_empty(), "every stock blueprint parses to its pinned cell count (%s)"
+		% ("all %d" % STOCK_CELLS.size() if wrong.is_empty() else ", ".join(wrong)))
+	# ...and the table covers the tree, so a new file cannot slip past unpinned.
+	var listed := ShipEdit.ship_files("res://ships")
+	_check(listed.size() == STOCK_CELLS.size(),
+		"...and the table names every file under res://ships (%d of %d)"
+			% [STOCK_CELLS.size(), listed.size()])
 
 
 ## The `.ship` parser AS IT STOOD before the header vocabulary: skip `# `/`#`
@@ -4171,17 +4232,21 @@ func _test_ship_table_files() -> void:
 	_check(String(hulk_row["name"]) == "Patrol Cutter" and String(hulk_row["kind"]) == "vessel",
 		"a row is labelled by its `name` header and its kind")
 	var whale_row: Dictionary = by_path["res://ships/whale.ship"]
-	_check(String(whale_row["name"]) == "whale" and String(whale_row["kind"]) == "vessel",
-		"a headerless file falls back to its basename, and reads as a vessel until told otherwise")
+	_check(String(whale_row["name"]) == "Sky Whale" and String(whale_row["kind"]) == "whale",
+		"the stock creature files carry their own name and kind (2026-09-05)")
+	var draft_row: Dictionary = by_path["res://ships/drafts/starter_owner_draft_1.ship"]
+	_check(String(draft_row["name"]) == "starter_owner_draft_1"
+		and String(draft_row["kind"]) == "vessel",
+		"a headerless file still falls back to its basename, and reads as a vessel")
 
 	# --- Opening one, and the palette that follows ---------------------------
 	var e := ShipEdit.new()
 	_check(e.load_path("res://ships/whale.ship"), "whale.ship opens on the table")
 	_check(e.cells.size() == ShipLayout.load_cells("res://ships/whale.ship").size(),
 		"...cell for cell")
-	# The stock whale has no `kind` yet (the owner adds headers on the table, not
-	# in a code round), so the palette is chosen from the kind the SHEET carries.
-	e.meta["kind"] = "whale"
+	# The stock whale NAMES its kind now (2026-09-05), so opening it is enough to
+	# get the creature palette — no test-side nudge.
+	_check(e.kind() == "whale", "...and the sheet knows it is a whale from the file")
 	var pal := ShipEdit.palette_for(e.kind())
 	_check(pal.has(BlockDB.Type.BLUBBER) and pal.has(BlockDB.Type.MEAT)
 		and pal.has(BlockDB.Type.SHELL), "a creature palette paints flesh")
@@ -4255,6 +4320,128 @@ func _test_ship_table_files() -> void:
 
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(ShipEdit.try_file()))
+
+
+## THE FILE GROUPS (owner 2026-09-05: "different folder groups (or accordions,
+## as an idea) such that it isn't just a blob of names ... ships, creatures,
+## bosses"). Four rules decide where a blueprint is filed, and the ONLY thing
+## worth pinning about them is which one wins — so the precedence ladder is
+## walked rung by rung, and then the whole answer is checked against the real
+## res://ships tree, which is the list the owner actually reads.
+func _test_ship_groups() -> void:
+	_t("the drafting table's accordions: which group a blueprint falls into")
+
+	# --- The ladder: folder > header > source > kind -------------------------
+	_check(ShipEdit.group_of("res://ships/whale.ship", {"kind": "whale"}, "res")
+		== "creatures", "a `kind whale` falls in with the creatures")
+	_check(ShipEdit.group_of("res://ships/starter.ship", {}, "res") == "ships",
+		"...a file with no headers at all is a ship")
+	_check(ShipEdit.group_of("res://ships/x.ship", {"kind": "vessel"}, "res") == "ships"
+		and ShipEdit.group_of("res://ships/x.ship", {"kind": "whale_city"}, "res") == "bosses"
+		and ShipEdit.group_of("res://ships/x.ship", {"kind": "nest"}, "res") == "nests"
+		and ShipEdit.group_of("res://ships/x.ship", {"kind": "kraken"}, "res") == "creatures",
+		"...and every kind has its shelf")
+	_check(ShipEdit.group_of("res://ships/x.ship", {"kind": "sky_serpent"}, "res") == "ships",
+		"an unrecognised kind goes where an unrecognised kind spawns: with the vessels")
+	# SOURCE beats KIND: a whale saved on the player's own shelf is still theirs.
+	var udir := ShipLayout.user_dir
+	_check(ShipEdit.group_of(udir.path_join("mine.ship"), {"kind": "whale"}, "user")
+		== "my ships", "the player's own shelf beats the kind default")
+	# HEADER beats SOURCE: ...unless they filed it somewhere themselves.
+	_check(ShipEdit.group_of(udir.path_join("mine.ship"),
+		{"kind": "whale", "group": "bosses"}, "user") == "bosses",
+		"...and a `group` header beats the shelf")
+	_check(ShipEdit.group_of("res://ships/x.ship", {"kind": "whale", "group": "bosses"}, "res")
+		== "bosses", "...and the kind (this is how whale_leviathan is a boss)")
+	# FOLDER beats everything: it is the decision you can see in a file browser.
+	_check(ShipEdit.group_of("res://ships/bosses/x.ship",
+		{"kind": "whale", "group": "creatures"}, "res") == "bosses",
+		"a subfolder under ships/ beats even the header")
+	_check(ShipEdit.group_of("res://ships/drafts/a.ship", {}, "res") == "drafts",
+		"...and ships/drafts is that same rule, not a special case")
+	_check(ShipEdit.group_of("res://ships/BOSSES/x.ship", {}, "res") == "bosses",
+		"...case-folded, because the group name is compared and displayed upper")
+	# One word, lower case — the group is a folder name, not a sentence.
+	_check(ShipEdit.group_of("res://ships/x.ship", {"group": "Boss Ships"}, "res") == "boss",
+		"a group header is one lower-case word")
+	_check(ShipEdit.group_of("res://ships/x.ship", {"group": "   "}, "res") == "ships",
+		"...and a blank one is no instruction at all")
+
+	# --- A `group` header round-trips through serialize ----------------------
+	# TWO cells, not one: a lone hull serializes to a bare "#" row, which the
+	# parser reads as a comment (the format's oldest rule). Nothing to do with
+	# headers — but a one-cell fixture would blame them for it.
+	var cells := {Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HELM}
+	var text := ShipLayout.serialize(cells, 1, {"kind": "whale", "group": "bosses"})
+	_check(String(ShipLayout.parse_meta(text).get("group", "")) == "bosses",
+		"a `group` header survives a serialize/parse round trip")
+	_check(ShipLayout.parse(text).size() == 2,
+		"...without the grid noticing (%d cells)" % ShipLayout.parse(text).size())
+	_check(ShipLayout.META_KEYS.has("group"),
+		"...because it is part of the header vocabulary, not a stray key")
+
+	# --- The whole tree, filed ----------------------------------------------
+	# `grouped_rows` reads user:// too, and the suite's own scratch shelf may hold
+	# a leftover; the res:// groups are what the stock tree pins.
+	var groups := ShipEdit.grouped_rows()
+	var members := {}
+	var order: Array = []
+	var total := 0
+	for g in groups:
+		var d := g as Dictionary
+		order.append(String(d["group"]))
+		total += int(d["count"])
+		var names: Array = []
+		for row in (d["rows"] as Array):
+			names.append(String((row as Dictionary)["path"]).get_file().get_basename())
+		names.sort()
+		members[String(d["group"])] = names
+		_check(int(d["count"]) == (d["rows"] as Array).size()
+			and String(d["label"]) == "%s (%d)" % [String(d["group"]).to_upper(), int(d["count"])],
+			"%s is labelled with its own count" % String(d["label"]))
+	_check(total == ShipEdit.file_rows().size(),
+		"every file is filed exactly once (%d of %d)" % [total, ShipEdit.file_rows().size()])
+
+	_check(members.get("ships", []) == ["hulk", "loft_test", "starter"],
+		"SHIPS holds the three vessels: %s" % str(members.get("ships", [])))
+	_check(members.get("bosses", []) == ["whale_city", "whale_leviathan"],
+		"BOSSES holds the arcology and the leviathan: %s" % str(members.get("bosses", [])))
+	_check(members.get("nests", []) == ["nest_den", "nest_eyrie", "nest_hive", "nest_roost"],
+		"NESTS holds all four: %s" % str(members.get("nests", [])))
+	_check(members.get("drafts", []).size() == 3,
+		"DRAFTS holds the owner's three drafts")
+	_check(members.get("structures", []) == ["dive_deck"],
+		"a `group structures` header pulls the launch deck out of SHIPS")
+	var creatures: Array = members.get("creatures", [])
+	_check(creatures.size() == 14, "CREATURES holds the fourteen bodies (%d)" % creatures.size())
+	_check(creatures.has("whale") and creatures.has("kraken_b")
+		and creatures.has("basilisk") and creatures.has("critter"),
+		"...the whales, the krakens, the basilisk and the critter")
+	_check(not creatures.has("whale_city") and not creatures.has("whale_leviathan"),
+		"...minus the two that named themselves bosses")
+
+	# DISPLAY ORDER: the named groups in their fixed order, strangers after them.
+	var expected := ["ships", "drafts", "creatures", "bosses", "nests", "structures"]
+	var seen: Array = []
+	for g in order:
+		if String(g) != "my ships":   # present only when the scratch shelf is not
+			seen.append(String(g))
+	_check(seen == expected, "the groups come out in display order: %s" % str(seen))
+	_check(ShipEdit.GROUP_ORDER[0] == "ships" and ShipEdit.GROUP_ORDER[1] == "my ships",
+		"...with the player's own shelf second, right under the stock hulls")
+
+	# --- Which accordions start folded --------------------------------------
+	ShipEdit.group_collapsed.clear()
+	_check(ShipEdit.group_is_collapsed("nests")
+		and ShipEdit.group_is_collapsed("structures"),
+		"nests and structures start folded — nobody opens them to design a ship")
+	_check(not ShipEdit.group_is_collapsed("ships")
+		and not ShipEdit.group_is_collapsed("creatures"),
+		"...everything else starts open")
+	ShipEdit.group_collapsed["nests"] = false
+	_check(not ShipEdit.group_is_collapsed("nests"),
+		"a fold the player changed outranks the default (and is static, so TRY IT keeps it)")
+	ShipEdit.group_collapsed.clear()
 
 
 ## THE DRAFTING TABLE'S MODEL (Q-Q): painting, mirroring, undo, the 1×-only
@@ -4387,6 +4574,32 @@ func _test_ship_editor_screen() -> void:
 	_check((edit.get("cells") as Dictionary).size() == n0 + 1, "a paint lands on the sheet")
 	var text := String(edit.call("to_text"))
 	_check(ShipLayout.parse(text).size() == n0 + 1, "and the export carries it")
+
+	# THE ACCORDIONS (2026-09-05). The file panel is a Tree with a hidden root:
+	# one top-level item per non-empty group, the files as its children. Walked
+	# here rather than trusted, because "the list still shows every file" is the
+	# thing a grouping change can silently break.
+	var tree := screen.get("_file_tree") as Tree
+	_check(tree != null and tree.hide_root, "the file panel is a Tree with a hidden root")
+	if tree != null:
+		var expected: Array = ShipEdit.grouped_rows()
+		var heads := 0
+		var files := 0
+		var head: TreeItem = tree.get_root().get_first_child()
+		while head != null:
+			heads += 1
+			_check(not head.is_selectable(0),
+				"the %s heading is not selectable — clicking it only folds it" % head.get_text(0))
+			var child: TreeItem = head.get_first_child()
+			while child != null:
+				files += 1
+				child = child.get_next()
+			head = head.get_next()
+		_check(heads == expected.size(),
+			"one heading per non-empty group (%d of %d)" % [heads, expected.size()])
+		_check(files == ShipEdit.file_rows().size(),
+			"...and every blueprint is under one of them (%d of %d)"
+				% [files, ShipEdit.file_rows().size()])
 	screen.queue_free()
 	await process_frame
 

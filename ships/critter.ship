@@ -14,6 +14,11 @@
 # Blunt head to the RIGHT, tapering tail LEFT — the whale's silhouette in
 # miniature. Keep it one connected piece and mostly blubber.
 
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Sky Critter
+kind critter
+
 origin 2 1
 
 .WWWW.

@@ -28,6 +28,12 @@
 # strict inner core: every meat cell has blubber or a stomach wall
 # between it and the sky. Keep it one connected piece.
 
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Leviathan
+kind whale
+group bosses
+
 origin 20 1
 
 ..W........W.WWWW..WWWWWWWWWWWWWWWWWWW..
