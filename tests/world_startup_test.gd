@@ -320,6 +320,7 @@ func _initialize() -> void:
 	await _check_debug_window(world, fleet)
 	await _check_repair_station(world, fleet)
 	_check_boss(world, fleet)
+	await _check_leviathan_identity(world, fleet)
 	await _check_creature_headers(world, fleet)
 	await _check_loft_ship(world, fleet)
 	await _check_lava_core(world, fleet)
@@ -536,6 +537,74 @@ func _check_creature_headers(world: Node, fleet) -> void:
 			== DiveRun.coins_for("critter", 1), "...which is the same coin it always paid")
 		stock.queue_free()
 	body.queue_free()
+	await world.get_tree().physics_frame
+
+
+
+
+## THE LEVIATHAN'S IDENTITY, and the ONE PREDICATE (DESIGN_KRAKEN §7 slice 1).
+##
+## The 8× suite owns the fight's geometry; this owns the parts that are true at
+## any scale: the body plan is real and reachable from F2, its headers decide
+## everything about it, its kind chooses the KRAKEN brain, and
+## `world._dive_is_the_boss` is the single test that replaced the three
+## `creature_kind == "whale_city"` string comparisons a run used to make.
+func _check_leviathan_identity(world: Node, fleet) -> void:
+	_ok(CreatureLog.is_known_id("kraken_leviathan"),
+		"the Leviathan has a bestiary row (the spawn-parity check's other half)")
+	_ok(CreatureLog.name_of("kraken_leviathan") == "The Leviathan",
+		"...under its own name (%s)" % CreatureLog.name_of("kraken_leviathan"))
+
+	var pl = world.get("player")
+	var at: Vector2 = (pl.global_position if pl != null else Vector2.ZERO) \
+		+ Vector2(2600.0, -1200.0)
+	var boss = world.call("debug_spawn", "leviathan", at)
+	_ok(boss != null, "F2 -> Spawn the Leviathan reaches the body (standing order)")
+	if boss == null:
+		return
+	_ok(boss.creature_kind == "kraken_leviathan",
+		"`kind kraken_leviathan` rides the payload (%s)" % boss.creature_kind)
+	_ok(is_equal_approx(boss.shared_health_max, 3600.0),
+		"`health 3600` IS its pool (%.0f)" % boss.shared_health_max)
+	_ok(boss.tame_level == 9,
+		"`tame 9` is ABOVE the perk ceiling, which is how a body is made untameable")
+	_ok(boss.bounty == 900, "`bounty 900` overrides the kind table (%d)" % boss.bounty)
+	_ok(DiveRun.coins_for("kraken_leviathan", DiveRun.DEPTHS, boss.bounty)
+			> DiveRun.coins_for("kraken", DiveRun.DEPTHS),
+		"...so a floor kill pays %d, not a hunter's %d"
+			% [DiveRun.coins_for("kraken_leviathan", DiveRun.DEPTHS, boss.bounty),
+				DiveRun.coins_for("kraken", DiveRun.DEPTHS)])
+	_ok(boss.variety == "kraken_leviathan", "the bestiary tag came off the path")
+	_ok(boss.faction == 2, "it is wildlife, like every other kraken")
+	_ok(world.call("_whale_ai_for", boss) is KrakenAI,
+		"its kind chose the KRAKEN brain, not a whale's")
+
+	# THE PREDICATE. True for the Leviathan wherever it stands; true for the
+	# city-whale only while a dive is hosted by an EXPEDITION world (this one),
+	# because that world lairs one and it was the depth-8 stand-in until now.
+	_ok(bool(world.call("_dive_is_the_boss", boss)),
+		"_dive_is_the_boss says yes to the Leviathan")
+	_ok(not bool(world.call("_dive_is_the_boss", null)),
+		"...no to nothing at all")
+	var city: Ship = null
+	var hunter: Ship = null
+	for s in fleet.ships():
+		if not is_instance_valid(s):
+			continue
+		if (s as Ship).creature_kind == "whale_city":
+			city = s
+		elif (s as Ship).creature_kind == "kraken":
+			hunter = s
+	if city != null:
+		_ok(bool(world.call("_dive_is_the_boss", city)),
+			"...yes to the city-whale an expedition still lairs")
+	if hunter != null:
+		_ok(not bool(world.call("_dive_is_the_boss", hunter)),
+			"...and NO to an ordinary kraken (%s)" % hunter.variety)
+	_ok(String(world.call("_edge_marker_kind", boss)) == "boss",
+		"...and the crown marker follows the same identity")
+
+	boss.queue_free()
 	await world.get_tree().physics_frame
 
 

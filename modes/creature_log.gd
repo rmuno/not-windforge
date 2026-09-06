@@ -59,6 +59,7 @@ const ROSTER := [
 	{"id": "kraken_urchin",   "name": "Urchin Kraken",      "kind": KIND_KRAKEN},
 	{"id": "kraken_angler",   "name": "Anglerfish Kraken",  "kind": KIND_KRAKEN},
 	{"id": "kraken_nautilus", "name": "Nautilus Kraken",    "kind": KIND_KRAKEN},
+	{"id": "kraken_leviathan", "name": "The Leviathan",     "kind": KIND_KRAKEN},
 	{"id": "basilisk",        "name": "Basilisk",           "kind": KIND_BASILISK},
 	{"id": "critter",         "name": "Sky Critter",        "kind": KIND_CRITTER},
 ]

@@ -242,6 +242,9 @@ func _build_spawn_tab() -> void:
 		func() -> void: _spawn("kraken"))
 	_action_button(box, "Spawn basilisk", "The top-band fire-spitter.",
 		func() -> void: _spawn("basilisk"))
+	_action_button(box, "Spawn the Leviathan",
+		"THE floor's resident: the depth-8 kraken boss, pool 3600, untameable.",
+		func() -> void: _spawn("leviathan"))
 	_action_button(box, "Spawn the city-whale boss",
 		"The Leviathan Arcology: the city-whale BOSS.",
 		func() -> void: _spawn("boss"))

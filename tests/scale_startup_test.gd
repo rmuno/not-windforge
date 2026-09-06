@@ -602,9 +602,266 @@ func _check_dive_scene_boots() -> void:
 	# advance the run out from under the garrison checks above (they measure a
 	# live world with nothing awaited between the set-up and the assertion).
 	await _check_dive_picket_holds_its_rung(w, pl, cx)
+	# ...and LAST OF ALL, the floor: waking the Leviathan ENDS the run in
+	# triumph, so nothing can follow it.
+	await _check_the_leviathan(w, pl, run, cx, terrain)
 
 	w.queue_free()
 	await process_frame
+
+
+
+
+## THE FLOOR HAS A KRAKEN, AND KILLING IT WINS (DESIGN_KRAKEN §7 slice 1).
+##
+## Here rather than in the 1× suite because every claim below is 8× GEOMETRY —
+## the den's altitude against the lava, a 6,656-px body, a roof measured in body
+## widths, and a hull dropped onto it (CODEMAP: `solid_bounds` is already world
+## px, and the legacy suite cannot see an eightfold error).
+##
+## Five things, in the order the round built them: the body, its collider against
+## the authored crown (judge 1's risk 2 — a boxed crown would delete the maw's
+## 1.6-cell shelter margin), the ROOF, the cull's exemption, and the WIN.
+func _check_the_leviathan(w: Node, pl, run, cx: float, terrain) -> void:
+	if pl == null or not is_instance_valid(pl) or run == null or terrain == null:
+		return
+	var floor_y: float = w.call("dive_altitude_y",
+		DiveRun.depth_altitude(DiveRun.DEPTHS))
+	run.set("depth", DiveRun.DEPTHS)
+	run.set("deepest", DiveRun.DEPTHS)
+	pl.global_position = Vector2(cx, floor_y)
+	pl.velocity = Vector2.ZERO
+	await w.get_tree().physics_frame
+
+	# --- 1. THE BODY -------------------------------------------------------
+	w.call("_dive_wake_leviathan")
+	var boss: Ship = null
+	for sid in (w.get("_dive_surged") as Array):
+		var s := instance_from_id(sid) as Ship
+		if s != null and is_instance_valid(s) and s.creature_kind == "kraken_leviathan":
+			boss = s
+	_ok(boss != null, "waking the floor spawns a kraken_leviathan, not a city-whale")
+	if boss == null:
+		return
+	_ok(is_equal_approx(boss.shared_health_max, 3600.0),
+		"its pool is the file's own `health 3600` (%.0f)" % boss.shared_health_max)
+	_ok(boss.tame_level == 9,
+		"`tame 9` puts it above the perk ceiling — untameable (%d)" % boss.tame_level)
+	_ok(boss.bounty == 900, "`bounty 900` rides on the body (%d)" % boss.bounty)
+	_ok(boss.variety == "kraken_leviathan", "...and the bestiary tag came off the path")
+	_ok(w.call("_whale_ai_for", boss) is KrakenAI,
+		"its kind chose the KRAKEN brain (ram + mouth grab), not a whale's")
+	_ok(bool(w.call("_dive_is_the_boss", boss)),
+		"the ONE predicate reads it as the run's destination")
+	_ok(String(w.call("_edge_marker_kind", boss)) == "boss",
+		"...so it wears the crown marker")
+	var stand_in := false
+	for s2 in (w.get("fleet").call("ships") as Array):
+		if is_instance_valid(s2) and (s2 as Ship).creature_kind == "whale_city":
+			stand_in = true
+	_ok(not stand_in, "and no city-whale stand-in was spawned into the run")
+
+	var bounds: Rect2 = boss.solid_bounds
+	print("    ~ the Leviathan: %d blocks, solid_bounds %.0f x %.0f px"
+		% [boss.blocks.size(), bounds.size.x, bounds.size.y])
+	_ok(absf(boss.global_position.x - cx) < bounds.size.x,
+		"it comes up at YOUR x (%.0f px off the line)" % absf(boss.global_position.x - cx))
+	var lava_y: float = LavaCore.surface_y_for(w.get("_world_rect") as Rect2,
+		float((w.get("_lava_core") as Node).get("top_frac")))
+	var keel := boss.global_position.y + bounds.end.y
+	_ok(keel < lava_y,
+		"the den keeps it out of the core, with %.0f px of clear air under its keel"
+			% (lava_y - keel))
+
+	# --- 2. THE COLLIDER AGAINST THE AUTHORED CROWN -------------------------
+	# The crown is 72 authored MEAT cells in the trailing twelve columns (4,608
+	# blocks at 8×), and D's whole risk/reward rests on them being reachable —
+	# both as the thing that grabs you and as the thing you shoot. A living
+	# creature collides off DOWNSAMPLED super-cells (`creature_coarse_cells`), so
+	# this asks the collider itself rather than the grid.
+	var rects: Array = boss.call("_coarse_creature_rects")
+	var xmin := 1 << 30
+	for cell in boss.blocks:
+		xmin = mini(xmin, (cell as Vector2i).x)
+	var crown_x := xmin + 12 * 8      # the trailing twelve AUTHORED columns, at 8×
+	var arms: Array[Vector2i] = []
+	for cell in boss.blocks:
+		var c := cell as Vector2i
+		if c.x < crown_x and int(boss.blocks[c]["type"]) == BlockDB.Type.MEAT:
+			arms.append(c)
+	var uncovered: Array[Vector2i] = []
+	for c in arms:
+		var hit := false
+		for r in rects:
+			if (r as Rect2i).has_point(c):
+				hit = true
+				break
+		if not hit:
+			uncovered.append(c)
+	_ok(arms.size() == 72 * 64,
+		"the crown is the authored 72 cells, upscaled (%d blocks)" % arms.size())
+	_ok(uncovered.is_empty(),
+		"every arm block is inside the living collider (%d boxes, %d arm blocks%s)"
+			% [rects.size(), arms.size(), "" if uncovered.is_empty()
+				else " — MISSED %d, first at %s" % [uncovered.size(), uncovered[0]]])
+	# ...and the OTHER half of judge 1's risk, as a measurement rather than an
+	# assertion: how much EMPTY air inside the crown's own footprint the boxes
+	# swallow. 0 % is a crown you can fly between; 100 % is a slab.
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for c in arms:
+		lo = Vector2i(mini(lo.x, c.x), mini(lo.y, c.y))
+		hi = Vector2i(maxi(hi.x, c.x), maxi(hi.y, c.y))
+	var air := 0
+	var boxed := 0
+	for y in range(lo.y, hi.y + 1):
+		for x in range(lo.x, hi.x + 1):
+			var c2 := Vector2i(x, y)
+			if boss.blocks.has(c2):
+				continue
+			air += 1
+			for r in rects:
+				if (r as Rect2i).has_point(c2):
+					boxed += 1
+					break
+	print("    ~ the crown's footprint: %d air blocks, %d boxed by the coarse collider (%.1f%%)"
+		% [air, boxed, 100.0 * float(boxed) / maxf(1.0, float(air))])
+
+	# --- 3. THE ROOF -------------------------------------------------------
+	var roof: Rect2 = w.get("_dive_den_roof")
+	_ok(roof.size.x > 0.0, "waking it cut a roof over the den")
+	if roof.size.x <= 0.0:
+		return
+	print("    ~ the den's roof: %.0f x %.0f px at (%.0f, %.0f)"
+		% [roof.size.x, roof.size.y, roof.position.x, roof.position.y])
+	_ok(roof.size.x >= bounds.size.x * 2.0,
+		"it is at least two body widths (%.0f px vs %.0f)"
+			% [roof.size.x, bounds.size.x * 2.0])
+	var cpx: float = terrain.call("cell_px")
+	_ok(roof.size.y >= 4.0 * cpx,
+		"...and at least four terrain cells thick, so nothing tunnels (%.0f px, cell %.0f)"
+			% [roof.size.y, cpx])
+	var body_top := boss.global_position.y + bounds.position.y
+	_ok(roof.end.y <= body_top,
+		"its underside is ABOVE the body (%.0f px of headroom)" % (body_top - roof.end.y))
+	# REAL STONE, all the way across — five samples through the middle of the slab.
+	var stone := 0
+	for i in 5:
+		var at := Vector2(roof.position.x + roof.size.x * (0.1 + 0.2 * float(i)),
+			roof.get_center().y)
+		if bool(terrain.call("is_solid", terrain.call("world_to_cell", at))):
+			stone += 1
+	_ok(stone == 5, "the slab is real terrain across its width (%d/5 samples)" % stone)
+	# ...and the LAVA IS OPEN EITHER SIDE (owner call 2: no walls, or phase 3 is
+	# a siege). One body width out from each end, at the body's own altitude.
+	var open_sides := 0
+	for dir in [-1.0, 1.0]:
+		var at2 := Vector2(roof.get_center().x
+			+ dir * (roof.size.x * 0.5 + bounds.size.x), boss.global_position.y)
+		if not bool(terrain.call("is_solid", terrain.call("world_to_cell", at2))):
+			open_sides += 1
+	_ok(open_sides == 2, "and the sky is open on both flanks (%d/2)" % open_sides)
+
+	# A HULL DROPPED ON THE DEN LANDS ON THE ROOF, not on the boss — which is the
+	# whole point of it (a falling husk was killing the fight by accident).
+	await _drain_streaming(terrain, roof.size.x, roof.get_center(), roof.size.x)
+	var drop_cells := {}
+	for x in 8:
+		for y in 8:
+			drop_cells[Vector2i(x, y)] = BlockDB.Type.HULL
+	var drop_at := Vector2(roof.get_center().x, roof.position.y - 2000.0)
+	var husk: Ship = w.get("fleet").call("spawn_ship_from_cells",
+		drop_cells, drop_at, 0, 0.0, float(w.get("world_scale")), 0)
+	_ok(husk != null, "a hull is dropped over the den")
+	if husk != null:
+		var settled := 0
+		for i in 600:
+			await w.get_tree().physics_frame
+			if not is_instance_valid(husk):
+				break
+			if absf(husk.linear_velocity.y) < 20.0:
+				settled += 1
+				if settled > 30:
+					break
+			else:
+				settled = 0
+		if is_instance_valid(husk):
+			var rested := husk.global_position.y + husk.solid_bounds.end.y
+			_ok(rested <= roof.end.y + 4.0 * cpx,
+				"...and it comes to rest ON the roof (keel %.0f, slab %.0f..%.0f)"
+					% [rested, roof.position.y, roof.end.y])
+			_ok(rested < body_top,
+				"...never on the boss (%.0f px above its back)" % (body_top - rested))
+			husk.queue_free()
+		else:
+			_ok(false, "...and it fell straight through the roof into the core")
+		await w.get_tree().physics_frame
+
+	# --- 4. THE CULL KEEPS IT ----------------------------------------------
+	# A rung and a half is the wake's leash; the boss is the run's DESTINATION and
+	# is never litter, however far you climb. Proved against a picket at the same
+	# distance, which IS litter — otherwise the exemption could be doing nothing.
+	var rung := absf(float(w.call("dive_altitude_y", DiveRun.depth_altitude(2)))
+		- float(w.call("dive_altitude_y", DiveRun.depth_altitude(1))))
+	var high: Vector2 = pl.global_position + Vector2(0.0, -2.0 * rung)
+	boss.global_position = high
+	var decoy = w.call("_dive_spawn_picket", "hulk", high + Vector2(4000.0, 0.0))
+	var decoy_id: int = decoy.get_instance_id() if decoy != null else 0
+	w.call("_dive_cull_the_wake", 2.0)
+	var surged: Array = w.get("_dive_surged") as Array
+	_ok(surged.has(boss.get_instance_id()),
+		"the cull keeps the boss two rungs away (%.0f px, leash %.0f)"
+			% [2.0 * rung, 1.5 * rung])
+	_ok(decoy_id == 0 or not surged.has(decoy_id),
+		"...and freed an ordinary VESSEL picket at the same distance (the exemption is real)")
+	# AND NO LIVING HUNTER IS EVER CULLED (DESIGN_KRAKEN §1.4 / DESCENT call 4).
+	# The pair is the point: a live kraken two rungs off is still coming for you;
+	# its CARCASS at the same distance is litter like any other.
+	var live_kraken = w.call("_dive_spawn_picket", "kraken",
+		high + Vector2(-7000.0, 0.0))
+	var dead_kraken = w.call("_dive_spawn_picket", "kraken",
+		high + Vector2(-14000.0, 0.0))
+	var dead_id: int = dead_kraken.get_instance_id() if dead_kraken != null else 0
+	if dead_kraken != null:
+		dead_kraken.shared_health = 0.0
+		dead_kraken.rebuild()
+	w.call("_dive_cull_the_wake", 2.0)
+	surged = w.get("_dive_surged") as Array
+	if live_kraken != null and is_instance_valid(live_kraken):
+		_ok(surged.has(live_kraken.get_instance_id()),
+			"a LIVING kraken two rungs off is never culled (%s)" % live_kraken.variety)
+	else:
+		_ok(false, "a LIVING kraken two rungs off is never culled")
+	# `queue_free` is deferred, so the honest question is whether the cull
+	# STRUCK it off the run's books — not whether the node is gone this frame.
+	_ok(dead_id == 0 or not surged.has(dead_id),
+		"...and its carcass at the same distance IS litter")
+	if live_kraken != null and is_instance_valid(live_kraken):
+		live_kraken.queue_free()
+	boss.global_position = Vector2(cx, floor_y)
+	await w.get_tree().physics_frame
+
+	# --- 5. THE WIN --------------------------------------------------------
+	# Through the REAL damage path: `damage_cell` is what a shell calls, it is
+	# what drains a living creature's shared pool, and it is what emits
+	# `creature_perished` — the signal the triumph now hangs off.
+	var wallet = pl.get("wallet")
+	var wallet_before: int = int(wallet.get("balance")) if wallet != null else 0
+	var pot_before: int = int(run.get("pot"))
+	var any_cell: Vector2i = boss.blocks.keys()[0]
+	boss.damage_cell(any_cell, boss.shared_health_max + 1.0)
+	await w.get_tree().physics_frame
+	_ok(String(run.get("outcome")) == "triumph",
+		"killing it ends the run in TRIUMPH (outcome '%s')" % String(run.get("outcome")))
+	_ok(int(run.get("banked")) > 0,
+		"...and the pot is BANKED at the floor's premium plus the bonus (%d, pot was %d)"
+			% [int(run.get("banked")), pot_before])
+	_ok(int(run.get("banked")) >= DiveRun.TRIUMPH_BONUS,
+		"...which is never less than TRIUMPH_BONUS itself (%d)" % DiveRun.TRIUMPH_BONUS)
+	if wallet != null:
+		_ok(int(wallet.get("balance")) > wallet_before,
+			"...and it reached the permanent wallet (%d -> %d)"
+				% [wallet_before, int(wallet.get("balance"))])
 
 
 ## THE GROUND IS ALREADY THERE WHEN YOU ARRIVE (owner 2026-09-02: *"the borders

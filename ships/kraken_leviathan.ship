@@ -1,0 +1,78 @@
+# THE LEVIATHAN -- the big kraken that `kraken_ascendancy` has been feeding, and
+# the thing that lives at depth 8 of THE DIVE. Design jam #3, designer D.
+# Preview:  godot --headless --path . --script tools/ship_preview.gd -- <this> out.svg
+#
+# ANATOMY (jam #2's standing ruling, owner from the source): the SHELL (K) is an
+# outer CASING -- two cells thick everywhere, so at 8x it is a 16-block plate --
+# wrapping a MEAT (M) interior. Only a LITTLE meat is exposed, and every exposed
+# cell is deliberate: the THROAT behind the shell fangs, and the six tentacle
+# ARMS of the crown. Krakens carry no blubber (no W); the brain holds them aloft
+# (WhaleAI._altitude_hold_accel) and a carcass falls.
+#
+# READS LEFT-TO-RIGHT WITH +x LEADING (the 2026-08-24 mirroring scar -- a
+# creature's drawn facing follows its motion, +x in front):
+#
+#   RIGHT (+x, leading)   the RAM SPIRE: the last 17 columns taper from nine
+#                         rows to a single cell, solid shell all the way. The
+#                         struck cell's collision_resist 20 divides the bruise
+#                         (Ship._apply_impacts), so it rams and mines and pays a
+#                         twentieth of the bill a meat nose would.
+#   MIDDLE                the MANTLE: 2-thick casing over a meat bulk, with THE
+#                         HOARD -- a sealed 12-cell loot cavity walled in meat,
+#                         cracked off the carcass exactly as kraken_c's is
+#                         (Ship.cavity_cells / harvest_cell).
+#   LEFT (-x, trailing)   the HEAD: a pinched neck, then shell JAW PLATES above
+#                         and below a NINE-ROW MAW. The gullet narrows to a
+#                         bare-MEAT THROAT and a meat back wall -- ELEVEN cells,
+#                         the only soft skin on the body proper (11% of its
+#                         100-cell hide; the other 89 are shell).
+#   FURTHER LEFT          THE CROWN: six exposed-MEAT tentacle ARMS, one cell
+#                         thick (eight blocks at 8x), trailing 12 columns and
+#                         fanning -- two sweeping out, two straight, two curling
+#                         in across the mouth's plane.
+#
+# WHERE THE MOUTH LANDS IS DERIVED, NOT AUTHORED: KrakenAI._compute_mouth_local
+# takes the centroid of exterior-exposed MEAT. Throat plus crown put it OUTSIDE
+# the jaw lip, in the middle of the arms -- so the shipped grab (kraken_grab_dps
+# 120 hp/s within kraken_grab_reach 70 px x scale_unit) fires FROM THE
+# TENTACLES. That is the whole trick: the arms are the bite, with no new code.
+#
+#   K shell (hp 250, mass 2, collision_resist 20 -- light, very hard)
+#   M meat  (hp 50, mass 8 -- the interior bulk, the throat, the arms)
+#   . air   (the open maw, and the sealed hoard)
+
+name The Leviathan
+kind kraken_leviathan
+group bosses
+health 3600
+tame 9
+bounty 900
+notes jam 3 designer D. tame 9 is ABOVE the perk ceiling (StatDB Master Trader grants taming 3) -- that is how a body is made untameable; tame 0 would make it tameable by ANYONE (world.try_tame compares taming_level() < tame_level).
+
+origin 25 12
+
+...M
+...MMMMM
+.......MMMMM
+...........MKKKK
+............KKKK...KKKKKKK
+MMMMMMMMMMMMKKMKKKKKKKKKKKKKK
+............KKKKKKKMMMMMMMKKKKKK
+...........MKKKKKKMMMMMMMMMMMKKKKKK
+.......MMMMM....MMKMMMMMMMMMMMMMKKKKKK
+...MMMMM..........MKMMMMMMMMMMMMMMMKKKKKK
+...M...............MKMMMMMMMMMMMMMMMMMKKKKKK
+...................MKMMMM....MMMMMMMMMMMMKKKKKK
+...................MKMMMM....MMMMMMMMMMMMMMMKKKKKKKK
+...................MKMMMM....MMMMMMMMMMMMKKKKKK
+...M...............MKMMMMMMMMMMMMMMMMMKKKKKK
+...MMMMM..........MKMMMMMMMMMMMMMMMKKKKKK
+.......MMMMM....MMKMMMMMMMMMMMMMKKKKKK
+...........MKKKKKKMMMMMMMMMMMKKKKKK
+............KKKKKKKMMMMMMMKKKKKK
+MMMMMMMMMMMMKKMKKKKKKKKKKKKKK
+............KKKK...KKKKKKK
+...........MKKKK
+.......MMMMM
+...MMMMM
+...M
