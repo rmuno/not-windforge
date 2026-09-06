@@ -112,6 +112,7 @@ enum Phase {
 	NONE,   ## roaming, or provoked-and-aligning: no attack in progress
 	PUSH,   ## heaving horizontally; ram immunity on
 	GLIDE,  ## no propulsion, coasting into the target; ram immunity still on
+	COIL,   ## winding up: rearing AWAY from the latched direction, no immunity
 }
 
 var whale: Ship
@@ -224,6 +225,55 @@ func _altitude_hold_accel() -> float:
 	return _gravity_cancel_accel() - whale.linear_velocity.y * RIDE_HOLD_DAMP
 
 
+## --- The four attack hooks (v0.147.0) -------------------------------------
+## The retaliation branch below is ONE doctrine with four decisions in it, and
+## the kraken re-decides all four (see KrakenAI: it leads its prey, throws the
+## shove downward, coils first, and holds the attack's pose). They live here as
+## overridable one-liners so the branch itself stays a single piece of code —
+## a whale and a kraken must never drift into two copies of the ram loop.
+##
+## Every base answer below IS the whale's shipped behaviour, unchanged: a whale
+## aims at the prey itself, latches a purely sideways shove (the owner's
+## broadside ruling), opens the attack in PUSH — so it NEVER enters COIL — and
+## pitches into its own motion.
+
+## WHERE THE BRAIN AIMS. The align climbs to this point's altitude and the latch
+## takes its direction from it.
+func _aim_point(prey: Node2D) -> Vector2:
+	return prey.global_position
+
+
+## THE LATCH: the direction the shove commits to, decided once when the align
+## converts and held (`_push_dir`) for the whole attack. `to` is the vector from
+## the creature to `_aim_point(prey)`.
+func _latch_push_dir(to: Vector2, _prey: Node2D) -> Vector2:
+	var sx := signf(to.x)
+	return Vector2(sx if sx != 0.0 else 1.0, 0.0)
+
+
+## The phase an attack OPENS in. PUSH = heave immediately, with no windup.
+func _attack_entry_phase() -> Phase:
+	return Phase.PUSH
+
+
+## How long COIL lasts, and the acceleration held during it. Zero and ZERO for
+## a whale, which never coils at all.
+func _coil_seconds() -> float:
+	return 0.0
+
+
+func _coil_accel() -> Vector2:
+	return Vector2.ZERO
+
+
+## THE POSE this frame (a target angle; `Ship.set_pose_tilt` clamps it to
+## ±POSE_MAX and eases the node's real rotation toward it). The whale pitches
+## into its own MOTION — see the facing note at the tick's tail.
+func _pose_tilt_target() -> float:
+	return clampf(whale.linear_velocity.y / (TILT_AT_SPEED * whale.scale_unit),
+		-1.0, 1.0) * Ship.POSE_MAX * float(whale.visual_facing)
+
+
 ## `target` is the caller's FALLBACK prey (the nearest player-side ship) — used
 ## only when no attacker was ever attributed. Node2D, not Ship: the retaliation
 ## target can be the on-foot PLAYER (shoot a whale from the ground and it comes
@@ -306,7 +356,10 @@ func tick(delta: float, target: Node2D) -> void:
 		if prey == null:
 			prey = target
 		# Broadside doctrine: get level with the prey, THEN shove flat.
-		var to := prey.global_position - whale.global_position
+		# `_aim_point` is the prey ITSELF for a whale and the prey's LEAD POINT
+		# for a kraken, so the align and the latch below chase one point and can
+		# never disagree about where the prey is going.
+		var to := _aim_point(prey) - whale.global_position
 		if _phase == Phase.NONE:
 			# Commit to the shove when level with the prey, OR when the align
 			# has run too long (a stuck vertical drive — the prey itself is in
@@ -320,9 +373,8 @@ func tick(delta: float, target: Node2D) -> void:
 				# Level with its prey (or out of patience, or already on it):
 				# wind up and heave from the CURRENT altitude. The direction is
 				# latched now and held for the whole attack.
-				var sx := signf(to.x)
-				_push_dir = Vector2(sx if sx != 0.0 else 1.0, 0.0)
-				_phase = Phase.PUSH
+				_push_dir = _latch_push_dir(to, prey)
+				_phase = _attack_entry_phase()
 				_phase_t = 0.0
 				_align_t = 0.0
 			else:
@@ -335,7 +387,19 @@ func tick(delta: float, target: Node2D) -> void:
 					* Tunables.get_num("whale_align_accel") * u
 				# (Station-holding against gravity is the unified swim
 				# bladder below — it spans this align AND the push/glide.)
-		if _phase == Phase.PUSH:
+		if _phase == Phase.COIL:
+			# THE WINDUP (kraken only — a whale's `_attack_entry_phase` never
+			# opens here). It rears AWAY from the direction it has already
+			# committed to, holding an away-facing pose: the tell that says
+			# WHEN to move and, because `_push_dir` is latched at the top of
+			# the attack, WHERE it is about to go. No ram immunity — recoiling
+			# into something is clumsiness, exactly as the align is.
+			_phase_t += delta
+			accel = _coil_accel()
+			if _phase_t >= _coil_seconds():
+				_phase = Phase.PUSH
+				_phase_t = 0.0
+		elif _phase == Phase.PUSH:
 			_phase_t += delta
 			# One heavy horizontal force, purely sideways — as with the
 			# source; drag bleeds off any leftover vertical drift.
@@ -398,6 +462,8 @@ func tick(delta: float, target: Node2D) -> void:
 	# the collider is reflected the same way now, so it pitches to AGREE with
 	# the drawing (nose-into-motion for both) instead of tilting the "wrong"
 	# way — the reflection and this sign are two halves of one transform.
-	whale.set_pose_tilt(
-		clampf(whale.linear_velocity.y / (TILT_AT_SPEED * u), -1.0, 1.0)
-		* Ship.POSE_MAX * float(whale.visual_facing))
+	#
+	# The angle itself comes from `_pose_tilt_target()` so a brain can HOLD a
+	# pose through an attack instead of reading its own velocity every frame
+	# (the kraken does; the whale's answer is the formula this line always was).
+	whale.set_pose_tilt(_pose_tilt_target())

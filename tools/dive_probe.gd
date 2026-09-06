@@ -31,6 +31,100 @@ var damage_taken := 0.0
 var _seen_shots := {}
 var enemy_shots := 0
 
+# --- THE KRAKEN SCORECARD (DESIGN_KRAKEN §7 slice 2) -----------------------
+# "Every later round tunes against them": four numbers the deep has never been
+# measured by. All four are read off the LIVE brains and bodies, so they answer
+# for what the fight did, not for what the spawn tables intended.
+#
+#   * TIME TO FIRST CONTACT — entering a depth, to the first frame a kraken has
+#     hold of you or is standing on your hull. Infinite at every depth is the
+#     bug this whole slice is about (designer C's arithmetic: the old
+#     horizontal-only heave cannot reach a hull that is falling).
+#   * GRABS — rising edges of `KrakenAI.grabbing`, per minute, longest hold.
+#   * INTEGRITY LOST TO KRAKENS — the grab's drain and the ram's bruise, split
+#     out of the total by "was a kraken on us this frame".
+#   * CULLED ALIVE — krakens the wake cull FREED while they still had a pool.
+#     Measured from outside `_dive_cull_the_wake` on purpose (a body that
+#     vanishes with health left was deleted, not killed), so this line reads
+#     the same before and after that function is ever touched.
+var kraken_first_contact := {}     ## depth -> seconds from entering it
+var kraken_contact_frames := 0
+var kraken_grabs := 0
+var kraken_grab_frames := 0
+var kraken_hold := 0.0
+var kraken_longest_hold := 0.0
+var kraken_damage := 0.0
+var krakens_culled_alive := 0
+var krakens_perished := 0
+## instance id -> the last pool we saw it with. A kraken that leaves this list
+## without its pool having reached zero was freed alive.
+var _kraken_pools := {}
+var _kraken_grabbing := {}
+## True while a kraken is grabbing us or in contact with our hull — the
+## attribution the `damaged` handler reads (designer C's own fallback: "else by
+## 'a mouth was in reach this frame'").
+var _kraken_on_us := false
+
+
+## Is this body one of the deep's hunters? Matches the Leviathan too, whatever
+## the concurrent slice ends up calling it, without needing its name here.
+func _is_kraken(s) -> bool:
+	return String(s.get("creature_kind")).begins_with("kraken")
+
+
+## One frame of the kraken scorecard: who is alive, who has hold of us, who
+## disappeared while still alive.
+func _tally_krakens(t: float, depth: int, depth_started: float) -> void:
+	var hull = world.get("local_ship")
+	var brains: Dictionary = world.get("_whale_ais")
+	var touching := {}
+	if hull != null and is_instance_valid(hull):
+		for body in hull.get_colliding_bodies():
+			touching[body.get_instance_id()] = true
+	var live := {}
+	var on_us := false
+	var holding := false
+	for s in fleet.ships():
+		if not is_instance_valid(s) or not _is_kraken(s):
+			continue
+		var id: int = s.get_instance_id()
+		live[id] = true
+		_kraken_pools[id] = float(s.get("shared_health"))
+		if float(s.get("shared_health")) <= 0.0:
+			continue   # a carcass neither grabs nor counts as a hunter
+		var ai = brains.get(id)
+		var grabbing: bool = ai != null and (bool(ai.get("grabbing"))
+			or bool(ai.get("grabbing_player")))
+		if grabbing:
+			holding = true
+			if not bool(_kraken_grabbing.get(id, false)):
+				kraken_grabs += 1
+		_kraken_grabbing[id] = grabbing
+		if grabbing or touching.has(id):
+			on_us = true
+	# Anything that was in the books last frame and is not alive now: killed if
+	# its pool had emptied, FREED BY THE CULL if it had not.
+	for id in _kraken_pools.keys():
+		if live.has(id):
+			continue
+		if float(_kraken_pools[id]) > 0.0:
+			krakens_culled_alive += 1
+		else:
+			krakens_perished += 1
+		_kraken_pools.erase(id)
+		_kraken_grabbing.erase(id)
+	_kraken_on_us = on_us
+	if holding:
+		kraken_grab_frames += 1
+		kraken_hold += STEP
+		kraken_longest_hold = maxf(kraken_longest_hold, kraken_hold)
+	else:
+		kraken_hold = 0.0
+	if on_us:
+		kraken_contact_frames += 1
+		if not kraken_first_contact.has(depth):
+			kraken_first_contact[depth] = t - depth_started
+
 
 ## Count NEW hostile shells this frame. The shots group is small (live shells
 ## only), so the per-frame scan is cheap.
@@ -78,7 +172,12 @@ func _initialize() -> void:
 	if hull_now != null and is_instance_valid(hull_now):
 		hull_now.damaged.connect(func(_cell: Vector2i, amount: float) -> void:
 			hits_taken += 1
-			damage_taken += amount)
+			damage_taken += amount
+			# ...and how much of it the deep took. `_kraken_on_us` is stamped
+			# once a frame by `_tally_krakens`, which is the only attribution
+			# the ram bruise admits of: a collision carries no shooter id.
+			if _kraken_on_us:
+				kraken_damage += amount)
 
 	# --- Shop, the way a player who found an outpost would -----------------
 	# Depths 6-8 are below Airspace.DEEP_TOP, so a run without a Lung dies at
@@ -169,6 +268,7 @@ func _initialize() -> void:
 			last_depth = d
 			depth_started = t
 		_count_enemy_fire()
+		_tally_krakens(t, d, depth_started)
 		# THREAT: did anything actually reach us? A garrison you never met is
 		# a spawn count, not a fight.
 		for sh in fleet.ships():
@@ -229,6 +329,23 @@ func _initialize() -> void:
 		% [enemy_shots, hits_taken,
 			(100.0 * float(hits_taken) / float(maxi(enemy_shots, 1))),
 			damage_taken, damage_taken / float(per_n), integ])
+	# THE KRAKEN SCORECARD (DESIGN_KRAKEN §7 slice 2). Targets, from the design:
+	# first contact under 25 s at d4-d7, 1.5-3 grabs a minute, krakens taking
+	# 15-25 % of the 3,000 integrity pool over a descent, and culled-alive 0.
+	var ttc := ""
+	for dd in range(1, 9):
+		ttc += "d%d:%s " % [dd, ("%.1f" % float(kraken_first_contact[dd]))
+			if kraken_first_contact.has(dd) else "-"]
+	var mins := maxf(t / 60.0, 0.001)
+	print("KRAKEN CONTACT: %s| %.1f s of contact in %.0f s of diving" % [ttc,
+		float(kraken_contact_frames) * STEP, t])
+	print("KRAKEN GRABS:   %d | %.2f per minute | held %.1f s total, longest %.1f s"
+		% [kraken_grabs, float(kraken_grabs) / mins,
+			float(kraken_grab_frames) * STEP, kraken_longest_hold])
+	print("KRAKEN BILL:    %.0f of %.0f damage taken (%.0f%%) | %d killed | %d CULLED ALIVE"
+		% [kraken_damage, damage_taken,
+			100.0 * kraken_damage / maxf(damage_taken, 1.0),
+			krakens_perished, krakens_culled_alive])
 	print("HULL:   %.0f blocks -> %.0f (%.0f lost)" % [hp0, hp1, hp0 - hp1])
 	print("GEAR:   %s" % _gear(hull1))
 	print("\n--- the descent ---")

@@ -2635,7 +2635,10 @@ func _process(delta: float) -> void:
 			# ridden-mining immunity is gone: durability is EARNED by shell, not a
 			# flag, so a half-mined nose loses its armor exactly as its shell strips.
 			var billed := available * factor / BlockDB.collision_resist(blocks[cell]["type"])
-			damage_cell(cell, billed, false)
+			# crush=true: the bruise is ALREADY divided by this cell's armour on
+			# the line above, so the living branch must not tax it a second time
+			# (the shell tax there is for SHOTS — see damage_cell).
+			damage_cell(cell, billed, false, [], true)
 			# A living creature's crash also floats a number at the contact point
 			# (owner 2026-08-22) — coalesced by the listener so a crush against a
 			# wall shows one growing number, not a spray.
@@ -2674,7 +2677,7 @@ func _process(delta: float) -> void:
 			# rebuild_now=false: ONE rebuild after the whole batch — the
 			# belly-flop freeze was a full rebuild (11k-block greedy merge)
 			# per crunched cell, all in a single frame.
-			var died := damage_cell(walk, remaining / resist, false)
+			var died := damage_cell(walk, remaining / resist, false, [], true)
 			_rebuild_dirty = _rebuild_dirty or died
 			var cost := hp * resist  # budget this cell soaks before it breaks
 			if remaining < cost:
@@ -3064,17 +3067,37 @@ func grant_bonus_integrity(bonus: float) -> void:
 	hull_integrity = clampf(hull_integrity + maxf(gained, 0.0), 0.0, hull_integrity_max)
 
 
+## `crush` marks the COLLISION path (the crush walk above), which has already
+## divided its bruise by the struck cell's `collision_resist` and must not be
+## armoured twice. Everything else — every shot, the mouth grab, fire, a blast —
+## is a hit ON A CELL and pays the creature's shell tax below.
 func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
-		dead_out: Array = []) -> bool:
+		dead_out: Array = [], crush := false) -> bool:
 	if not blocks.has(cell):
 		return false
 	# A LIVING creature absorbs everything into its shared pool — blocks
 	# break only on a carcass (see "Creature body" above). Still emits
 	# `damaged`, so provocation works; still redraws, so the wound shows.
 	if shared_health_max > 0.0 and shared_health > 0.0:
+		# THE THROAT IS REAL (v0.147.0, DESIGN_KRAKEN §1.1 / jam #3 finding 1).
+		# Until now this branch threw the struck cell away: shell and meat were
+		# identical to gunfire, though the bodies are AUTHORED as a shell casing
+		# around a meat interior and jam #2's anatomy ruling depends on the
+		# difference. Now a shot into SHELL drains the pool at
+		# 1/`creature_shell_resist` and a shot into exposed meat drains 1:1, so
+		# aiming — the coil's opening throat, the glide's exposed flank — is the
+		# skill that shortens a 1,200-pool kraken from 120 seconds to 30.
+		#
+		# A NEW LEVER, not `collision_resist`: `block_db.gd` warns in as many
+		# words that combat must never read that column, or a vessel's gasbag
+		# (resist 10) goes bullet-resistant. And CREATURES ONLY, because a
+		# vessel has no shared pool and never reaches this branch at all.
+		var drained := amount
+		if not crush and int(blocks[cell]["type"]) == BlockDB.Type.SHELL:
+			drained = amount / maxf(Tunables.get_num("creature_shell_resist"), 1.0)
 		var pool_bucket := shade_bucket(shared_health, shared_health_max)
-		shared_health = maxf(0.0, shared_health - amount)
-		damaged.emit(cell, amount)
+		shared_health = maxf(0.0, shared_health - drained)
+		damaged.emit(cell, drained)
 		flash_hit()   # a quick red pulse so a landed hit READS (charter §5)
 		# Whole-body wound shading has 6 visible steps. The step is a uniform
 		# darkening, so it lands as a per-tile self_modulate — no repaint at

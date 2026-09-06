@@ -137,6 +137,9 @@ func _initialize() -> void:
 	await _test_carcass_loot_state_survives_the_wire_and_the_save()
 	await _test_kraken_mouth_bites_the_player_on_foot()
 	await _test_kraken_spawn_keeps_out_of_deep_rock()
+	await _test_kraken_heave_finds_you()
+	await _test_kraken_coils_before_it_heaves()
+	await _test_creature_shell_is_armour_against_shots()
 	await _test_single_player_is_not_online()
 	await _test_remote_ships_are_eased_not_snapped()
 	await _test_serialization_roundtrip()
@@ -6803,6 +6806,311 @@ func _test_kraken_spawn_keeps_out_of_deep_rock() -> void:
 		"without the probe the kraken spawns inside the island, exactly as it used to")
 
 	t.queue_free()
+	await _step(2)
+
+
+## THE HEAVE FINDS YOU (v0.147.0, DESIGN_KRAKEN §1.3 / jam #3 designer C's M1).
+## The owner's complaint — krakens are easy to avoid — was ONE VECTOR: the
+## inherited latch is purely horizontal while the Dive's whole verb is DOWN, so
+## a four-second attack is thrown at a line you left in the first half-second.
+## These are the arithmetic claims the fix is made of, asserted with no body, no
+## world and no physics; the behaviour they buy is the test after this one.
+func _test_kraken_heave_finds_you() -> void:
+	_t("a kraken leads its prey, floors the heave's horizontal share, and never aims into the lava")
+	# Parity: the levers ship the constants they replaced (CODEMAP — "the
+	# default must mirror the constant it replaced").
+	_check_approx(Tunables.get_num("kraken_lead_seconds"), KrakenAI.LEAD_SECONDS,
+		0.001, "kraken_lead_seconds default = KrakenAI.LEAD_SECONDS")
+	_check_approx(Tunables.get_num("kraken_push_vertical"), KrakenAI.PUSH_VERTICAL,
+		0.001, "kraken_push_vertical default = KrakenAI.PUSH_VERTICAL")
+	_check_approx(Tunables.get_num("kraken_coil_seconds"), KrakenAI.COIL_SECONDS,
+		0.001, "kraken_coil_seconds default = KrakenAI.COIL_SECONDS")
+
+	# --- The lever's regression contract: 1.0 IS today, sign for sign. -------
+	# Compared against the base class's own latch rather than a copy of its
+	# formula, so this cannot drift if the whale's broadside is ever re-tuned.
+	var whale_brain := WhaleAI.new()
+	var raws: Array[Vector2] = [
+		Vector2(900.0, 0.0), Vector2(-900.0, 0.0), Vector2(900.0, 3072.0),
+		Vector2(-400.0, -5000.0), Vector2(0.0, 4000.0), Vector2(0.0, -4000.0),
+	]
+	var same := 0
+	for raw in raws:
+		if KrakenAI.floor_horizontal(raw, 1.0).is_equal_approx(
+				whale_brain._latch_push_dir(raw, null)):
+			same += 1
+	_check(same == raws.size(),
+		"at kraken_push_vertical 1.0 the heave is the inherited broadside, byte for byte (%d of %d aims)"
+			% [same, raws.size()])
+
+	# --- 0.5: a prey DIRECTLY BELOW gets a shove that is genuinely vertical.
+	var down := KrakenAI.floor_horizontal(Vector2(0.0, 4000.0), 0.5)
+	_check(absf(down.y) >= absf(down.x) * 1.0,
+		"at 0.5, a prey straight below is heaved DOWNWARD (%s: |y| %.3f >= |x| %.3f)"
+			% [down, absf(down.y), absf(down.x)])
+	_check_approx(down.length(), 1.0, 0.001, "...and the direction stays a unit vector")
+	_check_approx(absf(down.x), 0.5, 0.001,
+		"...with exactly the floored horizontal share left in it (%.3f)" % absf(down.x))
+	# The floor only ever ADDS horizontal: an aim that is already flat enough
+	# passes through untouched, so a level prey is still rammed level.
+	var flat := KrakenAI.floor_horizontal(Vector2(1000.0, 100.0), 0.5)
+	_check(flat.is_equal_approx(Vector2(1000.0, 100.0).normalized()),
+		"an aim already past the floor is left exactly as it is (%s)" % flat)
+	# Sign is taken from the prey, both axes: it heaves up at a climbing prey.
+	var up := KrakenAI.floor_horizontal(Vector2(-10.0, -4000.0), 0.5)
+	_check(up.x < 0.0 and up.y < 0.0, "it hunts UP as well as down (%s)" % up)
+
+	# --- THE LEAD POINT: aim where the prey WILL be. ------------------------
+	var here := Vector2(0.0, -20000.0)
+	var diving := Vector2(0.0, 1920.0)   # the rate stick's dive at 8x
+	var lead := KrakenAI.lead_point(here, diving, 1.6)
+	_check_approx(lead.y - here.y, 1920.0 * 1.6, 0.5,
+		"a hull diving at the stick's speed is aimed at 3,072 px below itself (%.0f)"
+			% (lead.y - here.y))
+	_check(KrakenAI.lead_point(here, Vector2.ZERO, 1.6).is_equal_approx(here),
+		"a prey standing still leads to itself — today's aim, unchanged")
+	_check(KrakenAI.lead_point(here, diving, 0.0).is_equal_approx(here),
+		"and 0 s of lead turns the whole thing off")
+	# The prey's velocity is read off whatever KIND of body it is.
+	var moving := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	moving.position = Vector2(-40000.0, 0.0)
+	moving.linear_velocity = Vector2(0.0, 500.0)
+	await _step(1)
+	_check(KrakenAI.prey_velocity(moving).y > 100.0,
+		"a Ship prey answers with its linear_velocity (%s)" % KrakenAI.prey_velocity(moving))
+	var bare := Node2D.new()
+	root.add_child(bare)
+	_check(KrakenAI.prey_velocity(bare) == Vector2.ZERO,
+		"a body with no velocity at all reads as standing still")
+	_check(KrakenAI.prey_velocity(null) == Vector2.ZERO, "...and so does no body")
+	bare.queue_free()
+	moving.queue_free()
+
+	# --- THE FLOOR THE AIM CANNOT CROSS (designer C's R2). -----------------
+	# Lead a hull that is diving hard enough and the aim point lands in the lava
+	# core, which would send the kraken after it: SHELL survives rock, nothing
+	# survives the core. The clamp holds the point above the same altitude a
+	# dormant migration refuses to cross.
+	var kept := Airspace.bounds
+	Airspace.bounds = Rect2(Vector2(-100000.0, -200000.0), Vector2(200000.0, 200000.0))
+	var floor_y: float = Airspace.bounds.end.y \
+		- Dormancy.MIGRATE_FLOOR_FRAC * Airspace.bounds.size.y
+	var deep := KrakenAI.lead_point(Vector2(0.0, floor_y - 500.0),
+		Vector2(0.0, 40000.0), 1.6)
+	_check(deep.y <= floor_y + 0.001,
+		"a lead point that would land in the lava is held above the floor (%.0f <= %.0f)"
+			% [deep.y, floor_y])
+	_check(is_equal_approx(deep.x, 0.0),
+		"...on the vertical axis only — the chase keeps its x")
+	var high := KrakenAI.lead_point(Vector2(0.0, -150000.0), Vector2(0.0, 1920.0), 1.6)
+	_check(high.y > -150000.0 and high.y < floor_y,
+		"a lead point in open air is not clamped at all (%.0f)" % high.y)
+	# BREAK THE FIX: with no sky declared there is no floor, and the same aim
+	# passes straight through — which is what keeps the 1x arena honest.
+	Airspace.bounds = Rect2()
+	_check(KrakenAI.lead_point(Vector2(0.0, floor_y - 500.0),
+			Vector2(0.0, 40000.0), 1.6).y > floor_y,
+		"with no sky there is no floor to clamp to (the Sprint-1 arena)")
+	Airspace.bounds = kept
+	await _step(2)
+
+
+## THE COIL (DESIGN_KRAKEN §1.3 / designer C's M2): the telegraph the anti-clunk
+## charter demands, and the fix for the pose bug C found — WhaleAI drives the
+## tilt off `linear_velocity.y` alone, so the most violent thing a kraken does
+## was the moment its body read most NEUTRAL. Kraken-only: the whale's suite
+## pins the velocity pose, and its flat broadside is an owner ruling.
+func _test_kraken_coils_before_it_heaves() -> void:
+	_t("a kraken rears away before it heaves, and holds the attack's pose through the glide")
+	var kraken := _make_ship({
+		Vector2i(-1, 0): BlockDB.Type.SHELL,
+		Vector2i(0, 0): BlockDB.Type.MEAT,
+		Vector2i(1, 0): BlockDB.Type.SHELL,
+	})
+	kraken.faction = 2
+	kraken.creature_kind = "kraken"
+	kraken.position = Vector2(0.0, -30000.0)
+	kraken.shared_health = 4000.0
+	kraken.shared_health_max = 4000.0
+	# DOWN and to the RIGHT, frozen: the aim has a real vertical share, so the
+	# pose claims below are about an angle and not about zero. A prey off the
+	# align band converts on the align TIMEOUT (whale_ai.gd's own stuck-drive
+	# fix); force its clock rather than burning two seconds of frames.
+	var prey := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	prey.freeze = true
+	prey.position = kraken.position + Vector2(4000.0, 6000.0)
+	await _step(2)
+
+	var ai := KrakenAI.new()
+	ai.whale = kraken
+	ai.home = kraken.global_position
+
+	ai._align_t = WhaleAI.ALIGN_MAX_SECONDS
+	ai.tick(1.0 / 60.0, prey)
+	_check(ai.phase() == WhaleAI.Phase.COIL,
+		"the attack opens in COIL, not in the heave")
+	_check(ai._push_dir.x > 0.0 and ai._push_dir.y > 0.3,
+		"with the direction — down AND across — already latched (%s)" % ai._push_dir)
+	_check(kraken.ram_immunity_dir == Vector2.ZERO,
+		"rearing back is not an attack — no ram immunity during the windup")
+	# THE TELL: the pose points AWAY from where it is about to go — the exact
+	# negative of the angle it is about to hold for the whole shove.
+	var d0: Vector2 = ai._push_dir
+	var attack_pose := clampf(atan2(d0.y, absf(d0.x)), -Ship.POSE_MAX, Ship.POSE_MAX) \
+		* float(kraken.visual_facing)
+	var away := kraken._pose_tilt
+	_check(absf(attack_pose) > 0.1 and is_equal_approx(away, -attack_pose),
+		"and it rears AWAY: the coil's pose is the exact negative of the attack's (%.3f vs %.3f rad)"
+			% [away, attack_pose])
+	kraken.linear_velocity = Vector2.ZERO
+	for i in int(KrakenAI.COIL_SECONDS * 60.0) + 1:
+		ai.tick(1.0 / 60.0, prey)
+		await physics_frame
+	# ...and it physically reels back. Measured ALONG the committed direction:
+	# the kraken's own wildness jitter (a deliberate lever) rides on top of the
+	# recoil and can win either axis on its own, so the claim is the dot, which
+	# is what "it moves against where it is about to go" actually means.
+	var reel: float = kraken.linear_velocity.dot(d0)
+	_check(reel < -10.0,
+		"and it physically reels back along the attack line first (%.0f px/s into it, v=%s)"
+			% [reel, kraken.linear_velocity])
+	_check(ai.phase() == WhaleAI.Phase.PUSH,
+		"the coil closes into the heave (%.1f s later)" % KrakenAI.COIL_SECONDS)
+	_check(kraken.ram_immunity_dir.x > 0.0, "...and NOW the ram immunity is on")
+
+	# Through PUSH and into the GLIDE, with the pose latched to the attack.
+	for i in int(WhaleAI.PUSH_SECONDS * 60.0) + 1:
+		ai.tick(1.0 / 60.0, prey)
+		await physics_frame
+	_check(ai.phase() == WhaleAI.Phase.GLIDE, "the heave closes into the glide")
+	var d: Vector2 = ai._push_dir
+	var want := clampf(atan2(d.y, absf(d.x)), -Ship.POSE_MAX, Ship.POSE_MAX) \
+		* float(kraken.visual_facing)
+	_check_approx(kraken._pose_tilt, want, 0.001,
+		"and the pose through the glide IS the push direction's angle (%.3f rad)"
+			% kraken._pose_tilt)
+	_check(absf(kraken._pose_tilt) <= Ship.POSE_MAX + 0.001
+			and absf(kraken._pose_tilt) > 0.1,
+		"...at the source's +/-31 degree cap, not flattened by the ram it is riding")
+	_check(d.is_equal_approx(d0),
+		"and the direction never turned once committed — the glide window (%s)" % d)
+
+	# --- THE HEAVE THROWN STRAIGHT DOWN. ------------------------------------
+	ai._end_attack()
+	prey.position = kraken.global_position + Vector2(0.0, 6000.0)
+	await _step(2)
+	ai._align_t = WhaleAI.ALIGN_MAX_SECONDS
+	ai.tick(1.0 / 60.0, prey)
+	_check(absf(ai._push_dir.y) >= absf(ai._push_dir.x),
+		"a prey straight below is heaved DOWN at, not past (%s)" % ai._push_dir)
+
+	# BREAK THE FIX, both levers at once: at push_vertical 1.0 the same aim is
+	# the old sideways-only ram, and at coil 0 there is no windup at all.
+	Tunables.set_value("kraken_push_vertical", 1.0)
+	Tunables.set_value("kraken_coil_seconds", 0.0)
+	ai._end_attack()
+	ai._align_t = WhaleAI.ALIGN_MAX_SECONDS
+	ai.tick(1.0 / 60.0, prey)
+	_check(is_zero_approx(ai._push_dir.y) and absf(ai._push_dir.x) > 0.99,
+		"push_vertical 1.0 restores the horizontal-only ram (%s)" % ai._push_dir)
+	_check(ai.phase() == WhaleAI.Phase.PUSH,
+		"and coil 0 s strikes with no windup, exactly as it used to")
+	Tunables.reset_all()
+
+	kraken.queue_free()
+	prey.queue_free()
+	await _step(2)
+
+
+## THE THROAT IS REAL (v0.147.0, DESIGN_KRAKEN §1.1 / jam #3 finding 1). Until
+## now `damage_cell`'s living branch threw the struck cell away, so shell and
+## meat were identical to gunfire though every kraken is AUTHORED as a shell
+## casing around a meat interior. Three boundaries, and all three are the point:
+## creatures only, SHOTS only, and a lever rather than `collision_resist`
+## (block_db.gd warns in words that combat must never read that column).
+func _test_creature_shell_is_armour_against_shots() -> void:
+	_t("a shot into a creature's SHELL drains a quarter; meat drains 1:1, vessels and crushes are untouched")
+	_check_approx(Tunables.get_num("creature_shell_resist"), 4.0, 0.001,
+		"the shipped shell tax is 4x (the jam's ruling: 20 would make shell immune)")
+
+	var beast := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.SHELL,
+		Vector2i(1, 0): BlockDB.Type.MEAT,
+		Vector2i(2, 0): BlockDB.Type.SHELL,
+	})
+	beast.creature_kind = "kraken"
+	beast.faction = 2
+	beast.position = Vector2(0.0, -52000.0)
+	beast.shared_health_max = 4000.0
+	beast.shared_health = 4000.0
+	await _step(1)
+
+	var pool := beast.shared_health
+	beast.net_damage_cell(Vector2i(0, 0), 400.0)
+	var shell_drain := pool - beast.shared_health
+	_check_approx(shell_drain, 100.0, 0.001,
+		"400 into the shell casing drains a quarter of it (%.0f)" % shell_drain)
+	pool = beast.shared_health
+	beast.net_damage_cell(Vector2i(1, 0), 400.0)
+	var meat_drain := pool - beast.shared_health
+	_check_approx(meat_drain, 400.0, 0.001,
+		"the same 400 into the exposed MEAT drains all of it (%.0f)" % meat_drain)
+	_check(meat_drain > shell_drain * 3.9,
+		"aiming is worth 4x — which is the whole of the fight (%.0f vs %.0f)"
+			% [meat_drain, shell_drain])
+
+	# THE CRUSH IS NOT A SHOT. The collision walk has already divided its bruise
+	# by the very same cell's collision_resist (SHELL 20), so taxing it again
+	# here would armour a ram twice and quietly halve every creature crash.
+	pool = beast.shared_health
+	beast.damage_cell(Vector2i(0, 0), 400.0, false, [], true)
+	var crush_shell := pool - beast.shared_health
+	pool = beast.shared_health
+	beast.damage_cell(Vector2i(1, 0), 400.0, false, [], true)
+	var crush_meat := pool - beast.shared_health
+	_check_approx(crush_shell, 400.0, 0.001,
+		"a CRUSH on shell bills in full — it was armoured upstream (%.0f)" % crush_shell)
+	_check_approx(crush_meat, 400.0, 0.001,
+		"and a crush on meat is unchanged too (%.0f)" % crush_meat)
+
+	# THE LEVER, and the break-the-fix: at 1 the armour is gone and a shell
+	# shot drains exactly as it did before this existed.
+	Tunables.set_value("creature_shell_resist", 1.0)
+	pool = beast.shared_health
+	beast.net_damage_cell(Vector2i(0, 0), 400.0)
+	_check_approx(pool - beast.shared_health, 400.0, 0.001,
+		"at resist 1 a shell shot drains 1:1 again — the old behaviour, on a lever")
+	Tunables.reset_all()
+
+	# A VESSEL IS NOT A CREATURE. Gasbags carry collision_resist 10 and would go
+	# bullet-resistant if combat ever read that column; nothing here touches
+	# them, because a vessel has no shared pool and never enters the branch.
+	var boat := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.GASBAG,
+		Vector2i(1, 0): BlockDB.Type.HULL,
+	})
+	boat.position = Vector2(0.0, -58000.0)
+	await _step(1)
+	var bag_hp: float = boat.blocks[Vector2i(0, 0)]["hp"]
+	boat.net_damage_cell(Vector2i(0, 0), 10.0)
+	_check_approx(bag_hp - float(boat.blocks[Vector2i(0, 0)]["hp"]), 10.0, 0.001,
+		"a shot into a vessel's gasbag costs it exactly what it always did")
+	# ...and a SHELL-plated vessel (there is nothing stopping the owner building
+	# one) is not armoured either: the tax belongs to living bodies.
+	var plated := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.SHELL,
+		Vector2i(1, 0): BlockDB.Type.HULL,
+	})
+	plated.position = Vector2(0.0, -64000.0)
+	await _step(1)
+	var plate_hp: float = plated.blocks[Vector2i(0, 0)]["hp"]
+	plated.net_damage_cell(Vector2i(0, 0), 40.0)
+	_check_approx(plate_hp - float(plated.blocks[Vector2i(0, 0)]["hp"]), 40.0, 0.001,
+		"...and shell PLATING on a vessel is plain plating (creatures only)")
+
+	beast.queue_free()
+	boat.queue_free()
+	plated.queue_free()
 	await _step(2)
 
 

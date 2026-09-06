@@ -174,6 +174,18 @@ const _REGISTRY := [
 	{"id": "kraken_grab_reach", "label": "Kraken grab reach", "group": "Combat",
 		"kind": KIND_FLOAT, "default": 70.0, "min": 0.0, "max": 600.0, "step": 5.0,
 		"tip": "How far a kraken's mouth-grab reaches, in px at scale 1. 0 disarms the grab."},   # KrakenAI.GRAB_REACH
+	{"id": "kraken_lead_seconds", "label": "Kraken lead time", "group": "Combat",
+		"kind": KIND_FLOAT, "default": 1.6, "min": 0.0, "max": 6.0, "step": 0.1,
+		"tip": "Seconds of your own velocity a kraken aims AHEAD of you. 0 aims where you are, which against a diving hull is where you were."},   # KrakenAI.LEAD_SECONDS
+	{"id": "kraken_push_vertical", "label": "Kraken heave vertical", "group": "Combat",
+		"kind": KIND_FLOAT, "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
+		"tip": "The smallest HORIZONTAL share of a kraken's heave, leaving the rest to go vertical. 1.0 restores the old sideways-only ram exactly; 0.5 lets the shove be thrown down at a diving hull."},   # KrakenAI.PUSH_VERTICAL
+	{"id": "kraken_coil_seconds", "label": "Kraken coil time", "group": "Combat",
+		"kind": KIND_FLOAT, "default": 0.7, "min": 0.0, "max": 3.0, "step": 0.05,
+		"tip": "Seconds a kraken rears away before it heaves — the tell, and your window to move. 0 removes the windup and it strikes with no warning."},   # KrakenAI.COIL_SECONDS
+	{"id": "creature_shell_resist", "label": "Creature shell resist", "group": "Combat",
+		"kind": KIND_FLOAT, "default": 4.0, "min": 1.0, "max": 12.0, "step": 0.5,
+		"tip": "How many times better a creature's SHELL survives a SHOT than its bare meat. 1 makes armour and throat identical again. Never touches vessels, and never a collision."},   # Ship.damage_cell, the living branch
 	{"id": "impact_damage_threshold", "label": "Impact damage floor", "group": "Combat",
 		"kind": KIND_FLOAT, "default": 20000.0, "min": 0.0, "max": 100000.0, "step": 1000.0,
 		"tip": "Collision energy a ship absorbs for free. Below it a crash costs nothing at all."},   # Ship.IMPACT_DAMAGE_THRESHOLD

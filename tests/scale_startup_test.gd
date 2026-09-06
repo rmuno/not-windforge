@@ -242,7 +242,116 @@ func _initialize() -> void:
 	await process_frame
 	await _check_dive_scene_boots()
 
+	# ...and then, with no world left in the tree at all, the one measurement
+	# that needs an empty sky: can a kraken catch a hull that is falling?
+	await _check_the_heave_catches_a_diving_hull()
+
 	_finish()
+
+
+## CAN A KRAKEN CATCH YOU? (v0.147.0, DESIGN_KRAKEN §1.5 / jam #3 designer C's
+## arithmetic.) The owner's complaint was that krakens are easy to avoid, and
+## the reason is pure geometry at 8×: the inherited heave is HORIZONTAL-only
+## while the Dive's whole verb is DOWN, so one 4-second attack is thrown at a
+## line a hull falling at the rate stick's 1,920 px/s left in the first half
+## second — C's cycle nets the hull +7,222 px, every cycle, forever.
+##
+## HERE and not in the 1× suite for the standing reason (CODEMAP §2): every
+## number in it — the dive rate, the align band, the grab reach, the heave's
+## peak — is a screen-scale distance, and at scale 1 the whole disagreement is
+## eight times smaller than the constants that make it.
+##
+## Run twice against the same start: once with the shipped levers, and once with
+## `kraken_push_vertical` 1.0 / `kraken_lead_seconds` 0 / `kraken_coil_seconds` 0,
+## which is exactly the brain that shipped before this slice. The second number
+## is the bug, measured; the first is the fix, measured; and the pair IS the
+## break-the-fix, because three levers put the old behaviour back.
+func _check_the_heave_catches_a_diving_hull() -> void:
+	print("\n=== the heave finds a diving hull (8x) ===\n")
+	# A sky, so the lead point's lava clamp is live, and an arena far from
+	# anything either boot above left behind.
+	var kept_bounds := Airspace.bounds
+	Airspace.bounds = Rect2(Vector2(-400000.0, -600000.0),
+		Vector2(800000.0, 600000.0))
+	var dive_rate: float = Tunables.get_num("dive_dive_rate") * 8.0
+	var now := await _time_to_contact(dive_rate)
+	Tunables.set_value("kraken_push_vertical", 1.0)
+	Tunables.set_value("kraken_lead_seconds", 0.0)
+	Tunables.set_value("kraken_coil_seconds", 0.0)
+	var before := await _time_to_contact(dive_rate)
+	Tunables.reset_all()
+	Airspace.bounds = kept_bounds
+	print("    TIME TO CONTACT: shipped %s | the old horizontal-only ram %s (cap %.0f s)"
+		% [("%.1f s" % now) if now > 0.0 else "never",
+			("%.1f s" % before) if before > 0.0 else "never", CATCH_SECONDS])
+	# A BOUND, not the measurement: a number pinned tight would redden on every
+	# tuning pass, and a number not pinned at all is not a test. Measured at
+	# 3.9 s the day this was written, against C's target of under 25 s in a real
+	# descent; CATCH_BOUND leaves three times that headroom and would still
+	# catch the heave going flat again.
+	_ok(now > 0.0 and now <= CATCH_BOUND,
+		"a kraken above a hull diving at the stick's %.0f px/s reaches it inside %.0f s (%s)"
+			% [dive_rate, CATCH_BOUND, ("%.1f s" % now) if now > 0.0 else "NEVER"])
+	_ok(before <= 0.0 or before > now * 1.5,
+		"...where the horizontal-only ram it replaced could not (%s)"
+			% [("%.1f s" % before) if before > 0.0
+				else "never, in %.0f s" % CATCH_SECONDS])
+
+
+## How long the hunt is given before it is called a miss, and how far above and
+## across the kraken starts — inside a max-zoom frame (~16,432 px half-diagonal),
+## so this is a hunter you can WATCH fail to reach you, not one out of range.
+const CATCH_SECONDS := 25.0
+const CATCH_BOUND := 12.0
+const CATCH_START := Vector2(4000.0, -6000.0)
+
+
+## Seconds until a kraken started at CATCH_START has hold of the hull or is
+## standing on it; -1 if it never does inside CATCH_SECONDS. The hull's velocity
+## is written every frame because that IS the rate stick (`Ship.rate_control`
+## drives toward a RATE, not a force) — and it stops mattering the instant the
+## measurement ends, which is the first frame of contact.
+func _time_to_contact(dive_rate: float) -> float:
+	var hull := _arena_ship(ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/starter.ship"), 8))
+	hull.faction = 0
+	hull.position = Vector2(0.0, -300000.0)
+	var kraken := _arena_ship(ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/kraken_c.ship"), 8))
+	kraken.faction = 2
+	kraken.creature_kind = "kraken"
+	kraken.shared_health_max = 1200.0 * 8.0
+	kraken.shared_health = kraken.shared_health_max
+	kraken.position = hull.position + CATCH_START
+	await process_frame
+	var ai := KrakenAI.new()
+	ai.whale = kraken
+	ai.home = kraken.global_position
+	var t := -1.0
+	for i in int(CATCH_SECONDS * 60.0):
+		hull.linear_velocity = Vector2(0.0, dive_rate)
+		ai.tick(1.0 / 60.0, hull)
+		await physics_frame
+		if ai.grabbing or hull.get_colliding_bodies().has(kraken):
+			t = float(i) / 60.0
+			break
+	hull.queue_free()
+	kraken.queue_free()
+	await process_frame
+	return t
+
+
+## A ship in the empty arena: 8× granularity, real gravity, nothing else.
+func _arena_ship(cells: Dictionary) -> Ship:
+	var s := Ship.new()
+	for cell in cells:
+		var type: int = cells[cell]
+		s.blocks[cell] = {"type": type, "hp": BlockDB.max_hp(type)}
+	root.add_child(s)
+	s.scale_unit = 8.0
+	s.gravity_scale = 8.0
+	s.rebuild()
+	return s
 
 
 ## "AS IF THEY WERE USING A SHIP'S MAX ZOOM" (the standing owner rule since

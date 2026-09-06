@@ -51,6 +51,33 @@ const GRAB_REACH := 70.0
 ## one frame; anger seconds are irrelevant since it is re-stamped continuously.
 const HUNT_RESTAMP_MS := 500.0
 
+## --- THE HEAVE FINDS YOU (v0.147.0, DESIGN_KRAKEN §1.3–§1.5) ---------------
+## The owner's complaint was that krakens are easy to avoid, and the reason was
+## one vector: `WhaleAI` latches a purely HORIZONTAL shove, while the Dive's
+## whole verb is DOWN. Four seconds of attack against a hull falling 1,920 px/s
+## is a punch thrown at a line you left in the first half-second — designer C's
+## arithmetic nets the hull +7,222 px every cycle, forever.
+##
+## Three kraken-only overrides fix it, and each is an F2 lever whose documented
+## default is the constant beside it (the parity checks compare the two):
+##
+##   * LEAD, don't align. Aim where the prey WILL be — `kraken_lead_seconds`
+##     ahead on its own velocity — so neither the align nor the latch chases an
+##     altitude you have already left.
+##   * THE SHOVE GETS A VERTICAL SHARE. `_push_dir` is the vector to that lead
+##     point with its HORIZONTAL share floored at `kraken_push_vertical`; 1.0 is
+##     today's broadside byte for byte, 0.5 lets ~0.87 of the heave be vertical.
+##   * IT COILS FIRST. `kraken_coil_seconds` of rearing AWAY, pose held away —
+##     the telegraph the charter demands, and the window in which the helm's
+##     lateral authority beats a shove that is already committed.
+const LEAD_SECONDS := 1.6
+const PUSH_VERTICAL := 0.5
+const COIL_SECONDS := 0.7
+## The rear-back, as a fraction of the ram's own heave. Small: this is a tell
+## made of motion, not a second attack — and it must not out-travel the shove
+## it precedes (it is applied for 0.7 s against PUSH's 1.0).
+const COIL_RECOIL := 0.25
+
 ## The mouth point in AUTHORED body-local px (centroid of the exterior-exposed
 ## meat — the soft opening). Computed once from the body; Vector2.INF = not yet.
 var _mouth_local := Vector2.INF
@@ -109,6 +136,132 @@ func tick(delta: float, target: Node2D) -> void:
 	if prey_ship != null and is_instance_valid(prey_ship) and not prey_ship.is_carcass():
 		_mouth_grab(delta, prey_ship)
 	_mouth_grab_player(delta)
+
+
+## --- The four attack hooks (WhaleAI's, re-decided) -------------------------
+## All four are guarded by `not tamed and not ridden`: a tamed kraken you ride
+## keeps the base creature's manners, and the whale's broadside ruling
+## (`whale_ai.gd` header) is untouched because a whale never calls any of this.
+
+## LEAD, DON'T ALIGN: where the prey will be `kraken_lead_seconds` from now.
+func _aim_point(prey: Node2D) -> Vector2:
+	if tamed or ridden:
+		return super._aim_point(prey)
+	return lead_point(prey.global_position, prey_velocity(prey),
+		Tunables.get_num("kraken_lead_seconds"))
+
+
+## THE HEAVE GETS A VERTICAL SHARE: the vector to the lead point, horizontal
+## share floored (see `floor_horizontal`).
+func _latch_push_dir(to: Vector2, prey: Node2D) -> Vector2:
+	if tamed or ridden:
+		return super._latch_push_dir(to, prey)
+	return floor_horizontal(to, Tunables.get_num("kraken_push_vertical"))
+
+
+## IT COILS FIRST — unless the lever turns the windup off entirely, in which
+## case the attack opens straight into the heave as it always did.
+func _attack_entry_phase() -> Phase:
+	if tamed or ridden or Tunables.get_num("kraken_coil_seconds") <= 0.0:
+		return super._attack_entry_phase()
+	return Phase.COIL
+
+
+func _coil_seconds() -> float:
+	return Tunables.get_num("kraken_coil_seconds")
+
+
+func _coil_accel() -> Vector2:
+	return -_push_dir * Tunables.get_num("whale_push_accel") * COIL_RECOIL \
+		* whale.scale_unit
+
+
+## THE POSE IS LATCHED to the attack, not read off the velocity.
+##
+## `WhaleAI` pitches the body by `linear_velocity.y` alone, so the most violent
+## thing a kraken does — a horizontal ram — is the moment its pose is most
+## NEUTRAL, and a heave thrown downward reads flat until the speed has already
+## arrived (designer C, on `whale_ai.gd`'s pose line). Latching the tilt to
+## `_push_dir` across COIL→PUSH→GLIDE fixes both: it rears AWAY during the
+## windup and holds the attack's own angle for the whole shove and coast, which
+## is what makes the glide window readable — the throat faces backward from the
+## tip and cannot turn. Fixed for the KRAKEN path only: the whale's suite pins
+## the velocity pose ("facing right, a dive pitches the nose down"), and its
+## flat broadside is an owner ruling, not a bug.
+##
+## Between attacks (`Phase.NONE`) it falls back to the inherited velocity pose,
+## so a roaming or aligning kraken still pitches into its own motion.
+func _pose_tilt_target() -> float:
+	if _phase == Phase.NONE or _push_dir == Vector2.ZERO:
+		return super._pose_tilt_target()
+	var d := -_push_dir if _phase == Phase.COIL else _push_dir
+	# atan2 against the horizontal MAGNITUDE, times the facing: the body is
+	# reflected about x when it swims left (v0.14.0), so the same downward
+	# heave needs the opposite rotation sign to read as nose-into-motion —
+	# the identical transform the inherited velocity pose applies.
+	return clampf(atan2(d.y, absf(d.x)), -Ship.POSE_MAX, Ship.POSE_MAX) \
+		* float(whale.visual_facing)
+
+
+## --- The heave's arithmetic, pure ------------------------------------------
+## Static and total so the suite can assert the vectors directly, with no body,
+## no world and no physics — the numbers this whole slice is made of.
+
+## Where the prey WILL be. Clamped above the floor by `clamp_above_floor`, so
+## "lead your prey" can never mean "aim into the lava".
+static func lead_point(at: Vector2, vel: Vector2, seconds: float) -> Vector2:
+	return clamp_above_floor(at + vel * maxf(seconds, 0.0))
+
+
+## A prey's velocity, whatever KIND of body it is: a Ship (and any RigidBody2D)
+## carries `linear_velocity`, the on-foot player a `velocity`, and a bare Node2D
+## neither. Zero for anything that cannot answer — an unmoving prey leads to
+## itself, which is exactly today's aim.
+static func prey_velocity(prey: Node2D) -> Vector2:
+	if prey == null or not is_instance_valid(prey):
+		return Vector2.ZERO
+	var v: Variant = prey.get("linear_velocity")
+	if not (v is Vector2):
+		v = prey.get("velocity")
+	if v is Vector2:
+		return v as Vector2
+	return Vector2.ZERO
+
+
+## THE FLOOR THE AIM CANNOT CROSS (designer C's R2). A kraken that aims downward
+## drives ITSELF downward, and while SHELL survives rock, nothing survives the
+## lava core (`world._update_lava_core` consumes creatures). The lead point is
+## therefore held above the same altitude a dormant migration refuses to cross,
+## `Dormancy.MIGRATE_FLOOR_FRAC` 0.10 — itself comfortably above the lava band's
+## own top (`Airspace.LAVA_TOP` 0.05). With no sky at all (the Sprint-1 arena, a
+## unit test) there is no floor to clamp to and the point passes through.
+static func clamp_above_floor(at: Vector2) -> Vector2:
+	if not Airspace.active():
+		return at
+	var b := Airspace.bounds
+	return Vector2(at.x,
+		minf(at.y, b.end.y - Dormancy.MIGRATE_FLOOR_FRAC * b.size.y))
+
+
+## THE LATCHED DIRECTION: `raw` normalized, with its HORIZONTAL share floored at
+## `h_floor`. At 1.0 the answer is the purely horizontal broadside `WhaleAI`
+## latches today, sign for sign — that is the lever's regression contract. Below
+## it the remainder goes vertical (0.5 horizontal → 0.866 vertical), so the
+## shove can finally be thrown down at a diving hull, or up at a climbing one.
+static func floor_horizontal(raw: Vector2, h_floor: float) -> Vector2:
+	var sx := signf(raw.x)
+	if sx == 0.0:
+		sx = 1.0   # dead astern: the base class's own fallback
+	var h := clampf(h_floor, 0.0, 1.0)
+	var d := raw.normalized()
+	if d == Vector2.ZERO:
+		return Vector2(sx, 0.0)   # standing on us: shove sideways, as today
+	if absf(d.x) >= h:
+		return d
+	var sy := signf(d.y)
+	if sy == 0.0:
+		sy = 1.0
+	return Vector2(sx * h, sy * sqrt(maxf(1.0 - h * h, 0.0)))
 
 
 ## A living creature (pool not yet empty). A carcass has drained its pool; the
