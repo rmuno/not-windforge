@@ -140,6 +140,8 @@ func _initialize() -> void:
 	await _test_kraken_heave_finds_you()
 	await _test_kraken_coils_before_it_heaves()
 	await _test_creature_shell_is_armour_against_shots()
+	await _test_kraken_mouths_are_clusters()
+	await _test_kraken_root_dies_and_stops_grabbing()
 	await _test_single_player_is_not_online()
 	await _test_remote_ships_are_eased_not_snapped()
 	await _test_serialization_roundtrip()
@@ -6476,7 +6478,7 @@ func _test_kraken_ai_grabs_hovers_and_rams() -> void:
 	for cell in far.blocks:
 		far_hp0 += far.blocks[cell]["hp"]
 	for i in 10:
-		ai._mouth_grab(1.0 / 60.0, far)
+		ai._mouth_grab(1.0 / 60.0, far, ai.site_worlds(), {})
 		await physics_frame
 	var far_hp1 := 0.0
 	for cell in far.blocks:
@@ -7113,6 +7115,156 @@ func _test_creature_shell_is_armour_against_shots() -> void:
 	beast.queue_free()
 	boat.queue_free()
 	plated.queue_free()
+	await _step(2)
+
+
+## MOUTHS ARE CLUSTERS (v0.148.0, DESIGN_KRAKEN §1.2 slice 4; jam #3 B-T3 = C-M6).
+## The anatomy read straight off the shipped `.ship` files, with no bodies, no
+## physics and no world: `KrakenAI.meat_clusters` / `throat_index` are static and
+## total precisely so this can be a spreadsheet check rather than a simulation.
+##
+## Two things are pinned here that a later tuning pass could quietly undo:
+##
+##   * THE COUNTS. The Leviathan's authored crown is SIX arms and its gullet ONE
+##     throat. It is 8-connected clustering that says so — 4-connected shatters
+##     the throat's diagonal staircase into five fragments (measured), four of
+##     which would then be arms grabbing from INSIDE the boss's own maw, which
+##     is the shelter both judges ruled to keep.
+##   * THE SELECTION RULE. "Largest wins" is exactly what judge 2 refused: the
+##     throat is 11 cells against arms of 12, so the check below asserts both
+##     that the throat is chosen AND that it is the smaller of the two — the
+##     naive rule fails this test by construction.
+func _test_kraken_mouths_are_clusters() -> void:
+	_t("the throat is a cluster and every other cluster is a root — six arms on the Leviathan")
+	_check_approx(Tunables.get_num("kraken_root_hp_per_cell"), KrakenAI.ROOT_HP_PER_CELL,
+		0.001, "kraken_root_hp_per_cell default = KrakenAI.ROOT_HP_PER_CELL")
+	_check_approx(Tunables.get_num("kraken_hoard_mult"), 2.0, 0.001,
+		"kraken_hoard_mult ships at the design's 2x")
+
+	# EVERY shipped kraken plan, by name: the count the file's own drawing says.
+	# The common krakens draw their tentacles continuous with the head, so they
+	# are ONE opening and behave exactly as they did before this slice; only the
+	# boss's authored crown is separate flesh.
+	var expect := {
+		"res://ships/kraken_b.ship": 0,
+		"res://ships/kraken_c.ship": 0,
+		"res://ships/kraken_urchin.ship": 0,
+		"res://ships/kraken_angler.ship": 0,
+		"res://ships/kraken_nautilus.ship": 0,
+		"res://ships/kraken_leviathan.ship": 6,
+	}
+	for path in expect:
+		var body := _make_ship(ShipLayout.load_cells(path))
+		body.position = Vector2(-96000.0, -12000.0)
+		var clusters := KrakenAI.meat_clusters(body.blocks, body.exterior_air())
+		var ti := KrakenAI.throat_index(clusters, body.blocks)
+		var roots: int = clusters.size() - 1
+		_check(ti >= 0 and roots == int(expect[path]),
+			"%s: 1 throat + %d roots (got %d + %d)"
+				% [path.get_file(), int(expect[path]), 1 if ti >= 0 else 0, roots])
+		if path.ends_with("kraken_leviathan.ship"):
+			var throat: Array = clusters[ti]
+			var biggest: int = 0
+			for c in clusters:
+				biggest = maxi(biggest, (c as Array).size())
+			_check(throat.size() == 11 and biggest == 12,
+				"...the boss's throat is the AUTHORED 11 cells beside 12-cell arms (%d vs %d)"
+					% [throat.size(), biggest])
+			_check(throat.size() < biggest,
+				"...so 'largest cluster wins' would have picked an ARM — the rule is 'nearest the body'")
+			var centre := KrakenAI.cluster_centroid(throat)
+			_check(absf(centre.y) < 0.001 and centre.x > -9.0 and centre.x < -5.0,
+				"...and the throat it picked is the one on the axis, in the maw (%.2f, %.2f)"
+					% [centre.x, centre.y])
+			for i in clusters.size():
+				if i == ti:
+					continue
+				_check((clusters[i] as Array).size() == 12,
+					"...arm %d is one authored 12-cell strand (%d)"
+						% [i, (clusters[i] as Array).size()])
+		body.queue_free()
+	await _step(2)
+
+
+## A ROOT DIES WHEN ITS MEAT IS GONE — the whole reason a root needs a pool of
+## its own. A living creature is ONE unit (`Ship.damage_cell`'s living branch
+## drains the shared pool and returns BEFORE removing anything), so nothing in
+## the game could ever take an arm off. `KrakenAI.absorb_hit` gives each root a
+## second, small bill fed by the hits that land on ITS cells; at zero the cells
+## come off and that site stops grabbing.
+##
+## And the invariant the header calls decision 3: the BITE does not move. The
+## derived mouth is pinned on the first ask, so six arms can fall off and the
+## throat still bites where D measured it.
+func _test_kraken_root_dies_and_stops_grabbing() -> void:
+	_t("an arm has its own pool; shoot it off and it stops grabbing, and the bite never moves")
+	var boss := _make_ship(ShipLayout.load_cells("res://ships/kraken_leviathan.ship"))
+	boss.position = Vector2(-120000.0, -12000.0)
+	boss.creature_kind = "kraken_leviathan"
+	boss.faction = 2
+	boss.shared_health_max = 3600.0
+	boss.shared_health = 3600.0
+	boss.rebuild()
+	await _step(1)
+	var ai := KrakenAI.new()
+	ai.whale = boss
+	ai.home = boss.global_position
+
+	_check(ai.root_count() == 6, "the boss carries six roots (%d)" % ai.root_count())
+	_check(ai.site_locals().size() == 7,
+		"...so it has SEVEN grab sites: the throat plus one per arm (%d)"
+			% ai.site_locals().size())
+	# THE POOL: 200 hp per AUTHORED cell, so a 12-cell arm is 2,400 — about 60 s
+	# of the bare starter's 40 hp/s on meat.
+	_check_approx(ai.root_hp_max(0), KrakenAI.ROOT_HP_PER_CELL * 12.0, 0.01,
+		"a 12-cell arm's own pool is 200 x 12 (%.0f)" % ai.root_hp_max(0))
+
+	var mouth_before: Vector2 = ai.site_locals()[0]
+	var arm: Array[Vector2i] = ai.root_cells(0)
+	var arm_site: Vector2 = ai.site_locals()[1]
+	var blocks_before: int = boss.blocks.size()
+	var pool_before: float = boss.shared_health
+
+	# Shoot the arm through the REAL path: `net_damage_cell` is what a shell
+	# calls, `damage_cell` drains the shared pool and emits `damaged`, and the
+	# world's one brain-wiring site routes that to `absorb_hit`. Here the routing
+	# is done by hand — this suite builds brains directly, with no world.
+	var shots := 0
+	while ai.root_hp(0) > 0.0 and shots < 400:
+		shots += 1
+		var hp_was: float = boss.shared_health
+		boss.net_damage_cell(arm[shots % arm.size()], 20.0)
+		ai.absorb_hit(arm[shots % arm.size()], hp_was - boss.shared_health)
+	_check(ai.root_hp(0) <= 0.0 and shots < 400,
+		"the arm's pool empties under fire (%d shots of 20)" % shots)
+	_check_approx(pool_before - boss.shared_health, KrakenAI.ROOT_HP_PER_CELL * 12.0,
+		1.0, "...and every one of those hits drained the SHARED pool too, 1:1 on meat")
+	_check(boss.blocks.size() == blocks_before,
+		"...but not one block has moved yet — a living creature is still one unit")
+
+	# The reap happens at the top of a tick, never re-entrantly inside the damage
+	# walk that emptied the pool.
+	ai.tick(1.0 / 60.0, null)
+	_check(ai.root_count() == 5,
+		"one tick later the arm is gone and five roots remain (%d)" % ai.root_count())
+	_check(boss.blocks.size() == blocks_before - arm.size(),
+		"...its %d cells are off the body (%d -> %d)"
+			% [arm.size(), blocks_before, boss.blocks.size()])
+	var still := false
+	for c in arm:
+		still = still or boss.blocks.has(c)
+	_check(not still, "...every one of them, by name")
+	_check(boss._connected_islands().size() == 1,
+		"...and losing an arm did not sever the body into pieces (%d island)"
+			% boss._connected_islands().size())
+	var sites_now := ai.site_locals()
+	_check_approx((sites_now[0] - mouth_before).length(), 0.0, 0.001,
+		"THE BITE DID NOT MOVE — the derived mouth is pinned, not recomputed")
+	_check(sites_now.size() == 6 and not sites_now.has(arm_site),
+		"...and the dead arm is off the grab-site list (%d sites left)" % sites_now.size())
+
+	boss.queue_free()
+	ai.whale = null
 	await _step(2)
 
 

@@ -245,6 +245,7 @@ func _initialize() -> void:
 	# ...and then, with no world left in the tree at all, the one measurement
 	# that needs an empty sky: can a kraken catch a hull that is falling?
 	await _check_the_heave_catches_a_diving_hull()
+	await _check_the_crown_grabs_and_the_maw_shelters()
 
 	_finish()
 
@@ -296,6 +297,90 @@ func _check_the_heave_catches_a_diving_hull() -> void:
 		"...where the horizontal-only ram it replaced could not (%s)"
 			% [("%.1f s" % before) if before > 0.0
 				else "never, in %.0f s" % CATCH_SECONDS])
+
+
+## MOUTHS ARE CLUSTERS, AT 8× (DESIGN_KRAKEN §1.2 / §5.4, v0.148.0).
+##
+## The 1× suite pins the anatomy off the `.ship` files (`meat_clusters`,
+## `throat_index`, an arm's own pool). What only 8× can answer is the GEOMETRY
+## the fight is made of, because every distance in it is a screen-scale one:
+## `kraken_grab_reach` 70 × 8 = 560 px against a 6,656-px body.
+##
+## Two claims, and they are the two halves of D's fight:
+##   * THE CROWN GRABS. A hull that touches an ARM's reach and nothing else is
+##     grabbed. Before this slice the boss had exactly one bite bubble and six
+##     decorative arms.
+##   * THE MAW SHELTERS. A hull parked in the jaws is inside the boss and out of
+##     every site's reach — the accident both judges ruled to KEEP, and the
+##     reason the throat's site is still the pinned derived centroid rather than
+##     the throat cluster's own middle (see `KrakenAI`'s header, decision 3).
+func _check_the_crown_grabs_and_the_maw_shelters() -> void:
+	print("\n=== the crown grabs, the maw shelters (8x) ===\n")
+	var boss := _arena_ship(ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/kraken_leviathan.ship"), 8))
+	boss.faction = 2
+	boss.creature_kind = "kraken_leviathan"
+	boss.shared_health_max = 3600.0
+	boss.shared_health = boss.shared_health_max
+	boss.position = Vector2(0.0, -420000.0)
+	await process_frame
+	var ai := KrakenAI.new()
+	ai.whale = boss
+	ai.home = boss.global_position
+	var sites := ai.site_worlds()
+	var reach := Tunables.get_num("kraken_grab_reach") * 8.0
+	_ok(sites.size() == 7,
+		"the boss brings seven grab sites to the fight: a throat and six arms (%d)"
+			% sites.size())
+	if sites.size() < 7:
+		boss.queue_free()
+		return
+	# A HULL ON AN ARM, and nowhere near the throat's own bubble.
+	var arm: Vector2 = sites[1]
+	_ok(arm.distance_to(sites[0]) > reach,
+		"...and arm 1 reaches %.0f px from the throat's bite, well past its %.0f px"
+			% [arm.distance_to(sites[0]), reach])
+	var hull := _arena_ship({
+		Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HULL,
+		Vector2i(0, 1): BlockDB.Type.HULL, Vector2i(1, 1): BlockDB.Type.HULL,
+	})
+	hull.faction = 0
+	hull.gravity_scale = 0.0
+	hull.global_position = arm
+	await process_frame
+	var hp0 := 0.0
+	for cell in hull.blocks:
+		hp0 += float(hull.blocks[cell]["hp"])
+	ai.tick(1.0 / 60.0, hull)
+	var hp1 := 0.0
+	for cell in hull.blocks:
+		hp1 += float(hull.blocks[cell]["hp"])
+	_ok(ai.grabbing and ai.grab_sites_latched >= 1,
+		"a hull touching an ARM's reach and not the throat's IS grabbed (%d site(s))"
+			% ai.grab_sites_latched)
+	_ok(hp1 < hp0, "...and the arm chews it (%.0f -> %.0f hp)" % [hp0, hp1])
+
+	# THE MAW. The throat's flesh, where the jaws close — and 1,000+ px from the
+	# derived bite, which sits out among the crown.
+	var maw := boss.to_global(boss._mirror_point(
+		KrakenAI.cluster_centroid(ai.throat_cells()) * Ship.CELL))
+	hull.global_position = maw
+	await process_frame
+	var nearest := INF
+	for s in sites:
+		nearest = minf(nearest, maw.distance_to(s))
+	ai.grabbing = false
+	ai.tick(1.0 / 60.0, hull)
+	_ok(not ai.grabbing and ai.grab_sites_latched == 0,
+		"a hull parked IN THE MAW is out of every site's reach (nearest %.0f px, reach %.0f)"
+			% [nearest, reach])
+	print("    ~ the throat's flesh is %.0f px from the derived bite; the bite's bubble"
+		% maw.distance_to(sites[0]))
+	print("      stops short of the aperture, which is what makes the jaws a shelter")
+	hull.queue_free()
+	boss.queue_free()
+	ai.whale = null
+	await process_frame
 
 
 ## How long the hunt is given before it is called a miss, and how far above and
@@ -711,6 +796,9 @@ func _check_dive_scene_boots() -> void:
 	# advance the run out from under the garrison checks above (they measure a
 	# live world with nothing awaited between the set-up and the assertion).
 	await _check_dive_picket_holds_its_rung(w, pl, cx)
+	# THE DUNK, above the Leviathan on purpose: a picket spawn refuses a finished
+	# run, and the check below is the whole of §5.1's sharp knowledge.
+	await _check_the_dunk(w, pl, terrain)
 	# ...and LAST OF ALL, the floor: waking the Leviathan ENDS the run in
 	# triumph, so nothing can follow it.
 	await _check_the_leviathan(w, pl, run, cx, terrain)
@@ -719,6 +807,204 @@ func _check_dive_scene_boots() -> void:
 	await process_frame
 
 
+
+
+## THE DUNK (DESIGN_KRAKEN §5.1, measured by `tools/dunk_probe.gd`, v0.148.0).
+##
+## The design's headline piece of sharp knowledge is a claim about SHIPPED code:
+## a kraken is held up by muscle alone, your lift props blow down, so hovering
+## over one where there is no roof sinks it into the core. Nothing had ever run
+## it. The probe did, and the numbers are the reason this check is shaped the
+## way it is:
+##
+##   * THE JET IS SHORT AND IT IS SAMPLED AT THE PREY'S ORIGIN. 8 cells =
+##     1,024 px from the prop's centre (`Ship.WASH_RANGE_CELLS`), and
+##     `world._apply_prop_wash` asks `body.global_position` — half a body BELOW
+##     its own back. On the shipped starter that leaves ~440 px of clear air at
+##     0.32 g and ~240 px at 0.84 g. You hover almost ON it, or not at all.
+##   * SO THE DUNK IS A RIDE, NOT A SHOVE. The animal falls out of the jet in
+##     under a second, and getting it back means diving after it — during which
+##     the props blow the other way (`wash_accel_at` reads the stick's sign), so
+##     the jet is off. The measured descent is a stutter at ~1,200 px/s, which is
+##     under the hull's own 1,920 px/s dive rate. It is 3–6 s of committed
+##     hovering per ~5,000 px, exactly what §5.1 asked for, and it is nowhere
+##     near instant — so `wash_push_mult` was NOT turned down (see the report).
+##   * AND THE ROOF ANSWERS IT. Over the den's slab the jet never reaches the
+##     boss at all.
+##
+## The pilot here is a stick, not a teleport: the hull flies the same rate
+## controller the run stamps on every listed hull, and the only input is the
+## neutral/down toggle a chasing player makes. The bound is twice the measured
+## time — tight enough to catch the jet going flat, loose enough to survive a
+## tuning pass.
+const DUNK_DROP_PX := 6000.0     ## how much air the prey starts with over the core
+const DUNK_BOUND_SECONDS := 18.0 ## 2x the measured 8.2 s over that drop
+const DUNK_KEEP_OFF := 350.0     ## clear air the chase refuses to close (a crash is not a hover)
+
+
+func _check_the_dunk(w: Node, pl, terrain) -> void:
+	if pl == null or not is_instance_valid(pl) or terrain == null:
+		return
+	print("\n=== the dunk: a hunter under a hovering starter (8x) ===\n")
+	# STILL AIR AND A STILL ANIMAL. The ring's up/down draft lifts a hull AND a
+	# kraken (v0.141.0's one-vector doctrine — measured carrying both upward at
+	# ~3,600 px/s at the floor), and a hunting kraken heaves away. Both are real,
+	# and both are somebody else's measurement: this one is muscle-versus-jet.
+	Tunables.set_value("dive_zone_wind_mult", 0.0)
+	Tunables.set_value("whale_push_accel", 0.0)
+	Tunables.set_value("whale_align_accel", 0.0)
+	Tunables.set_value("kraken_wildness", 0.0)
+	var lava: float = LavaCore.surface_y_for(w.get("_world_rect") as Rect2,
+		float((w.get("_lava_core") as Node).get("top_frac")))
+	var at := await _open_air(w, terrain, pl, Vector2(
+		pl.global_position.x + 14000.0, lava - DUNK_DROP_PX))
+	# THE BODY IS OUT OF THIS. Twenty seconds of world run below, and the deep
+	# has no floor but the core — so the person is held far above and aside for
+	# the duration and put back afterwards. (The run ends in LOSS otherwise, and
+	# the Leviathan's own check, which follows, has nothing left to win.)
+	var body_was: Vector2 = pl.global_position
+	var body_safe := Vector2(at.x - 30000.0, lava - 60000.0)
+	_hold_body(pl, body_safe)
+	var beast: Ship = w.call("_dive_spawn_picket", "kraken", at)
+	_ok(beast != null and is_instance_valid(beast), "a hunter is at the floor over open lava")
+	if beast == null or not is_instance_valid(beast):
+		return _reset_dunk_levers()
+	for i in 60:
+		await w.get_tree().physics_frame
+		_hold_body(pl, body_safe)
+		if not is_instance_valid(beast):
+			break
+	if not is_instance_valid(beast):
+		_ok(false, "...and it survived long enough to be dunked")
+		return _reset_dunk_levers()
+	beast.linear_velocity = Vector2.ZERO
+	var drop: float = lava - (beast.global_position.y + beast.solid_bounds.end.y)
+	_ok(drop > 1000.0, "it holds the deep by MUSCLE, %.0f px of air under its keel" % drop)
+
+	# The hull: the shipped starter, flying the run's own rate controller (the
+	# world stamps that on everything in `_dive_surged`, so listing it is all
+	# this needs).
+	var hull: Ship = w.get("fleet").call("spawn_ship_from_cells",
+		ShipLayout.upscale_cells(ShipLayout.load_cells("res://ships/starter.ship"), 8),
+		beast.global_position + Vector2(0.0, -6000.0), 0, 0.0,
+		float(w.get("world_scale")), 0)
+	_ok(hull != null and is_instance_valid(hull), "a starter is above it")
+	if hull == null or not is_instance_valid(hull):
+		return _reset_dunk_levers()
+	(w.get("_dive_surged") as Array).append(hull.get_instance_id())
+	await w.get_tree().physics_frame
+	var prop := Vector2.ZERO
+	for p in (hull.get("_wash_props") as Array):
+		if bool((p as Dictionary)["vertical"]):
+			prop = (p as Dictionary)["center"] as Vector2
+			break
+	_ok(prop != Vector2.ZERO, "...with lift props to blow with")
+	# Park a prop 700 px down its own jet — 0.84 g at the prey's origin, and
+	# ~240 px of clear air. "Directly above it" means above a PROP: the wash is
+	# rejected outside a prop's own width band.
+	hull.global_position = Vector2(beast.global_position.x - prop.x,
+		beast.global_position.y - 700.0 - prop.y)
+	hull.linear_velocity = Vector2.ZERO
+	hull.thrust_input = Vector2.ZERO
+	await w.get_tree().physics_frame
+
+	var t := 0.0
+	var eaten := false
+	var jet_frames := 0
+	var chasing := 0.0
+	for i in int(DUNK_BOUND_SECONDS * 60.0):
+		if not is_instance_valid(beast) or not is_instance_valid(hull):
+			break
+		# THE STICK, and nothing else: neutral is the hover (which IS the
+		# downwash), DOWN is the chase. Written every frame because the run
+		# stamps the rest of the flight envelope every frame too.
+		var air: float = (beast.global_position.y + beast.solid_bounds.position.y) \
+			- (hull.global_position.y + hull.solid_bounds.end.y)
+		hull.thrust_input = Vector2(0.0, -1.0 if air > DUNK_KEEP_OFF else 0.0)
+		if air > DUNK_KEEP_OFF:
+			chasing += 1.0 / 60.0
+		if hull.wash_accel_at(beast.global_position) != Vector2.ZERO:
+			jet_frames += 1
+		await w.get_tree().physics_frame
+		_hold_body(pl, body_safe)
+		t += 1.0 / 60.0
+		if not is_instance_valid(beast):
+			eaten = true
+			break
+		if LavaCore.is_in_core(w.get("_world_rect") as Rect2,
+				float((w.get("_lava_core") as Node).get("top_frac")),
+				beast.global_position.y + beast.solid_bounds.end.y):
+			eaten = true
+			break
+	if is_instance_valid(hull):
+		hull.thrust_input = Vector2.ZERO
+	print("    ~ the dunk: %.1f s over %.0f px (%.0f px/s), %d frames of jet, %.1f s of chasing"
+		% [t, drop, drop / maxf(t, 0.001), jet_frames, chasing])
+	_ok(eaten and t <= DUNK_BOUND_SECONDS,
+		"a hunter under a hovering starter sinks into the core in %s (bound %.0f s)"
+			% [("%.1f s" % t) if eaten else "NEVER", DUNK_BOUND_SECONDS])
+	_ok(t >= 1.0,
+		"...and it is never instant — the design's committed hovering, not a button (%.1f s)" % t)
+	if is_instance_valid(beast):
+		beast.queue_free()
+	if is_instance_valid(hull):
+		(w.get("_dive_surged") as Array).erase(hull.get_instance_id())
+		hull.queue_free()
+	_reset_dunk_levers()
+	pl.global_position = body_was
+	pl.velocity = Vector2.ZERO
+	await w.get_tree().physics_frame
+
+
+## Every live scrap mote's value, summed.
+func _scrap_value(field) -> int:
+	var total := 0
+	if field == null:
+		return total
+	for m in (field.call("active") as Array):
+		total += int(m["value"])
+	return total
+
+
+## Keep the person out of the measurement (and out of the core).
+func _hold_body(pl, at: Vector2) -> void:
+	if pl != null and is_instance_valid(pl):
+		pl.global_position = at
+		pl.velocity = Vector2.ZERO
+
+
+func _reset_dunk_levers() -> void:
+	Tunables.reset("dive_zone_wind_mult")
+	Tunables.reset("whale_push_accel")
+	Tunables.reset("whale_align_accel")
+	Tunables.reset("kraken_wildness")
+
+
+## A point near `want` with a genuinely EMPTY column around it. The deep still
+## has islands in it, and a body teleported into one is fired out at 14,000 px/s
+## (measured — the probe reported that ejection as a dunk for one run). The
+## player is moved to each candidate first, because an ungenerated chunk answers
+## "not solid" to everything.
+func _open_air(w: Node, terrain, pl, want: Vector2) -> Vector2:
+	for step in 12:
+		var at := want + Vector2(float(step) * 9000.0, 0.0)
+		# Streamed by draining the streamer AT the candidate rather than by
+		# standing the player there: the deep has no ground, and a body parked
+		# over the core for the seconds this takes simply falls into it (which
+		# is how this check first reported the run as LOST).
+		await _drain_streaming(terrain, 9000.0, at, 9000.0)
+		var clear := true
+		for dx in [-3000.0, -1500.0, 0.0, 1500.0, 3000.0]:
+			for dy in [-8000.0, -6000.0, -4000.0, -2000.0, 0.0, 2000.0]:
+				if bool(terrain.call("is_solid",
+						terrain.call("world_to_cell", at + Vector2(dx, dy)))):
+					clear = false
+					break
+			if not clear:
+				break
+		if clear:
+			return at
+	return want
 
 
 ## THE FLOOR HAS A KRAKEN, AND KILLING IT WINS (DESIGN_KRAKEN §7 slice 1).
@@ -979,8 +1265,34 @@ func _check_the_leviathan(w: Node, pl, run, cx: float, terrain) -> void:
 		if int(boss.blocks[c]["type"]) == BlockDB.Type.MEAT:
 			meat_cell = c
 			break
+	# THE HOARD (DESIGN_KRAKEN §4, v0.148.0). A dead kraken's SEALED CAVITY —
+	# the loot pocket every plan is drawn with, latched at spawn — spills a
+	# SECOND scrap cloud worth `kraken_hoard_mult` × the kill's own, hanging at
+	# the cavity rather than at the body's origin. Measured off the field's own
+	# motes, because that is where the reward actually is.
+	var field = w.get("_dive_scrap")
+	var scrap_before := _scrap_value(field)
+	var cavity: Dictionary = boss.cavity_cells()
+	var hoard_at := Vector2.ZERO
+	for cell in cavity:
+		hoard_at += boss.local_pos_of(cell as Vector2i)
+	hoard_at = boss.to_global(boss._mirror_point(hoard_at / maxf(float(cavity.size()), 1.0)))
+	_ok(not cavity.is_empty(),
+		"the boss carries a sealed cavity to spill (%d cells)" % cavity.size())
 	boss.damage_cell(meat_cell, boss.shared_health_max + 1.0)
 	await w.get_tree().physics_frame
+	var base: int = DiveRun.scrap_for("kraken_leviathan", int(run.get("depth")), 900)
+	var want: int = base + int(round(float(base) * Tunables.get_num("kraken_hoard_mult")))
+	_ok(_scrap_value(field) - scrap_before == want,
+		"death drops the kill's scrap AND a %.1fx hoard (%d + %d = %d, got %d)"
+			% [Tunables.get_num("kraken_hoard_mult"), base, want - base, want,
+				_scrap_value(field) - scrap_before])
+	var near := INF
+	for m in (field.call("active") as Array):
+		near = minf(near, (m["pos"] as Vector2).distance_to(hoard_at))
+	_ok(near < ScrapField.SPREAD_PX * float(w.get("world_scale")) * 2.0,
+		"...and the second cloud hangs at the CAVITY, not at the body's origin (%.0f px off)"
+			% near)
 	_ok(String(run.get("outcome")) == "triumph",
 		"killing it ends the run in TRIUMPH (outcome '%s')" % String(run.get("outcome")))
 	_ok(int(run.get("banked")) > 0,
