@@ -781,6 +781,17 @@ func _check_the_leviathan(w: Node, pl, run, cx: float, terrain) -> void:
 	_ok(keel < lava_y,
 		"the den keeps it out of the core, with %.0f px of clear air under its keel"
 			% (lava_y - keel))
+	# THE BODY STANDS CLEAR. Since v0.147.0 the boss HUNTS — it leads your line
+	# and heaves with a vertical share — and a kraken's mouth chews an on-foot
+	# body at 120 hp/s (KrakenAI.prey_player). This check is PLUMBING (identity,
+	# the roof, the cull, the win), not the fight: the body watches from a rung
+	# up and far to one side, or the run is lost to a grab before step 5 asks
+	# whether killing the boss wins it. The fight itself is measured by
+	# `_check_the_heave_catches_a_diving_hull` and by `tools/dive_probe.gd`.
+	var stand_off := absf(float(w.call("dive_altitude_y", DiveRun.depth_altitude(2)))
+		- float(w.call("dive_altitude_y", DiveRun.depth_altitude(1))))
+	pl.global_position = Vector2(cx + 20000.0, floor_y - stand_off)
+	pl.velocity = Vector2.ZERO
 
 	# --- 2. THE COLLIDER AGAINST THE AUTHORED CROWN -------------------------
 	# The crown is 72 authored MEAT cells in the trailing twelve columns (4,608
@@ -957,8 +968,18 @@ func _check_the_leviathan(w: Node, pl, run, cx: float, terrain) -> void:
 	var wallet = pl.get("wallet")
 	var wallet_before: int = int(wallet.get("balance")) if wallet != null else 0
 	var pot_before: int = int(run.get("pot"))
-	var any_cell: Vector2i = boss.blocks.keys()[0]
-	boss.damage_cell(any_cell, boss.shared_health_max + 1.0)
+	_ok(String(run.get("outcome")) == "",
+		"the run is still live before the kill (outcome '%s')" % String(run.get("outcome")))
+	# ON THE THROAT. Since v0.147.0 a shot on SHELL drains the pool at a quarter
+	# (`creature_shell_resist`) — the design's whole point — so a kill has to land
+	# on MEAT, exactly as a player's must. The first meat cell in the grid will do:
+	# the pool is one number, and which meat cell takes the hit does not matter.
+	var meat_cell: Vector2i = boss.blocks.keys()[0]
+	for c in boss.blocks:
+		if int(boss.blocks[c]["type"]) == BlockDB.Type.MEAT:
+			meat_cell = c
+			break
+	boss.damage_cell(meat_cell, boss.shared_health_max + 1.0)
 	await w.get_tree().physics_frame
 	_ok(String(run.get("outcome")) == "triumph",
 		"killing it ends the run in TRIUMPH (outcome '%s')" % String(run.get("outcome")))
