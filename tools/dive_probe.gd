@@ -487,7 +487,11 @@ func _initialize() -> void:
 		% [kraken_damage, damage_taken,
 			100.0 * kraken_damage / maxf(damage_taken, 1.0),
 			krakens_perished, krakens_culled_alive])
-	print("HULL:   %.0f blocks -> %.0f (%.0f lost)" % [hp0, hp1, hp0 - hp1])
+	if hull1 == null or not is_instance_valid(hull1):
+		hp1 = float(maxi(_blocks_at_loss, 0))
+	print("HULL:   %.0f blocks -> %.0f (%.0f lost)%s" % [hp0, hp1, hp0 - hp1,
+		"" if hull1 != null and is_instance_valid(hull1)
+			else "   [as it stood when the run took it away — the grid was not ground down]"])
 	print("GEAR:   %s" % _gear(hull1))
 	print("\n--- the descent ---")
 	for l in log_lines:
@@ -566,6 +570,9 @@ var _last_blocks := -1
 ## struck cell but drains the pool by the structural hp taken across every cell
 ## of the struck COMPONENT — and at 8× an authored 1×1 component is 64 cells.
 var _last_integ := -1.0
+## The last honest readings, kept past the unbind so the table stays true.
+var _blocks_at_loss := -1
+var _integ_at_loss := -1.0
 var body_hits: Array[String] = []
 var hull_steps: Array[String] = []
 
@@ -648,6 +655,21 @@ func _fly(d: int) -> void:
 		Vector2.DOWN, reach, rid)
 	var right := _ray(hull.to_global(Vector2(cx + side_step, keel_y)),
 		Vector2.DOWN, reach, rid)
+	# ...and ONE RAY ALONG THE TRAVEL, which is `ShipAI._avoid`'s idiom and the
+	# case straight-down rays cannot see: a hull sliding out of a blocked column
+	# at 1,500 px/s while still sinking is moving DIAGONALLY, and the rock it
+	# meets is the slab's SHOULDER, not anything under the keel. Folding it into
+	# `clear` slows the descent and trips the sidestep at once.
+	var vel: Vector2 = hull.linear_velocity
+	if vel.length() > 60.0:
+		var lead := vel.length() * LOOKAHEAD * 0.6 + b.size.length() * 0.5
+		var ahead := _ray(hull.to_global(b.get_center()), vel.normalized(), lead, rid)
+		if ahead < lead:
+			clear = minf(clear, maxf(ahead - b.size.length() * 0.5, 0.0))
+	# THE CEILING IS ALSO ROCK. Pressing UP out of a blocked column into an
+	# overhang is the same crash upside down, and nothing looked up before.
+	var head := _ray(hull.to_global(Vector2(cx, b.position.y)), Vector2.UP,
+		pad * 2.0, rid)
 	if hull.linear_velocity.y > 0.0:
 		_worst_clear = minf(_worst_clear, clear)
 
@@ -680,7 +702,7 @@ func _fly(d: int) -> void:
 		dodge.y = 0.0
 	var want_v := clampf((clear - pad) / LOOKAHEAD, 0.0, sink_max)
 	var vy: float = hull.linear_velocity.y
-	var climb := clear <= pad or dodge.y > 0.0
+	var climb := (clear <= pad or dodge.y > 0.0) and head > pad
 	if dodge.y < 0.0:
 		want_v = 0.0
 	var sink := not climb and vy < want_v - 60.0
@@ -889,6 +911,15 @@ func _watch_the_body(t: float, d: int) -> void:
 				"-" if not alive else str(hull.get_instance_id()),
 				"-" if not alive else "%.0f" % hull.hull_integrity])
 	if blocks < 0:
+		if _measuring:
+			# WHAT THE HULL WAS WORTH WHEN WE LOST IT. Without this the per-rung
+			# table reads a gone hull as ZERO blocks and prints "4,464 blocks
+			# lost" for a hull that lost none — which is precisely the misreading
+			# that sent the first diagnosis of this bug after landing slabs for a
+			# week. `local_ship` UNBINDS when the pilot dies; the grid is still
+			# standing.
+			_blocks_at_loss = _last_blocks
+			_integ_at_loss = _last_integ
 		_measuring = false
 		_hull_gone += STEP
 	_last_blocks = blocks
@@ -901,8 +932,10 @@ func _snapshot(d: int, t: float, pickets: int) -> Dictionary:
 	var run = world.get("dive")
 	return {
 		"depth": d, "t": t, "pickets": pickets,
-		"blocks": 0 if hull == null or not is_instance_valid(hull) else hull.blocks.size(),
-		"integ": 0.0 if hull == null or not is_instance_valid(hull) else hull.hull_integrity,
+		"blocks": (maxi(_blocks_at_loss, 0) if hull == null or not is_instance_valid(hull)
+			else hull.blocks.size()),
+		"integ": (maxf(_integ_at_loss, 0.0) if hull == null or not is_instance_valid(hull)
+			else hull.hull_integrity),
 		"terrain": dmg_terrain, "shells": dmg_shells, "kraken": dmg_kraken,
 		"ram": dmg_ram,
 		"kills": 0 if run == null else int(run.get("kills")),
@@ -916,8 +949,6 @@ func _row(d: int, mark: Dictionary, secs: float, pickets: int) -> Dictionary:
 	return {
 		"depth": d, "secs": secs, "pickets": pickets,
 		"blocks": int(mark["blocks"]) - int(now["blocks"]),
-		# A destroyed hull reads integrity 0 through a null pointer, which would
-		# print as "lost the whole pool" on the rung it died on — which is true.
 		"integ": maxf(float(mark["integ"]) - float(now["integ"]), 0.0),
 		"terrain": float(now["terrain"]) - float(mark["terrain"]),
 		"shells": float(now["shells"]) - float(mark["shells"]),
