@@ -170,6 +170,10 @@ var _dive_loft: Ship = null
 ## (owner 2026-08-30: "every level having some landmass … guardrailed and semi
 ## forced progress"), cut lazily one rung ahead of you.
 var _dive_landings := {}
+## The DEN'S ROOF, in world px — the slab cut over the Leviathan when it wakes
+## (`_dive_cut_den_roof`). Empty until depth 8; kept so the suite can measure the
+## thing rather than re-derive it, and cleared with the run.
+var _dive_den_roof := Rect2()
 ## This run's shelf size, sized against the hulls (see _dive_shelf_span).
 var _dive_shelf := Vector2.ZERO
 ## The launch deck this run raised, and the blueprint it was raised from — the
@@ -337,7 +341,7 @@ func _spawn_try_ship(path: String) -> void:
 		# does not spawn inside the body looking at it.
 		at += Vector2(TRY_CREATURE_GAP * float(world_scale), 0.0)
 		match kind:
-			"kraken":
+			"kraken", "kraken_leviathan":
 				body = _spawn_one_kraken(path, at)
 			"basilisk":
 				body = _spawn_one_basilisk(at, path)
@@ -1059,7 +1063,9 @@ func _edge_marker_kind(ship: Ship) -> String:
 		# hanging over it is the only invitation it makes.
 		return ""
 	match ship.creature_kind:
-		"whale_city":
+		# The floor's resident wears the crown whichever body it is wearing: the
+		# city-whale stand-in an expedition still lairs, and the Leviathan itself.
+		"whale_city", "kraken_leviathan":
 			return "boss"
 		"whale":
 			return "whale"
@@ -1135,7 +1141,7 @@ func edge_marker_targets() -> Array:
 			# ambient clutter, and the floor's resident is the run's
 			# destination, like the next landing's marker before it.
 			var boss_in_run := dive != null and dive.outcome == "" \
-				and ship.creature_kind == "whale_city"
+				and _dive_is_the_boss(ship)
 			if d2 > range2 and not boss_in_run:
 				continue
 			var kind := _edge_marker_kind(ship)
@@ -1243,6 +1249,7 @@ func begin_dive() -> void:
 	_dive_materialized = 0
 	_dive_held_in_view = 0
 	_dive_landings.clear()
+	_dive_den_roof = Rect2()
 	_dive_chunks_cut = {}
 	_dive_shelf = Vector2.ZERO
 	_dive_deck_cells = {}
@@ -1327,6 +1334,7 @@ func end_dive() -> void:
 			post.queue_free()
 	_dive_outposts.clear()
 	_dive_landings.clear()
+	_dive_den_roof = Rect2()
 	_dive_chunks_cut = {}
 	_dive_shelf = Vector2.ZERO
 	# The unchosen candidate goes with the run — unless you took it, in which
@@ -2054,7 +2062,16 @@ func _dive_cull_the_wake(delta: float) -> void:
 		# exemption and the crown marker, not for the wake — culling the
 		# floor's resident because you climbed a couple of rungs would delete
 		# the run's whole destination.
-		if ship.creature_kind == "whale_city":
+		if _dive_is_the_boss(ship):
+			kept.append(id)
+			continue
+		# ...AND A HUNTER IS NEVER CULLED WHILE IT LIVES (DESIGN_KRAKEN §1.4,
+		# DESCENT §0 call 4: *"you either kill them and they don't return, or
+		# you don't kill them and they come after you"*). Distance ends a
+		# gunboat's chase; it does not talk a kraken out of the deep. A CARCASS
+		# is litter like any other — `is_carcass()` is a drained pool, so the
+		# living test is the pool itself.
+		if KRAKEN_KINDS.has(ship.creature_kind) and ship.shared_health > 0.0:
 			kept.append(id)
 			continue
 		if DiveRun.nearest_distance(ship.global_position, foci) < far:
@@ -3447,15 +3464,55 @@ func _dive_surge() -> void:
 		else "under sail"])
 
 
-## The floor's resident. Until the Leviathan encounter is built (BACKLOG), the
-## existing city-whale boss body stands in: it already lairs in every world and
-## already has a boss-tier pool, so the depth-8 beat is playable now and the
-## bespoke fight replaces this one call.
+## THE LEVIATHAN'S BODY (DESIGN_KRAKEN, jam #3 designer D). 52 × 25 authored
+## cells — a shell-cased spear whose only soft skin is an eleven-cell THROAT and
+## a crown of six bare-MEAT arms, so the derived mouth
+## (`KrakenAI._compute_mouth_local`) lands OUTSIDE the jaws, in the arms. Its
+## pool / bounty / taming tier ride the file's own headers (Q-T), which is why
+## nothing here names a number.
+const LEVIATHAN_PATH := "res://ships/kraken_leviathan.ship"
+
+## The two kraken `creature_kind`s: the hunter of depths 4–7 and the floor's
+## resident. Both route to `KrakenAI`, and neither is ever culled while it is
+## alive (DESIGN_KRAKEN §1.4). Only `kraken` is in `DiveRun.KIND_COIN` — the
+## Leviathan's worth rides its blueprint's own `bounty 900`, which overrides the
+## table for coins AND for scrap, so the kind never needs a row.
+const KRAKEN_KINDS := ["kraken", "kraken_leviathan"]
+
+
+## IS THIS BODY THE RUN'S DESTINATION? The one predicate, replacing the three
+## `creature_kind == "whale_city"` string tests a run used to make (the edge
+## marker's crown, the wake cull's exemption, and now the win). Getting the cull
+## one wrong frees the run's destination at a rung and a half, which is why this
+## is a function and not three literals.
+##
+## The Leviathan is the boss wherever it stands. The CITY-WHALE still counts in a
+## dive hosted by an EXPEDITION world (`begin_dive` from F2 or the boot chooser),
+## because that world lairs one and it was the depth-8 stand-in until this round;
+## the Dive's own scene has no city-whale to confuse it with.
+func _dive_is_the_boss(ship: Ship) -> bool:
+	if ship == null or not is_instance_valid(ship):
+		return false
+	if ship.creature_kind == "kraken_leviathan":
+		return true
+	return ship.creature_kind == "whale_city" and not dive_native
+
+
+## THE FLOOR HAS A KRAKEN (DESIGN_KRAKEN §7 slice 1). Depth 8's arrival wakes THE
+## LEVIATHAN itself now — the city-whale stand-in is retired from the run (an
+## expedition's own arcology is untouched, it just no longer gets spawned by one).
+##
+## It comes UP AT YOU: spawned at the player's own x, at the DEN — the ladder's
+## floor rung (`depth_altitude(DEPTHS)`, altitude fraction 0.10) — which is a good
+## way below where the run reads depth 8 (the rung boundary is ~0.154). The lava
+## surface is at 0.06, so the den keeps ~23,600 px of clear air beneath it: room
+## for the DUNK, which is the sharp kill (§5.1).
 func _dive_wake_leviathan() -> void:
 	if player == null or not is_instance_valid(player):
 		return
-	var boss := _spawn_boss_at(player.global_position
-		+ Vector2(3400.0 * float(world_scale), 0.0))
+	var den := Vector2(player.global_position.x,
+		dive_altitude_y(DiveRun.depth_altitude(DiveRun.DEPTHS)))
+	var boss := _spawn_one_kraken(LEVIATHAN_PATH, den)
 	# THE FLOOR'S RESIDENT JOINS THE RUN'S BOOKS (owner 2026-09-01: "I don't
 	# see the leviathan near the bottom level"): outside `_dive_surged` it was
 	# one dormancy scan from sleeping where it stood — the sleeping-hunters
@@ -3464,7 +3521,49 @@ func _dive_wake_leviathan() -> void:
 	# and hunting; the edge markers give it the crown at ANY range in a run.
 	if boss != null and is_instance_valid(boss):
 		_dive_surged.append(boss.get_instance_id())
+		_dive_cut_den_roof(boss)
 		_notify("Something vast stirs at the floor.")
+
+
+## THE ROOF (DESIGN_KRAKEN §5.2 — owner: *"ideally the boss has a mini ceiling
+## above it so that it doesn't just randomly die to falling ships"*).
+##
+## A kraken is held aloft by MUSCLE, not lift, so anything hovering over it
+## shoves it down — your lift props at ~2.7 g, and the lava is what it lands in.
+## That is the sharp kill, and a roof is what keeps it a DECISION: under the slab
+## the boss cannot be dunked and the run's own falling husks land on stone
+## instead of on the fight. The lava stays OPEN either side — no walls, because a
+## cave would make the endgame a siege (owner call 2).
+##
+## Cut with `_cut_landing`'s idiom and for its reason: GENERATE the neighbourhood
+## first, stamp second. A region that has not been generated yet is one lazy
+## island pass away from being repainted over the slab half a minute after you
+## arrive (DECISIONS 2026-08-30).
+##
+## Two F2 levers, both measured in the BODY (so a re-authored Leviathan carries
+## its own roof with it): width in body widths, and the gap in body heights.
+const DIVE_DEN_ROOF_CELLS := 6      ## slab thickness in terrain cells (≥4: nothing tunnels)
+func _dive_cut_den_roof(body: Ship) -> void:
+	if terrain == null or body == null or not is_instance_valid(body):
+		return
+	var bounds := body.solid_bounds
+	if bounds.size == Vector2.ZERO:
+		return
+	# `solid_bounds` IS ALREADY WORLD PIXELS (CODEMAP §2 — the eightfold bug).
+	var w := bounds.size.x * maxf(Tunables.get_num("dive_den_roof_widths"), 0.0)
+	if w <= 0.0:
+		return   # the lever's OFF position: no roof, the dunk is always on
+	var gap := bounds.size.y * maxf(Tunables.get_num("dive_den_roof_gap_heights"), 0.0)
+	var cp := maxf(terrain.cell_px(), 1.0)
+	var thick := float(DIVE_DEN_ROOF_CELLS) * cp
+	var mid_x := body.global_position.x + bounds.get_center().x
+	var under := body.global_position.y + bounds.position.y - gap   # the slab's UNDERSIDE
+	var slab := Rect2(Vector2(mid_x - w * 0.5, under - thick), Vector2(w, thick))
+	IslandGen.ensure_generated(terrain, world_seed, [slab.get_center()],
+		w * 0.5 + thick, 64)
+	_stone(slab.position, slab.size)
+	terrain.flush_rebuilds()
+	_dive_den_roof = slab
 
 
 ## The escape landed: move the banked coins into the permanent wallet. THIS is
@@ -5192,6 +5291,12 @@ func debug_spawn(kind: String, at: Vector2) -> Ship:
 			return _spawn_one_basilisk(at)
 		"boss", "city":
 			return _spawn_boss_at(at)
+		"leviathan":
+			# THE floor's resident, on demand (standing order: a new spawnable
+			# ships with its F2 button in the same round). Its pool, bounty and
+			# taming tier come from the file's headers, so this is the same body
+			# a run wakes at depth 8 — minus the roof, which is the run's.
+			return _spawn_one_kraken(LEVIATHAN_PATH, at)
 		"loft":
 			return _spawn_loft_at(at)
 		"kraken":
@@ -6148,6 +6253,18 @@ func _on_creature_perished(kind: String, body: Ship = null) -> void:
 	# still left something worth flying through.
 	if body != null and is_instance_valid(body):
 		_dive_drop_scrap(kind, body.global_position, bounty)
+	# THE RUN'S WIN (DESIGN_KRAKEN §7 slice 1). Killing the floor's resident is
+	# the only thing that ends a run in TRIUMPH, and until this round nothing in
+	# the world ever called `DiveRun.triumph()` — depth 8 was unwinnable.
+	#
+	# ORDER MATTERS: the bounty is credited ABOVE, into the pot, because
+	# `_dive_credit_kill` refuses a finished run — and `triumph()` banks the pot.
+	# Then the same two steps the passage-home branch of `try_buy_stock` takes:
+	# the model sets the outcome and the banked figure, `_dive_bank` moves it into
+	# the permanent wallet and prints the ledger's line.
+	if dive != null and dive.outcome == "" and _dive_is_the_boss(body):
+		dive.triumph()
+		_dive_bank()
 	if not Tunables.get_bool("eco_enabled") or not WHALE_KINDS.has(kind):
 		return
 	kraken_ascendancy = clampf(
@@ -6454,8 +6571,11 @@ func _whale_ai_for(creature: Ship) -> WhaleAI:
 		# are WhaleAI, so the swim loop / taming / riding paths are identical.
 		var ai: WhaleAI
 		match creature.creature_kind:
-			"kraken":
-				ai = KrakenAI.new()      # two-ended deep hunter: ram + mouth grab
+			"kraken", "kraken_leviathan":
+				# Two-ended deep hunter: ram + mouth grab. THE LEVIATHAN IS A
+				# KRAKEN, not a re-skinned whale (jam #3, judge 1): its own kind
+				# so the run can name it, the same brain so the grammar is shared.
+				ai = KrakenAI.new()
 			"basilisk":
 				ai = BasiliskAI.new()    # stands off and spits fire
 			_:

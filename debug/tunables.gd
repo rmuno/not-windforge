@@ -133,6 +133,17 @@ const _REGISTRY := [
 	{"id": "dive_scrap_radius", "label": "Scrap pickup radius", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 120.0, "min": 0.0, "max": 600.0, "step": 10.0,
 		"tip": "How close scrap (the run's physical XP drop) is absorbed, px at scale 1 — 120 is 960 px at the shipped 8x. 0 = no magnet."},   # world.dive_scrap_radius
+	# THE DEN'S ROOF (DESIGN_KRAKEN §5.2, owner: "a mini ceiling above it so that
+	# it doesn't just randomly die to falling ships"). Both measured in the BODY,
+	# so a re-authored Leviathan carries its own roof.
+	{"id": "dive_den_roof_widths", "label": "Den roof width", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 2.0, "min": 0.0, "max": 6.0, "step": 0.25,
+		"note": "next depth 8",
+		"tip": "How wide the slab cut over the Leviathan's den is, in body widths. 0 removes the roof, so the lava dunk is always available."},   # world._dive_cut_den_roof
+	{"id": "dive_den_roof_gap_heights", "label": "Den roof height above", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 1.0, "min": 0.25, "max": 6.0, "step": 0.25,
+		"note": "next depth 8",
+		"tip": "Clear air between the Leviathan's back and the roof's underside, in body heights. 1 is a body's room to rear and heave."},   # world._dive_cut_den_roof
 	{"id": "dive_assistant", "label": "Assistant mans repairs", "group": "Dive",
 		"kind": KIND_BOOL, "default": true,
 		"tip": "On, a run posts an assistant at the repair station. Off means no station and no crew — the X wand is the only mend."},   # world._dive_post_the_assistant

@@ -1953,7 +1953,7 @@ func _test_creature_log() -> void:
 		var id := CreatureLog.variety_from_path(String((plan as Dictionary)["path"]))
 		_check(CreatureLog.is_known_id(id), "whale plan '%s' has a bestiary row" % id)
 	for kid in ["kraken_c", "kraken_b", "kraken_urchin", "kraken_angler",
-			"kraken_nautilus", "basilisk", "critter", "whale_city"]:
+			"kraken_nautilus", "kraken_leviathan", "basilisk", "critter", "whale_city"]:
 		_check(CreatureLog.is_known_id(kid), "spawn variety '%s' has a bestiary row" % kid)
 
 	# --- The discovered set: mark is new-once, idempotent, and guarded ------
@@ -4158,6 +4158,7 @@ const STOCK_CELLS := {
 	"res://ships/kraken_angler.ship": 108,
 	"res://ships/kraken_b.ship": 159,
 	"res://ships/kraken_c.ship": 166,
+	"res://ships/kraken_leviathan.ship": 439,
 	"res://ships/kraken_nautilus.ship": 143,
 	"res://ships/kraken_urchin.ship": 113,
 	"res://ships/loft_test.ship": 251,
@@ -4407,8 +4408,9 @@ func _test_ship_groups() -> void:
 
 	_check(members.get("ships", []) == ["hulk", "loft_test", "starter"],
 		"SHIPS holds the three vessels: %s" % str(members.get("ships", [])))
-	_check(members.get("bosses", []) == ["whale_city", "whale_leviathan"],
-		"BOSSES holds the arcology and the leviathan: %s" % str(members.get("bosses", [])))
+	_check(members.get("bosses", []) == ["kraken_leviathan", "whale_city", "whale_leviathan"],
+		"BOSSES holds the Leviathan, the arcology and the whale: %s"
+			% str(members.get("bosses", [])))
 	_check(members.get("nests", []) == ["nest_den", "nest_eyrie", "nest_hive", "nest_roost"],
 		"NESTS holds all four: %s" % str(members.get("nests", [])))
 	_check(members.get("drafts", []).size() == 3,

@@ -111,7 +111,7 @@ static func nest_palette() -> Array:
 ## does not recognise is not a creature).
 static func palette_for(kind: String) -> Array:
 	match kind:
-		"whale", "whale_city", "kraken", "basilisk", "critter":
+		"whale", "whale_city", "kraken", "kraken_leviathan", "basilisk", "critter":
 			return creature_palette()
 		"nest":
 			return nest_palette()
@@ -121,7 +121,8 @@ static func palette_for(kind: String) -> Array:
 ## Is this `kind` a living body rather than a vessel or a structure? The one
 ## predicate the palette, the FYI panel and TRY IT all branch on.
 static func is_creature_kind(kind: String) -> bool:
-	return kind in ["whale", "whale_city", "kraken", "basilisk", "critter"]
+	return kind in ["whale", "whale_city", "kraken", "kraken_leviathan",
+		"basilisk", "critter"]
 
 
 ## The open sheet’s kind, defaulting to `vessel` — a file with no `kind` header
@@ -623,7 +624,7 @@ static func group_of(path: String, meta: Dictionary, source: String) -> String:
 ## goes where an unknown kind spawns: with the vessels.
 static func group_for_kind(kind: String) -> String:
 	match kind:
-		"whale_city":
+		"whale_city", "kraken_leviathan":
 			return "bosses"
 		"whale", "kraken", "basilisk", "critter":
 			return "creatures"
