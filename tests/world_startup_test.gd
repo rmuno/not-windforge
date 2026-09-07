@@ -4354,6 +4354,12 @@ func _check_dive_verbs(world: Node, fleet) -> void:
 	var medic_cell: Vector2i = hull.blueprint_map().keys()[0]
 	var full_hp: float = float(hull.blocks[medic_cell]["hp"]) if hull.has_block(medic_cell) else 0.0
 	if full_hp > 1.0 and hull.menders_running:
+		# Every OTHER cell at full first: the station mends the nearest damaged
+		# blueprint cell, so a wound left by an earlier check would split the
+		# budget and both readings below would come out equal (it did, once the
+		# kraken rounds ran ahead of this in the merged suite).
+		for bc in hull.blocks:
+			hull.blocks[bc]["hp"] = BlockDB.max_hp(int(hull.blocks[bc]["type"]))
 		hull.blocks[medic_cell]["hp"] = 1.0
 		world.set("_mender_clock", 0.0)
 		world.call("_update_menders", 0.2)
