@@ -71,6 +71,16 @@ extends SceneTree
 ##      to the OTHER side of the next slab (`_lane_flip`) and re-plan. The
 ##      seconds spent doing it are REPORTED per rung — a pilot that spends the
 ##      run escaping is measuring itself again, and the reader has to see that.
+##   6. THE AIR IS MEASURED, NOT FOUGHT. The rate stick commands a speed
+##      RELATIVE TO THE AIR, so a column of falling air adds its speed to every
+##      descent and takes it off every brake. The ladder's wind columns run at
+##      1,000 px/s against a full up-stick worth 960 (`dive_climb_rate` 120 × 8),
+##      so inside one NO stick stops the descent. The probe REPORTS that time
+##      ("carried by air no stick can beat") rather than steering around it: a
+##      cut that turned the vertical over and ran sideways instead lost the hull
+##      at depth 1 in 19 s, because a wall of the ladder is something you punch
+##      through, not something you loiter beside. Which of the two a player
+##      should do is the ladder's design question, not the autopilot's.
 ##   5. FIGHT BACK, AND GIVE THE WILDLIFE ROOM — unchanged from v0.149.0. A
 ##      volley at the nearest hostile inside max-zoom sight every
 ##      `turret_cadence`, aimed at a kraken's MEAT and anything else's middle;
@@ -107,8 +117,14 @@ const HEADINGS := [
 ]
 ## How far a fan looks: the hull's own stopping distance with a margin, floored
 ## so a stationary hull still sees the room it is about to move into.
-const HORIZON_MULT := 1.6
+const HORIZON_MULT := 2.0
 const HORIZON_MIN_CELLS := 24.0
+## How much more room than the arithmetic demands the pilot insists on before it
+## will fly a speed. The stopping distance is honest but it is not conservative:
+## the crash that survived the first cut of this pilot read "keel sees 5,054 px,
+## needs 5,078" — inside one per cent, and lost. A third again is cheap now that
+## the ladder's columns carry a descent at ~1,900 px/s anyway.
+const SAFETY := 1.35
 ## Scoring weights (`PilotNav.heading_score`) and the hold that stops the pilot
 ## dithering on the crest of a slab it is trying to leave.
 const DOWN_WEIGHT := 0.75
@@ -1169,8 +1185,8 @@ func _initialize() -> void:
 			Score.uptime_pct(held_s, reach_s)])
 	print("PILOT:  %d crashes over %.0f s of diving | %d climb-outs from dead ends costing %.1f s | measured braking %.0f px/s² (best seen %.0f)"
 		% [crashes_total, t, escapes, stuck_secs, _decel, _decel_seen])
-	print("STICK:  %.0f s down | %.0f s up | %.0f s neutral (the hover holding station)"
-		% [secs_sinking, secs_climbing, secs_coasting])
+	print("STICK:  %.0f s down | %.0f s up | %.0f s neutral (the hover holding station) | %.0f s carried by air no stick can beat"
+		% [secs_sinking, secs_climbing, secs_coasting, carried_secs])
 	print("TOO LATE: %d ticks (%.1f s) descending with less room under the keel than the descent needed to stop"
 		% [too_late, float(too_late) * STEP])
 	for l in late_lines:
@@ -1269,6 +1285,9 @@ var stuck_d := {}           ## depth -> seconds the stuck detector held the desc
 var secs_climbing := 0.0    ## seconds with the up stick held (braking or escaping)
 var secs_sinking := 0.0     ## seconds with the down stick held
 var secs_coasting := 0.0    ## seconds on a neutral stick — the hover holding station
+## Seconds inside air falling faster than a full up-stick can climb — the part
+## of a descent that is not the pilot's at all (see rule 6 in `_fly`).
+var carried_secs := 0.0
 
 # --- WHAT ENDED THE RUN -----------------------------------------------------
 # `lost / worn` means THE BODY died, and nothing in the old log said what hit
@@ -1524,6 +1543,23 @@ func _fly(d: int) -> void:
 	if _veto_t > 0.0:
 		dodge.y = 0.0
 
+	# THE AIR IS PART OF THE ARITHMETIC (rule 6, v0.162.0). The rate stick
+	# commands a speed RELATIVE TO THE AIR, so a column of falling air adds its
+	# own speed to every descent AND subtracts from every brake. The ladder's
+	# wind columns run at 1,000 px/s against a full up-stick worth 960
+	# (`dive_climb_rate` 120 × 8), so inside one of them NO stick stops the
+	# descent — `floor_v` is the part of it that is simply not the pilot's any
+	# more. It is MEASURED and reported, not steered around: a cut that handed the
+	# vertical over and ran sideways instead lost the hull at depth 1 in 19 s to
+	# the wall's own grind — a wall of the ladder is something a player punches
+	# through, not something to loiter beside, and which of those is right is the
+	# ladder's design question rather than the autopilot's.
+	var wind_y: float = (hull.get("extra_wind") as Vector2).y
+	var climb_max: float = maxf(float(hull.climb_rate_max), 240.0)
+	var floor_v: float = maxf(wind_y - climb_max, 0.0)
+	if floor_v > 0.0:
+		carried_secs += STEP
+
 	# --- 2. PICK A HEADING (rule 3) --------------------------------------
 	var lane_off: float = _lane_x(d) - hull.to_global(b.get_center()).x
 	_heading_t = maxf(0.0, _heading_t - STEP)
@@ -1553,19 +1589,20 @@ func _fly(d: int) -> void:
 		best = e
 		_heading = e
 
+
 	# --- 3. THE VERTICAL STICK (rule 2). The fastest descent this column can
 	# still be stopped out of, from THIS hull's measured authority — and zero
 	# whenever anything says stop, because a rung is not something to settle onto
 	# gently, it is something to be beside.
 	var v_safe: float = minf(
-		Nav.safe_speed(maxf(down_clear - pad, 0.0), _decel, REACTION), sink_max)
+		Nav.safe_speed(maxf(down_clear - pad, 0.0) / SAFETY, _decel, REACTION), sink_max)
 	# ...and the same rule down the TRAVEL vector, converted back to its vertical
 	# share. A hull crossing the slalom is mostly moving sideways, and a hard
 	# veto on a short travel fan would stop the descent every time the lane's far
 	# wall came into view — which is most of the descent. Its VERTICAL component
 	# is the only part the down stick can spend, so that is the part it caps.
 	if speed > 60.0 and vel.y > 0.0:
-		v_safe = minf(v_safe, Nav.safe_speed(maxf(travel_clear - pad, 0.0),
+		v_safe = minf(v_safe, Nav.safe_speed(maxf(travel_clear - pad, 0.0) / SAFETY,
 			_decel, REACTION) * (vel.y / speed))
 	if best.y <= 0.0 or dodge.y != 0.0 or _escape_t > 0.0:
 		v_safe = 0.0
