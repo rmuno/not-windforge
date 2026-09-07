@@ -1467,6 +1467,20 @@ const SEAL_GRIND := 50.0
 ## out long before that. A hard, survivable, unmistakable "no" (§3.5).
 const SEAL_BODY_TOLL := 18.0
 
+## What the band does to a BODY, px/s² at scale 1 (×`world_scale` at the site).
+##
+## A PERSON IS NOT A HULL, and the wind idiom has nothing to grip on one: a body
+## has no mass, no beam and no drag term — it is moved by `velocity.y +=`, so the
+## airstream that carries a ship reaches it as a shove of `wind × AIR_DAMP` and a
+## body falling at 6,400 px/s simply drops through the band unimpressed. So the
+## seal keeps DESCENT §4.5's own answer for the body: a flat one-way upward
+## acceleration, 12,000 px/s² at 8×. A body entering at terminal fall penetrates
+## `6,400² / (2 × 12,000)` ≈ 1,700 px of a 4,483 px band and is thrown back out
+## about a second later, ~20 hp lighter. Unmistakable, survivable, and final:
+## A SHIPLESS RUN CANNOT DESCEND PAST A LIVE SEAL (§3.5). Clear the depth, find a
+## mount, or take passage home.
+const SEAL_BODY_PUSH := 1500.0
+
 
 ## Does depth `d` have a seal UNDER it? Depths 2..DEPTHS-1 do: depth 1 carries no
 ## garrison at all (`garrison_count` returns 0 below 2, the den's clock does not
@@ -1522,6 +1536,13 @@ static func seal_speed_for(beta: float, ref := BETA_REF) -> float:
 ## `BETA_REF` converted to a world scale (it was measured at 8×).
 static func beta_ref_at(world_scale: float) -> float:
 	return BETA_REF * maxf(world_scale, 0.001) / BETA_REF_SCALE
+
+
+## `BEAM_REF` converted to a world scale (it too was measured at 8×). A beam is a
+## LENGTH, so it scales linearly with the world — the same conversion `beta_ref_at`
+## makes, said about the other half of β.
+static func beam_ref_at(world_scale: float) -> float:
+	return BEAM_REF * maxf(world_scale, 0.001) / BETA_REF_SCALE
 
 
 ## How many cells the grind chews at once, for a hull of beam `beam_px` measured

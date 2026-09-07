@@ -3783,6 +3783,25 @@ func _test_dive_seal() -> void:
 		"a dart still pays the %d-site floor" % DiveRun.SEAL_SITES_MIN)
 	_check(DiveRun.seal_sites(DiveRun.BEAM_REF * 20.0) == DiveRun.SEAL_SITES_MAX,
 		"a barge is capped at %d sites" % DiveRun.SEAL_SITES_MAX)
+	# The beam yardstick scales with the world exactly as β does — the toll's
+	# frontal measure and the force's must never be read at different scales, or
+	# the 8× starter would grind at the 12-site cap while feeling a 1× airstream.
+	_check(is_equal_approx(DiveRun.beam_ref_at(8.0), DiveRun.BEAM_REF)
+		and is_equal_approx(DiveRun.beam_ref_at(1.0), DiveRun.BEAM_REF / 8.0),
+		"the beam yardstick scales with the world too")
+	_check(DiveRun.seal_sites(DiveRun.BEAM_REF, DiveRun.beam_ref_at(8.0))
+			== DiveRun.seal_sites(DiveRun.BEAM_REF / 8.0, DiveRun.beam_ref_at(1.0)),
+		"...so one hull grinds at the same site count at either scale")
+	# THE CROSSING'S PRICE, from the constants alone (the live measurement is in
+	# scale_startup_test). Band height / (down stick − airstream) × sites × grind,
+	# against the shipped pool: DESCENT §3.3's X ≈ 30 %.
+	var cross_px := DiveRun.BAND_RUNGS * DiveRun.rung_frac() \
+		* float(IslandGen.WORLD_CELLS.size.y) * TerrainDB.CELL * 8.0
+	var cross_v := (240.0 - DiveRun.SEAL_AIR_SPEED) * 8.0
+	var bill := cross_px / cross_v * float(DiveRun.SEAL_SITES) * DiveRun.SEAL_GRIND
+	_check(bill / 3000.0 > 0.2 and bill / 3000.0 < 0.45,
+		"a stock crossing prices at %.0f hp = %.0f%% of a 3,000 pool (%.2f s at %.0f px/s)"
+			% [bill, bill / 3000.0 * 100.0, cross_px / cross_v, cross_v])
 
 	# --- THE LOCK: KILLED ≠ DESPAWNED (§2.4) ------------------------------
 	var run := DiveRun.new()

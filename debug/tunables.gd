@@ -117,7 +117,7 @@ const _REGISTRY := [
 		"tip": "Multiplier on how hard a live band blows upward, against a 1,920 px/s down-stick. 1 is shipped; 0 leaves the band lethal but crossable at full speed."},   # world.dive_seal_speed_at
 	{"id": "dive_seal_grind", "label": "Seal grind per site", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 50.0, "min": 0.0, "max": 400.0, "step": 5.0,
-		"tip": "Structural hp per second each grinding site chews while a hull is inside a live band. The stock hull is worth 6 sites, so 50 is 300 hp/s and hovering there is death in ten seconds. 0 makes a band pure wind."},   # world._dive_seal_toll
+		"tip": "Structural hp per second each grinding site chews inside a live band. The stock hull is worth 6 sites, so 50 is 300 hp/s and hovering is death in ten seconds. 0 = pure wind."},   # world._dive_seal_toll
 	# The pregenerated garrison (owner 2026-09-01: nothing may just APPEAR).
 	{"id": "dive_spawn_screens", "label": "Garrison wake distance", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 2.0, "min": 0.5, "max": 8.0, "step": 0.25,

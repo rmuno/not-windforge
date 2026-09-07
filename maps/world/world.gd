@@ -395,6 +395,9 @@ var _edge_markers: EdgeMarkers
 ## The deep-band ember haze (maps/world/deep_fog.gd): a screen-space wash that
 ## thickens as you descend. Under the HUD, over the world; driven by fog_density().
 var _deep_fog: DeepFog
+## The Dive's lethal wind bands (maps/world/seal_bands.gd): world-space, behind
+## terrain, fed by `seal_bands()`. Silent outside a run.
+var _seal_bands: SealBands
 
 ## Which balloon SIZE Q tethers while the build palette selects "balloon"
 ## (Ship.BalloonSize; B cycles the palette). Carcass-as-airship: aim at a
@@ -607,6 +610,13 @@ func _ready() -> void:
 	var overlay := WorldOverlay.new()
 	overlay.world = self
 	add_child(overlay)
+
+	# THE DESCENT SEAL's paint (Q-R). World-space and BEHIND terrain (z -20), so
+	# an island crossing a band occludes the wind by being opaque — ruling 4's
+	# "the wind goes around it", for free. Draws nothing outside a run.
+	_seal_bands = SealBands.new()
+	_seal_bands.world = self
+	add_child(_seal_bands)
 
 	# The layered background, BEHIND the world: its own CanvasLayer at -1 so
 	# every real thing (terrain, ships, the lot) draws over it.
@@ -1270,6 +1280,11 @@ func begin_dive() -> void:
 	_dive_deck_cells = {}
 	_dive_berth_taken = {}
 	_dive_husks.clear()
+	# The seal's per-run state: the grind clock, what the local side is standing
+	# in, and which doors this run has already announced as broken.
+	_dive_seal_clock = 0.0
+	_dive_seal_inside = 0
+	_dive_seal_said.clear()
 	if _dive_scrap != null:
 		_dive_scrap.clear()
 	# The card draft's RNG — seeded off the run's own seed so a given run offers a
@@ -2460,6 +2475,11 @@ func _tick_dive(delta: float) -> void:
 	# ...and ONE wind vector carries everything that is weather (review §3.2):
 	# the tile's lean and the closing sky, composed, stamped, felt by both sides.
 	_dive_weather(delta)
+	# ...and the seal's other half: the wind decides whether you CAN cross, the
+	# grind decides what crossing is worth (DESCENT §3). After the weather stamp,
+	# so a hull is billed for the band it is actually flying in this frame.
+	_dive_seal_toll(delta)
+	_dive_say_the_seal()
 	_dive_watch_integrity()
 	# Keep the card draft's offer filled while one is owed, so the HUD always has
 	# three to paint and the number keys have something to pick. The moment an
@@ -2605,18 +2625,27 @@ func dive_altitude_frac(pos: Vector2) -> float:
 ## is a property of PLACE (DESIGN.md §4) and the nearest band is half a rung
 ## below depth 2, which you cannot reach without having gone down.
 func dive_seal_speed_at(pos: Vector2, beta: float, own_depth := 0) -> float:
-	if dive == null or dive.outcome != "":
-		return 0.0
-	if not Tunables.get_bool("dive_seal_enabled"):
-		return 0.0
 	var d := DiveRun.seal_at(dive_altitude_frac(pos))
-	if d <= 0 or d == own_depth:
+	if d <= 0 or d == own_depth or not dive_seal_live(d):
 		return 0.0
-	if dive.seal_open(dive.seed_v, d, Tunables.get_num("dive_zone_tile_widths")):
-		return 0.0   # cleared: the band is dead and stays dead
 	return DiveRun.seal_speed_for(beta, DiveRun.beta_ref_at(float(world_scale))) \
 		* DiveRun.SEAL_AIR_SPEED * float(world_scale) \
 		* Tunables.get_num("dive_seal_mult")
+
+
+## Is depth `d`'s band still blowing? THE ONE PLACE the lock is read — the
+## airstream, the toll, the status row and the painter all ask this, so they can
+## never disagree about whether a door is open. False for a depth with no seal,
+## for a finished run, and with the F2 switch off.
+func dive_seal_live(d: int) -> bool:
+	if dive == null or dive.outcome != "":
+		return false
+	if not Tunables.get_bool("dive_seal_enabled"):
+		return false
+	if not DiveRun.has_seal(d):
+		return false
+	return not dive.seal_open(dive.seed_v, d,
+		Tunables.get_num("dive_zone_tile_widths"))
 
 
 ## A hull's ballistic coefficient: mass per pixel of BEAM (the frontal measure a
@@ -2656,13 +2685,173 @@ func _dive_weather(delta: float) -> void:
 	# the hull's damp inverts `weather_wind`'s own divide, which is what makes the
 	# felt strength on foot identical to the force the hull is riding.
 	#
-	# A body has no mass and no beam, so it feels the seal at the REFERENCE β:
-	# the full authored airstream, which is what makes a live band a hard "no" on
-	# foot (DESCENT §3.5 — a shipless run cannot descend past a live seal).
+	# A body has no mass and no beam, so it feels the seal at the REFERENCE β.
 	if player != null and is_instance_valid(player) and not player.is_piloting():
 		var body_wind := dive_weather_for(player.global_position,
 			DiveRun.beta_ref_at(float(world_scale)))
 		player.velocity.y += body_wind.y * DiveRun.AIR_DAMP * delta
+		# ...AND THE BAND SHOVES IT (DESCENT §4.5, `SEAL_BODY_PUSH`). The wind
+		# idiom has nothing to grip on a person: through `AIR_DAMP` the seal's
+		# airstream reaches a body as ~176 px/s² against a 6,400 px/s fall, which
+		# is not a wall, it is a draught. So the body keeps the design's own flat
+		# one-way acceleration — enough that a fall penetrates about 1,700 px of a
+		# 4,483 px band and is thrown back out. ALWAYS UPWARD while inside, never
+		# down: a body under a band can no more be sucked into one than a hull can.
+		var bd := DiveRun.seal_at(dive_altitude_frac(player.global_position))
+		if bd > 0 and dive_seal_live(bd):
+			player.velocity.y -= DiveRun.SEAL_BODY_PUSH * float(world_scale) * delta
+
+
+# --- THE TOLL: what a crossing costs (DESIGN_DESCENT §3) --------------------
+#
+# The airstream above decides whether you can cross; this decides what crossing
+# is worth. While a hull's plating overlaps a LIVE band it is being taken apart
+# at `seal_sites(beam) × dive_seal_grind` hp of structure per second, through the
+# same `nearest_solid_cell` → `net_damage_cell` path a card blast uses — so the
+# blocks come off visibly, one cell every couple of seconds per site, and the
+# hull-integrity pool drains by exactly what was destroyed. The bill is
+# `rate × time`, and TIME is the thing a build buys down.
+#
+# Two rulings are coded here rather than in the arithmetic:
+#
+#   * VESSELS ONLY. A creature feels the band's wind like everything else (the
+#     weather is universal), but nothing grinds it: a wind that unbolts a ship
+#     block by block has nothing to take off a whale, and the alternative —
+#     billing wildlife too — quietly attritions the sky's residents to death
+#     while nobody is watching. The `air_density_floor` stamp is vessels-only for
+#     the same reason ("a creature flies on muscle").
+#   * A GARRISON NEVER PAYS INSIDE ITS OWN DEPTH'S BAND (§0 call 7, "symmetric
+#     with one exception"). The band is where it lives. Chase it into somebody
+#     else's and it arrives hurt, which is the reward for a good punch.
+
+## Seconds between grind ticks. 4 Hz: fast enough that a crossing is billed
+## smoothly, slow enough that the per-site cell search is nothing.
+const DIVE_SEAL_TICK := 0.25
+
+var _dive_seal_clock := 0.0
+
+## The depth of the live band the LOCAL side (your hull, your mount, or your
+## body) is standing in this tick, or 0. Read by `dive_status` — the HUD says
+## "IN THE SEAL" off this, and it is the only reason the field exists.
+var _dive_seal_inside := 0
+
+
+## Bill everything standing in a live band. Ticked from `_tick_dive`.
+func _dive_seal_toll(delta: float) -> void:
+	if dive == null or dive.outcome != "":
+		return
+	_dive_seal_clock += delta
+	if _dive_seal_clock < DIVE_SEAL_TICK:
+		return
+	var dt := _dive_seal_clock
+	_dive_seal_clock = 0.0
+	_dive_seal_inside = 0
+	if not Tunables.get_bool("dive_seal_enabled"):
+		return
+	var grind := Tunables.get_num("dive_seal_grind")
+	var mine: Ship = local_ship if is_instance_valid(local_ship) else null
+	var ridden: Ship = null
+	if player != null and is_instance_valid(player) and player.is_riding():
+		ridden = player.riding as Ship
+	var billed: Array[Ship] = []
+	if mine != null:
+		billed.append(mine)
+	for sid in _dive_surged:
+		var hull := instance_from_id(sid) as Ship
+		if hull != null and is_instance_valid(hull) and hull != mine:
+			billed.append(hull)
+	for hull in billed:
+		# A creature is in the wind but not in the grinder (see the header).
+		if hull.creature_kind != "":
+			continue
+		var span := _dive_seal_overlap(hull)
+		if span == Vector2.ZERO:
+			continue
+		if hull == mine or hull == ridden:
+			_dive_seal_inside = int(span.x)   # (x carries the depth, y the run of px)
+		_dive_seal_grind(hull, span, grind * dt)
+	# THE BODY pays a flat rate and cannot cross at all: the airstream throws it
+	# back out of the top long before 100 hp of `SEAL_BODY_TOLL` runs out, which
+	# is the design's "hard, survivable, unmistakable no" (§3.5).
+	if player != null and is_instance_valid(player) and not player.is_piloting() \
+			and not player.is_riding():
+		var bd := DiveRun.seal_at(dive_altitude_frac(player.global_position))
+		if bd > 0 and dive_seal_live(bd):
+			_dive_seal_inside = bd
+			player.take_damage(DiveRun.SEAL_BODY_TOLL * dt)
+
+
+## Depths whose seal this run has already announced as broken, so the fanfare
+## fires once. Cleared with the run.
+var _dive_seal_said := {}
+
+
+## SAY IT WHEN THE DOOR OPENS. The kill that clears a depth happens somewhere in
+## the middle of a fight, and a gate that dies silently is indistinguishable from
+## a gate that was never there (charter §5). One line, once, per depth.
+func _dive_say_the_seal() -> void:
+	if dive == null or dive.outcome != "" \
+			or not Tunables.get_bool("dive_seal_enabled"):
+		return
+	var d := dive.depth
+	if not DiveRun.has_seal(d) or _dive_seal_said.has(d):
+		return
+	if dive_seal_live(d):
+		return
+	_dive_seal_said[d] = true
+	_notify("THE SEAL IS BROKEN. The way down is open.")
+
+
+## Where `hull`'s plating overlaps a LIVE band, as (depth, run of px), or
+## `Vector2.ZERO` for a hull in clear air. Packed into one Vector2 because the
+## caller wants both answers and neither is worth a Dictionary at 4 Hz.
+##
+## Measured on `solid_bounds` in the hull's own frame — the same rectangle the
+## beam (and therefore the site count) is read off, so "how much of me is in it"
+## and "how hard it grips me" can never be measured on different shapes.
+func _dive_seal_overlap(hull: Ship) -> Vector2:
+	if hull == null or not is_instance_valid(hull) or hull.solid_bounds.size == Vector2.ZERO:
+		return Vector2.ZERO
+	var b := hull.solid_bounds
+	var top := hull.to_global(b.position).y
+	var bot := hull.to_global(Vector2(b.position.x, b.end.y)).y
+	var mid := dive_altitude_frac(Vector2(hull.global_position.x, (top + bot) * 0.5))
+	# One band at the hull's own middle, then the two it might be straddling —
+	# the bands are half a rung apart, so at most one can ever contain a hull's
+	# centre and this loop stops at the first that overlaps.
+	for d in [DiveRun.seal_at(mid), DiveRun.seal_at(dive_altitude_frac(
+			Vector2(hull.global_position.x, top))),
+			DiveRun.seal_at(dive_altitude_frac(
+				Vector2(hull.global_position.x, bot)))]:
+		if int(d) <= 0 or int(d) == DiveRun.key_depth(hull.garrison_key):
+			continue
+		if not dive_seal_live(int(d)):
+			continue
+		var band := DiveRun.seal_band(int(d))
+		var lo := maxf(top, dive_altitude_y(float(band[0])))
+		var hi := minf(bot, dive_altitude_y(float(band[1])))
+		if hi > lo:
+			return Vector2(float(d), hi - lo)
+	return Vector2.ZERO
+
+
+## Chew `per_site` hp out of `hull` at each of its grinding sites, scattered
+## through the slice of it that is inside the band. No attacker is recorded: the
+## weather is nobody's kill, and a picket the sky grinds down still drops its
+## scrap and its bounty through the ordinary death path.
+func _dive_seal_grind(hull: Ship, span: Vector2, per_site: float) -> void:
+	if per_site <= 0.0 or span.y <= 0.0:
+		return
+	var b := hull.solid_bounds
+	var band := DiveRun.seal_band(int(span.x))
+	var lo := maxf(hull.to_global(b.position).y, dive_altitude_y(float(band[0])))
+	var sites := DiveRun.seal_sites(b.size.x,
+		DiveRun.beam_ref_at(float(world_scale)))
+	for i in sites:
+		var at := Vector2(
+			hull.to_global(b.position).x + _dive_rng.randf() * b.size.x,
+			lo + _dive_rng.randf() * span.y)
+		hull.net_damage_cell(hull.nearest_solid_cell(at), per_site)
 
 
 # --- Hull integrity (owner rulings 2026-08-31) ------------------------------
@@ -4238,6 +4427,59 @@ func dive_status() -> Variant:
 	if is_instance_valid(local_ship) and local_ship.hull_integrity_max > 0.0:
 		out["hull_frac"] = clampf(
 			local_ship.hull_integrity / local_ship.hull_integrity_max, 0.0, 1.0)
+	# THE SEAL under the rung you are on (Q-R). Without the COUNT the mechanic is
+	# invisible: a player who cannot see that two more kills opens the door reads
+	# the whole band as arbitrary weather (DESCENT §7.4). Empty for a depth with
+	# no seal under it (1 and the floor) and with the F2 switch off, so the HUD's
+	# row simply is not there rather than saying "0 of 0".
+	out["seal"] = {}
+	if Tunables.get_bool("dive_seal_enabled") and DiveRun.has_seal(dive.depth):
+		var p := dive.seal_progress(dive.seed_v, dive.depth,
+			Tunables.get_num("dive_zone_tile_widths"))
+		out["seal"] = {
+			"depth": dive.depth,
+			"left": maxi(0, int(p[1]) - int(p[0])),
+			"of": int(p[1]),
+			"live": int(p[0]) < int(p[1]),
+			"inside": _dive_seal_inside > 0,
+		}
+	return out
+
+
+## THE LIVE BANDS a painter can draw, in plain values (world-decides/layer-paints
+## — `SealBands` holds no logic and never touches a Ship or the run model).
+##
+## Only the bands the camera could actually see: the ladder is six bands over
+## 590,000 px and a layer asked to draw all of them would be drawing the whole
+## world. `rect` is world-space and spans the visible width, so the layer paints
+## a slab of sky rather than deciding where the sky is.
+func seal_bands() -> Array:
+	var out: Array = []
+	if dive == null or dive.outcome != "" \
+			or not Tunables.get_bool("dive_seal_enabled"):
+		return out
+	if camera == null or not is_instance_valid(camera):
+		return out
+	var z := maxf(camera.zoom.y, 0.00001)
+	var half_h := _viewport_px().y * 0.5 / z
+	var half_w := view_half_width_px()
+	var c := camera.global_position
+	var tw := Tunables.get_num("dive_zone_tile_widths")
+	for d in range(2, DiveRun.DEPTHS):
+		var band := DiveRun.seal_band(d)
+		var top := dive_altitude_y(float(band[0]))
+		var bot := dive_altitude_y(float(band[1]))
+		if bot < c.y - half_h or top > c.y + half_h:
+			continue
+		var p := dive.seal_progress(dive.seed_v, d, tw)
+		out.append({
+			"rect": Rect2(Vector2(c.x - half_w, top), Vector2(half_w * 2.0, bot - top)),
+			"live": int(p[0]) < int(p[1]),
+			"left": maxi(0, int(p[1]) - int(p[0])),
+			"of": int(p[1]),
+			"depth": d,
+			"inside": _dive_seal_inside == d,
+		})
 	return out
 
 
