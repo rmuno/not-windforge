@@ -4096,6 +4096,12 @@ func _check_dive_run_scope(world: Node, fleet) -> void:
 			"EVERY hull the run flies is stamped the same way, not just yours")
 	else:
 		_ok(false, "a picket to stamp")
+	# THE ASSISTANT is a stamp like any other — a station switched on and a person
+	# standing at it, posted the moment you commit a hull. It is in this table
+	# because it is the one grant that had no reset (QA sweep 2026-09-07).
+	_ok(hull.menders_running and _menders_aboard(world) > 0,
+		"...and the assistant is at the repair station, keeping it running (%d aboard)"
+			% _menders_aboard(world))
 	# THE DRAFT'S PAUSE is the run's too: headless never really pauses (the
 	# picker's own gate), so the flag and the tree are set by hand here — what is
 	# pinned is that TEARING DOWN A RUN LETS GO, whatever set it.
@@ -4124,6 +4130,16 @@ func _check_dive_run_scope(world: Node, fleet) -> void:
 				and hull.physics_material_override == null
 				and hull.modulate.is_equal_approx(Color.WHITE),
 			"...disarmed, un-scorched, and back on the stock keel")
+		# THE ASSISTANT GOES HOME. Before 2026-09-07 nothing took this back, so a
+		# kept hull mended itself for free forever off a crewman the run hired.
+		# The repair BLOCK stays — a machine on your ship is yours, like anything
+		# else built in a run; it is the hand and the switch that are the grant.
+		_ok(not hull.menders_running and _menders_aboard(world) == 0,
+			"...and the assistant stands down with the run (%d still aboard)"
+				% _menders_aboard(world))
+		_ok(not hull.repair_cells.is_empty(),
+			"...leaving the repair station itself on the hull you kept (%d cells)"
+				% hull.repair_cells.size())
 	_ok(is_equal_approx(pl.fall_damage_mult, 1.0)
 			and is_zero_approx(pl.bonus_max_health),
 		"the body walks out of the run stock")
@@ -4249,6 +4265,25 @@ func _check_dive_run_scope(world: Node, fleet) -> void:
 	await world.get_tree().physics_frame
 	Tunables.set_value("dormancy_enabled", dorm_was)
 	pl.health = pl.max_health
+
+
+## Mender crewmen the world still has — the Dive's ASSISTANT, counted once each
+## from BOTH the world's NPC list and the tree, because the two can disagree and
+## either disagreement is the leak: an entry left in `_npcs` is a stale reference
+## the crew scans walk every frame, and a body left in the tree is a person still
+## standing at a station after the run that hired them ended. `queue_free` is
+## deferred, so a node on its way out is not counted.
+func _menders_aboard(world: Node) -> int:
+	var seen := {}
+	for npc in (world.get("_npcs") as Array):
+		if npc != null and is_instance_valid(npc) and not npc.is_queued_for_deletion() \
+				and String(npc.get("role")) == "mender":
+			seen[npc.get_instance_id()] = true
+	for child in world.get_children():
+		var hand := child as Crewman
+		if hand != null and not hand.is_queued_for_deletion() and hand.role == "mender":
+			seen[hand.get_instance_id()] = true
+	return seen.size()
 
 
 ## THE DIVE'S VERB SET IS A CONTRACT (docs/KEYBINDINGS.md, QA sweep 2026-09-06).

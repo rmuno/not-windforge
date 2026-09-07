@@ -1424,6 +1424,30 @@ func end_dive() -> void:
 		local_ship.card_integrity_bonus = 0.0
 		local_ship.modulate = Color.WHITE
 		local_ship.physics_material_override = null   # the stock keel comes back
+	# THE ASSISTANT IS A GRANT, AND GRANTS END WITH THE RUN (QA sweep 2026-09-07).
+	# `_dive_post_the_assistant` switches the repair station ON and stands a crewman
+	# at it the moment you commit a hull; nothing ever took either back, so a hull
+	# you kept walked out of the Dive mending itself for free, forever, off a person
+	# hired by a mode that is over — the same leak the dials above are guarded
+	# against, wearing a face. Ruled with the stamp/reset table (v0.150.0): every
+	# stamp has a reset, and this was the one stamp that did not.
+	#
+	# What is NOT taken back is the STATION: `debug_add_mender` bolts a repair block
+	# onto a hull with no room for one, and a block on your ship is yours like
+	# anything else you built during a run. You keep the machine; you lose the hand
+	# on it and the switch it was holding down. (Owner: if the assistant should be a
+	# parting GIFT instead, delete this block — it is the whole of the behaviour.)
+	if is_instance_valid(local_ship):
+		local_ship.menders_running = false
+	var crew_kept: Array = []
+	for npc in _npcs:
+		if npc == null or not is_instance_valid(npc):
+			continue
+		if npc.role == "mender":
+			npc.queue_free()
+		else:
+			crew_kept.append(npc)
+	_npcs = crew_kept
 	# ...and so does your body: every card dial stamped on it is run-scoped like the
 	# rest, so a character who walks out of a run walks, falls and grapples stock.
 	# The pool shrinks LAST (grant_bonus_health trims `health` to the smaller max),
@@ -4375,10 +4399,14 @@ func _dive_add(key: String) -> float:
 	return dive.addend(key) if dive != null and dive.outcome == "" else 0.0
 
 
-## Is card rule `name` switched on right now? False outside a live run, so every
-## flag site is inert in ordinary play the way every dial site is 1.0.
-func _dive_flag(name: String) -> bool:
-	return dive != null and dive.outcome == "" and dive.flag(name)
+## THERE IS NO `_dive_flag` TWIN OF THE TWO ABOVE (deleted 2026-09-07, QA sweep).
+## One sat here for three versions with no caller, and the reason it never grew
+## one is structural: a DIAL is stamped onto a body from the world's tick, so the
+## world has to read it; a RULE SWITCH is asked at the single moment it fires, and
+## the only flag shipped — "second_heart" — is asked by `DiveRun.spend_second_heart()`,
+## which must SPEND it in the same breath. A generic `_dive_flag(name)` could only
+## answer the half of that question that does not matter. New card rules go on
+## `DiveRun` beside the state they mutate; `DiveRun.flag()` is the shared reader.
 
 
 ## Apply every held card's proc for `event`. `damage` carries the hit size for

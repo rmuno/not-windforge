@@ -12,6 +12,10 @@ var failures := 0
 
 
 func _initialize() -> void:
+	# WHAT THE ENGINE BROUGHT, before the suite adds anything of its own — the
+	# autoloads. `_teardown` frees the difference (see `_finish`).
+	for child in root.get_children():
+		_boot_nodes[child.get_instance_id()] = true
 	# THE OWNER'S REAL PROFILE IS NOT A FIXTURE: every suite writes through
 	# the profile (creature sightings, the F2 forget buttons, card takes), and
 	# a full run used to wipe the real bestiary + card gallery. Redirect first,
@@ -252,6 +256,9 @@ func _initialize() -> void:
 	# ...and the contact that killed the pilot at depth 4 once the canopy was
 	# fixed: one crush bill against the whole integrity pool.
 	await _check_one_contact_bills_the_pool_once()
+	# ...and the thing the v0.157.0 scorecard said none of the above could do:
+	# kill a picket with the gun.
+	await _check_a_picket_dies_to_a_few_volleys()
 
 	_finish()
 
@@ -633,6 +640,104 @@ func _check_one_contact_bills_the_pool_once() -> void:
 		% int(BlockDB.max_hp(BlockDB.Type.ENGINE)))
 	print("      BLOCKS) — the canopy's problem an order smaller, and pool-safe")
 	bank.queue_free()
+	await process_frame
+
+
+## A SHELL HAS TO BE WORTH SOMETHING (v0.160.0, off the v0.157.0 scorecard).
+##
+## Three seeds at 8× fired ~1,400 shells and killed NOTHING: a picket's 600 pool
+## against a 20-damage shell was 30 landed hits, at about one shell a second,
+## spread over the 22 bodies a descent meets. Two dials answer it — a shell bills
+## the pool `dive_shell_worth` times its damage (blocks untouched), and a picket
+## dies at `dive_picket_integrity` — and this is the check that says how many
+## landed volleys that actually is, on the REAL native-8× hulk, through the real
+## `net_damage_cell` path a `Shot` takes.
+##
+## HERE and not in the 1× suite for the standing reason (CODEMAP §2): the whole
+## finding is the eightfold. At scale 1 a hulk is 56 cells wide and its
+## components are one cell each, so neither the component bill nor the 8× cell
+## count that made a shell worthless exists to measure.
+func _check_a_picket_dies_to_a_few_volleys() -> void:
+	print("\n=== a picket dies to a few landed volleys (8x) ===\n")
+	var pool: float = Tunables.get_num("dive_picket_integrity")
+	var shell: float = Tunables.get_num("turret_damage")
+	var worth: float = Tunables.get_num("dive_shell_worth")
+	# The shipped hulk is authored NATIVE 8× — `_spawn_hulk_at` does not upscale
+	# it, so neither does this.
+	var cells: Dictionary = ShipLayout.load_cells("res://ships/hulk.ship")
+	var picket := _arena_ship(cells)
+	picket.gravity_scale = 0.0
+	picket.global_position = Vector2.ZERO
+	picket.faction = 1
+	picket.hull_integrity_max = pool
+	picket.hull_integrity = pool
+	await process_frame
+
+	# Where an enemy gunner's shell actually lands: the outer plating on the beam.
+	# Walked forward hit by hit like real fire, never the same cell twice, so no
+	# shot is billing a cell a previous shot had already worn down.
+	var skin: Array[Vector2i] = []
+	for c in picket.blocks:
+		if int(picket.blocks[c]["type"]) == BlockDB.Type.HULL:
+			skin.append(c)
+	skin.sort()
+	_ok(skin.size() > 64, "the hulk has plating to shoot (%d hull cells)" % skin.size())
+	var landed := 0
+	while picket.hull_integrity > 0.0 and landed < skin.size() and landed < 400:
+		# The exact call `Shot` makes when a shell finds a hull.
+		picket.net_damage_cell(skin[landed], shell, worth)
+		landed += 1
+	_ok(picket.hull_integrity <= 0.0,
+		"%d landed shells empty a picket's %.0f pool" % [landed, pool])
+	# The starter's two turrets face opposite ways (its `T` glyphs sit on the
+	# port and starboard edges), so one bears on a target and a volley is ONE
+	# shell — landed shells and landed volleys are the same number here.
+	_ok(landed >= 3 and landed <= 8,
+		"...which is %d landed volleys from the starter's helm (was %.0f)"
+			% [landed, 600.0 / shell])
+	# AND THE BLOCKS ARE UNTOUCHED BY THE LEVER — the worth scales the run's life,
+	# not the visible bite. Same shell, same plating, with the lever at 1.
+	var plain := _arena_ship(cells)
+	plain.gravity_scale = 0.0
+	plain.global_position = Vector2.ZERO
+	plain.hull_integrity_max = pool
+	plain.hull_integrity = pool
+	await process_frame
+	var full := BlockDB.max_hp(BlockDB.Type.HULL)
+	plain.net_damage_cell(skin[0], shell, 1.0)
+	var hp_at_one: float = plain.blocks[skin[0]]["hp"] if plain.has_block(skin[0]) else 0.0
+	var billed_at_one := pool - plain.hull_integrity
+	plain.hull_integrity = pool
+	plain.net_damage_cell(skin[1], shell, worth)
+	var hp_at_worth: float = plain.blocks[skin[1]]["hp"] if plain.has_block(skin[1]) else 0.0
+	var billed_at_worth := pool - plain.hull_integrity
+	_ok(absf(hp_at_one - hp_at_worth) < 0.01
+			and absf(hp_at_one - (full - shell)) < 0.01,
+		"the same shell takes the same %.0f hp off a cell at either worth (%.0f / %.0f)"
+			% [shell, full - hp_at_one, full - hp_at_worth])
+	_ok(absf(billed_at_worth - billed_at_one * worth) < 0.01,
+		"...while the POOL bill is %.0f at worth 1 and %.0f at worth %.2f"
+			% [billed_at_one, billed_at_worth, worth])
+	# BREAK IT ON PURPOSE: put BOTH dials back where v0.157.0 measured zero kills
+	# — a 600 pool and a shell worth its face value — and fire the same volleys
+	# into the same plating. BOTH, because either one alone restores the old
+	# fight (that is what makes them the owner's two sliders), so a check that
+	# reverted only the worth would pass for the wrong reason once the pool came
+	# down far enough to die to eight face-value shells anyway.
+	var old_pool := 600.0
+	plain.hull_integrity_max = old_pool
+	plain.hull_integrity = old_pool
+	var old_landed := 0
+	while plain.hull_integrity > 0.0 and old_landed < 8:
+		plain.net_damage_cell(skin[old_landed], shell, 1.0)
+		old_landed += 1
+	_ok(plain.hull_integrity > 0.0,
+		"...and at the OLD dials (pool %.0f, worth 1) it still flies after 8 volleys (%.0f left)"
+			% [old_pool, plain.hull_integrity])
+	print("    ~ pool %.0f, shell %.0f x worth %.2f = %.0f a landed volley"
+		% [pool, shell, worth, shell * worth])
+	picket.queue_free()
+	plain.queue_free()
 	await process_frame
 
 
@@ -1957,16 +2062,50 @@ func _check_the_breath(w: Node, pl, boss: Ship, roof: Rect2, cpx: float) -> void
 	# (there is 21,937 px of it) and put back afterwards; a hull parked over the
 	# den itself would be measuring a climb into stone.
 	#
+	# THE DROP IS 15,000 px, NOT 9,000, AND THAT NUMBER IS THE WHOLE OF A FLAKE
+	# (2026-09-07, found by the teardown round while looking for something else).
+	# At 9,000 the hull came to rest ON THE ROOF SLAB it was supposed to be clear
+	# of, about a quarter of the time. The arithmetic, all of it printed by the
+	# checks above: the slab is 230,994..231,186; the boss settles with its keel
+	# at 229,120 on one run and 229,305 on the next (it is a rigid body that has
+	# been flying, and where it comes to rest is not to the pixel); a 6,656 × 3,200
+	# body dropped 9,000 puts the maw somewhere in 234,920..238,120, so
+	# `maw - 6,000` lands anywhere in 228,920..232,120 — a window with the slab
+	# sitting in the middle of it. On the good side the starter climbed 735 px/s
+	# and the acceptance read 34 %; on the bad side it climbed 375 and the ratio
+	# went to -23 %, and the design claim took the blame for a hull caught on a
+	# rock. Measured on MAIN, 1 run in 3 (and 2 in 14 on the version before it),
+	# so it is nobody's regression — the margin was always this thin.
+	#
+	# 15,000 clears it outright: the check below now reports 11,152 px of daylight
+	# between the hull and the slab, and there is still 6,900 px of air over the
+	# lava at the other end (the keel check above measures 21,937 at rest, and the
+	# drop spends 15,000 of it). Everything the measurement is about
+	# is untouched — the maw stays exactly 6,000 px under the hull, well inside
+	# the 12,000 px reach — and the boss goes back to `den_was` either way.
+	#
 	# The period goes to its "continuous" position too (a cycle no longer than
 	# the tell): a rear arriving mid-measurement would read as a lull in the
 	# wind, and the rhythm is pinned by `run_tests._test_the_breath` already.
 	var den_was := boss.global_position
 	Tunables.set_value("dive_breath_period", DiveRun.BREATH_TELL_SECONDS)
-	boss.global_position = den_was + Vector2(0.0, 9000.0)
+	boss.global_position = den_was + Vector2(0.0, 15000.0)
 	boss.linear_velocity = Vector2.ZERO
 	await w.get_tree().physics_frame
 	maw = kai.maw_world()
 	var over_maw := maw - Vector2(0.0, 6000.0)
+	# ...AND THE PRECONDITION IS SAID OUT LOUD, because what went wrong at 9,000
+	# was invisible in the result: a hull resting on a rock reads as a design
+	# claim that failed. Now the air the measurement needs is asserted where it is
+	# needed, so the next geometry change that eats it gets a line naming itself
+	# instead of a number that looks like a verdict on the breath.
+	# The slab is the one piece of stone anywhere near here, and this function is
+	# handed it, so the question is asked of the rectangle rather than of the
+	# terrain: does the box the hull will occupy touch the roof?
+	var box := Rect2(over_maw - Vector2(2000.0, 1500.0), Vector2(4000.0, 3000.0))
+	_ok(not box.intersects(roof),
+		"the climb is measured in CLEAR AIR, %.0f px below the den's roof slab"
+			% (over_maw.y - roof.end.y))
 	var hull: Ship = w.get("fleet").call("spawn_ship_from_cells",
 		ShipLayout.upscale_cells(ShipLayout.load_cells("res://ships/starter.ship"), 8),
 		over_maw, 0, 0.0, scale, 0)
@@ -2488,7 +2627,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 		# hulk from it is the same body the sky would have stood there.
 		picket = w.call("_dive_spawn_picket", "hulk",
 			pl.global_position + Vector2(9000.0, 0.0)) as Ship
-		await w.get_tree().physics_frame
+		await _step_the_wake_held(w)
 	_ok(picket != null and is_instance_valid(picket) and picket.has_helm(),
 		"a crewed picket to leave alone at depth 2")
 	if picket == null:
@@ -2522,7 +2661,11 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 		terr.flush_rebuilds()
 	picket.global_position = spot
 	picket.linear_velocity = Vector2.ZERO
-	await w.get_tree().physics_frame
+	await _step_the_wake_held(w)
+	if not is_instance_valid(picket):
+		_ok(false, "the picket survives the frame that parks it (the wake cull took it)")
+		Tunables.reset_all()
+		return
 	# JAM THE STICK, then kill the driver: exactly the sequence a shell through
 	# the panel produces.
 	picket.net_set_controls(0.4, -1.0)
@@ -2533,7 +2676,11 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 			npc.queue_free()
 	var y0: float = picket.global_position.y
 	for i in 180:
-		await w.get_tree().physics_frame
+		await _step_the_wake_held(w)
+	if not is_instance_valid(picket):
+		_ok(false, "the picket outlives its own measurement (the wake cull took it)")
+		Tunables.reset_all()
+		return
 	var centred_fall: float = picket.global_position.y - y0
 	_ok(is_zero_approx(picket.thrust_input.y),
 		"a dead driver leaves the stick CENTRED, not frozen (%.2f)"
@@ -2546,11 +2693,19 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	picket.global_position = Vector2(spot.x, rung_y)
 	picket.linear_velocity = Vector2.ZERO
 	picket.net_set_controls(0.4, -1.0)
-	await w.get_tree().physics_frame
+	await _step_the_wake_held(w)
+	if not is_instance_valid(picket):
+		_ok(false, "...and survives the frame that re-parks it (the wake cull took it)")
+		Tunables.reset_all()
+		return
 	_ok(not is_zero_approx(picket.thrust_input.y),
 		"...and the world does not fight a stick set on purpose (one centring, not a loop)")
 	for i in 180:
-		await w.get_tree().physics_frame
+		await _step_the_wake_held(w)
+	if not is_instance_valid(picket):
+		_ok(false, "...and outlives the counterfactual too (the wake cull took it)")
+		Tunables.reset_all()
+		return
 	var jammed_fall: float = picket.global_position.y - rung_y
 	_ok(centred_fall < jammed_fall * 0.7,
 		"a centred picket keeps its rung far better than a jammed one (%.0f px vs %.0f in 3 s)"
@@ -2559,6 +2714,54 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 		"...in the run's floored air (%.2f at depth 2, real air 0.23)"
 			% picket.air_density_at(picket.global_position.y))
 	Tunables.reset_all()
+
+
+## THE WAKE CULL IS NOT WHAT THE CHECK ABOVE MEASURES — and it can quietly end it.
+##
+## `world._dive_cull_the_wake` frees any `_dive_surged` hull more than
+## DIVE_CULL_RUNGS (1.5) rungs from the body, once per second of run time. This
+## check parks its picket 9,000 px across, at depth 2's altitude, from wherever
+## the previous check left the player, and then runs three real seconds of world
+## TWICE. When that geometry falls outside the leash the cull takes the picket
+## mid-measurement — and the next line down read `picket.global_position` on a
+## freed node with no guard in front of it.
+##
+## THIS IS THE FLAKE, and it is no longer a guess (2026-09-07, second pass).
+## Forced once on purpose — the cull clock set one frame short of firing and the
+## player parked 200,000 px off, which is a geometry a run's own seed can hand you
+## — the suite logged `Nonexistent function 'net_set_controls' in base 'previously
+## freed'` at exactly this check, abandoned the function, ran 296 checks instead of
+## 301 and reddened at MIN_CHECKS. That is the BACKLOG line's message, site and
+## silence, reproduced. What makes it a lottery in the wild is the GROUND SEED, not
+## the clock: the leash is measured from the nearest player, and whether the run
+## has left the player within 1.5 rungs of a spot 9,000 px off the centre line
+## depends on where this seed put its landings — hence "about one run in five",
+## and hence 19 consecutive clean runs while looking for it.
+##
+## So time only advances here through `_step_the_wake_held`, which holds the cull
+## on BOTH sides of every frame this check takes. The first pass held it inside the
+## two 180-frame measurement loops only, and left three bare `await`s — the
+## reposition, the re-park and the spawn — each of which is a whole second of
+## accumulated clock away from firing. One frame with the clock held cannot reach
+## 1.0, so the cull cannot land between a write to the picket and the read after it.
+##
+## Held off rather than worked around, because the cull ALREADY has its own check
+## (`_check_dive_garrison_materializes` §4b, "a cleared sky stays cleared"). The
+## world otherwise ticks exactly as it does in play — this suppresses only the one
+## system whose job is to delete the subject of the measurement. The validity
+## guards beside each step are the belt to this braces: if the picket is ever taken
+## anyway, the check SAYS so instead of vanishing.
+func _hold_the_wake(w: Node) -> void:
+	w.set("_dive_cull_clock", 0.0)
+
+
+## One frame of world with the wake cull held off across it. Held BEFORE the frame
+## (so that frame's tick cannot be the one that fires) and again after (so the
+## caller's next line, and the frame after that, start from zero as well).
+func _step_the_wake_held(w: Node) -> void:
+	_hold_the_wake(w)
+	await w.get_tree().physics_frame
+	_hold_the_wake(w)
 
 
 ## THE LADDER, in a real sky (Q-V, DESIGN_DESCENT §11 — SUPERSEDES the seal's
@@ -3855,7 +4058,12 @@ func _write_user_ship(basename: String, body: String) -> void:
 	f.close()
 
 
+## Checks actually reached, pass or fail — the count the floor below guards.
+var checks := 0
+
+
 func _ok(condition: bool, detail: String) -> void:
+	checks += 1
 	if condition:
 		print("    ok   %s" % detail)
 	else:
@@ -3863,10 +4071,98 @@ func _ok(condition: bool, detail: String) -> void:
 		print("    FAIL %s" % detail)
 
 
+## THE TREE AS THE SUITE FOUND IT: root's children before the first world is
+## instantiated — i.e. the autoloads, which are the engine's, not the suite's.
+## `_teardown` frees everything that is NOT in here.
+var _boot_nodes := {}
+
+
+## A DETERMINISTIC TEARDOWN (2026-09-07).
+##
+## The suite called `quit()` the instant the last check printed, and handed the
+## engine whatever was still in the tree. "At teardown" is where the `previously
+## freed` line was reported (BACKLOG, v0.140.0), so what the engine finds there
+## should not be left to chance.
+##
+## So the suite takes its own world apart, in a fixed order, before it quits:
+##
+##   1. STOP THE CLOCK FIRST. `PROCESS_MODE_DISABLED` on every node the suite
+##      added means no `_process`/`_physics_process` can run again — so no world
+##      can take one more system pass over a fleet that is being dismantled, and
+##      no AI can read a body that the step before it freed. This is the line that
+##      would remove such a race; the freeing below is then just tidiness.
+##   2. DROP EVERYTHING, autoloads excepted (`Net`, `Tunables`, `Profile` and the
+##      rest are the engine's children, and freeing them mid-shutdown would
+##      invent the very problem this removes).
+##
+## HONESTLY MEASURED: on the full happy path this reports 0 — every check already
+## frees what it built, so the tree really is empty by the time `_finish` runs.
+## Where it earns its keep is the DOZEN EARLY EXITS (`return _finish()` from a
+## failed load, a missing fleet, a missing player…): those quit with a live world
+## still ticking, which is the one shape of teardown the suite could not describe.
+## And it makes the count printable, so "the tree was empty" stops being an
+## assumption and becomes a line in the log.
+##
+## No `await`: `_finish` is reached through `return _finish()`, so it must stay a
+## plain function. Nothing needs a frame here — with processing off there is
+## nothing left to be raced against, and `quit()` flushes the queue itself.
+func _teardown() -> void:
+	var taken := 0
+	for child in root.get_children():
+		if _boot_nodes.has(child.get_instance_id()):
+			continue
+		child.process_mode = Node.PROCESS_MODE_DISABLED
+		if not child.is_queued_for_deletion():
+			child.queue_free()
+		taken += 1
+	print("    ~ teardown: %d node(s) the suite added stopped and dropped before quit"
+		% taken)
+
+
+## THE FLOOR UNDER THE CHECK COUNT — the fix for "the suite still passes".
+##
+## A GDScript runtime error does not stop the program: it ABANDONS THE RUNNING
+## FUNCTION and hands control back to the caller (measured 2026-09-07 with a
+## throwaway probe — `n.free()` then `n.global_position` logged the flake's exact
+## line, the four `_ok`s after it never ran, and the harness printed PASS). So a
+## check that touches a body the world freed under it does not redden anything;
+## it just stops early, and the ONLY visible trace is a stderr line and a suite
+## that quietly ran fewer checks than it used to. That is precisely how the
+## `previously freed` flake could live for four versions while the suite reported
+## PASS every time (BACKLOG, v0.140.0) — and why it was never reproduced with a
+## backtrace: nothing was looking for a missing check.
+##
+## A count is therefore the detector, and it costs one integer. The count is
+## STABLE across seeds — 268 on all 14 consecutive runs measured at v0.156.0,
+## failures included, 301 with the Descent seal's checks (v0.158.0) and 302 with
+## the clear-air precondition on the breath acceptance — and the only legitimate
+## way to run fewer is the host-bind SKIP, which is worth two. So the floor sits
+## two under the current count: an abandoned check loses several at once and
+## reddens here, with a message that says what happened.
+##
+## BROKEN ONCE, ON PURPOSE (2026-09-07): a freed node touched inside
+## `_check_dive_picket_holds_its_rung` logged the flake's exact line, cost four
+## checks (301 -> 297) and turned the suite RED here — where without this constant
+## it would have printed PASS over a stderr line nobody was counting.
+##
+## RAISE THIS when the suite gains checks (that is the whole maintenance cost, and
+## it is what keeps the guard tight); LOWER it only with a reason, the same
+## discipline `config/version` gets. It is a contract, not a coincidence.
+const MIN_CHECKS := 300
+
+
 func _finish() -> void:
+	_teardown()
+	if checks < MIN_CHECKS:
+		failures += 1
+		print("\n    FAIL only %d checks ran, floor is %d — a check was ABANDONED"
+			% [checks, MIN_CHECKS])
+		print("         (a GDScript runtime error quits the function it is in and"
+			+ " nothing else; look above for SCRIPT ERROR)")
 	if failures == 0:
-		print("\nSCALE STARTUP: PASS\n")
+		print("\nSCALE STARTUP: PASS — %d checks\n" % checks)
 		quit(0)
 	else:
-		print("\nSCALE STARTUP: FAIL — %d problem(s)\n" % failures)
+		print("\nSCALE STARTUP: FAIL — %d problem(s) in %d checks\n"
+			% [failures, checks])
 		quit(1)

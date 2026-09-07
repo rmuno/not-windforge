@@ -693,6 +693,8 @@ func _initialize() -> void:
 	var pinned := _seed_from_args()
 	if pinned != 0:
 		world.call("pin_dive_seed", pinned)
+	# ...and the DIALS, before the run opens, so a balance A/B is one build.
+	_apply_lever_args()
 	world.call("begin_dive")
 	await _frames(10)
 	_report("on the launch deck")
@@ -1445,6 +1447,36 @@ func _seed_from_args() -> int:
 	return 0
 
 
+## `--lever id=value`, repeatable: set F2 levers before the run opens.
+##
+## A BALANCE ROUND'S BEFORE AND AFTER HAVE TO BE THE SAME BINARY (v0.160.0). The
+## seed pins the sky; this pins the dials, so "what did changing the shell's
+## worth do" is one build, one seed, two lever sets — rather than two checkouts
+## whose OTHER differences ride along in the numbers. Prints what it set, because
+## a probe run is only quotable with its conditions printed.
+##
+##   --script tools/dive_probe.gd -- --seed 565218463 --lever dive_shell_worth=1
+func _apply_lever_args() -> void:
+	var args := OS.get_cmdline_user_args()
+	var set_line := ""
+	for i in args.size():
+		if String(args[i]) != "--lever" or i + 1 >= args.size():
+			continue
+		var pair := String(args[i + 1]).split("=", true, 1)
+		if pair.size() != 2:
+			continue
+		var id := pair[0]
+		if Tunables.def(id).is_empty():
+			print("LEVERS: no such lever '%s' — ignored" % id)
+			continue
+		var kind := String(Tunables.def(id)["kind"])
+		var value: Variant = pair[1].to_lower() in ["1", "true", "on"] \
+			if kind == "bool" else float(pair[1])
+		set_line += "%s=%s " % [id, str(Tunables.set_value(id, value))]
+	if set_line != "":
+		print("LEVERS: %s(everything else at its shipped default)" % set_line)
+
+
 func _frames(n: int) -> void:
 	for i in n:
 		await world.get_tree().physics_frame
@@ -1514,12 +1546,16 @@ func _components_line(hull) -> String:
 		return "no glyph clusters (all raw structure)"
 	var shell: float = Tunables.get_num("turret_damage")
 	var pool: float = hull.hull_integrity_max
-	# The pool bill of one shell into that cluster: capped at the cell's own hp.
+	# The pool bill of one shell into that cluster: capped at the cell's own hp
+	# (v0.149.0, a component is billed once), then multiplied by WHAT A SHELL IS
+	# WORTH (v0.160.0) — the same cap-then-scale order Ship.damage_cell uses, so
+	# this line quotes the arithmetic the game will actually run rather than the
+	# pre-lever number it printed for two rounds.
 	var cell_hp := 0.0
 	var wc: Vector2i = sample[worst_key]
 	if hull.blocks.has(wc):
 		cell_hp = BlockDB.max_hp(int(hull.blocks[wc]["type"]))
-	var bill := minf(shell, cell_hp)
+	var bill := minf(shell, cell_hp) * maxf(Tunables.get_num("dive_shell_worth"), 0.0)
 	return ("biggest cluster per glyph (cells×clusters) %s| one %.0f-damage shell into '%s' "
 		+ "reaches %d cells (%.0f hp each) and bills the pool %.0f of %.0f "
 		+ "— %.0f such hits before the pool is gone") % [
