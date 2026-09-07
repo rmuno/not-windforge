@@ -8390,6 +8390,12 @@ func _step_systems(delta: float) -> void:
 		(e[1] as Callable).call(delta)
 		var ms := float(Time.get_ticks_usec() - t0) * 0.001
 		_sys_ms[e[0]] = float(_sys_ms.get(e[0], 0.0)) + ms
+		# ...and the same measurement into the per-body ledger while a probe is
+		# holding that stopwatch, purely for its PEAK column: `_sys_ms` is a
+		# running sum and cannot tell "2 ms every tick" from "400 ms once a
+		# second", which are different bugs with the same average.
+		if TickPerf.on:
+			TickPerf.bill("sys: " + String(e[0]), t0)
 
 
 ## The accumulated per-system milliseconds, and RESET — the diagnostic calls

@@ -32,7 +32,7 @@ extends SceneTree
 ## does compiles that class before the autoloads exist.
 
 const WARMUP := 90       ## ticks to settle after the population stands up
-const SAMPLE := 240      ## ticks measured
+const SAMPLE := 600      ## ticks measured (the engine step monitor updates once a second)
 
 var world: Node = null
 var fleet = null
@@ -137,8 +137,20 @@ func _initialize() -> void:
 	var t0 := Time.get_ticks_usec()
 	var f0 := Engine.get_physics_frames()
 	var d0 := Engine.get_process_frames()
+	# THE ENGINE'S OWN STOPWATCH ON THE STEP. Wall-clock per tick is only a load
+	# figure while the loop is SATURATED: under budget Godot SLEEPS to hold 60 Hz
+	# and every measurement pins to 16.7 ms whatever the tick actually cost — the
+	# trap `tools/tick_probe.gd` already carries a warning about. This monitor is
+	# `physics_process_max`: the longest single physics step (callbacks AND the
+	# server's own step) inside the last second, with no sleep in it. It is also
+	# exactly what the F3 log's `phys` column reports, so a number here is
+	# directly comparable to the owner's capture.
+	var phys_seen: Array = []
 	for i in SAMPLE:
 		await physics_frame
+		var pm := Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
+		if phys_seen.is_empty() or absf(float(phys_seen[-1]) - pm) > 0.0001:
+			phys_seen.append(pm)
 		# The swarm dies as it flies (rock is close at the floor). Keep the
 		# population the capture had, or the second half of the sample measures a
 		# quieter world than the first.
@@ -168,11 +180,14 @@ func _initialize() -> void:
 	var probe_ms := 0.0
 	var phys_rows: Array = []
 	var idle_rows: Array = []
+	var sys_rows: Array = []
 	for r in perf.rows(ticks):
-		if String(r[0]).begins_with("probe: "):
+		if String(r[0]).begins_with("sys: "):
+			# Already counted inside the `world` row — carried for its PEAK.
+			sys_rows.append(r)
+		elif String(r[0]).begins_with("probe: "):
 			probe_ms += float(r[1])
-			continue
-		if String(r[0]).begins_with("idle: "):
+		elif String(r[0]).begins_with("idle: "):
 			idle_rows.append(r)
 			idle_ms += float(r[1])
 		else:
@@ -180,21 +195,37 @@ func _initialize() -> void:
 			phys_ms += float(r[1])
 	print("\n--- WHO SPENT THE TICK (%d ticks / %d drawn frames sampled) ---"
 		% [ticks, drawn])
-	print("%-34s %9s %9s" % ["callback", "ms/tick", "calls"])
+	print("%-34s %9s %9s %9s" % ["callback", "ms/tick", "calls", "worst"])
 	for r in phys_rows:
 		if float(r[1]) < 0.005:
 			continue
-		print("%-34s %9.3f %9.1f" % [String(r[0]), float(r[1]), float(r[2])])
+		print("%-34s %9.3f %9.1f %9.3f"
+			% [String(r[0]), float(r[1]), float(r[2]), float(r[3])])
 	print("%-34s %9.3f" % ["  physics-side script", phys_ms])
 	print("%-34s %9.3f   (%.3f ms per IDLE frame)"
 		% ["  idle-side script, amortised", idle_ms,
 			idle_ms * float(ticks) / float(drawn)])
 	print("%-34s %9.3f   <- the harness's own node churn, not the game"
 		% ["  the probe itself", probe_ms])
-	print("%-34s %9.3f   <- the physics server itself (2D solver + broadphase)"
-		% ["  servers + engine (remainder)",
-			maxf(wall - phys_ms - idle_ms - probe_ms, 0.0)])
-	print("%-34s %9.3f" % ["WALL PER TICK", wall])
+	# The worst step the engine timed, and the typical one. `phys_seen` holds one
+	# entry per second of sample, so a handful of numbers: both are printed
+	# because a floor tick that is fine on average and 40 ms once a second still
+	# reads as a stutter, and only the pair says which is happening.
+	var step_max := 0.0
+	var step_sum := 0.0
+	for v in phys_seen:
+		step_max = maxf(step_max, float(v))
+		step_sum += float(v)
+	var step_avg: float = step_sum / float(maxi(phys_seen.size(), 1))
+	# NOT comparable to the mean above, and deliberately printed apart from it:
+	# this monitor is a per-second MAXIMUM, so it answers "how bad does a step
+	# get" while the rows answer "what does a step cost". A mean under budget
+	# with a 300 ms worst is a STUTTER (a spawn, a rebuild); a mean over budget
+	# is the spiral. The `worst` column on every row above says which is which.
+	print("%-34s %9.3f   (worst %.3f, %d samples) <- the F3 log's `phys`"
+		% ["PHYSICS STEP, worst per second", step_avg, step_max, phys_seen.size()])
+	print("%-34s %9.3f   (60 Hz pacing floor: 16.7 — under it the loop SLEEPS)"
+		% ["wall per tick", wall])
 	if not idle_rows.is_empty():
 		print("\n--- ...and the IDLE frame (ms per idle frame) ---")
 		for r in idle_rows:
@@ -204,17 +235,14 @@ func _initialize() -> void:
 			print("%-34s %9.3f" % [String(r[0]), per_frame])
 
 	print("\n--- ...and inside `world` (the SYS line's systems) ---")
-	var sys_rows: Array = []
 	var sys_total := 0.0
 	for key in sys:
-		var ms: float = float(sys[key]) / float(maxi(ticks, 1))
-		sys_total += ms
-		sys_rows.append([key, ms])
-	sys_rows.sort_custom(func(a, b) -> bool: return float(a[1]) > float(b[1]))
+		sys_total += float(sys[key]) / float(maxi(ticks, 1))
+	print("%-34s %9s %9s" % ["system", "ms/tick", "worst"])
 	for r in sys_rows:
 		if float(r[1]) < 0.005:
 			continue
-		print("%-34s %9.3f" % [String(r[0]), float(r[1])])
+		print("%-34s %9.3f %9.3f" % [String(r[0]), float(r[1]), float(r[3])])
 	print("%-34s %9.3f" % ["SYS TOTAL", sys_total])
 
 	# THE NUMBER THE OWNER SEES. Godot runs up to `max_physics_steps_per_frame`
@@ -222,11 +250,11 @@ func _initialize() -> void:
 	# costs all of them, which is the spiral the capture recorded.
 	var ceiling := int(ProjectSettings.get_setting(
 		"physics/common/max_physics_steps_per_frame", 8))
-	var steps := 1 if wall <= 1000.0 / 60.0 else ceiling
-	print("\nRENDERED FRAME ESTIMATE: %.1f ms/tick x %d catch-up steps = %.0f ms/frame"
-		% [wall, steps, wall * float(steps)])
-	print("  ~%.1f fps before the renderer has drawn anything (budget: 16.7 ms/tick)"
-		% (1000.0 / maxf(wall * float(steps), 0.001)))
+	var steps := 1 if step_avg <= 1000.0 / 60.0 else ceiling
+	print("\nRENDERED FRAME ESTIMATE: %.1f ms/step x %d catch-up steps = %.0f ms/frame"
+		% [step_avg, steps, step_avg * float(steps)])
+	print("  ~%.1f fps before the renderer has drawn anything (budget: 16.7 ms/step)"
+		% (1000.0 / maxf(step_avg * float(steps), 0.001)))
 	quit(0)
 
 

@@ -1530,7 +1530,20 @@ func set_dormant(on: bool) -> void:
 var rebuild_count := 0
 
 
+## A REBUILD IS THE MOST EXPENSIVE THING A SHIP DOES, so it bills itself when a
+## probe is holding the stopwatch (debug/tick_perf.gd). It is what a SPAWN costs
+## (`floor_tick_probe` measured a floor spawn as the worst step in a run) and
+## what damage costs, and a mean alone cannot separate the two.
 func rebuild() -> void:
+	if not TickPerf.on:
+		_do_rebuild()
+		return
+	var t0 := Time.get_ticks_usec()
+	_do_rebuild()
+	TickPerf.bill("rebuild " + perf_label(), t0)
+
+
+func _do_rebuild() -> void:
 	rebuild_count += 1
 	# Instrumentation: count every rebuild so the diagnostic can surface a
 	# rebuild storm (the FPS suspect). Inert — a lone int, read+reset by the
@@ -2244,11 +2257,17 @@ func _power_ratio() -> float:
 ## leviathan" and "a 4,000-cell hull" are different findings and a generic
 ## "ships" row hides which one is the bill. Cached: it is only ever asked while
 ## the stopwatch is on, and a body's kind never changes.
+## Cached against the KIND, not merely against emptiness: a creature is spawned
+## as a plain hull and told what it is a moment later (`world._spawn_one_kraken`
+## sets `creature_kind` between the spawn and the rebuild), so a label latched at
+## the first callback would file every kraken in the game under "hull".
 var _perf_label := ""
+var _perf_kind := ""
 func perf_label() -> String:
-	if _perf_label.is_empty():
-		var kind := creature_kind if creature_kind != "" else (
-			"nest" if is_nest else "hull")
+	var kind := creature_kind if creature_kind != "" else (
+		"nest" if is_nest else "hull")
+	if _perf_label.is_empty() or _perf_kind != kind:
+		_perf_kind = kind
 		_perf_label = "%s(%d)" % [kind, blocks.size()]
 	return _perf_label
 

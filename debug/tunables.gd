@@ -463,6 +463,23 @@ const _REGISTRY := [
 		"kind": KIND_INT, "default": 12, "min": 2, "max": 400, "step": 1,
 		"note": "next rebuild",
 		"tip": "Cells per collider box: small traces the silhouette at a physics cost, huge collapses the creature to one old-style AABB."},   # Ship._coarse_creature_rects
+	# --- Perf: the honest-degradation lever (2026-09-07) ---------------------
+	# Not a balance dial. When a physics step overruns its 16.7 ms budget Godot
+	# runs CATCH-UP steps — up to this many per drawn frame — so one slow tick
+	# costs the frame eight of them and the frame rate falls off a cliff while
+	# the simulation stays at real-time speed. That is the 1 fps in the owner's
+	# 2026-09-07 floor capture: `ticks=7-8` next to `fps=1`.
+	#
+	# Lowering it does NOT make the tick cheaper. It changes what OVERRUN LOOKS
+	# LIKE: at 2-3 the engine stops trying to catch up, so the world runs in
+	# slow motion at a frame rate you can still see and steer by, instead of
+	# running at correct speed inside a slideshow. Slow-motion-but-playable beats
+	# real-time-but-frozen when the machine cannot keep up — but it is a lie
+	# about time (a run's clock, a fall, a fuse all slow with it), so the DEFAULT
+	# STAYS 8, which is Godot's own and what every measurement here assumes.
+	{"id": "physics_catchup_steps", "label": "Physics catch-up steps", "group": "Perf",
+		"kind": KIND_INT, "default": 8, "min": 1, "max": 8, "step": 1,
+		"tip": "Physics steps Godot may run per drawn frame to catch up after a slow one. 8 is the engine default: correct time, 1 fps when it cannot keep up. 2-3 degrades into slow motion you can still see and steer by."},   # Engine.max_physics_steps_per_frame
 	{"id": "creature_facing_dwell", "label": "Facing turn dwell", "group": "Whale",
 		"kind": KIND_FLOAT, "default": 0.35, "min": 0.0, "max": 3.0, "step": 0.05,
 		"tip": "Seconds a creature must want the OTHER facing before its drawn body turns around. 0 is the old instant flip, which strobed ~18 times a second in a crowd at the Dive floor."},   # Ship.FACING_FLIP_DWELL
