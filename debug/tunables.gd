@@ -144,6 +144,18 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 1.0, "min": 0.25, "max": 6.0, "step": 0.25,
 		"note": "next depth 8",
 		"tip": "Clear air between the Leviathan's back and the roof's underside, in body heights. 1 is a body's room to rear and heave."},   # world._dive_cut_den_roof
+	# THE BREATH (DESIGN_KRAKEN §6 phase 2). The Leviathan's inhale is a WIND —
+	# one more term of the run's weather — so its levers sit with the run's other
+	# weather rather than in Combat with the grab.
+	{"id": "dive_breath", "label": "The Leviathan inhales", "group": "Dive",
+		"kind": KIND_BOOL, "default": true,
+		"tip": "On, the boss's second phase pulls everything nearby toward its mouth. Off silences the inhale AND its tell; the phases and the phase-3 retreat stay."},   # KrakenAI._breath_armed
+	{"id": "dive_breath_mult", "label": "Breath strength", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 3.0, "step": 0.05,
+		"tip": "Multiplier on the inhale's airstream (672 px/s at the maw at 8x). Above ~1.4 it beats a full climb and starts to trap; 1.07 is the design's proposed 720."},   # world._dive_breath_at
+	{"id": "dive_breath_period", "label": "Breath period", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 6.0, "min": 1.2, "max": 20.0, "step": 0.5,
+		"tip": "Seconds of one breath cycle: it rears for the first 1.2 s (the tell), then inhales for the rest. 1.2 or below makes the pull continuous."},   # KrakenAI.breath_pull
 	{"id": "dive_assistant", "label": "Assistant mans repairs", "group": "Dive",
 		"kind": KIND_BOOL, "default": true,
 		"tip": "On, a run posts an assistant at the repair station. Off means no station and no crew — the X wand is the only mend."},   # world._dive_post_the_assistant

@@ -124,6 +124,162 @@ static func weather_wind(zone_kind: String, over_rungs: float,
 		* ceiling_mult
 	return Vector2(0.0, vy)
 
+
+# --- THE BREATH (DESIGN_KRAKEN §6 phase 2, designer A §2.1) -----------------
+#
+# The Leviathan's inhale is A WIND, not a force and not a tentacle: one more
+# term of the run's weather, stamped on `Ship.extra_wind` exactly as the ring's
+# lean and the closing sky are. Everything follows from that one decision:
+#
+#   * IT TAXES THE STICK AND NEVER TRAPS. The rate controller measures its
+#     `v_up` RELATIVE TO THE AIR, so a wind slower than `dive_climb_rate`
+#     leaves the difference as authority. BREATH_SPEED is deliberately under
+#     that rate — see the constant.
+#   * IT IS SYMMETRIC. The world stamps the weather on every body it is flying
+#     (DESCENT call 7), so the depth's own pickets ride the inhale into the
+#     jaws exactly as you do. The one exclusion is the SOURCE: a maw that
+#     inhales itself is a body flying into its own mouth.
+#   * IT COMPOSES. Two winds on one axis must never null the stick — see
+#     `breath_compose`, which is designer A's own mitigation (its risk 2).
+#
+# The functions below are pure and total, so the whole of the breath — its
+# phases, its rhythm, its field and its composition — is assertable with no
+# body, no world and no physics.
+
+## The inhale's airstream speed AT THE MAW, px/s at scale 1 (the world multiplies
+## by `world_scale`). 66 → 528 px/s at the shipped 8×.
+##
+## THE NUMBER CAME OFF THE HULL, NOT OFF THE STICK, and that is the whole story
+## of this constant. Designer A sized the breath against `dive_climb_rate`
+## (120 → 960 px/s at 8×) and proposed 720, "less than a full climb". But the
+## rate controller COMMANDS 960 and the shipped starter at the floor only
+## DELIVERS 735 (measured, `scale_startup_test._check_the_breath`) — its props
+## run out before the stick does. Against the real 735 a 720 px/s inhale leaves
+## about 2 % authority, which is the trap the design forbids: measured at 672 it
+## was 16 %, still under the bar. At 528 the same measurement comes back around
+## a third of a free climb, which is heavy pressure you can still fly out of.
+##
+## `dive_breath_mult` is the owner's dial if that reads soft (1.36 is designer
+## A's 720); the acceptance measurement is what should move it, not the paper.
+const BREATH_SPEED := 66.0
+## How far the inhale reaches, px at scale 1. 1,500 → 12,000 px at 8× — the
+## design's figure, and a good deal further than the 560 px grab it feeds.
+const BREATH_REACH := 1500.0
+## THE EDGE (designer A: the breath needs "a readable EDGE"). Full strength
+## inside this fraction of the reach, smoothly gone by the reach itself, so
+## crossing into it is a felt event and not a gradient with no boundary.
+const BREATH_EDGE_FRAC := 0.55
+
+## The pool fractions that bound the fight's three phases (§6): P1 the hunter,
+## down to BREATH_PHASE_2; P2 the breath, down to BREATH_PHASE_3; P3 the sink.
+##
+## THE PHASE IS THE TINT, literally: `Ship._creature_tint` shades a living body
+## by `roundi(frac × 5)`, and 0.70 × 5 = 3.5, 0.30 × 5 = 1.5 are exactly the
+## half-steps that rounding straddles. The body therefore darkens ONE STEP on
+## the frame each phase begins, with no new rendering code at all — which is
+## what the design means by "the body darkens by the existing tint steps".
+const BREATH_PHASE_2 := 0.70
+const BREATH_PHASE_3 := 0.30
+
+## THE TELL, in seconds: it rears before every inhale (designer A — a HELD pose,
+## brain-driven rather than velocity-driven). There is no pull at all during it,
+## so the tell can never arrive alongside the thing it announces.
+const BREATH_TELL_SECONDS := 1.2
+## The default cycle, tell + inhale (F2 `dive_breath_period`). Menace is uptime
+## (designer A), so most of a cycle is the pull.
+const BREATH_PERIOD := 6.0
+## How long the pull takes to come up once the tell is over. A wind that arrives
+## at full strength in one frame reads as a teleport, not as a breath.
+const BREATH_RAMP := 0.4
+
+
+## WHICH PHASE a Leviathan at pool fraction `frac` is in: 1 the hunter, 2 the
+## breath, 3 the sink. Monotone and total — a pool that only falls walks
+## 1 → 2 → 3 and never back.
+static func breath_phase(frac: float) -> int:
+	if frac > BREATH_PHASE_2:
+		return 1
+	return 2 if frac > BREATH_PHASE_3 else 3
+
+
+## IS IT REARING? True for the first BREATH_TELL_SECONDS of every cycle. A period
+## at or below the tell is the lever's "no rhythm" position: the pull is then
+## continuous, and there is nothing left to announce.
+static func breath_telling(t: float, period: float) -> bool:
+	if period <= BREATH_TELL_SECONDS:
+		return false
+	return fposmod(t, period) < BREATH_TELL_SECONDS
+
+
+## THE CYCLE, as a 0..1 pull strength: nothing while it rears, then a ramp to
+## full for the rest of the period. `breath_telling` is exactly its zero region,
+## which is what makes "the tell precedes the pull" a property instead of a
+## comment.
+static func breath_cycle(t: float, period: float) -> float:
+	if period <= BREATH_TELL_SECONDS:
+		return 1.0
+	var u := fposmod(t, period) - BREATH_TELL_SECONDS
+	if u <= 0.0:
+		return 0.0
+	return clampf(u / maxf(BREATH_RAMP, 0.001), 0.0, 1.0)
+
+
+## THE FIELD, px/s at scale 1: the airstream at a point `rel` px (scale 1) FROM
+## THE MAW, for a pull of `pull` (0..1) and the F2 strength `mult`. Toward the
+## maw, full inside the edge, nothing at or beyond the reach.
+##
+## Symmetric by construction: the vector depends on the offset alone, so a
+## picket on the far side is pulled toward the same mouth the player is.
+static func breath_wind(rel: Vector2, pull: float, mult: float) -> Vector2:
+	if pull <= 0.0 or mult <= 0.0:
+		return Vector2.ZERO
+	var d := rel.length()
+	if d <= 0.001 or d >= BREATH_REACH:
+		return Vector2.ZERO
+	var edge := 1.0 - smoothstep(BREATH_EDGE_FRAC * BREATH_REACH, BREATH_REACH, d)
+	return -rel / d * BREATH_SPEED * pull * mult * edge
+
+
+## COMPOSE THE BREATH ONTO THE REST OF THE WEATHER (designer A's risk 2 — "two
+## sources on one axis": the closing sky already runs at 2,400 px/s down at 8×,
+## and a breath stacked on top of that would null the stick outright).
+##
+## THE RULE IS A CAP, NOT A BUDGET: the composed vertical air may reach the
+## STRONGER of the two sources (`max(|base.y|, BREATH_SPEED)`) and no further.
+## Three consequences, and the middle one is the whole mitigation:
+##
+##   * in still air the inhale arrives whole (the cap is its own speed);
+##   * a sky already at or past BREATH_SPEED swallows everything the breath
+##     would ADD to it — a leash at cap plus an inhale pulling the same way is
+##     just the leash, so the two can never compound into a dead stick;
+##   * but an inhale pulling AGAINST that sky still counts, because it makes the
+##     air slower, not faster. A maw above you in a downdraft is exactly the
+##     moment the breath is most worth feeling, and the first cut of this rule
+##     (room left under BREATH_SPEED, clamped symmetrically) refused it — which
+##     made the inhale vertically inert everywhere in the ring the sky was
+##     blowing at all, which is most of depth 8.
+##
+## Its horizontal pull, which the sky has no term for, always survives.
+##
+## The consequence the acceptance rests on is unchanged: the breath can never
+## make the vertical stream faster than it already was beyond BREATH_SPEED, so
+## stick authority inside it is bounded below by `1 − BREATH_SPEED / climb_rate`
+## whatever the sky is doing.
+static func breath_compose(base: Vector2, breath: Vector2) -> Vector2:
+	if breath == Vector2.ZERO:
+		return base
+	var cap := maxf(absf(base.y), BREATH_SPEED)
+	return Vector2(base.x + breath.x, clampf(base.y + breath.y, -cap, cap))
+
+
+## What fraction of a commanded climb of `climb_rate` survives a full inhale —
+## the design's acceptance number as arithmetic. Both speeds at the same scale.
+static func breath_stick_authority(climb_rate: float) -> float:
+	if climb_rate <= 0.0:
+		return 0.0
+	return clampf((climb_rate - BREATH_SPEED) / climb_rate, 0.0, 1.0)
+
+
 ## DYING. One pool, one life (owner 2026-08-31: "where did the 3 lives come
 ## from? just do 100 hp for the player"). The old three-deaths-with-a-pot-cut
 ## respawn loop is gone: your GRIT pool is the whole story, and when it empties

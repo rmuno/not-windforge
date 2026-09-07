@@ -3451,6 +3451,138 @@ func _test_dive_weather() -> void:
 		"the capped leash is a few times the climb, not the ten-fold rail it replaced")
 
 	_test_dive_draft_band()
+	_test_the_breath(climb)
+
+
+## THE BREATH (DESIGN_KRAKEN §6 phase 2 / §7 slice 6, designer A §2.1) — the
+## Leviathan's inhale as one more term of the run's weather.
+##
+## The acceptance the design names is a number: **stick authority inside the
+## breath ≥ 25 %**. That is arithmetic on two speeds, so it is pinned here where
+## it cannot drift, and MEASURED on the real rate controller in
+## `scale_startup_test._check_the_breath` — a wind that is 30 % of a climb on
+## paper and 0 % in a hull is exactly what this pair exists to catch.
+func _test_the_breath(climb: float) -> void:
+	_t("THE BREATH: an inhale that taxes the stick, and rears before it pulls")
+
+	# --- THE PHASES ARE THE POOL, AND THE POOL IS THE TINT ------------------
+	_check(DiveRun.breath_phase(1.0) == 1 and DiveRun.breath_phase(0.71) == 1,
+		"a full pool is P1, the hunter — no breath while it still has its blood")
+	_check(DiveRun.breath_phase(0.70) == 2 and DiveRun.breath_phase(0.31) == 2,
+		"70 % down to 30 % is P2, THE BREATH")
+	_check(DiveRun.breath_phase(0.30) == 3 and DiveRun.breath_phase(0.0) == 3,
+		"below 30 % it is P3, the sink")
+	# THE PHASE IS THE TINT (the design's "the body darkens by the existing tint
+	# steps"). `Ship._creature_tint` shades a living body by `roundi(frac × 5)`,
+	# so the claim is that the shade STEPS across each phase boundary — checked
+	# against that shipped formula rather than against a copy of it.
+	var eps := 0.0005
+	for edge in [DiveRun.BREATH_PHASE_2, DiveRun.BREATH_PHASE_3]:
+		var below := roundi(clampf(edge - eps, 0.0, 1.0) * 5.0)
+		var above := roundi(clampf(edge + eps, 0.0, 1.0) * 5.0)
+		_check(below != above,
+			"the wound shade steps exactly at the %.0f %% boundary (%d -> %d) — the phase IS the tint"
+				% [edge * 100.0, above, below])
+
+	# --- THE TELL PRECEDES THE PULL ----------------------------------------
+	# Not "there is a tell somewhere": across a whole cycle at 60 Hz the pull is
+	# zero everywhere the rear shows, and the rear is over before the pull opens.
+	# That is the property the charter's telegraph rule wants, and a tell that
+	# fires late cannot satisfy it.
+	var period := DiveRun.BREATH_PERIOD
+	var overlap := 0
+	var pulled := 0
+	var first_pull := -1.0
+	var last_tell := -1.0
+	for i in int(period * 60.0):
+		var t := float(i) / 60.0
+		var telling := DiveRun.breath_telling(t, period)
+		var pull := DiveRun.breath_cycle(t, period)
+		if telling:
+			last_tell = t
+			if pull > 0.0:
+				overlap += 1
+		if pull > 0.0:
+			pulled += 1
+			if first_pull < 0.0:
+				first_pull = t
+	_check(overlap == 0, "not one frame of the cycle both rears AND pulls (%d)" % overlap)
+	_check(first_pull >= DiveRun.BREATH_TELL_SECONDS - 0.02 and last_tell < first_pull,
+		"the rear runs %.2f s and the pull opens after it, at %.2f s"
+			% [last_tell + 1.0 / 60.0, first_pull])
+	_check(float(pulled) / (period * 60.0) > 0.5,
+		"menace is uptime: most of a cycle is the pull (%.0f %%)"
+			% (100.0 * float(pulled) / (period * 60.0)))
+	# A cycle at or under the tell is the lever's "continuous" position: no
+	# rhythm left, so the rear stops claiming there is one.
+	_check(is_equal_approx(DiveRun.breath_cycle(3.0, DiveRun.BREATH_TELL_SECONDS), 1.0)
+			and not DiveRun.breath_telling(3.0, DiveRun.BREATH_TELL_SECONDS),
+		"a period at the tell's own length pulls continuously, with no tell")
+
+	# --- THE FIELD: toward the maw, with an edge, and symmetric -------------
+	var reach := DiveRun.BREATH_REACH
+	var below_maw := DiveRun.breath_wind(Vector2(0.0, 400.0), 1.0, 1.0)
+	var above_maw := DiveRun.breath_wind(Vector2(0.0, -400.0), 1.0, 1.0)
+	_check(below_maw.y < 0.0 and above_maw.y > 0.0,
+		"it pulls TOWARD the mouth from either side (%.0f / %.0f px/s@1x)"
+			% [below_maw.y, above_maw.y])
+	_check(below_maw.is_equal_approx(-above_maw),
+		"...symmetrically — a picket opposite you rides the same inhale you do")
+	_check(is_equal_approx(below_maw.length(), DiveRun.BREATH_SPEED),
+		"inside the edge it blows at its full %.0f px/s@1x (%.0f)"
+			% [DiveRun.BREATH_SPEED, below_maw.length()])
+	_check(DiveRun.breath_wind(Vector2(reach, 0.0), 1.0, 1.0) == Vector2.ZERO
+			and DiveRun.breath_wind(Vector2(reach * 1.5, 0.0), 1.0, 1.0) == Vector2.ZERO,
+		"and nothing at all at or beyond the %.0f px reach" % reach)
+	var mid := DiveRun.breath_wind(Vector2(0.0, reach * 0.8), 1.0, 1.0).length()
+	_check(mid > 0.0 and mid < DiveRun.BREATH_SPEED,
+		"the edge is a shoulder, not a cliff (%.0f px/s@1x at 80 %% of the reach)" % mid)
+	_check(DiveRun.breath_wind(Vector2(0.0, 400.0), 0.0, 1.0) == Vector2.ZERO
+			and DiveRun.breath_wind(Vector2(0.0, 400.0), 1.0, 0.0) == Vector2.ZERO,
+		"a rearing boss and the F2 strength at 0 both mean still air")
+
+	# --- >= 25 % STICK AUTHORITY, AND TWO WINDS ON ONE AXIS -----------------
+	var authority := DiveRun.breath_stick_authority(climb)
+	_check(authority >= 0.25,
+		"a full climb inside a full inhale still WINS %.0f %% of its commanded speed (%.0f of %.0f px/s@1x)"
+			% [authority * 100.0, climb - DiveRun.BREATH_SPEED, climb])
+	_check(DiveRun.BREATH_SPEED < climb,
+		"...because the breath is deliberately weaker than a climb (%.0f vs %.0f)"
+			% [DiveRun.BREATH_SPEED, climb])
+	# The compose rule (designer A's risk 2). In still air the inhale arrives
+	# whole; under a leash already past the breath's own speed its VERTICAL share
+	# is refused outright and only the sideways pull survives — so the sky and
+	# the mouth can never add up to a stick that does nothing.
+	var pull_down := Vector2(30.0, DiveRun.BREATH_SPEED)
+	_check(DiveRun.breath_compose(Vector2.ZERO, pull_down).is_equal_approx(pull_down),
+		"in still air the whole inhale is admitted")
+	var leash := Vector2(0.0,
+		DiveRun.CEILING_LEASH_SPEED * DiveRun.CEILING_LEASH_MAX_RUNGS)
+	var both := DiveRun.breath_compose(leash, pull_down)
+	_check(is_equal_approx(both.y, leash.y),
+		"under a leash at cap the inhale adds NOTHING downward (%.0f px/s@1x, leash %.0f)"
+			% [both.y, leash.y])
+	_check(is_equal_approx(both.x, pull_down.x),
+		"...but its sideways pull always survives — the sky has no term for x")
+	# THE HALF THE FIRST CUT OF THE RULE THREW AWAY. A maw ABOVE you in that same
+	# leash pulls UP, which makes the air SLOWER — the mitigation is against two
+	# winds compounding, not against one cancelling the other, and refusing this
+	# made the inhale vertically inert everywhere the sky was blowing at all.
+	var pull_up := Vector2(0.0, -DiveRun.BREATH_SPEED)
+	var against := DiveRun.breath_compose(leash, pull_up)
+	_check(against.y < leash.y
+			and is_equal_approx(against.y, leash.y - DiveRun.BREATH_SPEED),
+		"...and an inhale pulling AGAINST the leash still counts (%.0f px/s@1x of %.0f)"
+			% [against.y, leash.y])
+	_check(absf(DiveRun.breath_compose(Vector2.ZERO, Vector2(0.0, 999.0)).y)
+			<= DiveRun.BREATH_SPEED + 0.001,
+		"and the breath alone can never make the vertical air exceed its own speed")
+	# The F2 rows exist and their defaults ARE the model's own numbers (the same
+	# parity every other lever in this suite is held to).
+	_check(is_equal_approx(Tunables.get_num("dive_breath_period"), DiveRun.BREATH_PERIOD)
+			and is_equal_approx(Tunables.get_num("dive_breath_mult"), 1.0)
+			and Tunables.get_bool("dive_breath"),
+		"F2 carries the breath: on, strength 1.0, period %.1f s" % DiveRun.BREATH_PERIOD)
 
 
 ## THE DRAFT IS A FIELD (owner 2026-09-02: *"the vertical wind bands could be a
@@ -12110,6 +12242,55 @@ func _test_prop_wash_pushes_and_chops() -> void:
 		await _step(1)
 	_check(critter.linear_velocity.x < v0,
 		"...and is pushed along it (%.0f -> %.0f px/s)" % [v0, critter.linear_velocity.x])
+
+	# THE SAMPLE POINT IS THE SURFACE, NOT THE ORIGIN (DECISIONS 2026-09-06,
+	# owner call (c); the fix the dunk's measured 7.2 s asked for). A jet is a
+	# directional field with a finite length, so where along it a body counts as
+	# standing decides whether the shove is the design's or a third of it.
+	critter.global_position = astern
+	await _step(1)
+	var box := critter.solid_bounds
+	# TOWARD THE PROP, not toward the emitting ship: the jet starts at a
+	# propeller and only counts points inside that prop's own width band, so a
+	# sample aimed at a hull's ORIGIN slides out of the band by however far that
+	# hull draws its lift columns from its origin (the dunk measured NEVER on
+	# exactly that mistake before this line said `nearest_wash_prop`).
+	var src := fan.nearest_wash_prop(critter.global_position)
+	_check(src.distance_to(fan.to_global(Vector2.ZERO)) < Ship.CELL * 2.0,
+		"the jet's source is the prop itself (%.0f px from the hull's origin)"
+			% src.distance_to(fan.global_position))
+	var meets := critter.wash_sample_toward(src)
+	var local := meets - critter.global_position
+	_check(is_equal_approx(local.x, box.end.x)
+			and local.y >= box.position.y and local.y <= box.end.y,
+		"the draught meets a body on the FACE toward the emitter (%.0f px from its origin)"
+			% local.length())
+	_check((meets - fan.global_position).length()
+			< (critter.global_position - fan.global_position).length(),
+		"...which is nearer the fan than its origin is — the whole point of the fix")
+	# Down the jet's own axis, a body whose surface is inside the jet and whose
+	# origin is past its end is now IN the draught. That is the dunk: a kraken's
+	# origin sits half a body below its own back.
+	var far := fan.to_global(Vector2(-Ship.CELL * (Ship.WASH_RANGE_CELLS + 0.5), 0.0))
+	critter.global_position = far
+	await _step(1)
+	_check(fan.wash_accel_at(critter.global_position) == Vector2.ZERO,
+		"an origin just past the jet's end is out of it")
+	_check(fan.wash_accel_at(critter.wash_sample_toward(
+			fan.nearest_wash_prop(critter.global_position))) != Vector2.ZERO,
+		"...while the back it is actually standing on is still being blown on")
+	# WHEREVER THE EMITTER IS, the answer is a point ON THIS BODY — an overlapping
+	# pair (a fixture, a spawn on top of you) can never be handed a point out in
+	# the air, which is what would make the sweep read a body it is touching as
+	# out of the jet.
+	critter.global_position = fan.global_position
+	await _step(1)
+	var inside := critter.wash_sample_toward(
+		fan.nearest_wash_prop(critter.global_position)) - critter.global_position
+	var bb := critter.solid_bounds
+	_check(inside.x >= bb.position.x - 0.001 and inside.x <= bb.end.x + 0.001
+			and inside.y >= bb.position.y - 0.001 and inside.y <= bb.end.y + 0.001,
+		"an emitter inside the body still samples a point on the body itself")
 
 	fan.queue_free()
 	critter.queue_free()
