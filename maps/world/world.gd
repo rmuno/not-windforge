@@ -1314,10 +1314,15 @@ func begin_dive() -> void:
 	_dive_berth_taken = {}
 	_dive_husks.clear()
 	# The seal's per-run state: the grind clock, what the local side is standing
-	# in, and which doors this run has already announced as broken.
+	# in, and which depths this run has already announced as cleared. The
+	# LADDER's own geometry goes with it — a stale conveyor from the last run
+	# would put a wall through the new deck before the first tick rebuilt it,
+	# and ruling 7 ("the start is a safe zone") is a claim about frame one.
 	_dive_seal_clock = 0.0
 	_dive_seal_inside = 0
 	_dive_seal_said.clear()
+	_dive_ladder_conf = {}
+	_dive_ladder_pieces.clear()
 	if _dive_scrap != null:
 		_dive_scrap.clear()
 	# A FRESH SEED EACH RUN, AND THE GROUND WITH IT (owner, 2026-08-30). Before
@@ -2566,6 +2571,9 @@ func _tick_dive(delta: float) -> void:
 		_dive_hold_the_ring(delta)
 	else:
 		_hold_the_corridor(delta)
+	# THE LADDER runs its conveyor and resolves this tick's rectangles FIRST, so
+	# the weather stamp, the grind and the painter are all handed the same sky.
+	_dive_advance_ladder(delta)
 	# ...and ONE wind vector carries everything that is weather (review §3.2):
 	# the tile's lean and the closing sky, composed, stamped, felt by both sides.
 	_dive_weather(delta)
@@ -2757,56 +2765,219 @@ func dive_altitude_frac(pos: Vector2) -> float:
 	return clampf((_world_rect.end.y - pos.y) / _world_rect.size.y, 0.0, 1.0)
 
 
-# --- THE DESCENT SEAL, applied (DESIGN_DESCENT.md §0/§1.2) --------------------
+# --- THE LADDER, applied (Q-V, DESIGN_DESCENT §11) ---------------------------
 #
-# The seal is ANOTHER TERM OF THE WEATHER, not a new force site: under each depth
-# 2..7 sits a band of RISING air, live until every standing-garrison entry of that
-# depth is dead. Because `Ship`'s rate controller commands a speed relative to the
-# AIR, that one term does both halves of the ruling with no clamp anywhere:
+# The seal's six fixed bands are gone. What sits in the sky instead is two
+# columns of RECTANGULAR WIND LOOPS (`DiveRun.ladder_at` is the whole geometry,
+# pure): one SINKING under the ring's landing line, one RISING on the far side
+# with the wrap seam down its middle, a calm corridor between them either way.
+# Each column is a stack of rectangles that translates and recycles, wind on the
+# perimeter and a carrying calm inside.
 #
-#   * a NEUTRAL stick inside a live band is carried up and out — the drifter is
-#     ejected with a warning bite rather than killed (DESCENT §4.4);
-#   * a full DOWN stick crosses at `dive_rate - seal_speed`, paying the grind
-#     (`_dive_seal_toll`) for exactly as long as that takes.
+# WHAT CARRIED OVER FROM THE SEAL, UNCHANGED: it is a TERM OF THE WEATHER, not a
+# force site — since v0.141.0 all of the run's weather is one wind vector per
+# body and `Ship`'s rate controller commands a speed RELATIVE TO THE AIR, so a
+# wall is an airstream rather than a clamp. `seal_speed_for(β)` still scales it
+# by mass per pixel of beam (ruling 3, "mass beats it"). `_dive_seal_toll` still
+# bills the 4 Hz grind, on the WALLS only. `garrison_key` still rides the body.
 #
-# MASS BEATS IT (ruling 3): the speed a hull FEELS scales with `BETA_REF / β`,
-# β = mass per px of beam, clamped — so a dense narrow dart feels a quarter of the
-# airstream and is through in a fraction of the time.
+# WHAT CHANGED: a band's rect is a function of (column, rung, the stack's travel)
+# instead of a fixed altitude; the walls are VERTICAL bands as well as
+# horizontal; `seal_open` gates nothing — a full-depth clear buys +25 % of the
+# stack's speed for the rest of the run (`DiveRun.ladder_tempo`); and the
+# garrison's own-depth exemption is dropped, because "your own depth" means
+# nothing on a band that is moving through every depth there is.
 
-## The seal's airstream at `pos`, in world px/s UPWARD (0 = no live band here),
-## for a body of ballistic coefficient `beta` that calls depth `own_depth` home.
-##
-## `own_depth` is the exemption of DESCENT §0 call 7, "symmetric with one
-## exception": everybody pays the band's weather, but a garrison hull inside ITS
-## OWN depth's band is standing in its own house and feels nothing. Pass 0 for
-## your hull, for wildlife and for anything the roster never named.
-##
-## NOT gated on `deepest > 1` like the ring and the closing sky. Those two are
-## the RUN pressing on you and the launch deck is meant to be unhurried; a seal
-## is a property of PLACE (DESIGN.md §4) and the nearest band is half a rung
-## below depth 2, which you cannot reach without having gone down.
-func dive_seal_speed_at(pos: Vector2, beta: float, own_depth := 0) -> float:
-	var d := DiveRun.seal_at(dive_altitude_frac(pos))
-	if d <= 0 or d == own_depth or not dive_seal_live(d):
+## Is the ladder blowing at all? Two switches: `dive_seal_enabled` is the master
+## (the seal's whole apparatus — wind, grind, keys), `dive_ladder_enabled` the
+## geometry. Either off is a free descent; there is no fixed-band fallback.
+func dive_ladder_on() -> bool:
+	if dive == null or dive.outcome != "":
+		return false
+	return Tunables.get_bool("dive_seal_enabled") \
+		and Tunables.get_bool("dive_ladder_enabled")
+
+
+## How fast the stack translates, in world px/s — the lever at scale 1 times the
+## world, times the tempo a cleared depth bought (ruling 9).
+func dive_ladder_sink_px() -> float:
+	if dive == null:
 		return 0.0
-	return DiveRun.seal_speed_for(beta, DiveRun.beta_ref_at(float(world_scale))) \
-		* DiveRun.SEAL_AIR_SPEED * float(world_scale) \
+	return Tunables.get_num("dive_ladder_sink") * float(world_scale) \
+		* dive.ladder_tempo(dive.seed_v,
+			Tunables.get_num("dive_zone_tile_widths"))
+
+
+## THE LADDER'S GEOMETRY for this tick, resolved once (`_dive_advance_ladder`
+## refreshes it). The one place the levers are read, so the wind, the grind and
+## the painter cannot be handed three different ladders in one frame.
+var _dive_ladder_conf := {}
+## ...and its pieces in WORLD PIXELS, rebuilt with it: `{rect, dir, part, band}`.
+## The grind walks these; so does the painter.
+var _dive_ladder_pieces: Array = []
+
+
+## The band thickness expressed in ring tiles — the one conversion
+## `DiveRun.ladder_conf` cannot make for itself (a length in px against a tile in
+## px, and it knows neither).
+func dive_ladder_wall_tiles() -> float:
+	var tw := _dive_tile_w()
+	if tw <= 0.0 or _world_rect.size.y <= 0.0:
+		return 0.1
+	return DiveRun.ladder_band_frac() * _world_rect.size.y / tw
+
+
+## Run the conveyor and rebuild the tick's geometry. Called from `_tick_dive`
+## BEFORE the weather stamp, so every body this frame rides the same rectangles.
+##
+## The travel is ACCUMULATED on the run rather than derived from `elapsed`: the
+## clear reward changes the speed mid-run, and `speed × clock` would teleport
+## every rectangle in the sky the frame a depth's last picket dies.
+func _dive_advance_ladder(delta: float) -> void:
+	if dive == null:
+		return
+	if _world_rect.size.y > 0.0 and dive.outcome == "":
+		dive.ladder_travel += dive_ladder_sink_px() / _world_rect.size.y * delta
+	_dive_ladder_conf = DiveRun.ladder_conf(
+		Tunables.get_int("dive_ladder_rungs"),
+		Tunables.get_num("dive_ladder_column_tiles"),
+		Tunables.get_num("dive_ladder_calm_tiles"),
+		dive_ladder_wall_tiles())
+	_dive_ladder_pieces.clear()
+	if not dive_ladder_on():
+		return
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	var tw := _dive_tile_w()
+	# The painter wants ONE arrow per piece, so the two terms are composed here at
+	# the reference β (a picture cannot be per-hull) and handed over normalized.
+	var sink_px := dive_ladder_sink_px()
+	var wall_px := dive_ladder_wall_px(DiveRun.beta_ref_at(float(world_scale)))
+	for row_v in DiveRun.ladder_rects(dive.ladder_travel, _dive_ladder_conf):
+		var row := row_v as Dictionary
+		var y0 := dive_altitude_y(float(row["top"]))
+		var y1 := dive_altitude_y(float(row["bottom"]))
+		var x0 := cx + float(row["x0"]) * tw
+		var x1 := cx + float(row["x1"]) * tw
+		if y1 <= y0 or x1 <= x0:
+			continue
+		var flow := (row["carry"] as Vector2) * sink_px \
+			+ (row["dir"] as Vector2) * wall_px
+		_dive_ladder_pieces.append({
+			"rect": Rect2(Vector2(x0, y0), Vector2(x1 - x0, y1 - y0)),
+			"dir": flow.normalized(), "part": row["part"],
+			"column": row["column"], "rung": row["rung"],
+			"band": String(row["part"]) != "calm",
+		})
+
+
+## Where a world point sits in the ladder — `DiveRun.ladder_at` with the two
+## conversions this file owns: x into ring tiles from the ring's centre, y into
+## an altitude fraction. Everything that asks about the ladder asks here.
+func dive_ladder_at(pos: Vector2) -> Dictionary:
+	if not dive_ladder_on() or _dive_ladder_conf.is_empty():
+		return {"zone": "none", "part": "", "column": -1, "rung": -1,
+			"dir": Vector2.ZERO}
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	return DiveRun.ladder_at((pos.x - cx) / _dive_tile_w(),
+		dive_altitude_frac(pos), dive.ladder_travel, _dive_ladder_conf)
+
+
+## THE LADDER'S WIND at `pos`, in world px/s (+y DOWN), for a hull of ballistic
+## coefficient `beta`. Zero in a corridor, in shelter, and with the ladder off.
+##
+## TWO TERMS, COMPOSED (see `DiveRun.ladder_at`):
+##
+##   * THE CARRY — the rectangle's own velocity, at the stack's speed. It is what
+##     every part of a rectangle shares, walls included, and it is deliberately
+##     NOT scaled by β: the calm is the rectangle MOVING, not air fighting you,
+##     so a neutral stick rides it down (ruling 5) whatever the hull weighs.
+##   * THE CIRCULATION — the loop drawn inside that rectangle, an airstream of
+##     `SEAL_AIR_SPEED × seal_speed_for(β)`: the seal's own force, unchanged,
+##     pointed by the loop instead of always up, and still beaten by mass
+##     (ruling 3). Zero in the calm; a wall is where it lives.
+##
+## NOT gated on `deepest > 1` like the ring and the closing sky: those are the
+## RUN pressing on you, and the launch deck is unhurried here by GEOMETRY instead
+## (ruling 7 — the run starts dead centre of a calm).
+func dive_ladder_wind_at(pos: Vector2, beta: float) -> Vector2:
+	var hit := dive_ladder_at(pos)
+	if String(hit["zone"]) == "none":
+		return Vector2.ZERO
+	# LANDMASS SHELTER (ruling 8): rock closing the point left AND right kills
+	# both the wind and the grind. Asked last, because it is the only part of
+	# this that touches terrain.
+	if dive_wind_sheltered(pos):
+		return Vector2.ZERO
+	return (hit["carry"] as Vector2) * dive_ladder_sink_px() \
+		+ (hit["dir"] as Vector2) * dive_ladder_wall_px(beta)
+
+
+## A WALL's circulation speed for a hull of ballistic coefficient `beta`, in
+## world px/s — the seal's `SEAL_AIR_SPEED` scaled by `BETA_REF / β` and the F2
+## wall strength, which is ruling 3 ("mass beats it") carried over intact.
+func dive_ladder_wall_px(beta: float) -> float:
+	return DiveRun.SEAL_AIR_SPEED * float(world_scale) \
+		* DiveRun.seal_speed_for(beta, DiveRun.beta_ref_at(float(world_scale))) \
 		* Tunables.get_num("dive_seal_mult")
 
 
-## Is depth `d`'s band still blowing? THE ONE PLACE the lock is read — the
-## airstream, the toll, the status row and the painter all ask this, so they can
-## never disagree about whether a door is open. False for a depth with no seal,
-## for a finished run, and with the F2 switch off.
-func dive_seal_live(d: int) -> bool:
-	if dive == null or dive.outcome != "":
+# --- L3: SHELTER IS HORIZONTAL ENCLOSURE (ruling 8) --------------------------
+#
+# The owner, verbatim: *"landmasses should keep enclosed areas intact. But the
+# landmass has to horizontally enclose these things (not vertically),
+# necessarily"*. So a point is sheltered when there is rock to its LEFT and rock
+# to its RIGHT at that altitude — and rock above or below it counts for nothing,
+# because the loops sweep VERTICALLY and a roof stops none of that.
+#
+# This replaces DESCENT §5's shadow FRACTION (a per-column multiplier off an
+# island's silhouette) with a boolean, and deliberately: the §5 scan was written
+# for a horizontal band that an island poked through, where "how much of the
+# column is blocked" was a real question. On a loop whose walls run up and down
+# the only question left is whether the air can reach you sideways.
+#
+# Shelter is all-or-nothing and it kills BOTH halves — the wind and the grind.
+# A pocket is a place the ladder is not, which is what makes it a door.
+
+## How far rock may be and still count as closing you in, in world px. The band's
+## own thickness: a wall of wind is 4,483 px across at 8×, so anything further
+## than that has the whole wall between it and you and shelters nothing.
+func dive_shelter_reach_px() -> float:
+	if _world_rect.size.y <= 0.0:
+		return 0.0
+	return DiveRun.ladder_band_frac() * _world_rect.size.y
+
+
+## Is `pos` closed in by rock on the LEFT and on the RIGHT at its own altitude?
+##
+## Walks out one cell at a time in each direction, which is the only honest scan:
+## an island is a silhouette of arbitrary cells and a coarse step walks straight
+## through a one-cell wall. The reach caps it at ~35 cells a side at 8×, and it
+## is only ever asked of a point that is already inside the ladder — a corridor
+## never pays for this.
+func dive_wind_sheltered(pos: Vector2) -> bool:
+	if terrain == null or not is_instance_valid(terrain):
 		return false
-	if not Tunables.get_bool("dive_seal_enabled"):
+	var reach := dive_shelter_reach_px()
+	if reach <= 0.0:
 		return false
-	if not DiveRun.has_seal(d):
+	var cell_w := terrain.cell_px()
+	if cell_w <= 0.0:
 		return false
-	return not dive.seal_open(dive.seed_v, d,
-		Tunables.get_num("dive_zone_tile_widths"))
+	var steps := int(reach / cell_w)
+	if steps <= 0:
+		return false
+	var here := terrain.world_to_cell(pos)
+	var left := false
+	for i in range(1, steps + 1):
+		if terrain.is_solid(Vector2i(here.x - i, here.y)):
+			left = true
+			break
+	if not left:
+		return false
+	for i in range(1, steps + 1):
+		if terrain.is_solid(Vector2i(here.x + i, here.y)):
+			return true
+	return false
 
 
 ## A hull's ballistic coefficient: mass per pixel of BEAM (the frontal measure a
@@ -2819,19 +2990,24 @@ func dive_beta_of(ship: Ship) -> float:
 
 
 ## The WHOLE airstream one body is flying in: the ambient weather at its position
-## plus its own share of any live seal. Split from `dive_weather_at` because the
-## ambient is a property of the point and the seal is a property of the point AND
-## the hull — two hulls in one band feel different winds, which is the build lever.
+## plus its own share of the ladder. Split from `dive_weather_at` because the
+## ambient is a property of the point and the ladder is a property of the point
+## AND the hull — two hulls in one wall feel different winds, the build lever.
+##
+## THE OWN-DEPTH EXEMPTION IS GONE (Q-V ruling 9). It was DESCENT §0 call 7's
+## "symmetric with one exception": a garrison hull felt nothing inside its own
+## depth's band, because the band was its house. A rectangle that translates
+## through every depth in the sky is nobody's house, so everything in the run
+## pays the walls exactly as you do. The parameter survives so `key_depth` still
+## has somewhere to go; it decides nothing.
 ##
 ## `asking_id` rides through to `dive_weather_at` for the LEVIATHAN'S BREATH,
 ## which is the same shape of thing one layer down: a term that is a property of
 ## the point and of who is standing in it (the boss does not inhale itself). Two
 ## per-body weather terms now, composed in the one place that stamps them.
-func dive_weather_for(pos: Vector2, beta: float, own_depth := 0,
+func dive_weather_for(pos: Vector2, beta: float, _own_depth := 0,
 		asking_id := 0) -> Vector2:
-	var w := dive_weather_at(pos, asking_id)
-	w.y -= dive_seal_speed_at(pos, beta, own_depth)   # +y is DOWN; the seal rises
-	return w
+	return dive_weather_at(pos, asking_id) + dive_ladder_wind_at(pos, beta)
 
 
 ## Stamp this tick's weather on everything the run is flying.
@@ -2863,16 +3039,19 @@ func _dive_weather(delta: float) -> void:
 		var body_wind := dive_weather_for(player.global_position,
 			DiveRun.beta_ref_at(float(world_scale)))
 		player.velocity.y += body_wind.y * DiveRun.AIR_DAMP * delta
-		# ...AND THE BAND SHOVES IT (DESCENT §4.5, `SEAL_BODY_PUSH`). The wind
-		# idiom has nothing to grip on a person: through `AIR_DAMP` the seal's
-		# airstream reaches a body as ~176 px/s² against a 6,400 px/s fall, which
-		# is not a wall, it is a draught. So the body keeps the design's own flat
-		# one-way acceleration — enough that a fall penetrates about 1,700 px of a
-		# 4,483 px band and is thrown back out. ALWAYS UPWARD while inside, never
-		# down: a body under a band can no more be sucked into one than a hull can.
-		var bd := DiveRun.seal_at(dive_altitude_frac(player.global_position))
-		if bd > 0 and dive_seal_live(bd):
-			player.velocity.y -= DiveRun.SEAL_BODY_PUSH * float(world_scale) * delta
+		# ...AND A WALL SHOVES IT (DESCENT §4.5, `SEAL_BODY_PUSH`). The wind idiom
+		# has nothing to grip on a person: through `AIR_DAMP` the airstream reaches
+		# a body as ~176 px/s² against a 6,400 px/s fall, which is not a wall, it
+		# is a draught. So the body keeps the design's own flat acceleration —
+		# enough that a fall penetrates about 1,700 px of a 4,483 px band and is
+		# thrown back out. NOW POINTED BY THE LOOP rather than always upward, and
+		# on BOTH axes: the ladder's walls run sideways as well, and a person the
+		# top band cannot push left is a person the chute cannot hand down.
+		var hit := dive_ladder_at(player.global_position)
+		if String(hit["zone"]) == "band" \
+				and not dive_wind_sheltered(player.global_position):
+			player.velocity += (hit["dir"] as Vector2) \
+				* DiveRun.SEAL_BODY_PUSH * float(world_scale) * delta
 
 
 # --- THE TOLL: what a crossing costs (DESIGN_DESCENT §3) --------------------
@@ -2893,9 +3072,12 @@ func _dive_weather(delta: float) -> void:
 #     billing wildlife too — quietly attritions the sky's residents to death
 #     while nobody is watching. The `air_density_floor` stamp is vessels-only for
 #     the same reason ("a creature flies on muscle").
-#   * A GARRISON NEVER PAYS INSIDE ITS OWN DEPTH'S BAND (§0 call 7, "symmetric
-#     with one exception"). The band is where it lives. Chase it into somebody
-#     else's and it arrives hurt, which is the reward for a good punch.
+#   * EVERYTHING PAYS THE WALLS, INCLUDING THE GARRISON (Q-V ruling 9). The
+#     seal's "a garrison never pays inside its own depth's band" exemption is
+#     gone with the fixed bands it was written for: a rectangle that sinks
+#     through the whole sky is nobody's house.
+#   * THE CALM DOES NOT BILL. Only the perimeter grinds — riding a rectangle down
+#     is the free half of the ladder, and being caught by its wall is the price.
 
 ## Seconds between grind ticks. 4 Hz: fast enough that a crossing is billed
 ## smoothly, slow enough that the per-site cell search is nothing.
@@ -2903,13 +3085,13 @@ const DIVE_SEAL_TICK := 0.25
 
 var _dive_seal_clock := 0.0
 
-## The depth of the live band the LOCAL side (your hull, your mount, or your
-## body) is standing in this tick, or 0. Read by `dive_status` — the HUD says
-## "IN THE SEAL" off this, and it is the only reason the field exists.
+## Is the LOCAL side (your hull, your mount, or your body) standing in a wall
+## this tick? Read by `dive_status` — the HUD says "IN THE WIND" off this, and it
+## is the only reason the field exists.
 var _dive_seal_inside := 0
 
 
-## Bill everything standing in a live band. Ticked from `_tick_dive`.
+## Bill everything standing in a wall. Ticked from `_tick_dive`.
 func _dive_seal_toll(delta: float) -> void:
 	if dive == null or dive.outcome != "":
 		return
@@ -2919,7 +3101,7 @@ func _dive_seal_toll(delta: float) -> void:
 	var dt := _dive_seal_clock
 	_dive_seal_clock = 0.0
 	_dive_seal_inside = 0
-	if not Tunables.get_bool("dive_seal_enabled"):
+	if not dive_ladder_on():
 		return
 	var grind := Tunables.get_num("dive_seal_grind")
 	var mine: Ship = local_ship if is_instance_valid(local_ship) else null
@@ -2938,92 +3120,91 @@ func _dive_seal_toll(delta: float) -> void:
 		if hull.creature_kind != "":
 			continue
 		var span := _dive_seal_overlap(hull)
-		if span == Vector2.ZERO:
+		if span.size == Vector2.ZERO:
 			continue
 		if hull == mine or hull == ridden:
-			_dive_seal_inside = int(span.x)   # (x carries the depth, y the run of px)
+			_dive_seal_inside = 1
 		_dive_seal_grind(hull, span, grind * dt)
-	# THE BODY pays a flat rate and cannot cross at all: the airstream throws it
-	# back out of the top long before 100 hp of `SEAL_BODY_TOLL` runs out, which
-	# is the design's "hard, survivable, unmistakable no" (§3.5).
+	# THE BODY pays a flat rate wherever a wall has hold of it — the flat shove of
+	# `SEAL_BODY_PUSH` throws it out long before 100 hp of `SEAL_BODY_TOLL` runs
+	# out, which is the design's "hard, survivable, unmistakable no" (§3.5).
 	if player != null and is_instance_valid(player) and not player.is_piloting() \
 			and not player.is_riding():
-		var bd := DiveRun.seal_at(dive_altitude_frac(player.global_position))
-		if bd > 0 and dive_seal_live(bd):
-			_dive_seal_inside = bd
+		var hit := dive_ladder_at(player.global_position)
+		if String(hit["zone"]) == "band" \
+				and not dive_wind_sheltered(player.global_position):
+			_dive_seal_inside = 1
 			player.take_damage(DiveRun.SEAL_BODY_TOLL * dt)
 
 
-## Depths whose seal this run has already announced as broken, so the fanfare
-## fires once. Cleared with the run.
+## Depths this run has already announced as cleared, so the fanfare fires once.
+## Cleared with the run.
 var _dive_seal_said := {}
 
 
-## SAY IT WHEN THE DOOR OPENS. The kill that clears a depth happens somewhere in
-## the middle of a fight, and a gate that dies silently is indistinguishable from
-## a gate that was never there (charter §5). One line, once, per depth.
+## SAY IT WHEN A DEPTH IS CLEARED. Clearing no longer opens a door — it buys the
+## stack +25 % for the rest of the run (ruling 9) — and a reward that arrives
+## silently is indistinguishable from no reward at all (charter §5). One line,
+## once, per depth.
 func _dive_say_the_seal() -> void:
-	if dive == null or dive.outcome != "" \
-			or not Tunables.get_bool("dive_seal_enabled"):
+	if dive == null or dive.outcome != "" or not dive_ladder_on():
 		return
 	var d := dive.depth
 	if not DiveRun.has_seal(d) or _dive_seal_said.has(d):
 		return
-	if dive_seal_live(d):
+	if not dive.seal_open(dive.seed_v, d,
+			Tunables.get_num("dive_zone_tile_widths")):
 		return
 	_dive_seal_said[d] = true
-	_notify("THE SEAL IS BROKEN. The way down is open.")
+	_notify("THE DEPTH IS CLEARED. The ladder runs 25%% faster.")
 
 
-## Where `hull`'s plating overlaps a LIVE band, as (depth, run of px), or
-## `Vector2.ZERO` for a hull in clear air. Packed into one Vector2 because the
-## caller wants both answers and neither is worth a Dictionary at 4 Hz.
+## Where `hull`'s plating overlaps a WALL, in world px, or an empty Rect2 for a
+## hull in calm or corridor air. The intersection is taken against the tick's own
+## cached pieces (`_dive_ladder_pieces`), and the DEEPEST overlap wins, so a hull
+## straddling two walls is billed on the one that has most of it.
 ##
-## Measured on `solid_bounds` in the hull's own frame — the same rectangle the
-## beam (and therefore the site count) is read off, so "how much of me is in it"
-## and "how hard it grips me" can never be measured on different shapes.
-func _dive_seal_overlap(hull: Ship) -> Vector2:
-	if hull == null or not is_instance_valid(hull) or hull.solid_bounds.size == Vector2.ZERO:
-		return Vector2.ZERO
+## Measured on `solid_bounds` — the same rectangle the beam (and therefore the
+## site count) is read off, so "how much of me is in it" and "how hard it grips
+## me" can never be measured on different shapes. Ships are `lock_rotation`, so
+## the hull's own frame IS axis-aligned in the world.
+func _dive_seal_overlap(hull: Ship) -> Rect2:
+	if hull == null or not is_instance_valid(hull) \
+			or hull.solid_bounds.size == Vector2.ZERO:
+		return Rect2()
 	var b := hull.solid_bounds
-	var top := hull.to_global(b.position).y
-	var bot := hull.to_global(Vector2(b.position.x, b.end.y)).y
-	var mid := dive_altitude_frac(Vector2(hull.global_position.x, (top + bot) * 0.5))
-	# One band at the hull's own middle, then the two it might be straddling —
-	# the bands are half a rung apart, so at most one can ever contain a hull's
-	# centre and this loop stops at the first that overlaps.
-	for d in [DiveRun.seal_at(mid), DiveRun.seal_at(dive_altitude_frac(
-			Vector2(hull.global_position.x, top))),
-			DiveRun.seal_at(dive_altitude_frac(
-				Vector2(hull.global_position.x, bot)))]:
-		if int(d) <= 0 or int(d) == DiveRun.key_depth(hull.garrison_key):
+	var aabb := Rect2(hull.to_global(b.position), b.size)
+	# A hull that has found a pocket is out of the wind entirely (ruling 8).
+	if dive_wind_sheltered(aabb.get_center()):
+		return Rect2()
+	var best := Rect2()
+	var best_area := 0.0
+	for piece_v in _dive_ladder_pieces:
+		var piece := piece_v as Dictionary
+		if not bool(piece["band"]):
 			continue
-		if not dive_seal_live(int(d)):
-			continue
-		var band := DiveRun.seal_band(int(d))
-		var lo := maxf(top, dive_altitude_y(float(band[0])))
-		var hi := minf(bot, dive_altitude_y(float(band[1])))
-		if hi > lo:
-			return Vector2(float(d), hi - lo)
-	return Vector2.ZERO
+		var hitr := aabb.intersection(piece["rect"] as Rect2)
+		var area := hitr.size.x * hitr.size.y
+		if area > best_area:
+			best_area = area
+			best = hitr
+	return best
 
 
 ## Chew `per_site` hp out of `hull` at each of its grinding sites, scattered
-## through the slice of it that is inside the band. No attacker is recorded: the
+## through the slice of it that is inside the wall. No attacker is recorded: the
 ## weather is nobody's kill, and a picket the sky grinds down still drops its
 ## scrap and its bounty through the ordinary death path.
-func _dive_seal_grind(hull: Ship, span: Vector2, per_site: float) -> void:
-	if per_site <= 0.0 or span.y <= 0.0:
+func _dive_seal_grind(hull: Ship, span: Rect2, per_site: float) -> void:
+	if per_site <= 0.0 or span.size.x <= 0.0 or span.size.y <= 0.0:
 		return
 	var b := hull.solid_bounds
-	var band := DiveRun.seal_band(int(span.x))
-	var lo := maxf(hull.to_global(b.position).y, dive_altitude_y(float(band[0])))
 	var sites := DiveRun.seal_sites(b.size.x,
 		DiveRun.beam_ref_at(float(world_scale)))
 	for i in sites:
 		var at := Vector2(
-			hull.to_global(b.position).x + _dive_rng.randf() * b.size.x,
-			lo + _dive_rng.randf() * span.y)
+			span.position.x + _dive_rng.randf() * span.size.x,
+			span.position.y + _dive_rng.randf() * span.size.y)
 		hull.net_damage_cell(hull.nearest_solid_cell(at), per_site)
 
 
@@ -4626,52 +4807,51 @@ func dive_status() -> Variant:
 	# no seal under it (1 and the floor) and with the F2 switch off, so the HUD's
 	# row simply is not there rather than saying "0 of 0".
 	out["seal"] = {}
-	if Tunables.get_bool("dive_seal_enabled") and DiveRun.has_seal(dive.depth):
-		var p := dive.seal_progress(dive.seed_v, dive.depth,
-			Tunables.get_num("dive_zone_tile_widths"))
+	if dive_ladder_on() and DiveRun.has_seal(dive.depth):
+		var tw_seal := Tunables.get_num("dive_zone_tile_widths")
+		var p := dive.seal_progress(dive.seed_v, dive.depth, tw_seal)
 		out["seal"] = {
 			"depth": dive.depth,
 			"left": maxi(0, int(p[1]) - int(p[0])),
 			"of": int(p[1]),
+			# "live" now means "this depth has NOT paid out its tempo yet" — the
+			# clear stopped being a door in Q-V and became the reward.
 			"live": int(p[0]) < int(p[1]),
 			"inside": _dive_seal_inside > 0,
+			"tempo": dive.ladder_tempo(dive.seed_v, tw_seal),
 		}
 	return out
 
 
-## THE LIVE BANDS a painter can draw, in plain values (world-decides/layer-paints
-## — `SealBands` holds no logic and never touches a Ship or the run model).
+## THE LADDER a painter can draw, in plain values (world-decides/layer-paints —
+## `SealBands` holds no logic and never touches a Ship or the run model).
 ##
-## Only the bands the camera could actually see: the ladder is six bands over
-## 590,000 px and a layer asked to draw all of them would be drawing the whole
-## world. `rect` is world-space and spans the visible width, so the layer paints
-## a slab of sky rather than deciding where the sky is.
-func seal_bands() -> Array:
+## Only the pieces the camera could actually see: the ladder is ten rectangles
+## over 590,000 px of sky and a layer asked to draw all of them would be drawing
+## the whole world. `rect` is world-space, `dir` is which way that piece blows
+## (so the streaks can run WITH the wind), `band` says wall or calm.
+##
+## The rectangles are already resolved for this tick (`_dive_advance_ladder`), so
+## this is a cull, not a derivation — which is what keeps it cheap enough to call
+## every frame from `_draw`.
+func ladder_bands() -> Array:
 	var out: Array = []
-	if dive == null or dive.outcome != "" \
-			or not Tunables.get_bool("dive_seal_enabled"):
-		return out
-	if camera == null or not is_instance_valid(camera):
+	if not dive_ladder_on() or camera == null or not is_instance_valid(camera):
 		return out
 	var z := maxf(camera.zoom.y, 0.00001)
 	var half_h := _viewport_px().y * 0.5 / z
 	var half_w := view_half_width_px()
-	var c := camera.global_position
-	var tw := Tunables.get_num("dive_zone_tile_widths")
-	for d in range(2, DiveRun.DEPTHS):
-		var band := DiveRun.seal_band(d)
-		var top := dive_altitude_y(float(band[0]))
-		var bot := dive_altitude_y(float(band[1]))
-		if bot < c.y - half_h or top > c.y + half_h:
+	var view := Rect2(camera.global_position - Vector2(half_w, half_h),
+		Vector2(half_w * 2.0, half_h * 2.0))
+	for piece_v in _dive_ladder_pieces:
+		var piece := piece_v as Dictionary
+		var r := piece["rect"] as Rect2
+		if not view.intersects(r):
 			continue
-		var p := dive.seal_progress(dive.seed_v, d, tw)
 		out.append({
-			"rect": Rect2(Vector2(c.x - half_w, top), Vector2(half_w * 2.0, bot - top)),
-			"live": int(p[0]) < int(p[1]),
-			"left": maxi(0, int(p[1]) - int(p[0])),
-			"of": int(p[1]),
-			"depth": d,
-			"inside": _dive_seal_inside == d,
+			"rect": r, "dir": piece["dir"], "band": piece["band"],
+			"part": piece["part"], "column": piece["column"],
+			"rung": piece["rung"],
 		})
 	return out
 

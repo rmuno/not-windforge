@@ -103,9 +103,14 @@ const _REGISTRY := [
 	{"id": "dive_zone_tile_widths", "label": "Ring tile width", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 3.0, "min": 1.0, "max": 40.0, "step": 1.0,
 		"tip": "Width of one ring tile in shelf-widths. 3 is about 33 s of lateral travel; 12 measured 133 s — a ring nobody would cross."},   # world._dive_tile_w
+	# RETIRED BY THE LADDER (Q-V, 2026-09-07): the v0.141 ring's updraft-at-the-
+	# centre / downdraft-at-the-seam is the INVERSE of the ladder's two columns,
+	# and running both puts ±600 px/s of contradiction on one axis. The lever
+	# stays — `dive_zones_enabled` still owns the ring's tiles, rocks, wrap and
+	# garrison, all untouched — but its WIND now defaults off.
 	{"id": "dive_zone_wind_mult", "label": "Zone wind strength", "group": "Dive",
-		"kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1,
-		"tip": "Multiplier on the ring's zone winds. 1 is shipped, 0 stills them."},   # world._dive_weather
+		"kind": KIND_FLOAT, "default": 0.0, "min": 0.0, "max": 4.0, "step": 0.1,
+		"tip": "Multiplier on the v0.141 ring's up/down drafts. 0 since the ladder replaced them; 1 puts the old sky back on top of it."},   # world._dive_weather
 	{"id": "dive_draft_band_tiles", "label": "Draft band width", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 2.0, "min": 1.0, "max": 6.0, "step": 0.5,
 		"tip": "How wide an up/down draft is, in ring tiles. 2 carries the wind a full tile past the seam, so the wrap happens inside it."},   # world.dive_draft_at
@@ -114,19 +119,37 @@ const _REGISTRY := [
 	{"id": "dive_ceiling_mult", "label": "Closing-sky leash", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1,
 		"tip": "Strength of the downdraft holding you under the deepest rung you reached. 1 is shipped, 0 turns the closing sky off."},   # world._dive_weather
-	# THE DESCENT SEAL (Q-R, DESIGN_DESCENT.md): a band of lethal RISING air under
-	# each depth 2..7, live until that depth's whole standing garrison is dead.
-	# Another term of the same weather — a neutral stick is carried out of it, a
-	# full down-stick crosses and pays the grind for as long as that takes.
+	# THE DESCENT SEAL, NOW THE LADDER (Q-V, DESIGN_DESCENT §11): two columns of
+	# rectangular wind LOOPS — wind on the perimeter, a calm interior that carries
+	# you — sinking under the landing line, rising on the far side of the seam.
+	# `dive_seal_enabled` is the master switch for the whole thing (the seal's
+	# force, grind and garrison keys all carried over); `dive_ladder_enabled` is
+	# the geometry. Either off = free descent; there is no fixed-band fallback,
+	# the old geometry is retired.
 	{"id": "dive_seal_enabled", "label": "The descent seal", "group": "Dive",
 		"kind": KIND_BOOL, "default": true,
-		"tip": "On, a lethal band of rising air sits under each depth and only dies when that depth's whole standing garrison is dead. Off restores the free descent."},   # world.dive_seal_speed_at
-	{"id": "dive_seal_mult", "label": "Seal airstream strength", "group": "Dive",
+		"tip": "Master switch for the descent seal — the ladder's wind AND its grind. Off restores the free descent."},   # world.dive_ladder_wind_at
+	{"id": "dive_ladder_enabled", "label": "The ladder", "group": "Dive",
+		"kind": KIND_BOOL, "default": true,
+		"tip": "On, the seal is two columns of moving wind loops (one sinking under the landing, one rising on the seam). Off leaves the sky empty of them."},   # world.dive_ladder_wind_at
+	{"id": "dive_ladder_rungs", "label": "Rectangles per column", "group": "Dive",
+		"kind": KIND_INT, "default": 4, "min": 2, "max": 8, "step": 1,
+		"tip": "How many wind loops each column is a stack of. 4 makes one 112,000 px tall (~1.75 rungs); 8 halves that and doubles how often a band passes you."},   # world.dive_ladder_conf
+	{"id": "dive_ladder_sink", "label": "Ladder sink speed", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 125.0, "min": 0.0, "max": 400.0, "step": 5.0,
+		"tip": "How fast the stack translates, px/s at scale 1 — 1,000 at the shipped 8x, so a neutral stick rides the calm floorward in about 7.5 minutes. The calm's own drift is this speed."},   # world.dive_ladder_sink_px
+	{"id": "dive_ladder_column_tiles", "label": "Column width", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 4.0, "min": 1.0, "max": 6.0, "step": 0.5,
+		"tip": "Column width against corridor width — the pair sets the RATIO and the ring's circumference sets the scale, so the wrap stays seamless. 4 and 2 give the shipped 4-tile columns."},   # world.dive_ladder_conf
+	{"id": "dive_ladder_calm_tiles", "label": "Calm corridor width", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 2.0, "min": 0.0, "max": 6.0, "step": 0.5,
+		"tip": "The still air between the two columns, against the column width. 0 closes the corridor and the columns touch — their shared walls agree, so that is legal."},   # world.dive_ladder_conf
+	{"id": "dive_seal_mult", "label": "Ladder wall strength", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1,
-		"tip": "Multiplier on how hard a live band blows upward, against a 1,920 px/s down-stick. 1 is shipped; 0 leaves the band lethal but crossable at full speed."},   # world.dive_seal_speed_at
+		"tip": "Multiplier on how hard a perimeter wall blows, against a 1,920 px/s down-stick. 1 is shipped; 0 leaves the walls grinding but crossable at full speed."},   # world.dive_ladder_wind_at
 	{"id": "dive_seal_grind", "label": "Seal grind per site", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 50.0, "min": 0.0, "max": 400.0, "step": 5.0,
-		"tip": "Structural hp per second each grinding site chews inside a live band. The stock hull is worth 6 sites, so 50 is 300 hp/s and hovering is death in ten seconds. 0 = pure wind."},   # world._dive_seal_toll
+		"tip": "Structural hp per second each grinding site chews inside a wall. The stock hull is worth 6 sites, so 50 is 300 hp/s and parking in one is death in ten seconds. 0 = pure wind."},   # world._dive_seal_toll
 	# The pregenerated garrison (owner 2026-09-01: nothing may just APPEAR).
 	{"id": "dive_spawn_screens", "label": "Garrison wake distance", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 2.0, "min": 0.5, "max": 8.0, "step": 0.25,
