@@ -2474,7 +2474,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 		# hulk from it is the same body the sky would have stood there.
 		picket = w.call("_dive_spawn_picket", "hulk",
 			pl.global_position + Vector2(9000.0, 0.0)) as Ship
-		await w.get_tree().physics_frame
+		await _step_the_wake_held(w)
 	_ok(picket != null and is_instance_valid(picket) and picket.has_helm(),
 		"a crewed picket to leave alone at depth 2")
 	if picket == null:
@@ -2508,7 +2508,11 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 		terr.flush_rebuilds()
 	picket.global_position = spot
 	picket.linear_velocity = Vector2.ZERO
-	await w.get_tree().physics_frame
+	await _step_the_wake_held(w)
+	if not is_instance_valid(picket):
+		_ok(false, "the picket survives the frame that parks it (the wake cull took it)")
+		Tunables.reset_all()
+		return
 	# JAM THE STICK, then kill the driver: exactly the sequence a shell through
 	# the panel produces.
 	picket.net_set_controls(0.4, -1.0)
@@ -2519,8 +2523,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 			npc.queue_free()
 	var y0: float = picket.global_position.y
 	for i in 180:
-		await w.get_tree().physics_frame
-		_hold_the_wake(w)
+		await _step_the_wake_held(w)
 	if not is_instance_valid(picket):
 		_ok(false, "the picket outlives its own measurement (the wake cull took it)")
 		Tunables.reset_all()
@@ -2537,12 +2540,15 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	picket.global_position = Vector2(spot.x, rung_y)
 	picket.linear_velocity = Vector2.ZERO
 	picket.net_set_controls(0.4, -1.0)
-	await w.get_tree().physics_frame
+	await _step_the_wake_held(w)
+	if not is_instance_valid(picket):
+		_ok(false, "...and survives the frame that re-parks it (the wake cull took it)")
+		Tunables.reset_all()
+		return
 	_ok(not is_zero_approx(picket.thrust_input.y),
 		"...and the world does not fight a stick set on purpose (one centring, not a loop)")
 	for i in 180:
-		await w.get_tree().physics_frame
-		_hold_the_wake(w)
+		await _step_the_wake_held(w)
 	if not is_instance_valid(picket):
 		_ok(false, "...and outlives the counterfactual too (the wake cull took it)")
 		Tunables.reset_all()
@@ -2567,24 +2573,42 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 ## mid-measurement — and the next line down read `picket.global_position` on a
 ## freed node with no guard in front of it.
 ##
-## This is the likeliest home of the `previously freed` log the suite produced at
-## teardown roughly one run in five (BACKLOG, confirmed v0.140.0): the message is
-## the right one (an unguarded READ of `global_position`), the timing is the right
-## one (this was the LAST check before `_finish` when it was first reported, so the
-## line landed at the end of the log), and the symptom matches exactly — see
-## MIN_CHECKS for why a hit here would never have reddened anything. It is NOT
-## proved: 14 consecutive runs at v0.156.0 and 5 at v0.140.0 did not reproduce it,
-## so this is a hazard closed, not a bug caught in the act. The count floor below
-## is what will name the site if there is another one.
+## THIS IS THE FLAKE, and it is no longer a guess (2026-09-07, second pass).
+## Forced once on purpose — the cull clock set one frame short of firing and the
+## player parked 200,000 px off, which is a geometry a run's own seed can hand you
+## — the suite logged `Nonexistent function 'net_set_controls' in base 'previously
+## freed'` at exactly this check, abandoned the function, ran 296 checks instead of
+## 301 and reddened at MIN_CHECKS. That is the BACKLOG line's message, site and
+## silence, reproduced. What makes it a lottery in the wild is the GROUND SEED, not
+## the clock: the leash is measured from the nearest player, and whether the run
+## has left the player within 1.5 rungs of a spot 9,000 px off the centre line
+## depends on where this seed put its landings — hence "about one run in five",
+## and hence 19 consecutive clean runs while looking for it.
+##
+## So time only advances here through `_step_the_wake_held`, which holds the cull
+## on BOTH sides of every frame this check takes. The first pass held it inside the
+## two 180-frame measurement loops only, and left three bare `await`s — the
+## reposition, the re-park and the spawn — each of which is a whole second of
+## accumulated clock away from firing. One frame with the clock held cannot reach
+## 1.0, so the cull cannot land between a write to the picket and the read after it.
 ##
 ## Held off rather than worked around, because the cull ALREADY has its own check
 ## (`_check_dive_garrison_materializes` §4b, "a cleared sky stays cleared"). The
 ## world otherwise ticks exactly as it does in play — this suppresses only the one
 ## system whose job is to delete the subject of the measurement. The validity
-## guards beside each call are the belt to this braces: if the picket is ever taken
+## guards beside each step are the belt to this braces: if the picket is ever taken
 ## anyway, the check SAYS so instead of vanishing.
 func _hold_the_wake(w: Node) -> void:
 	w.set("_dive_cull_clock", 0.0)
+
+
+## One frame of world with the wake cull held off across it. Held BEFORE the frame
+## (so that frame's tick cannot be the one that fires) and again after (so the
+## caller's next line, and the frame after that, start from zero as well).
+func _step_the_wake_held(w: Node) -> void:
+	_hold_the_wake(w)
+	await w.get_tree().physics_frame
+	_hold_the_wake(w)
 
 
 ## THE DESCENT SEAL, in a real sky (DESIGN_DESCENT.md, owner rulings §0).
