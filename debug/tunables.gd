@@ -152,20 +152,23 @@ const _REGISTRY := [
 	{"id": "dive_crush_pool_cap", "label": "Crush cap, share of pool", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 0.15, "min": 0.02, "max": 1.0, "step": 0.01,
 		"tip": "Most of your integrity pool ONE collision can cost, as a share of its max. 0.15 = a ram is a seventh of the run; 1 is the old uncapped bill."},   # Ship._settle_crush_pool_bill
-	# A SHELL IS WORTH SOMETHING (v0.158.0, off the v0.157.0 scorecard: ~1,400
+	# A SHELL IS WORTH SOMETHING (v0.159.0, off the v0.157.0 scorecard: ~1,400
 	# shells across three seeds, ZERO kills either way, gunnery 0.3-0.6 % of the
 	# damage a run takes). These two are the whole balance change, and either one
-	# alone puts the old fight back.
+	# alone puts the old fight back. Sized on three probe seeds at 1.5 (see the
+	# tip): a depth of enemy fire costs 26-34 % of the pool net of mending, which
+	# is the band the scorecard round asked for. 3.0 was the first cut and
+	# measured 53-66 % — a run died to gunnery inside two rungs.
 	{"id": "dive_shell_worth", "label": "Shell cost to integrity", "group": "Dive",
-		"kind": KIND_FLOAT, "default": 3.0, "min": 1.0, "max": 20.0, "step": 0.25,
-		"tip": "How many times its damage a SHELL costs the hull it hits out of its integrity pool, yours and a picket's alike — blocks and every other source are untouched. 1.0 is the old value."},   # Ship.damage_cell pool_mult, via Shot
+		"kind": KIND_FLOAT, "default": 1.5, "min": 1.0, "max": 20.0, "step": 0.25,
+		"tip": "How many times its damage a SHELL bills the pool it hits, yours and a picket's alike — blocks and every other source untouched. 1.5 is about a third of your pool per depth; 1.0 is the old value."},   # Ship.damage_cell pool_mult, via Shot
 	{"id": "dive_mend_refund", "label": "Mend refund to integrity", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 0.1, "min": 0.0, "max": 1.0, "step": 0.05,
 		"tip": "Share of the hp a repair puts back that also refunds the integrity pool; blocks mend at full speed either way. 1.0 is the old value, which erased a depth of gunnery."},   # Ship._mend_refund_share
 	{"id": "dive_picket_integrity", "label": "Picket integrity", "group": "Dive",
-		"kind": KIND_FLOAT, "default": 300.0, "min": 50.0, "max": 20000.0, "step": 50.0,
+		"kind": KIND_FLOAT, "default": 150.0, "min": 50.0, "max": 20000.0, "step": 50.0,
 		"note": "next spawn",
-		"tip": "Integrity pool a hostile picket dies at. 300 is five landed volleys from the starter's helm at the shipped shell worth; 600 is the old value."},   # world._dive_surge
+		"tip": "Integrity pool a hostile picket dies at. 150 is five landed volleys from the starter's helm at the shipped shell worth; 600 is the old value, which nothing ever killed."},   # world._dive_surge
 	{"id": "dive_explosion_damage", "label": "Dying-ship blast", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 25.0, "min": 0.0, "max": 500.0, "step": 5.0,
 		"tip": "Damage to anyone aboard a ship that explodes. It hurts but must not execute the player; jumping off avoids even that. 0 = harmless."},   # world._dive_explode_ship

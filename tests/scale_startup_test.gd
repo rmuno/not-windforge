@@ -639,7 +639,7 @@ func _check_one_contact_bills_the_pool_once() -> void:
 	await process_frame
 
 
-## A SHELL HAS TO BE WORTH SOMETHING (v0.158.0, off the v0.157.0 scorecard).
+## A SHELL HAS TO BE WORTH SOMETHING (v0.159.0, off the v0.157.0 scorecard).
 ##
 ## Three seeds at 8× fired ~1,400 shells and killed NOTHING: a picket's 600 pool
 ## against a 20-damage shell was 30 landed hits, at about one shell a second,
@@ -714,16 +714,22 @@ func _check_a_picket_dies_to_a_few_volleys() -> void:
 	_ok(absf(billed_at_worth - billed_at_one * worth) < 0.01,
 		"...while the POOL bill is %.0f at worth 1 and %.0f at worth %.2f"
 			% [billed_at_one, billed_at_worth, worth])
-	# BREAK IT ON PURPOSE: at the old worth the same fire cannot finish the job in
-	# the volleys the check above allows — that is the regression this pins.
-	plain.hull_integrity = pool
+	# BREAK IT ON PURPOSE: put BOTH dials back where v0.157.0 measured zero kills
+	# — a 600 pool and a shell worth its face value — and fire the same volleys
+	# into the same plating. BOTH, because either one alone restores the old
+	# fight (that is what makes them the owner's two sliders), so a check that
+	# reverted only the worth would pass for the wrong reason once the pool came
+	# down far enough to die to eight face-value shells anyway.
+	var old_pool := 600.0
+	plain.hull_integrity_max = old_pool
+	plain.hull_integrity = old_pool
 	var old_landed := 0
 	while plain.hull_integrity > 0.0 and old_landed < 8:
 		plain.net_damage_cell(skin[old_landed], shell, 1.0)
 		old_landed += 1
 	_ok(plain.hull_integrity > 0.0,
-		"...and at the OLD worth of 1 the picket is still flying after 8 volleys (%.0f left)"
-			% plain.hull_integrity)
+		"...and at the OLD dials (pool %.0f, worth 1) it still flies after 8 volleys (%.0f left)"
+			% [old_pool, plain.hull_integrity])
 	print("    ~ pool %.0f, shell %.0f x worth %.2f = %.0f a landed volley"
 		% [pool, shell, worth, shell * worth])
 	picket.queue_free()

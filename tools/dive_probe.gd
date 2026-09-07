@@ -1449,7 +1449,7 @@ func _seed_from_args() -> int:
 
 ## `--lever id=value`, repeatable: set F2 levers before the run opens.
 ##
-## A BALANCE ROUND'S BEFORE AND AFTER HAVE TO BE THE SAME BINARY (v0.158.0). The
+## A BALANCE ROUND'S BEFORE AND AFTER HAVE TO BE THE SAME BINARY (v0.159.0). The
 ## seed pins the sky; this pins the dials, so "what did changing the shell's
 ## worth do" is one build, one seed, two lever sets — rather than two checkouts
 ## whose OTHER differences ride along in the numbers. Prints what it set, because
@@ -1546,12 +1546,16 @@ func _components_line(hull) -> String:
 		return "no glyph clusters (all raw structure)"
 	var shell: float = Tunables.get_num("turret_damage")
 	var pool: float = hull.hull_integrity_max
-	# The pool bill of one shell into that cluster: capped at the cell's own hp.
+	# The pool bill of one shell into that cluster: capped at the cell's own hp
+	# (v0.149.0, a component is billed once), then multiplied by WHAT A SHELL IS
+	# WORTH (v0.159.0) — the same cap-then-scale order Ship.damage_cell uses, so
+	# this line quotes the arithmetic the game will actually run rather than the
+	# pre-lever number it printed for two rounds.
 	var cell_hp := 0.0
 	var wc: Vector2i = sample[worst_key]
 	if hull.blocks.has(wc):
 		cell_hp = BlockDB.max_hp(int(hull.blocks[wc]["type"]))
-	var bill := minf(shell, cell_hp)
+	var bill := minf(shell, cell_hp) * maxf(Tunables.get_num("dive_shell_worth"), 0.0)
 	return ("biggest cluster per glyph (cells×clusters) %s| one %.0f-damage shell into '%s' "
 		+ "reaches %d cells (%.0f hp each) and bills the pool %.0f of %.0f "
 		+ "— %.0f such hits before the pool is gone") % [
