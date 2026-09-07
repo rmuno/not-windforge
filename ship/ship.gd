@@ -1749,19 +1749,45 @@ func _is_mount(cell: Vector2i) -> bool:
 ##
 ## A body with no solid footprint has no axis, and `_mirror_point` is the
 ## identity for it in both states — so it must not be reflected either.
+##
+## THE SHAPES ARE REBUILT, NOT SLID (2026-09-07). Writing new positions onto
+## shapes that stay registered is cheaper still, and the geometry it lands is
+## identical — measured shape for shape on the Leviathan and on a common kraken —
+## but it is not the same event to the physics server: a shape that MOVES while
+## registered carries its contacts with it, and a body-width teleport therefore
+## hands the solver a penetration to pay back. `_rebuild_collider` never did that,
+## because it removed the shapes first. So this removes them first too. What it
+## skips is the expensive half and only that: the greedy merge / coarse
+## downsample that produced `_hull_rects`, which does not depend on the facing and
+## is reused verbatim — so the 28,096-cell dictionary is never walked.
 func _reflect_collider_x() -> void:
 	if solid_bounds.size.x <= 0.0:
 		return
-	var twice_axis := 2.0 * _mirror_axis_x()
+	# The rects the live shapes were built from, kept in step with `_hull_shapes`
+	# by every path that edits either (see `_add_hull_shape`).
+	var rects := _hull_rects.duplicate()
+	var stale: Array[Node] = []
 	for child in get_children():
 		if child is CollisionShape2D:
-			var cs := child as CollisionShape2D
-			cs.position.x = twice_axis - cs.position.x
-		elif child is AnimatableBody2D:
-			for sub in (child as Node).get_children():
-				if sub is CollisionShape2D:
-					var s2 := sub as CollisionShape2D
-					s2.position.x = twice_axis - s2.position.x
+			stale.append(child)
+	for child in stale:
+		remove_child(child)
+		child.queue_free()
+	_hull_shapes.clear()
+	_hull_rects.clear()
+	for rect in rects:
+		_add_hull_shape(rect)
+	# Platforms and shields are grid walks, and a body that flips is a living
+	# CREATURE — flesh, with neither. So only pay for them if this body actually
+	# owns one, which is the same question "has it any such child" asks.
+	var has_sub := false
+	for child in get_children():
+		if child is AnimatableBody2D:
+			has_sub = true
+			break
+	if has_sub:
+		_rebuild_platforms()
+		_rebuild_shields()
 
 
 func _rebuild_collider() -> void:
