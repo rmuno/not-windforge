@@ -3126,17 +3126,25 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 	var dead: Array[Vector2i] = []
 	var shade_moved := false
 	# Structural hp REALLY removed this hit — what an armed hull's integrity
-	# pool drains by. Capped at each cell's remaining hp on purpose: a 9999
+	# pool drains by. Capped at the struck cell's remaining hp on purpose: a 9999
 	# overkill on a 60 hp block costs the pool 60, so integrity measures the
-	# ship actually being destroyed, never a weapon's number. (A component's
-	# cells all take the hit, and all of them count — components are valuable.)
-	var structural := 0.0
+	# ship actually being destroyed, never a weapon's number.
+	#
+	# A COMPONENT DRAINS THE POOL ONCE, NOT ONCE PER CELL (2026-09-06, found by
+	# tools/dive_probe.gd). A component's cells all take the hit as ONE unit —
+	# that is the owner's rule for machines and balloons — and this loop used to
+	# add every member's loss to the pool. At 1× a component was one cell and
+	# the two readings agreed; at 8× the starter's canopy is a 1,536-cell
+	# cluster, so ONE 20-hp shell into a gasbag drained 30,720 against a 3,000
+	# pool — the whole run's life, ten times over, with zero blocks destroyed —
+	# and a picket's 600 pool died to any shell that found its bag. The pool now
+	# bills the component as the one part it is: the struck cell's own loss.
+	var structural := minf(amount, maxf(blocks[cell]["hp"], 0.0)) if blocks.has(cell) else 0.0
 	for c in members:
 		if not blocks.has(c):
 			continue  # cluster map can be stale mid-batch
 		var hp_max := BlockDB.max_hp(blocks[c]["type"])
 		var was := shade_bucket(blocks[c]["hp"], hp_max)
-		structural += minf(amount, maxf(blocks[c]["hp"], 0.0))
 		blocks[c]["hp"] -= amount
 		if blocks[c]["hp"] <= 0.0:
 			dead.append(c)

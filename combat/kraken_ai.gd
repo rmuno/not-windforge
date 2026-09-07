@@ -78,11 +78,77 @@ const COIL_SECONDS := 0.7
 ## it precedes (it is applied for 0.7 s against PUSH's 1.0).
 const COIL_RECOIL := 0.25
 
+## --- MOUTHS ARE CLUSTERS (v0.148.0, DESIGN_KRAKEN §1.2 / jam #3 B-T3 = C-M6) -
+## The exterior-exposed MEAT of a body is not one opening: it is a set of
+## CLUSTERS, and a body plan's arm count is therefore a text file rather than a
+## line of GDScript. One cluster is the THROAT; every other is a ROOT — an arm,
+## with its own reach and its own small pool.
+##
+## THREE DECISIONS THIS SLICE HAD TO MAKE, and why they came out this way:
+##
+## 1. **8-CONNECTED, not 4.** The authored gullets are DIAGONAL STAIRCASES.
+##    `kraken_leviathan.ship`'s eleven throat cells 4-connect into FIVE
+##    fragments — and four of them would then be "arms" grabbing from inside the
+##    boss's own maw, which is exactly the shelter both judges ruled to keep
+##    (judge 2 §4, D §2b). Diagonally they are one piece of flesh, and the
+##    measured answer on the shipped plans is the AUTHORED anatomy: the
+##    Leviathan 1 throat + 6 arm roots, every common kraken 1 throat + 0 roots
+##    (their "tentacles" are drawn continuous with the head).
+## 2. **THE THROAT IS THE CLUSTER NEAREST THE BODY'S SOLID CENTROID.** Largest-
+##    wins is the rule judge 2 explicitly refused: D's throat is 11 cells against
+##    a 12-cell arm, so the bite would land on whichever arm the flood reached
+##    first. "Nearest the interior" is the shape of the thing — a throat is an
+##    opening IN the body, an arm trails away from it. Measured margin on the
+##    Leviathan: the throat's centroid is 5.6 authored cells from the solid
+##    centroid, the nearest arm 16.8. Ties break by cell count, then by the
+##    lowest cell, so the answer is deterministic across peers and boots.
+## 3. **THE BITE DOES NOT MOVE.** `_mouth_local` is still the centroid of ALL
+##    exterior-exposed meat, computed exactly as it was and PINNED on the first
+##    ask — judge 2's ruling word for word ("the derived centroid keeps computing
+##    the BITE … clustering is used only to enumerate ROOTS"), and D's −17.0
+##    measurement with it. That is what keeps "the mouth cannot reach into its
+##    own mouth" true: the bubble is centred 6 cells PAST the jaw lip and stops
+##    1.6 cells short of the aperture, so a hull parked in the maw is inside the
+##    boss and out of the bite. A throat site placed on the throat's OWN cells
+##    would swallow the maw and delete the fight's one shelter.
+##    Consequence, deliberately: an arm dying never moves the bite, because the
+##    pinned point is never recomputed.
+##
+## So the SITES are: the throat (biting at the pinned derived centroid) plus one
+## per root (biting at its own centroid). Seven on the Leviathan; one — today's
+## behaviour, byte for byte — on every other kraken in `ships/`.
+
+## A root's own pool, per AUTHORED cell — the documented default of the F2 lever
+## `kraken_root_hp_per_cell` (the parity check compares the two). A living
+## creature is ONE unit and no block breaks while it lives (`damage_cell` drains
+## the shared pool and returns before removing anything), so "kill this arm"
+## needs a pool of its own. A hit that lands ON a root's cells drains the shared
+## pool as it always did AND this; at zero the arm's cells come off the body and
+## it stops grabbing. 80 × a 12-cell arm = 960 hp — about 24 s of the bare
+## starter's 40 hp/s on meat: permanent, visible progress with no phase machine.
+##
+## AUTHORED cells, not blocks: at 8× every authored cell is 64 blocks, and the
+## lever has to mean the same number at both scales.
+const ROOT_HP_PER_CELL := 80.0
+
 ## The mouth point in AUTHORED body-local px (centroid of the exterior-exposed
 ## meat — the soft opening). Computed once from the body; Vector2.INF = not yet.
 var _mouth_local := Vector2.INF
-## Read by tests/debug: was the mouth latched onto prey this tick?
+## Read by tests/debug: was ANY grab site latched onto prey this tick?
 var grabbing := false
+## Read by tests/debug/probe: how many distinct SITES had hold this tick (the
+## boss has seven). `grabbing` is "any of them"; this is how many.
+var grab_sites_latched := 0
+
+## The ROOTS, in cluster order: {cells: Array[Vector2i], local: Vector2 (authored
+## body-local px), hp: float, hp_max: float}. Empty until `_ensure_sites`.
+var _roots: Array[Dictionary] = []
+## The throat cluster's own cells (read by tests). It has NO pool: killing the
+## throat is killing the animal, and that is what `shared_health` is.
+var _throat_cells: Array[Vector2i] = []
+## cell -> index into `_roots`, so a landed hit is routed in O(1).
+var _root_cells := {}
+var _sites_built := false
 
 ## The ON-FOOT player, handed in by the world each tick (world._creature_swim).
 ## Null when there is nobody, or while they are PILOTING — a pilot rides inside
@@ -106,6 +172,12 @@ func tick(delta: float, target: Node2D) -> void:
 	# kraken's own additions — the hunt restamp and the per-cell mouth grab —
 	# need a block grid, so they act on the SHIP prey only.
 	var prey_ship := target as Ship
+	# AN ARM THAT RAN OUT OF POOL COMES OFF, once, at the top of a tick. Deferred
+	# from the hit that emptied it on purpose: the drain arrives inside
+	# `Ship.damage_cell`'s `damaged.emit`, and mutating the grid re-entrantly
+	# from inside the damage walk is the one thing that branch is not written to
+	# survive.
+	_reap_dead_roots()
 	# Aggression: hunt on sight. A WILD kraken keeps itself provoked while a
 	# living prey is around, so the inherited align→push→glide ram runs
 	# immediately (the whale only rams AFTER being hit; the kraken does not
@@ -131,11 +203,17 @@ func tick(delta: float, target: Node2D) -> void:
 	# tamed brain no ship target), and ANY person standing in the jaws.
 	grabbing = false
 	grabbing_player = false
+	grab_sites_latched = 0
 	if not _is_alive():
 		return
+	# ONE world-space site list per tick — the boss has seven and both grab paths
+	# want them, so they are resolved once rather than per path per site.
+	var sites := site_worlds()
+	var latched := {}
 	if prey_ship != null and is_instance_valid(prey_ship) and not prey_ship.is_carcass():
-		_mouth_grab(delta, prey_ship)
-	_mouth_grab_player(delta)
+		_mouth_grab(delta, prey_ship, sites, latched)
+	_mouth_grab_player(delta, sites, latched)
+	grab_sites_latched = latched.size()
 
 
 ## --- The four attack hooks (WhaleAI's, re-decided) -------------------------
@@ -274,27 +352,47 @@ func _is_alive() -> bool:
 ## mouth and, if it is within bite range, drain it by GRAB_DPS·delta. Cheap: the
 ## O(cells) nearest-cell scan runs only after a coarse whole-body proximity gate,
 ## so it costs nothing until the mouth is actually near the prey.
-func _mouth_grab(delta: float, target: Ship) -> void:
-	var mouth := _mouth_world()
+func _mouth_grab(delta: float, target: Ship, sites: Array[Vector2],
+		latched: Dictionary) -> void:
+	if sites.is_empty():
+		return
 	var u := whale.scale_unit
 	var reach := Tunables.get_num("kraken_grab_reach") * u
-	# Coarse gate: skip the per-cell scan unless the mouth is near the prey body at
-	# all (reach + the prey's own extent). solid_bounds is body-local px.
+	# Coarse gate, per site: skip the per-cell scan for any site that is not near
+	# the prey body at all (reach + the prey's own extent). solid_bounds is
+	# body-local px.
 	var coarse := reach + target.solid_bounds.size.length()
-	if (mouth - target.global_position).length() > coarse:
+	var near: Array[int] = []
+	for i in sites.size():
+		if (sites[i] - target.global_position).length() <= coarse:
+			near.append(i)
+	if near.is_empty():
 		return
-	var best_cell := Vector2i.ZERO
-	var best_d2 := INF
+	# ONE walk of the prey grid for every near site. Seven separate scans of an
+	# 8× hull's ~11,000 cells would cost seven times what the shipped single
+	# mouth did; the sites ride along inside the one dictionary walk instead.
+	var best_cell: Array[Vector2i] = []
+	var best_d2: Array[float] = []
+	best_cell.resize(near.size())
+	best_d2.resize(near.size())
+	for j in near.size():
+		best_d2[j] = INF
 	for cell in target.blocks:
 		if not BlockDB.get_def(target.blocks[cell]["type"])["solid"]:
 			continue
-		var d2 := (target.to_global(target.local_pos_of(cell)) - mouth).length_squared()
-		if d2 < best_d2:
-			best_d2 = d2
-			best_cell = cell
-	if best_d2 <= reach * reach:
-		target.net_damage_cell(best_cell, Tunables.get_num("kraken_grab_dps") * delta)
+		var at := target.to_global(target.local_pos_of(cell))
+		for j in near.size():
+			var d2 := (at - sites[near[j]]).length_squared()
+			if d2 < best_d2[j]:
+				best_d2[j] = d2
+				best_cell[j] = cell
+	var dps := Tunables.get_num("kraken_grab_dps")
+	for j in near.size():
+		if best_d2[j] > reach * reach:
+			continue
+		target.net_damage_cell(best_cell[j], dps * delta)
 		grabbing = true
+		latched[near[j]] = true
 
 
 ## The mouth chews PEOPLE too (owner follow-up 2026-08-24): stand in the jaws on
@@ -308,24 +406,289 @@ func _mouth_grab(delta: float, target: Ship) -> void:
 ## (The tamed guard lives in tick(), shared with the ship grab, so the two bite
 ## paths cannot drift apart; a kraken tames only at the top tier, but the base
 ## class serves every creature that does.)
-func _mouth_grab_player(delta: float) -> void:
+func _mouth_grab_player(delta: float, sites: Array[Vector2],
+		latched: Dictionary) -> void:
 	if prey_player == null or not is_instance_valid(prey_player) \
 			or not prey_player.has_method("take_damage"):
 		return
 	var reach := Tunables.get_num("kraken_grab_reach") * whale.scale_unit
-	if (prey_player.global_position - _mouth_world()).length_squared() > reach * reach:
-		return
-	prey_player.take_damage(Tunables.get_num("kraken_grab_dps") * delta)
-	grabbing_player = true
+	var dps := Tunables.get_num("kraken_grab_dps")
+	for i in sites.size():
+		if (prey_player.global_position - sites[i]).length_squared() > reach * reach:
+			continue
+		prey_player.take_damage(dps * delta)
+		grabbing_player = true
+		latched[i] = true
 
 
 ## The mouth in WORLD space. Mirrors the authored point with the body's facing
 ## (the collider mirrors with the skin, v0.14.0), so the mouth tracks the drawn
 ## head whichever way the kraken is swimming.
 func _mouth_world() -> Vector2:
-	if _mouth_local == Vector2.INF:
-		_mouth_local = _compute_mouth_local()
+	_ensure_sites()
 	return whale.to_global(whale._mirror_point(_mouth_local))
+
+
+## --- THE GRAB SITES --------------------------------------------------------
+
+## Every grab site in AUTHORED body-local px: the THROAT first (the pinned
+## derived mouth centroid — see the header's decision 3), then one per live ROOT
+## at its own cluster centroid.
+func site_locals() -> Array[Vector2]:
+	_ensure_sites()
+	var out: Array[Vector2] = [_mouth_local]
+	for r in _roots:
+		out.append(r["local"] as Vector2)
+	return out
+
+
+## The same list in WORLD space. Mirrored with the body's facing (the collider
+## mirrors with the skin, v0.14.0), so an arm tracks the drawn arm whichever way
+## the kraken is swimming.
+func site_worlds() -> Array[Vector2]:
+	var out: Array[Vector2] = []
+	if whale == null or not is_instance_valid(whale):
+		return out
+	for p in site_locals():
+		out.append(whale.to_global(whale._mirror_point(p)))
+	return out
+
+
+## How many ROOTS this body still has (tests / F2 / probe). The throat is not
+## counted: it is the animal, not a limb.
+func root_count() -> int:
+	_ensure_sites()
+	return _roots.size()
+
+
+## A root's remaining pool, and its full one. -1 for an index that is not a root.
+func root_hp(i: int) -> float:
+	_ensure_sites()
+	return float(_roots[i]["hp"]) if i >= 0 and i < _roots.size() else -1.0
+
+
+func root_hp_max(i: int) -> float:
+	_ensure_sites()
+	return float(_roots[i]["hp_max"]) if i >= 0 and i < _roots.size() else -1.0
+
+
+## The throat cluster's cells (tests). The cells of root `i` are `root_cells(i)`.
+func throat_cells() -> Array[Vector2i]:
+	_ensure_sites()
+	return _throat_cells
+
+
+func root_cells(i: int) -> Array[Vector2i]:
+	_ensure_sites()
+	if i < 0 or i >= _roots.size():
+		return [] as Array[Vector2i]
+	return _roots[i]["cells"] as Array[Vector2i]
+
+
+## A HIT LANDED ON THIS BODY. Wired at the ONE place a creature's brain is set up
+## (`world._whale_ai_for` already connects `damaged` there to provoke it), so
+## the routing cannot drift into a second copy: if the struck cell belongs to a
+## root, that root's own pool drains by the SAME amount the shared pool just
+## took — post shell tax, which for bare meat is 1:1 (`Ship.damage_cell` emits
+## the drained figure, not the weapon's number).
+##
+## The reap is NOT done here — see `tick`.
+func absorb_hit(cell: Vector2i, amount: float) -> void:
+	if whale == null or not is_instance_valid(whale) or amount <= 0.0:
+		return
+	# A CARCASS HAS NO ARMS TO LOSE. `damaged` fires on the mining path too, and
+	# a corpse being harvested must not pay for an exterior-air flood per hit.
+	if not _is_alive():
+		return
+	# The first landed hit is a fine moment to learn the anatomy: a creature
+	# nobody is fighting never pays for the flood, and one that IS being shot
+	# has to know which arm is taking it.
+	_ensure_sites()
+	var i: int = int(_root_cells.get(cell, -1))
+	if i < 0 or i >= _roots.size():
+		return
+	var root: Dictionary = _roots[i]
+	root["hp"] = maxf(float(root["hp"]) - amount, 0.0)
+
+
+## AN ARM THAT RAN OUT OF POOL COMES OFF THE BODY. Removing cells from a LIVING
+## creature is new — everything else in the game removes blocks from a carcass —
+## so this is the deliberate list of what it must not break:
+##
+##   * SEVERING. Not a severing pass: `remove_block(cell, false)` skips the
+##     per-cell rebuild AND `_resolve_severing`, exactly as `strip_to_husk`
+##     does, so cutting an arm off can never spray the crown into six
+##     independent bodies. One coalesced `rebuild()` pays for the whole strip.
+##   * THE COARSE COLLIDER. Rebuilt by that one `rebuild()`, like every other
+##     structural change; a living creature's boxes are derived, never stored.
+##   * THE SEALED CAVITY. `cavity_cells()` is latched at spawn and an arm is
+##     exterior flesh: cutting one cannot breach the hoard.
+##   * THE BITE. `_mouth_local` is pinned and is NOT recomputed here — only the
+##     cluster list is. That is decision 3 in the header, and the test that
+##     pins it.
+##   * THE POOL. `shared_health` is untouched: an arm is not free damage, it is
+##     a second bill you chose to pay.
+func _reap_dead_roots() -> void:
+	if not _sites_built or _roots.is_empty() or not _is_alive():
+		return
+	var doomed: Array[Vector2i] = []
+	for r in _roots:
+		if float(r["hp"]) > 0.0:
+			continue
+		for c in (r["cells"] as Array):
+			doomed.append(c)
+	if doomed.is_empty():
+		return
+	for c in doomed:
+		whale.remove_block(c, false)
+	_sites_built = false        # the clusters are stale; the pinned bite is not
+	whale.rebuild()
+	_ensure_sites()
+
+
+## Cluster the body once and decide which cluster is the throat. Lazy: an
+## exterior-air flood over a 416 × 200 8× bounding box is not something to pay
+## for on a body nobody is fighting. Re-run only when an arm has actually come
+## off (`_reap_dead_roots`).
+func _ensure_sites() -> void:
+	if _sites_built or whale == null or not is_instance_valid(whale):
+		return
+	_sites_built = true
+	var exterior := whale.exterior_air()
+	# THE BITE, PINNED ONCE (header decision 3): all exposed meat, the shipped
+	# formula, and never recomputed however many arms come off afterwards.
+	if _mouth_local == Vector2.INF:
+		_mouth_local = _compute_mouth_local(exterior)
+	var clusters := meat_clusters(whale.blocks, exterior)
+	var ti := throat_index(clusters, whale.blocks)
+	_throat_cells = clusters[ti] as Array[Vector2i] if ti >= 0 else ([] as Array[Vector2i])
+	# A recomputed root INHERITS the damage its old self had taken (matched by a
+	# shared cell), or shooting one arm and then killing another would heal the
+	# first.
+	var was := _roots
+	_roots = []
+	_root_cells = {}
+	var per_cell := Tunables.get_num("kraken_root_hp_per_cell")
+	for i in clusters.size():
+		if i == ti:
+			continue
+		var cells: Array[Vector2i] = clusters[i]
+		var hp_max := per_cell * _authored_cells(cells.size())
+		var taken := 0.0
+		for old in was:
+			if (old["cells"] as Array).has(cells[0]):
+				taken = maxf(float(old["hp_max"]) - float(old["hp"]), 0.0)
+				break
+		var idx := _roots.size()
+		for c in cells:
+			_root_cells[c] = idx
+		_roots.append({
+			"cells": cells,
+			"local": cluster_centroid(cells) * Ship.CELL,
+			"hp": maxf(hp_max - taken, 0.0),
+			"hp_max": hp_max,
+		})
+
+
+## Blocks -> AUTHORED cells. At 8× every authored cell is an 8×8 patch of blocks,
+## so a lever quoted per authored cell means the same thing at both scales.
+func _authored_cells(blocks: int) -> float:
+	var u := maxf(whale.scale_unit, 1.0)
+	return float(blocks) / (u * u)
+
+
+## --- The clustering, pure --------------------------------------------------
+## Static and total so the suite can assert a body plan's anatomy straight off
+## the `.ship` file, with no body, no world and no physics.
+
+## The EXTERIOR-EXPOSED MEAT of `blocks`, 8-connected into clusters. `exterior`
+## is `Ship.exterior_air()` — the air that reaches the outside, so a sealed loot
+## cavity's inner meat walls are not an opening.
+##
+## EIGHT-connected, not four: see the header's decision 1 — the authored gullets
+## are diagonal staircases and 4-connectivity shatters them.
+##
+## Deterministic: the flood starts from the SORTED cell list, because a
+## Dictionary iterates in insertion order and a spawn payload's order is not a
+## promise. The returned clusters are sorted too, so `cells[0]` is a stable
+## identity for a root across a recompute.
+static func meat_clusters(blocks: Dictionary, exterior: Dictionary) -> Array:
+	var exposed := {}
+	for cell in blocks:
+		if int(blocks[cell]["type"]) != BlockDB.Type.MEAT:
+			continue
+		for d in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+			if exterior.has(cell + d):
+				exposed[cell] = true
+				break
+	var starts := exposed.keys()
+	starts.sort()
+	var seen := {}
+	var out: Array = []
+	for start in starts:
+		if seen.has(start):
+			continue
+		var group: Array[Vector2i] = []
+		var stack: Array[Vector2i] = [start]
+		seen[start] = true
+		while not stack.is_empty():
+			var c: Vector2i = stack.pop_back()
+			group.append(c)
+			for dx in [-1, 0, 1]:
+				for dy in [-1, 0, 1]:
+					var n := Vector2i(c.x + dx, c.y + dy)
+					if exposed.has(n) and not seen.has(n):
+						seen[n] = true
+						stack.append(n)
+		group.sort()
+		out.append(group)
+	return out
+
+
+static func cluster_centroid(cells: Array) -> Vector2:
+	if cells.is_empty():
+		return Vector2.ZERO
+	var sum := Vector2.ZERO
+	for c in cells:
+		sum += Vector2(c as Vector2i)
+	return sum / float(cells.size())
+
+
+## WHICH CLUSTER IS THE THROAT — the one whose centroid is NEAREST the body's
+## solid centroid (header decision 2). A throat is an opening IN the body; an arm
+## trails away from it, so "nearest the interior" is the shape of the thing, and
+## it is the rule that survives D's 11-cell throat beside a 12-cell arm where
+## "largest wins" does not.
+##
+## Ties: the larger cluster, then the lowest first cell. Both are only there so
+## two peers and two boots agree — no shipped plan reaches them.
+## Returns -1 when there is no exposed meat at all (a fully-cased body).
+static func throat_index(clusters: Array, blocks: Dictionary) -> int:
+	if clusters.is_empty():
+		return -1
+	var centre := Vector2.ZERO
+	var n := 0
+	for cell in blocks:
+		if not BlockDB.get_def(int(blocks[cell]["type"]))["solid"]:
+			continue
+		centre += Vector2(cell as Vector2i)
+		n += 1
+	if n > 0:
+		centre /= float(n)
+	var best := -1
+	var best_d2 := INF
+	for i in clusters.size():
+		var d2 := (cluster_centroid(clusters[i]) - centre).length_squared()
+		var better := d2 < best_d2 - 0.0001
+		if not better and absf(d2 - best_d2) <= 0.0001 and best >= 0:
+			var a: Array = clusters[i]
+			var b: Array = clusters[best]
+			better = a.size() > b.size() \
+				or (a.size() == b.size() and (a[0] as Vector2i) < (b[0] as Vector2i))
+		if better:
+			best_d2 = minf(best_d2, d2)
+			best = i
+	return best
 
 
 ## The mouth centroid in authored body-local px: the average of the EXTERIOR-
@@ -334,12 +697,13 @@ func _mouth_world() -> Vector2:
 ## meat walls do NOT count, so this lands at the real opening. Falls back to the
 ## meat centroid if nothing is exposed (a fully-cased body), and to the body
 ## centre if there is no meat at all.
-func _compute_mouth_local() -> Vector2:
+func _compute_mouth_local(exterior := {}) -> Vector2:
 	var meat: Array[Vector2i] = []
 	for cell in whale.blocks:
 		if whale.blocks[cell]["type"] == BlockDB.Type.MEAT:
 			meat.append(cell)
-	var exterior := _exterior_air()
+	if exterior.is_empty():
+		exterior = _exterior_air()
 	var sum := Vector2.ZERO
 	var n := 0
 	for cell in meat:
