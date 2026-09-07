@@ -3005,6 +3005,13 @@ func _test_dive_card_suite() -> void:
 	_check(DiveCards.HULL_PER_BODY_HP > 1.0,
 		"a body point is worth more than one pool point (%.0f)"
 			% DiveCards.HULL_PER_BODY_HP)
+	# ...and it is TEN, exactly. The bounds below say what the number must be
+	# BETWEEN; every `desc` in the deck, CODEMAP's DIVE CARDS row and
+	# DESIGN_DIVE_REVIEW all state the figure itself, so the value is pinned too —
+	# retuning it is meant to be a decision, not a drift.
+	_check(is_equal_approx(DiveCards.HULL_PER_BODY_HP, 10.0),
+		"...and the documented ten, not merely 'somewhere under parity' (%.1f)"
+			% DiveCards.HULL_PER_BODY_HP)
 	var parity: float = Tunables.get_num("dive_ship_integrity") / 100.0
 	_check(DiveCards.HULL_PER_BODY_HP < parity,
 		"...but deliberately UNDER parity (%.0fx of a possible %.0fx), so the flat"
@@ -4843,6 +4850,20 @@ func _test_dive_run() -> void:
 		"the pot banked at the floor's premium (%d -> %d)" % [carried, run.banked])
 	_check(run.advance(1.0, 0.2).is_empty(), "a finished run is inert")
 	_check(not run.go_home(), "...and cannot be extracted twice")
+	# PASSAGE HOME WITH NOTHING ON YOU. The row is free (the premium IS the pot's
+	# own arithmetic, `bank_value`), so a run that went deep and spent everything
+	# at the counter must still be able to buy the way out — being stranded by
+	# having shopped is the one thing the extraction row must never do.
+	var stranded := DiveRun.new()
+	stranded.deepest = 5
+	stranded.pot = 0
+	_check(stranded.go_home(), "a run with an EMPTY pot can still take passage home")
+	_check(stranded.outcome == "escaped" and stranded.banked == 0,
+		"...and banks nothing, without failing (banked %d)" % stranded.banked)
+	_check(DiveRun.bank_value(0, DiveRun.DEPTHS) == 0,
+		"...because an empty pot is worth nothing at any premium")
+	_check(int(DiveRun.STOCK[DiveRun.STOCK.size() - 1]["cost"]) == 0,
+		"...and the counter's passage row is free, so the pot cannot gate it")
 
 	# --- The closing sky's arithmetic ---------------------------------------
 	_check(DiveRun.ceiling_at(DiveRun.depth_altitude(1)) <= DiveRun.TOP_FRAC,

@@ -340,6 +340,10 @@ func _initialize() -> void:
 	await _check_dive_survival(world, fleet)
 	# ...then SCRAP + WRECK HUSKS, which needs its own run too (it kills hulls).
 	await _check_dive_scrap_and_husks(world, fleet)
+	# ...then the QA sweep's two: every run-scoped stamp has a reset, and the
+	# Dive's documented verb subset really is the verb subset.
+	await _check_dive_run_scope(world, fleet)
+	await _check_dive_verbs(world, fleet)
 
 	# ...and LAST OF ALL, a second, SEPARATE boot: the streamlined dive world.
 	# This one cannot share the world above, because the whole point of it is
@@ -3989,6 +3993,450 @@ func _check_dive_scrap_and_husks(world: Node, fleet) -> void:
 	Tunables.set_value("dormancy_enabled", dorm_was)
 	pl.health = pl.max_health
 	await world.get_tree().physics_frame
+
+
+## EVERY KEY `maps/world/dive_hud.gd` READS OUT OF `world.dive_status()`.
+##
+## The layer paints plain values and never asks a question of its own, so a key
+## missing in one PHASE of a run is not an error anywhere — it is a blank space on
+## the gauge, or a 0 where a number belongs. Listed here, walked below against
+## every phase a real run passes through.
+const DIVE_HUD_KEYS := [
+	# the gauge
+	"depths", "depth", "deepest", "depth_label", "zone", "pot", "shipless",
+	"hull_frac", "xp", "xp_need", "cards", "draft",
+	# the ledger
+	"outcome", "headline", "deepest_label", "kills", "surges", "elapsed",
+	"banked",
+]
+
+
+func _dive_status_gap(world: Node) -> String:
+	var st: Variant = world.call("dive_status")
+	if st == null:
+		return "no status at all"
+	var missing: Array = []
+	for key in DIVE_HUD_KEYS:
+		if not (st as Dictionary).has(key):
+			missing.append(key)
+	return "" if missing.is_empty() else ", ".join(missing)
+
+
+## THE RUN IS SCOPED TO THE RUN (QA sweep, 2026-09-06).
+##
+## `_tick_dive` STAMPS the mode's whole flight model onto real bodies — the
+## floored air, the rate stick and its two speeds, the card dials, the integrity
+## pool, a slippery keel, a scorch tint, an airstream — and `end_dive` is the only
+## thing that takes any of it back. A stamp with no matching reset is a hull that
+## keeps flying the Dive in an expedition, so this walks the whole table: stamp
+## everything that can be stamped, end the run, and assert STOCK.
+##
+## The picket half is the one that was actually wrong: the local hull's resets were
+## written line by line as each stamp was added, while `_dive_surged` — every OTHER
+## vessel the run flies, stamped in the very same tick — was only ever `clear()`ed,
+## which drops the list and leaves the bodies carrying the run.
+func _check_dive_run_scope(world: Node, fleet) -> void:
+	print("\n--- THE RUN IS SCOPED TO THE RUN: every stamp has a reset ---")
+	var pl = world.get("player")
+	if pl == null or not is_instance_valid(pl):
+		_ok(false, "a body for the run-scope check")
+		return
+	var dorm_was: bool = Tunables.get_bool("dormancy_enabled")
+	Tunables.set_value("dormancy_enabled", false)
+	world.call("begin_dive")
+	await _dive_take_a_hull(world, fleet)
+	var run = world.get("dive")
+	var hull = world.get("local_ship")
+	if run == null or hull == null or not is_instance_valid(hull):
+		_ok(false, "a live run with a committed hull")
+		Tunables.set_value("dormancy_enabled", dorm_was)
+		return
+	world.call("_tick_dive", 0.016)
+
+	# --- STAMP EVERYTHING ---------------------------------------------------
+	# The card dials (a multiplier each, and the flat pool), so the reset has
+	# something to undo rather than a value that was already stock.
+	run.call("grant_card", "trimmed_sails")     # thrust
+	run.call("grant_card", "lead_keel")         # dive_rate
+	run.call("grant_card", "thick_skin")        # fall_damage_taken + max_hp
+	# THE WEATHER only blows once you have been DOWN (both halves of
+	# `dive_weather_at` are gated on `deepest > 1`), so the run is told it has
+	# been — which is also what arms the closing sky's leash.
+	run.set("deepest", 2)
+	run.set("low_frac", DiveRun.depth_altitude(3))
+	# A PICKET: the other side of every stamp, armed and listed by the real spawn
+	# path rather than assembled by hand.
+	var picket = world.call("_dive_spawn_picket", "hulk",
+		hull.global_position + Vector2(3000.0 * float(world.get("world_scale")), 0.0))
+	await world.get_tree().physics_frame
+	world.call("_tick_dive", 0.016)
+	world.call("_dive_weather", 0.016)
+	# ...and a WOUND, so the scorch tint is really on the node.
+	hull.hull_integrity = hull.hull_integrity_max * 0.5
+	world.call("_dive_watch_integrity")
+
+	_ok(hull.thrust_mult > 1.0 and hull.dive_rate_mult > 1.0
+			and hull.impact_damage_mult < 1.0 and hull.card_integrity_bonus > 0.0,
+		"the run has the card dials on your hull (thrust %.2f, dive %.2f, impact %.2f)"
+			% [hull.thrust_mult, hull.dive_rate_mult, hull.impact_damage_mult])
+	_ok(hull.rate_control and hull.air_density_floor > 0.0
+			and hull.climb_rate_max > 0.0 and hull.dive_rate_max > 0.0
+			and hull.hull_integrity_max > 0.0
+			and hull.physics_material_override != null,
+		"...the flight model, the pool and the slippery keel with them")
+	_ok(not hull.extra_wind.is_equal_approx(Vector2.ZERO),
+		"...and the closing sky's airstream (%.0f px/s down)" % hull.extra_wind.y)
+	_ok(pl.fall_damage_mult < 1.0 and pl.bonus_max_health > 0.0,
+		"...and the body's own dials (fall x%.2f, +%.0f max hp)"
+			% [pl.fall_damage_mult, pl.bonus_max_health])
+	var picket_ok: bool = picket != null and is_instance_valid(picket)
+	if picket_ok:
+		_ok(picket.rate_control and picket.air_density_floor > 0.0
+				and picket.dive_rate_max > 0.0 and picket.hull_integrity_max > 0.0,
+			"EVERY hull the run flies is stamped the same way, not just yours")
+	else:
+		_ok(false, "a picket to stamp")
+	# THE DRAFT'S PAUSE is the run's too: headless never really pauses (the
+	# picker's own gate), so the flag and the tree are set by hand here — what is
+	# pinned is that TEARING DOWN A RUN LETS GO, whatever set it.
+	world.set("_dive_draft_paused", true)
+	world.get_tree().paused = true
+
+	# --- END IT -------------------------------------------------------------
+	world.call("end_dive")
+	_ok(not world.get_tree().paused,
+		"ending a run with a draft still open releases the tree")
+	world.get_tree().paused = false   # belt and braces: never leave the suite held
+
+	if is_instance_valid(hull):
+		_ok(is_equal_approx(hull.thrust_mult, 1.0)
+				and is_equal_approx(hull.dive_rate_mult, 1.0)
+				and is_equal_approx(hull.impact_damage_mult, 1.0)
+				and is_zero_approx(hull.card_integrity_bonus),
+			"your hull's card dials are stock again")
+		_ok(not hull.rate_control and is_zero_approx(hull.air_density_floor)
+				and is_zero_approx(hull.climb_rate_max)
+				and is_zero_approx(hull.dive_rate_max)
+				and hull.extra_wind.is_equal_approx(Vector2.ZERO),
+			"...its flight model is the game's again, and the weather is gone")
+		_ok(is_zero_approx(hull.hull_integrity_max)
+				and is_zero_approx(hull.hull_integrity)
+				and hull.physics_material_override == null
+				and hull.modulate.is_equal_approx(Color.WHITE),
+			"...disarmed, un-scorched, and back on the stock keel")
+	_ok(is_equal_approx(pl.fall_damage_mult, 1.0)
+			and is_zero_approx(pl.bonus_max_health),
+		"the body walks out of the run stock")
+	# THE GAP THIS CHECK EXISTS FOR. Before v0.150.0 `end_dive` cleared the LIST
+	# and left the bodies: a picket carried the Dive's floored air, its rate
+	# controller and its armed pool into whatever came next.
+	if picket_ok and is_instance_valid(picket):
+		_ok(not picket.rate_control and is_zero_approx(picket.air_density_floor)
+				and is_zero_approx(picket.climb_rate_max)
+				and is_zero_approx(picket.dive_rate_max)
+				and picket.extra_wind.is_equal_approx(Vector2.ZERO),
+			"and so does every OTHER hull the run was flying")
+		_ok(is_zero_approx(picket.hull_integrity_max),
+			"...disarmed with it, so nothing outside a run dies as a unit")
+		picket.queue_free()
+
+	# --- A SECOND RUN STARTS FROM NOTHING -----------------------------------
+	# `begin_dive` is reachable with a run already live (its own F2 button), and it
+	# used to reset the MODEL over the top of the previous run's WORLD.
+	world.call("begin_dive")
+	world.call("begin_dive")   # ...twice, which is the case that leaked
+	await world.get_tree().physics_frame
+	var again = world.get("dive")
+	if again != null:
+		_ok(int(again.get("pot")) == 0 and int(again.get("deepest")) == 1
+				and (again.get("cards") as Array).is_empty()
+				and not bool(again.get("committed")),
+			"a second run's model starts clean")
+	_ok(world.get("local_ship") == null,
+		"...with nobody's ship claimed, exactly like the first")
+	_ok((world.get("_dive_surged") as Array).is_empty()
+			and (world.get("_dive_husks") as Array).is_empty(),
+		"...and no hunters or wrecks inherited from the run before it")
+	var decks := 0
+	for s in fleet.ships():
+		if not is_instance_valid(s) or s.is_queued_for_deletion():
+			continue
+		if s.is_nest and s.creature_kind == "":
+			decks += 1
+	_ok(decks <= 1, "...and exactly one launch deck in the sky, not two (%d)" % decks)
+	# --- A SAVED VESSEL WIDER THAN EVERY BERTH IS REFUSED, NOT MOORED -------
+	# `user://ships` is a directory the player fills, so the deck has to survive
+	# what turns up in it. A hull the hatches cannot pass would drive itself into
+	# the walkway either side (DiveDeck.BERTH_BUFFER_CELLS is the climb-out
+	# clearance) — the run boots without it rather than with a wreck in a berth.
+	var wide_path := ShipLayout.user_dir.path_join("_qa_too_wide.ship")
+	var dir := DirAccess.open("user://")
+	if dir != null:
+		dir.make_dir_recursive(ShipLayout.user_dir)
+	var f := FileAccess.open(wide_path, FileAccess.WRITE)
+	if f != null:
+		f.store_line("name QA Barge")
+		f.store_line("kind vessel")
+		f.store_line("")
+		f.store_line("H".rpad(600, "#"))
+		f.store_line("#".rpad(600, "#"))
+		f.close()
+		world.call("begin_dive")
+		await world.get_tree().physics_frame
+		var berths: Array = world.call("dive_berth_positions")
+		var widest := 0.0
+		for berth in berths:
+			widest = maxf(widest, float((berth as Dictionary)["width"]))
+		var too_wide := 0
+		for s in fleet.ships():
+			if is_instance_valid(s) and not s.is_queued_for_deletion() \
+					and s.faction == 0 and s.freeze and s.creature_kind == "" \
+					and not s.is_nest and s.solid_bounds.size.x > widest:
+				too_wide += 1
+		_ok(widest > 0.0, "the deck reports a berth width to measure against (%.0f px)" % widest)
+		_ok(too_wide == 0,
+			"a saved vessel wider than every berth is refused, not moored (%d)" % too_wide)
+		world.call("end_dive")
+		DirAccess.remove_absolute(wide_path)
+	else:
+		_ok(false, "a scratch directory to write the over-wide blueprint into")
+
+	# --- DYING ON THE LAUNCH DECK, BEFORE YOU HAVE TAKEN ANYTHING -----------
+	# The first thing a new player can do wrong, and the one ending that has no
+	# hull in it: `lose(shipless)`, and a ledger line that says so.
+	world.call("begin_dive")
+	var never = world.get("dive")
+	_ok(bool(world.call("_dive_perish")), "falling off the deck ends an uncommitted run")
+	if never != null:
+		_ok(String(never.get("outcome")) == "lost"
+				and String(never.get("lost_how")) == "shipless",
+			"...as 'shipless', not as a hull you never had")
+		_ok(String(DiveRun.outcome_line(never.call("ledger"))).begins_with("YOU FELL"),
+			"...and the ledger has the line for it")
+	world.call("end_dive")
+	await world.get_tree().physics_frame
+	Tunables.set_value("dormancy_enabled", dorm_was)
+	pl.health = pl.max_health
+
+
+## THE DIVE'S VERB SET IS A CONTRACT (docs/KEYBINDINGS.md, QA sweep 2026-09-06).
+##
+## "A mode gets a SUBSET of the verbs, never its own keys" — so the only honest
+## test of that table is to try the verbs a run is documented NOT to have and
+## watch them be refused, and to try the ones it keeps and watch them work.
+## `dive_style()` is the predicate the doc names; this pins what it actually
+## reaches, plus the number row (which the picker and the counter share) and
+## `dive_status`'s key set in every phase of a run.
+func _check_dive_verbs(world: Node, fleet) -> void:
+	print("\n--- THE DIVE'S VERBS: what a run refuses, and what it keeps ---")
+	var pl = world.get("player")
+	if pl == null or not is_instance_valid(pl):
+		_ok(false, "a body for the verb-contract check")
+		return
+	_ok(not bool(world.call("dive_style")), "outside a run, dive_style() is off")
+	_ok(not bool(world.call("_refuse_in_run", "should not be said")),
+		"...and the session verbs are not refused")
+	var dorm_was: bool = Tunables.get_bool("dormancy_enabled")
+	Tunables.set_value("dormancy_enabled", false)
+	world.call("begin_dive")
+
+	# --- dive_status is complete BEFORE you have taken anything -------------
+	_ok(_dive_status_gap(world) == "",
+		"pre-commit, dive_status carries every key the HUD paints (%s)"
+			% _dive_status_gap(world))
+	var pre: Dictionary = world.call("dive_status")
+	_ok(bool(pre.get("shipless", false)),
+		"...and says NO SHIP, because there is not one yet")
+
+	await _dive_take_a_hull(world, fleet)
+	var run = world.get("dive")
+	var hull = world.get("local_ship")
+	if run == null or hull == null or not is_instance_valid(hull):
+		_ok(false, "a live run with a committed hull")
+		Tunables.set_value("dormancy_enabled", dorm_was)
+		return
+	world.call("_tick_dive", 0.016)
+	_ok(bool(world.call("dive_style")), "inside a run, dive_style() is on")
+	_ok(bool(world.call("_refuse_in_run", "Not in a run — test")),
+		"...and a session verb (T / R / F5 / F9 / H / J) is refused out loud")
+
+	# --- THE BUILD VERBS. KEYBINDINGS: Q place / C deconstruct are "no" ------
+	# They were gated everywhere EXCEPT at the two calls that write a grid: the
+	# palette was hidden, the ghost was blank, digging and painting returned early,
+	# and Q still stamped a block into your hull mid-run.
+	var before: int = hull.blocks.size()
+	var solid: Vector2i = hull.helm_cells[0] if not hull.helm_cells.is_empty() \
+		else hull.blocks.keys()[0]
+	_ok(not bool(world.call("try_build_block", hull, solid + Vector2i(0, -3))),
+		"Q does not place a block in a run")
+	_ok(not bool(world.call("try_remove_block", hull, solid)),
+		"C does not deconstruct in a run")
+	_ok(hull.blocks.size() == before,
+		"...and the hull is exactly the hull you took (%d cells)" % hull.blocks.size())
+	_ok(world.call("build_ghost") == null, "...so there is no build ghost to paint")
+
+	# --- E: the one use key a run keeps -------------------------------------
+	# The doors were thrown open at commit and E never offers one again; the helm
+	# answers from anywhere on or just off the hull (DIVE_HELM_MARGIN_CELLS).
+	var closed := 0
+	for cell in hull.door_cells:
+		if hull.has_block(cell) \
+				and int(hull.blocks[cell]["type"]) == BlockDB.Type.DOOR_CLOSED:
+			closed += 1
+	_ok(closed == 0, "a run throws every door on your hull open (%d shut)" % closed)
+	var b: Rect2 = hull.solid_bounds
+	var cellpx := Ship.CELL * float(world.get("world_scale"))
+	pl.global_position = hull.to_global(Vector2(b.position.x - cellpx, b.position.y))
+	world.call("_handle_interact")
+	_ok(bool(world.call("helm_in_reach")),
+		"E answers from just OUTSIDE the hull (the margin, not a radius)")
+	_ok((world.get("_nearby_door") as Array).is_empty(),
+		"...and never offers a door while it does")
+	pl.global_position = hull.to_global(
+		Vector2(b.position.x - cellpx * 12.0, b.position.y))
+	world.call("_handle_interact")
+	_ok(not bool(world.call("helm_in_reach")),
+		"...but not from across the sky")
+
+	# --- F2's "send a surge" AT DEPTH 1 -------------------------------------
+	# The one caller left (owner call 6 retired the timer and the on-arrival
+	# spawn), and the shallowest rung is where it is least defended: the ladder
+	# says depth 1 sends gunboats, and the ledger's "attacks" line counts it.
+	var surges_was: int = int(run.get("surges"))
+	world.call("_dive_surge")
+	_ok(int(run.get("surges")) == surges_was + 1,
+		"F2's surge is booked on the ledger at depth 1 (attacks %d)"
+			% int(run.get("surges")))
+	_ok(DiveRun.surge_kinds(1) == ["hulk"],
+		"...and depth 1 sends a gunboat, never the deep's own")
+
+	# --- THE NUMBER ROW: 1-3 pick a card, 1-4 buy stock, never both ---------
+	# Drain what the OPENING HAND still owes first, so exactly one draft is on
+	# offer below: a second owed draft refills the picker the instant the first is
+	# taken (deliberately — a fat kill can fill two bars), and that is not the
+	# double-fire this pins.
+	var guard := 0
+	while bool(world.call("dive_draft_open")) and guard < 12:
+		world.call("take_dive_card", 1)
+		guard += 1
+	run.call("add_draft")
+	world.call("_tick_dive", 0.016)
+	_ok(bool(world.call("dive_draft_open")), "a draft is on offer")
+	_ok(_dive_status_gap(world) == "",
+		"...and dive_status is still complete with one open (%s)"
+			% _dive_status_gap(world))
+	_ok(((world.call("dive_status") as Dictionary).get("draft", []) as Array).size() > 0,
+		"...with painter-ready rows in it")
+	var sheet = world.get("_character_sheet")
+	if sheet != null:
+		sheet.visible = true
+		_ok(not bool(world.call("_try_pick_card", 1)),
+			"the counter panel owns the number row while it is open")
+		sheet.visible = false
+	_ok(not bool(world.call("take_dive_card", 4)),
+		"there is no card 4 — the picker is 1-3, the counter is 1-4")
+	var held: int = (run.get("cards") as Array).size()
+	_ok(bool(world.call("_try_pick_card", 1)), "1 takes the first card")
+	_ok((run.get("cards") as Array).size() == held + 1,
+		"...exactly one card (%d held)" % (run.get("cards") as Array).size())
+	_ok(not bool(world.call("_try_pick_card", 1)),
+		"...and the same key again takes nothing — a draft cannot double-fire")
+
+	# --- THE DIALS AND EFFECTS NOTHING ELSE WATCHES LAND --------------------
+	# A card whose dial no live site reads is a dead card, and the parity test in
+	# the unit suite cannot see the difference: it checks the catalog against a
+	# VOCABULARY, not against the world. `thrust` / `dive_rate` / `damage` /
+	# `fire_rate` / `fall_damage_taken` / `max_hp` / the heals / the bounce are
+	# pinned in the checks above; these three are the rest of the deck.
+	#
+	# FIELD MEDIC (`hull_repair`) reaches the assistant's mend RATE — measured off
+	# the hp the station actually restores, so a rename on either side reddens.
+	var medic_cell: Vector2i = hull.blueprint_map().keys()[0]
+	var full_hp: float = float(hull.blocks[medic_cell]["hp"]) if hull.has_block(medic_cell) else 0.0
+	if full_hp > 1.0 and hull.menders_running:
+		# Every OTHER cell at full first: the station mends the nearest damaged
+		# blueprint cell, so a wound left by an earlier check would split the
+		# budget and both readings below would come out equal (it did, once the
+		# kraken rounds ran ahead of this in the merged suite).
+		for bc in hull.blocks:
+			hull.blocks[bc]["hp"] = BlockDB.max_hp(int(hull.blocks[bc]["type"]))
+		# ...and Field Medic NOT held for the plain reading: the draft the picker
+		# took a few lines up is drawn from the run's own RNG, so one boot in
+		# several hands card 1 = Field Medic and both readings come out equal.
+		(run.get("cards") as Array).erase("field_medic")
+		hull.blocks[medic_cell]["hp"] = 1.0
+		world.set("_mender_clock", 0.0)
+		world.call("_update_menders", 0.2)
+		var plain: float = float(hull.blocks[medic_cell]["hp"]) - 1.0
+		_ok(plain > 0.0, "the run's assistant really mends the hull (+%.1f hp)" % plain)
+		hull.blocks[medic_cell]["hp"] = 1.0
+		run.call("grant_card", "field_medic")
+		world.set("_mender_clock", 0.0)
+		world.call("_update_menders", 0.2)
+		var medicked: float = float(hull.blocks[medic_cell]["hp"]) - 1.0
+		_ok(medicked > plain,
+			"...and Field Medic's hull_repair dial reaches that rate (+%.1f -> +%.1f hp)"
+				% [plain, medicked])
+		hull.blocks[medic_cell]["hp"] = full_hp
+	else:
+		_ok(false, "a mendable cell and a running station for the Field Medic check")
+	# THE COIN PROCS (Bounty Hunter / Pickpocket / Prize Money) pay the POT — the
+	# only money a landing spends, so a dead `coins` effect is a dead system.
+	run.call("grant_card", "bounty_hunter")
+	var pot_was: int = int(run.get("pot"))
+	world.call("_dive_apply_procs", "kill")
+	_ok(int(run.get("pot")) == pot_was + 10,
+		"a kill proc pays coins into the pot (%d -> %d)" % [pot_was, int(run.get("pot"))])
+	run.call("grant_card", "pickpocket")
+	pot_was = int(run.get("pot"))
+	world.call("_dive_apply_procs", "hit", 5.0)
+	_ok(int(run.get("pot")) == pot_was + 3,
+		"...and a hit proc pays on its own event, not on the kill's")
+	# THE OUTPOST PATCH tops the pool up by a flat 900 on a hull that is whole —
+	# the sweep's own refund is 0 there, so the number is readable.
+	var patch: float = float(world.get_script().get_script_constant_map().get(
+		"DIVE_PATCH_INTEGRITY", 0.0))
+	_ok(patch > 0.0, "the hull patch names a flat pool top-up (%.0f)" % patch)
+	hull.hull_integrity = hull.hull_integrity_max * 0.25
+	var pool_was: float = hull.hull_integrity
+	world.call("_dive_patch_hull")
+	_ok(hull.hull_integrity >= pool_was + patch - 1.0,
+		"...and buying it mends the run's pool by at least that (%.0f -> %.0f)"
+			% [pool_was, hull.hull_integrity])
+
+	# --- dive_status through the rest of the run's phases -------------------
+	hull.hull_integrity = 0.0
+	world.call("_dive_watch_integrity")
+	_ok(world.get("local_ship") == null, "the hull is lost")
+	_ok(_dive_status_gap(world) == "",
+		"shipless, dive_status is still complete (%s)" % _dive_status_gap(world))
+	_ok(bool((world.call("dive_status") as Dictionary).get("shipless", false)),
+		"...and the gauge says NO SHIP now that there is not one")
+	# A CARD TAKEN WITH NO SHIP. Every heal-family effect lands on WHAT YOU ARE,
+	# and with the hull gone that is the body — a draft here must resolve, not
+	# reach through a null `local_ship`.
+	run.call("add_draft")
+	world.call("_tick_dive", 0.016)
+	var shipless_held: int = (run.get("cards") as Array).size()
+	_ok(bool(world.call("take_dive_card", 1)) 			and (run.get("cards") as Array).size() == shipless_held + 1,
+		"a card can still be taken with no ship under you")
+	world.call("_dive_apply_procs", "land")
+	_ok(true, "...and its landing procs resolve onto the body without a hull")
+	run.call("lose", true)
+	_ok(_dive_status_gap(world) == "",
+		"run over, dive_status is still complete (%s)" % _dive_status_gap(world))
+	var over: Dictionary = world.call("dive_status")
+	_ok(String(over.get("outcome", "")) != ""
+			and String(over.get("headline", "")) != "",
+		"...and the ledger has a headline to print ('%s')"
+			% String(over.get("headline", "")))
+	_ok(not bool(world.call("dive_style")),
+		"a finished run is out of the Dive's verb set (the ledger is not play)")
+
+	world.call("end_dive")
+	await world.get_tree().physics_frame
+	Tunables.set_value("dormancy_enabled", dorm_was)
+	pl.health = pl.max_health
 
 
 func _ok(condition: bool, detail: String) -> void:
