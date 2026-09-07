@@ -514,7 +514,7 @@ func _check_the_canopy_is_not_one_unit() -> void:
 	await process_frame
 
 
-## ONE CONTACT, ONE POOL BILL (v0.153.0). `tools/dive_probe.gd` at v0.151.0 lost
+## ONE CONTACT, ONE POOL BILL (v0.155.0). `tools/dive_probe.gd` at v0.151.0 lost
 ## the hull at depth 4 to a SINGLE neutral-whale ram — `HULL BILL: ram 199891
 ## (99%, 1 contact)`, 814 blocks gone, the grid nowhere near ground down — and at
 ## seed 565218463 the same shape killed it as one TERRAIN crash billed 237,391.
@@ -1090,9 +1090,97 @@ func _check_dive_scene_boots() -> void:
 	# ...and LAST OF ALL, the floor: waking the Leviathan ENDS the run in
 	# triumph, so nothing can follow it.
 	await _check_the_leviathan(w, pl, run, cx, terrain)
+	# ...and after all of it: opening runs is destructive, so the seed check goes
+	# last of all.
+	await _check_dive_reseeds_the_ring(w, terrain)
 
 	w.queue_free()
 	await process_frame
+
+
+## A FRESH SEED EACH RUN — THE GROUND, NOT JUST THE LADDER (owner 2026-08-30,
+## built v0.154.0).
+##
+## `DiveRun.seed_v` has varied per run since v0.93.0, but it only moved the
+## ladder's slalom, the outposts and the garrison: the ISLANDS came from
+## `world_seed`, rolled once per boot, so two runs in one sitting flew the same
+## sky. In the Dive's own scene the run's seed IS the world's now, and
+## `begin_dive` re-seeds the ring whenever the two disagree.
+##
+## This check needs the dive-native 8× world and can live nowhere else — the
+## legacy suite's world has no ring to re-seed, so it asserts the SHAPE half of
+## the same ruling instead (`_check_dive_run_scope`).
+func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
+	print("\n--- A FRESH SEED EACH RUN: the ring is regenerated, not repositioned ---")
+	if not w.has_method("begin_dive") or terrain == null:
+		_ok(false, "a dive-native world to re-seed")
+		return
+	w.call("end_dive")
+	w.call("begin_dive")
+	await w.get_tree().physics_frame
+	var run_a = w.get("dive")
+	var seed_a: int = int(run_a.get("seed_v"))
+	_ok(seed_a == int(w.get("world_seed")),
+		"the run's seed IS the sky's, so there is one number to quote (%d)" % seed_a)
+	var ground_a := _ring_signature(terrain)
+
+	# A MARK THE NEXT RUN MUST NOT INHERIT: one stone cell deep under the ring,
+	# far below the burst of generation a new run fires around its launch deck.
+	# If it survives, the wipe did not happen and the "new" sky is the old one
+	# with fresh stamps on top of it.
+	var deep: Vector2 = w.call("dive_landing_pos", 1)
+	deep.y = w.call("dive_altitude_y", DiveRun.depth_altitude(6))
+	var mark: Vector2i = terrain.world_to_cell(deep)
+	terrain.set_cell(mark, TerrainDB.Type.STONE)
+	_ok(terrain.is_solid(mark), "a mark is planted in the run's ground")
+
+	w.call("begin_dive")
+	await w.get_tree().physics_frame
+	var seed_b: int = int((w.get("dive") as Object).get("seed_v"))
+	var status: Dictionary = w.call("dive_status")
+	_ok(seed_b != seed_a,
+		"the next run rolls a different seed (%d -> %d)" % [seed_a, seed_b])
+	_ok(int(w.get("world_seed")) == seed_b, "...and the sky is re-seeded with it")
+	_ok(not terrain.is_solid(mark),
+		"...the previous run's ground is GONE, not built over")
+	_ok(_ring_signature(terrain) != ground_a,
+		"...so the islands a run flies through are a different set")
+	_ok(DiveRun.garrison_all(seed_a, 3.0).hash()
+			!= DiveRun.garrison_all(seed_b, 3.0).hash(),
+		"...with a different garrison standing in it")
+	# THE HITCH. Re-seeding is a wipe, a prime and ONE bounded burst around the
+	# deck; everything else streams in the way it does at boot. Measured at
+	# 2-3 ms on the owner's machine (`tools/dive_seed_probe.gd`), and the bound
+	# here is loose on purpose — what it guards against is somebody putting an
+	# EAGER world generation back in front of the word "dive".
+	var ms := float(status.get("regen_ms", -1.0))
+	_ok(ms > 0.0, "re-seeding is what happened, and the run says so (%.1f ms)" % ms)
+	_ok(ms < 250.0, "...and it costs a fraction of a second, not a loading screen")
+
+	# THE PIN: the same sky twice, which is the only way a change can be A/B'd
+	# against one dive (and what `dive_probe --seed N` exists for).
+	w.call("pin_dive_seed", seed_a)
+	w.call("begin_dive")
+	await w.get_tree().physics_frame
+	_ok(int((w.get("dive") as Object).get("seed_v")) == seed_a
+			and int(w.get("world_seed")) == seed_a,
+		"a pinned seed re-opens that run's sky")
+	_ok(_ring_signature(terrain) == ground_a,
+		"...with the same islands in the same places, cell for cell")
+	w.call("end_dive")
+	await w.get_tree().physics_frame
+
+
+## WHICH CHUNKS HOLD GROUND, AND HOW MUCH OF IT IS SOLID — a fingerprint of one
+## seed's sky. Sampling cells around the launch deck was tried first and is
+## worthless: depth 1 sits in the ring's updraft column, which the generator
+## deliberately keeps clear, so every seed fingerprints as the same empty air.
+func _ring_signature(terrain) -> int:
+	var packed := PackedInt64Array()
+	for c in (terrain.chunk_coords() as Array):
+		packed.append(int((c as Vector2i).y) * 1000000 + int((c as Vector2i).x))
+	packed.sort()
+	return hash([packed, int(terrain.total_solid_cells())])
 
 
 

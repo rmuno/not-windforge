@@ -366,7 +366,7 @@ var creature_kind := ""
 var hull_integrity := 0.0
 var hull_integrity_max := 0.0
 
-## ONE CONTACT, ONE POOL BILL (v0.153.0, found by tools/dive_probe.gd). While a
+## ONE CONTACT, ONE POOL BILL (v0.155.0, found by tools/dive_probe.gd). While a
 ## crush walk is spending itself inward, `damage_cell` BANKS its structural loss
 ## here instead of draining `hull_integrity`, and `_settle_crush_pool_bill`
 ## charges the pool once for the whole contact, capped by `dive_crush_pool_cap`.
@@ -3089,7 +3089,7 @@ func grant_bonus_integrity(bonus: float) -> void:
 	hull_integrity = clampf(hull_integrity + maxf(gained, 0.0), 0.0, hull_integrity_max)
 
 
-## Charge the pool for ONE crush contact and close its account (v0.153.0).
+## Charge the pool for ONE crush contact and close its account (v0.155.0).
 ##
 ## The bill banked by the walk is "structural hp really removed, cell by cell
 ## along the inward line" — the right shape, the wrong SIZE at 8×: a crush budget

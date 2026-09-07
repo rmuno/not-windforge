@@ -87,6 +87,15 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 0.1, "min": 0.0, "max": 1.0, "step": 0.05,
 		"note": "next commit",
 		"tip": "Friction under a run's hull. Low slides off slabs; 1.0 restores the stock keel that pinned a hull holding DOWN on a landing."},   # world._tick_dive commit branch
+	# A FRESH SEED EACH RUN (owner 2026-08-30) — and the lever that suspends it,
+	# which is what makes a run repeatable at all. There is deliberately no
+	# NUMBER here: a seed is a full 32-bit int and the F2 window draws every
+	# non-bool lever as a slider, so an ARBITRARY seed goes in through
+	# `world.pin_dive_seed` (tools/dive_probe.gd --seed N). What a playtest wants
+	# is "that one again", and that is the last run's seed.
+	{"id": "dive_pin_seed", "label": "Pin the last run's seed", "group": "Dive",
+		"kind": KIND_BOOL, "default": false,
+		"tip": "On, the next run re-opens the last run's sky — the same ring, ladder, outposts and garrison — so a change can be A/B'd against one dive. Off rolls a fresh seed every run."},   # world.begin_dive
 	# The wind ring (owner experiment 2026-08-31): the run's sky loops.
 	{"id": "dive_zones_enabled", "label": "The wind ring", "group": "Dive",
 		"kind": KIND_BOOL, "default": true,
@@ -123,7 +132,7 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 3000.0, "min": 200.0, "max": 60000.0, "step": 100.0,
 		"note": "next commit",
 		"tip": "Integrity pool your hull dies as a unit at. A siege deals roughly 100 hp/s of structure, so 3000 is about half a minute undefended."},   # world._tick_dive commit branch
-	# ONE CONTACT CANNOT BE THE WHOLE RUN (v0.153.0, tools/dive_probe.gd). The
+	# ONE CONTACT CANNOT BE THE WHOLE RUN (v0.155.0, tools/dive_probe.gd). The
 	# crush walk bills the pool for every cell it destroys inward, which is a
 	# momentum-sized number at 8x — one whale ram or one landing slab emptied
 	# 3,000 several times over. Blocks are untouched; only the POOL is capped.

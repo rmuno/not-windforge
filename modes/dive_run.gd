@@ -181,11 +181,30 @@ var elapsed := 0.0
 ## "" while running, then one of "escaped" / "lost" / "triumph".
 var outcome := ""
 
-## THIS RUN'S SEED. Not the world's: regenerating terrain mid-session is a world
-## rebuild, and what actually has to vary run to run is the run's SHAPE — where
-## each depth's landing sits and which of them are outposts. The sky around them
-## still comes from the world seed, which is the part that should stay familiar.
+## THIS RUN'S SEED. It decides the run's SHAPE — where each depth's landing
+## sits, which of them are outposts, the floating rock of the flanks, who
+## garrisons every tile — and since v0.154.0 it decides the GROUND as well: in
+## the Dive's own scene `world.begin_dive` regenerates the ring from this number
+## (`world_seed = dive.seed_v`), so ONE seed is the whole run. The 2026-08-30
+## note in DECISIONS ("a run rolls its own seed, not the world's") was written
+## when a run was hosted by the expedition's lazily-generated ×4 world, where
+## re-seeding meant a world rebuild; the Dive got its own narrow scene in
+## v0.125.0 and regenerating THAT is a bounded wipe-and-prime. An F2 dive inside
+## an expedition still leaves that world's ground exactly where it was.
 var seed_v := 0
+
+## THE SEED THE NEXT RUN WILL OPEN WITH, or 0 to roll a fresh one. Static
+## because everything that pins a seed — F2's lever, `tools/dive_probe.gd`'s
+## `--seed N`, the dive scene handing the run the seed it rolled for its own sky
+## — runs BEFORE the run it is pinning exists. SPENT by `_init`, so a pin is for
+## one run: pinning is a deliberate act, and a pin that outlived its run would
+## quietly turn "a fresh seed each run" back off.
+static var next_seed := 0
+
+## The seed of the most recent run (0 before any). What F2's pin re-uses, and
+## what the MAP ROOM draws when you open it after a run — the sky you just flew
+## rather than a specimen.
+static var last_seed := 0
 
 ## Have you taken a hull? A run starts on the LAUNCH DECK with nobody's ship
 ## under you (owner 2026-08-30) — the candidates are parked, and boarding one is
@@ -230,17 +249,12 @@ static func xp_for_level(level: int) -> int:
 	return XP_BASE + XP_STEP * maxi(0, level)
 
 
-## A PROBE HOOK, not a game dial: non-zero forces the next run's `seed_v`, so a
-## reported `tools/dive_probe.gd` run can be RE-FLOWN after a fix. The probe has
-## printed the seed since v0.149.0 ("a probe run is only quotable with it
-## printed") and nothing could hand it back, which made every before/after
-## comparison a different ladder. Static, and written only by
-## `tools/dive_probe.gd --seed N`; the game never touches it.
-static var seed_forced := 0
-
-
 func _init() -> void:
-	seed_v = seed_forced if seed_forced != 0 else randi()
+	# A FRESH SEED EACH RUN (owner, 2026-08-30) unless somebody pinned one, and a
+	# pin is spent here so the run after it is fresh again.
+	seed_v = next_seed if next_seed != 0 else randi()
+	next_seed = 0
+	last_seed = seed_v
 
 
 # --- The pure ladder --------------------------------------------------------
