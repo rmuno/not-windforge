@@ -1950,16 +1950,50 @@ func _check_the_breath(w: Node, pl, boss: Ship, roof: Rect2, cpx: float) -> void
 	# (there is 21,937 px of it) and put back afterwards; a hull parked over the
 	# den itself would be measuring a climb into stone.
 	#
+	# THE DROP IS 15,000 px, NOT 9,000, AND THAT NUMBER IS THE WHOLE OF A FLAKE
+	# (2026-09-07, found by the teardown round while looking for something else).
+	# At 9,000 the hull came to rest ON THE ROOF SLAB it was supposed to be clear
+	# of, about a quarter of the time. The arithmetic, all of it printed by the
+	# checks above: the slab is 230,994..231,186; the boss settles with its keel
+	# at 229,120 on one run and 229,305 on the next (it is a rigid body that has
+	# been flying, and where it comes to rest is not to the pixel); a 6,656 × 3,200
+	# body dropped 9,000 puts the maw somewhere in 234,920..238,120, so
+	# `maw - 6,000` lands anywhere in 228,920..232,120 — a window with the slab
+	# sitting in the middle of it. On the good side the starter climbed 735 px/s
+	# and the acceptance read 34 %; on the bad side it climbed 375 and the ratio
+	# went to -23 %, and the design claim took the blame for a hull caught on a
+	# rock. Measured on MAIN, 1 run in 3 (and 2 in 14 on the version before it),
+	# so it is nobody's regression — the margin was always this thin.
+	#
+	# 15,000 clears it outright: the check below now reports 11,152 px of daylight
+	# between the hull and the slab, and there is still 6,900 px of air over the
+	# lava at the other end (the keel check above measures 21,937 at rest, and the
+	# drop spends 15,000 of it). Everything the measurement is about
+	# is untouched — the maw stays exactly 6,000 px under the hull, well inside
+	# the 12,000 px reach — and the boss goes back to `den_was` either way.
+	#
 	# The period goes to its "continuous" position too (a cycle no longer than
 	# the tell): a rear arriving mid-measurement would read as a lull in the
 	# wind, and the rhythm is pinned by `run_tests._test_the_breath` already.
 	var den_was := boss.global_position
 	Tunables.set_value("dive_breath_period", DiveRun.BREATH_TELL_SECONDS)
-	boss.global_position = den_was + Vector2(0.0, 9000.0)
+	boss.global_position = den_was + Vector2(0.0, 15000.0)
 	boss.linear_velocity = Vector2.ZERO
 	await w.get_tree().physics_frame
 	maw = kai.maw_world()
 	var over_maw := maw - Vector2(0.0, 6000.0)
+	# ...AND THE PRECONDITION IS SAID OUT LOUD, because what went wrong at 9,000
+	# was invisible in the result: a hull resting on a rock reads as a design
+	# claim that failed. Now the air the measurement needs is asserted where it is
+	# needed, so the next geometry change that eats it gets a line naming itself
+	# instead of a number that looks like a verdict on the breath.
+	# The slab is the one piece of stone anywhere near here, and this function is
+	# handed it, so the question is asked of the rectangle rather than of the
+	# terrain: does the box the hull will occupy touch the roof?
+	var box := Rect2(over_maw - Vector2(2000.0, 1500.0), Vector2(4000.0, 3000.0))
+	_ok(not box.intersects(roof),
+		"the climb is measured in CLEAR AIR, %.0f px below the den's roof slab"
+			% (over_maw.y - roof.end.y))
 	var hull: Ship = w.get("fleet").call("spawn_ship_from_cells",
 		ShipLayout.upscale_cells(ShipLayout.load_cells("res://ships/starter.ship"), 8),
 		over_maw, 0, 0.0, scale, 0)
@@ -3884,10 +3918,11 @@ func _teardown() -> void:
 ##
 ## A count is therefore the detector, and it costs one integer. The count is
 ## STABLE across seeds — 268 on all 14 consecutive runs measured at v0.156.0,
-## failures included, and 301 with the Descent seal's checks (v0.158.0) — and the
-## only legitimate way to run fewer is the host-bind SKIP, which is worth two. So
-## the floor sits two under the current count: an abandoned check loses several at
-## once and reddens here, with a message that says what happened.
+## failures included, 301 with the Descent seal's checks (v0.158.0) and 302 with
+## the clear-air precondition on the breath acceptance — and the only legitimate
+## way to run fewer is the host-bind SKIP, which is worth two. So the floor sits
+## two under the current count: an abandoned check loses several at once and
+## reddens here, with a message that says what happened.
 ##
 ## BROKEN ONCE, ON PURPOSE (2026-09-07): a freed node touched inside
 ## `_check_dive_picket_holds_its_rung` logged the flake's exact line, cost four
@@ -3897,7 +3932,7 @@ func _teardown() -> void:
 ## RAISE THIS when the suite gains checks (that is the whole maintenance cost, and
 ## it is what keeps the guard tight); LOWER it only with a reason, the same
 ## discipline `config/version` gets. It is a contract, not a coincidence.
-const MIN_CHECKS := 299
+const MIN_CHECKS := 300
 
 
 func _finish() -> void:
