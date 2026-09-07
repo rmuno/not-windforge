@@ -56,6 +56,7 @@ func _initialize() -> void:
 	await _test_props_alone_hold_altitude()
 	await _test_balloons_lift_and_detach()
 	await _test_balloons_are_one_destructible_placeable()
+	await _test_a_balloon_unit_is_one_authored_cell()
 	await _test_whale_is_a_whale()
 	await _test_whale_is_one_unit_until_dead()
 	await _test_shots_snap_to_the_nearest_block_on_a_creature()
@@ -1260,6 +1261,119 @@ func _test_balloons_are_one_destructible_placeable() -> void:
 	b.queue_free()
 	clone2.queue_free()
 	await process_frame
+
+
+## A BALLOON UNIT IS ONE AUTHORED CELL (v0.151.0). `damage_cell` hits every cell
+## of the struck cluster, and clustering gasbags by CONTIGUITY made that unit the
+## ship's entire lift at 8×: `tools/dive_probe.gd` measured the starter's canopy
+## as ONE 1,536-cell "G" cluster, so two 20-hp shells popped the whole thing
+## (35 hp a cell) and one terrain graze deleted all 1,536 blocks. The owner's
+## "the blimp sections should be one unit" was authored when a bag was a few
+## cells at 1×; `upscale_cells` multiplies granularity, so the fix clusters
+## gasbags by the `scale_unit × scale_unit` tile an authored cell became.
+##
+## Machines are NOT tiled: a 4×4 engine is a rated component and its footprint
+## IS the unit. And at scale 1 there is no tile at all, so 1× is unchanged —
+## which is why the first check here is the old behaviour, still true.
+func _test_a_balloon_unit_is_one_authored_cell() -> void:
+	_t("a balloon unit is one AUTHORED cell — the canopy is not one 1,536-cell hit")
+
+	# (a) 1× IS UNCHANGED: a 2×2 gasbag is still ONE balloon, as it always was.
+	var flat := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.GASBAG, Vector2i(1, 0): BlockDB.Type.GASBAG,
+		Vector2i(0, 1): BlockDB.Type.GASBAG, Vector2i(1, 1): BlockDB.Type.GASBAG,
+	}, true)
+	_check(flat._component_members(Vector2i(0, 0)).size() == 4,
+		"at scale 1 a 2×2 gasbag is ONE cluster (%d cells) — 1× untouched"
+			% flat._component_members(Vector2i(0, 0)).size())
+	flat.queue_free()
+
+	# (b) THE SAME AUTHORING AT SCALE 2: one authored 2×2 of gasbag upscaled ×2
+	# is a 4×4 of live cells — and it must be FOUR balloons of 2×2, not one of 16.
+	var authored := {
+		Vector2i(0, 0): BlockDB.Type.GASBAG, Vector2i(1, 0): BlockDB.Type.GASBAG,
+		Vector2i(0, 1): BlockDB.Type.GASBAG, Vector2i(1, 1): BlockDB.Type.GASBAG,
+	}
+	var up := _scaled_ship(ShipLayout.upscale_cells(authored, 2), 2.0)
+	_check(up.blocks.size() == 16, "the 2× grid really is 16 cells (%d)" % up.blocks.size())
+	var seen := {}
+	var covered := 0
+	for c in up.blocks:
+		var idx: int = up._component_of.get(c, -1)
+		if idx >= 0:
+			covered += 1
+			seen[idx] = true
+	_check(covered == 16, "_component_of still covers EVERY gasbag cell (%d/16)" % covered)
+	_check(seen.size() == 4, "...as FOUR balloons, one per authored cell (%d)" % seen.size())
+	var sizes_ok := true
+	for c2 in up.blocks:
+		if up._component_members(c2).size() != 4:
+			sizes_ok = false
+	_check(sizes_ok, "each balloon is the 2×2 tile its authored cell became")
+	# The tiles are the ALIGNED ones, not any old 2×2: (0,0) and (1,0) share a
+	# unit, (1,0) and (2,0) do not, because the tile boundary runs between them.
+	_check(up._component_of[Vector2i(0, 0)] == up._component_of[Vector2i(1, 0)],
+		"cells inside one tile share a unit")
+	_check(up._component_of[Vector2i(1, 0)] != up._component_of[Vector2i(2, 0)],
+		"...and the unit STOPS at the tile boundary, however contiguous the bag")
+	# One hit reaches one tile: 4 cells damaged, the other 12 pristine.
+	var full := BlockDB.max_hp(BlockDB.Type.GASBAG)
+	up.damage_cell(Vector2i(0, 0), 5.0)
+	var hurt := 0
+	for c3 in up.blocks:
+		if up.blocks[c3]["hp"] < full - 0.01:
+			hurt += 1
+	_check(hurt == 4, "one shell damages exactly its own balloon (%d cells)" % hurt)
+	up.queue_free()
+
+	# (c) MACHINES KEEP CONTIGUITY: the same upscale on an engine is ONE machine.
+	var eng := _scaled_ship(ShipLayout.upscale_cells({
+		Vector2i(0, 0): BlockDB.Type.ENGINE, Vector2i(1, 0): BlockDB.Type.ENGINE,
+	}, 2), 2.0)
+	_check(eng._component_members(Vector2i(0, 0)).size() == 8,
+		"a machine is still its whole contiguous footprint (%d cells)"
+			% eng._component_members(Vector2i(0, 0)).size())
+	eng.queue_free()
+	await process_frame
+
+	# (d) THE SHIPPED STARTER AT THE SCALE THE OWNER PLAYS. 24 authored gasbag
+	# cells (a 12×2 canopy) → 24 balloons of 64 cells, where the whole canopy
+	# used to be a single 1,536-cell unit.
+	var authored_cells: Dictionary = ShipLayout.load_cells("res://ships/starter.ship")
+	var authored_bags := 0
+	for c4 in authored_cells:
+		if int(authored_cells[c4]) == BlockDB.Type.GASBAG:
+			authored_bags += 1
+	var starter := _scaled_ship(ShipLayout.upscale_cells(authored_cells, 8), 8.0)
+	var bags := 0
+	var biggest := 0
+	for cl in starter._glyph_clusters:
+		if String(cl["key"]) != "G":
+			continue
+		bags += 1
+		biggest = maxi(biggest, (cl["cells"] as Array).size())
+	_check(authored_bags == 24,
+		"the shipped starter authors %d gasbag cells" % authored_bags)
+	_check(bags == authored_bags,
+		"...and at 8× it carries exactly that many balloons (%d, was 1)" % bags)
+	_check(biggest == 64,
+		"the biggest balloon is one 8×8 tile (%d cells, was 1536)" % biggest)
+	starter.queue_free()
+	await process_frame
+
+
+## A ship built at a world SCALE: the grid must already be upscaled, and
+## `scale_unit` set before the first rebuild derives the clusters from it.
+func _scaled_ship(cells: Dictionary, unit: float) -> Ship:
+	var s := Ship.new()
+	for cell in cells:
+		var type: int = cells[cell]
+		s.blocks[cell] = {"type": type, "hp": BlockDB.max_hp(type)}
+	s.gravity_scale = 0.0
+	root.add_child(s)
+	s.scale_unit = unit
+	s.rebuild()
+	return s
 
 
 func _test_whale_is_a_whale() -> void:

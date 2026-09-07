@@ -4260,9 +4260,32 @@ func _paint_glyphs(on: CanvasItem) -> void:
 ## once across the cluster's bounds, scaled to fit. Owner spec for the 8×
 ## world: a 4×4 generator reads "E", propeller slabs read "P(V)"/"P(H)"
 ## by axis, doors carry two Ds at 25% and 75% of their height.
+##
+## EXCEPT BALLOONS, WHICH CLUSTER BY TILE (2026-09-06, v0.151.0). A cluster is
+## the unit `damage_cell` hits as one — every member takes the amount — and for
+## gasbags CONTIGUITY made that unit the ship's whole lift at 8×. The starter's
+## 24 authored gasbag cells upscale to ONE contiguous 1,536-cell region, so two
+## 20-hp turret shells popped the entire canopy (a gasbag cell has 35 hp) and a
+## single terrain graze deleted all 1,536 blocks in one crush walk — measured by
+## `tools/dive_probe.gd` at v0.149.0. The owner's "the blimp sections should be
+## one unit" rule was authored when a bag was a few cells at 1×; at 8× the same
+## words mean something 64× bigger than they meant.
+##
+## So a balloon UNIT is one AUTHORED cell: the `s × s`-aligned tile a cell
+## upscaled into (`ShipLayout.upscale_cells` maps authored `cell` to
+## `cell * s .. cell * s + s - 1`, so that tile IS the authored cell). Two
+## adjacent gasbag cells join only inside the same tile. Hand-placed bags at 8×
+## — the 4×4 `BUNDLE_8X` stamp — fall into whichever 8×8 tile they occupy, so a
+## unit is up to four stamps: still a bag-sized part, never the canopy.
+## At `s == 1` there is no tile and this is byte-identical to before.
+##
+## MACHINES (E / P(H) / P(V) / T / H / R / D) keep contiguity: they are RATED
+## components whose footprint IS the part, and a 4×4 engine taking a hit as one
+## machine is the rule working as intended.
 func _rebuild_glyph_clusters() -> void:
 	_glyph_clusters.clear()
 	_component_of.clear()
+	var s: int = maxi(1, int(round(scale_unit)))
 	var visited := {}
 	for cell in blocks:
 		if visited.has(cell):
@@ -4270,6 +4293,9 @@ func _rebuild_glyph_clusters() -> void:
 		var key := _glyph_key(cell)
 		if key == "":
 			continue
+		# Only balloons are tiled, and only when the grid was actually upscaled.
+		var tiled := key == "G" and s > 1
+		var tile := _tile_of(cell, s)
 		visited[cell] = true
 		var queue: Array[Vector2i] = [cell]
 		var cells: Array[Vector2i] = []
@@ -4279,9 +4305,14 @@ func _rebuild_glyph_clusters() -> void:
 			cells.append(c)
 			rect = rect.merge(Rect2(local_pos_of(c) - Vector2.ONE * CELL * 0.5, Vector2.ONE * CELL))
 			for n in _neighbours(c):
-				if not visited.has(n) and blocks.has(n) and _glyph_key(n) == key:
-					visited[n] = true
-					queue.append(n)
+				if visited.has(n) or not blocks.has(n) or _glyph_key(n) != key:
+					continue
+				# A tile is a rectangle and the fill never leaves it, so the seed's
+				# tile is every member's tile — one compare, no per-step bookkeeping.
+				if tiled and _tile_of(n, s) != tile:
+					continue
+				visited[n] = true
+				queue.append(n)
 		# Turrets get a firing arc: a 180° half-plane facing AWAY from the
 		# mounting (owner; matches the original). Hung under a strut →
 		# bears downward; bolted to a wall → bears outboard; corner mounts
@@ -4296,6 +4327,17 @@ func _rebuild_glyph_clusters() -> void:
 		for c in cells:
 			_component_of[c] = _glyph_clusters.size()
 		_glyph_clusters.append({"key": key, "rect": rect, "cells": cells, "facing": facing})
+
+
+## The `s × s`-aligned tile a live cell sits in — i.e. the AUTHORED cell it was
+## upscaled from (`ShipLayout.upscale_cells`). Balloons cluster by this, so one
+## authored gasbag cell is one balloon however big the world's scale is.
+##
+## `floori` over a FLOAT division on purpose: GDScript's int / int truncates
+## toward zero, which would fold cells −7..7 into one tile on a hull built out
+## past its own origin (place/deconstruct freely produce negative cells).
+static func _tile_of(cell: Vector2i, s: int) -> Vector2i:
+	return Vector2i(floori(float(cell.x) / float(s)), floori(float(cell.y) / float(s)))
 
 
 ## Propellers cluster by axis; gasbags cluster as balloons (one unit, no

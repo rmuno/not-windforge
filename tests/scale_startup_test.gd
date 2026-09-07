@@ -246,6 +246,9 @@ func _initialize() -> void:
 	# that needs an empty sky: can a kraken catch a hull that is falling?
 	await _check_the_heave_catches_a_diving_hull()
 	await _check_the_crown_grabs_and_the_maw_shelters()
+	# ...and in the same empty sky, the shipped starter's CANOPY under fire and
+	# under a graze — the two symptoms dive_probe measured at v0.149.0.
+	await _check_the_canopy_is_not_one_unit()
 
 	_finish()
 
@@ -381,6 +384,141 @@ func _check_the_crown_grabs_and_the_maw_shelters() -> void:
 	boss.queue_free()
 	ai.whale = null
 	await process_frame
+
+
+## THE CANOPY IS NOT ONE UNIT (v0.151.0). `tools/dive_probe.gd` measured both
+## symptoms at v0.149.0 on the shipped starter at 8×: the 24 authored gasbag
+## cells upscale into ONE contiguous 1,536-cell "G" cluster, `damage_cell` hits
+## every cell of the struck cluster, and so
+##   * two 20-hp turret shells popped the ENTIRE lift (a gasbag cell has 35 hp),
+##   * one terrain GRAZE deleted all 1,536 blocks in a single crush walk.
+## Balloons cluster by the `scale_unit` tile an authored cell became now, so a
+## unit is 64 cells and the canopy is 24 of them.
+##
+## HERE and not in the 1× suite for the standing reason (CODEMAP §2): at scale 1
+## the tile is the cell and the bug does not exist — the whole disagreement is
+## `upscale_cells`, which the legacy suite never runs on the starter. Measured on
+## fresh arena copies of the shipped file, in the empty sky the checks above
+## leave behind, so nothing else in this suite is counting a canopy we shot.
+func _check_the_canopy_is_not_one_unit() -> void:
+	print("\n=== the canopy is 24 balloons, not one 1,536-cell unit (8x) ===\n")
+	var cells: Dictionary = ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/starter.ship"), 8)
+	var canopy := _arena_ship(cells)
+	canopy.gravity_scale = 0.0
+	canopy.global_position = Vector2.ZERO  # sea level: lift_ratio reads real air
+	# ARMED, exactly as a run arms your hull — the pool is the other half of what
+	# a shell into the canopy used to cost.
+	canopy.hull_integrity_max = Tunables.get_num("dive_ship_integrity")
+	canopy.hull_integrity = canopy.hull_integrity_max
+	await process_frame
+
+	var bags := _bag_cells(canopy)
+	_ok(bags.size() == 1536,
+		"the shipped starter's canopy is %d cells at 8x" % bags.size())
+	if bags.is_empty():
+		canopy.queue_free()
+		return
+	var floats_before := canopy.lift_ratio()
+	var mass_before := canopy.mass
+
+	# (a) ONE SHELL REACHES ONE BALLOON. 20 hp into a canopy cell: 64 cells hurt
+	# (its 8×8 tile), 1,472 pristine. Before: all 1,536, and the pool billed once
+	# for the lot (v0.149.0) but every block still took the hit.
+	var aim: Vector2i = bags[bags.size() / 2]
+	var full := BlockDB.max_hp(BlockDB.Type.GASBAG)
+	var pool_before := canopy.hull_integrity
+	canopy.damage_cell(aim, 20.0)
+	var hurt := 0
+	for c in bags:
+		if canopy.has_block(c) and float(canopy.blocks[c]["hp"]) < full - 0.01:
+			hurt += 1
+	_ok(hurt == 64,
+		"one 20-hp shell damages exactly its own balloon — 64 cells, not 1,536 (%d)"
+			% hurt)
+	_ok(absf((pool_before - canopy.hull_integrity) - 20.0) < 0.01,
+		"...and bills the integrity pool 20 (%.0f of %.0f left)"
+			% [canopy.hull_integrity, canopy.hull_integrity_max])
+
+	# The SECOND shell kills that balloon (35 hp a cell, 40 taken) — the pair that
+	# used to pop the whole canopy. One tile goes; the other 23 hold the ship up.
+	canopy.damage_cell(aim, 20.0)
+	await process_frame
+	await process_frame
+	var left := _bag_cells(canopy).size()
+	_ok(left == 1472,
+		"two shells cost ONE balloon: %d canopy cells left of 1,536 (was 0)" % left)
+
+	# (c) AND IT STILL FLOATS. Before, two shells took every gasbag with them and
+	# the hull became a brick — the run over on a picket's second round.
+	var floats_after := canopy.lift_ratio()
+	_ok(floats_after > 1.0,
+		"the shot hull still lifts its own weight (ratio %.3f, was %.3f before the hit)"
+			% [floats_after, floats_before])
+	print("    ~ mass %.0f -> %.0f, lift ratio %.3f -> %.3f"
+		% [mass_before, canopy.mass, floats_before, floats_after])
+
+	# The CONTRAST, measured rather than asserted from memory: the same hull with
+	# the whole canopy gone — what the old rule handed you — cannot hold itself up.
+	var bald := _arena_ship(cells)
+	bald.gravity_scale = 0.0
+	bald.global_position = Vector2.ZERO
+	await process_frame
+	for c in _bag_cells(bald):
+		bald.blocks.erase(c)
+	bald.rebuild()
+	_ok(bald.lift_ratio() < 1.0,
+		"...where a hull that lost the WHOLE canopy is a brick (ratio %.3f)"
+			% bald.lift_ratio())
+	bald.queue_free()
+	canopy.queue_free()
+	await process_frame
+
+	# (b) THE GRAZE. A crush budget of 600,000 — the size dive_probe billed per
+	# crash (1,765,755 over three) — driven into the canopy from above through the
+	# real _process walk, not arithmetic. The walk kills the tile it entered and
+	# then finds its next step already gone, so it stops: a few balloons at worst,
+	# never the lift.
+	var grazed := _arena_ship(cells)
+	grazed.gravity_scale = 0.0
+	grazed.global_position = Vector2.ZERO
+	await process_frame
+	var before_bags := _bag_cells(grazed).size()
+	var top: Vector2i = _bag_cells(grazed)[0]
+	# Solve the budget back through _process's conversion at 8×:
+	#   available = (impulse - THRESHOLD * unit³) * SCALE / unit²
+	var impulse: float = Tunables.get_num("impact_damage_threshold") * 512.0 \
+		+ 600000.0 * 64.0 / Tunables.get_num("impact_damage_scale")
+	grazed._pending_impacts.append({
+		"pos": grazed.local_pos_of(top) + Vector2(0.0, -Ship.CELL * 0.5),
+		"impulse": impulse,
+		"normal": Vector2.DOWN,   # the ground pushing INTO the canopy from above
+		"immune": false,
+	})
+	await process_frame
+	await process_frame
+	var after_bags := _bag_cells(grazed).size()
+	var lost := before_bags - after_bags
+	_ok(lost > 0, "the graze really bit the canopy (%d cells)" % lost)
+	_ok(lost <= 192,
+		"...a few balloons at most — %d cells lost, bound 192 (three tiles), not 1,536"
+			% lost)
+	_ok(grazed.lift_ratio() > 1.0,
+		"and the grazed hull still flies home (ratio %.3f)" % grazed.lift_ratio())
+	print("    ~ a 600,000 crush budget into the canopy: %d of %d cells lost"
+		% [lost, before_bags])
+	grazed.queue_free()
+	await process_frame
+
+
+## Every GASBAG cell of a ship, in a stable order.
+func _bag_cells(s: Ship) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	for c in s.blocks:
+		if int(s.blocks[c]["type"]) == BlockDB.Type.GASBAG:
+			out.append(c)
+	out.sort()
+	return out
 
 
 ## How long the hunt is given before it is called a miss, and how far above and

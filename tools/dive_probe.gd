@@ -997,34 +997,58 @@ func _gear(hull) -> String:
 		hull.power_supply(), hull.active_draw()]
 
 
-## WHAT ONE SHELL COSTS THE POOL. `Ship.damage_cell` drains `hull_integrity` by
-## the structural hp taken across EVERY cell of the struck COMPONENT, and at 8×
-## an authored component is upscaled 64-fold and then merges with its neighbours
-## into one `_glyph_clusters` entry. So the number that decides how many hits a
-## run survives is not the pool and not the block hp — it is the SIZE OF THE
-## BIGGEST CLUSTER, and nothing printed it before.
+## WHAT ONE SHELL COSTS, AND HOW FAR IT REACHES — two numbers, not one.
+##
+## `Ship.damage_cell` hits EVERY cell of the struck COMPONENT (the owner's "a
+## machine or a balloon is one unit") but since v0.149.0 it bills the integrity
+## pool ONCE: the struck cell's own loss, capped at its remaining hp. So the POOL
+## cost of a shell is `min(shell damage, cell hp)` wherever it lands, while the
+## BLOCKS one shell removes is the size of the cluster it lands in.
+##
+## The second number is the one this probe found: at 8× the starter's 24 authored
+## gasbag cells upscaled into ONE contiguous 1,536-cell "G" cluster, so a shell
+## into the canopy reached all of it and a graze deleted the ship's whole lift.
+## Balloons cluster per authored tile since v0.151.0 (64 cells at 8×), so watch
+## this line for a "G" that has grown back into the thousands.
+##
+## (The old text here printed `shell × cluster` as the pool drain — the
+## pre-v0.149.0 arithmetic, stale the moment the pool stopped billing per cell.)
 func _components_line(hull) -> String:
 	if hull == null or not is_instance_valid(hull):
 		return "no hull"
-	var biggest := {}
+	var biggest := {}   # glyph -> cells in its biggest cluster
+	var sample := {}    # glyph -> one cell of that cluster, for its block hp
+	var counts := {}    # glyph -> how many clusters wear it
 	for cluster in hull._glyph_clusters:
 		var k := String(cluster["key"])
-		var n: int = (cluster["cells"] as Array).size()
-		biggest[k] = maxi(int(biggest.get(k, 0)), n)
+		var cells: Array = cluster["cells"]
+		counts[k] = int(counts.get(k, 0)) + 1
+		if cells.size() > int(biggest.get(k, 0)) and not cells.is_empty():
+			biggest[k] = cells.size()
+			sample[k] = cells[0]
 	var worst := 0
 	var worst_key := "-"
 	var out := ""
 	for k in biggest:
-		out += "%s:%d " % [k, int(biggest[k])]
+		out += "%s:%d×%d " % [k, int(biggest[k]), int(counts.get(k, 0))]
 		if int(biggest[k]) > worst:
 			worst = int(biggest[k])
 			worst_key = String(k)
+	if worst_key == "-":
+		return "no glyph clusters (all raw structure)"
 	var shell: float = Tunables.get_num("turret_damage")
 	var pool: float = hull.hull_integrity_max
-	return ("biggest cluster per glyph %s| a %.0f-damage shell into '%s' (%d cells) "
-		+ "drains %.0f of the %.0f pool — %.1f hits and the run is over") % [
-		out, shell, worst_key, worst, shell * float(worst), pool,
-		maxf(pool, 1.0) / maxf(shell * float(worst), 1.0)]
+	# The pool bill of one shell into that cluster: capped at the cell's own hp.
+	var cell_hp := 0.0
+	var wc: Vector2i = sample[worst_key]
+	if hull.blocks.has(wc):
+		cell_hp = BlockDB.max_hp(int(hull.blocks[wc]["type"]))
+	var bill := minf(shell, cell_hp)
+	return ("biggest cluster per glyph (cells×clusters) %s| one %.0f-damage shell into '%s' "
+		+ "reaches %d cells (%.0f hp each) and bills the pool %.0f of %.0f "
+		+ "— %.0f such hits before the pool is gone") % [
+		out, shell, worst_key, worst, cell_hp, bill, pool,
+		maxf(pool, 0.0) / maxf(bill, 1.0)]
 
 
 func _nearest_hull():
