@@ -114,6 +114,19 @@ const _REGISTRY := [
 	{"id": "dive_ceiling_mult", "label": "Closing-sky leash", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1,
 		"tip": "Strength of the downdraft holding you under the deepest rung you reached. 1 is shipped, 0 turns the closing sky off."},   # world._dive_weather
+	# THE DESCENT SEAL (Q-R, DESIGN_DESCENT.md): a band of lethal RISING air under
+	# each depth 2..7, live until that depth's whole standing garrison is dead.
+	# Another term of the same weather — a neutral stick is carried out of it, a
+	# full down-stick crosses and pays the grind for as long as that takes.
+	{"id": "dive_seal_enabled", "label": "The descent seal", "group": "Dive",
+		"kind": KIND_BOOL, "default": true,
+		"tip": "On, a lethal band of rising air sits under each depth and only dies when that depth's whole standing garrison is dead. Off restores the free descent."},   # world.dive_seal_speed_at
+	{"id": "dive_seal_mult", "label": "Seal airstream strength", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1,
+		"tip": "Multiplier on how hard a live band blows upward, against a 1,920 px/s down-stick. 1 is shipped; 0 leaves the band lethal but crossable at full speed."},   # world.dive_seal_speed_at
+	{"id": "dive_seal_grind", "label": "Seal grind per site", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 50.0, "min": 0.0, "max": 400.0, "step": 5.0,
+		"tip": "Structural hp per second each grinding site chews inside a live band. The stock hull is worth 6 sites, so 50 is 300 hp/s and hovering is death in ten seconds. 0 = pure wind."},   # world._dive_seal_toll
 	# The pregenerated garrison (owner 2026-09-01: nothing may just APPEAR).
 	{"id": "dive_spawn_screens", "label": "Garrison wake distance", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 2.0, "min": 0.5, "max": 8.0, "step": 0.25,

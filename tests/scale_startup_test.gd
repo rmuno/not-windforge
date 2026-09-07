@@ -1157,7 +1157,9 @@ func _check_dive_scene_boots() -> void:
 			continue
 		listed += 1
 		if hull2.extra_wind.is_equal_approx(
-				w.call("dive_weather_at", hull2.global_position)):
+				w.call("dive_weather_for", hull2.global_position,
+					w.call("dive_beta_of", hull2),
+					DiveRun.key_depth(hull2.garrison_key))):
 			winded += 1
 		if moved_one == null and hull2.creature_kind == "":
 			moved_one = hull2
@@ -1170,7 +1172,9 @@ func _check_dive_scene_boots() -> void:
 		moved_one.global_position = pl.global_position
 		w.call("_dive_weather", 0.0)
 		_ok(moved_one.extra_wind.is_equal_approx(
-				w.call("dive_weather_at", pl.global_position)),
+				w.call("dive_weather_for", pl.global_position,
+					w.call("dive_beta_of", moved_one),
+					DiveRun.key_depth(moved_one.garrison_key))),
 			"an enemy hull at YOUR position feels your weather exactly (%s)"
 				% moved_one.extra_wind)
 
@@ -1182,8 +1186,17 @@ func _check_dive_scene_boots() -> void:
 	# THE DUNK, above the Leviathan on purpose: a picket spawn refuses a finished
 	# run, and the check below is the whole of §5.1's sharp knowledge.
 	await _check_the_dunk(w, pl, terrain)
-	# ...and LAST OF ALL, the floor: waking the Leviathan ENDS the run in
-	# triumph, so nothing can follow it.
+	# THE SEAL, between them, and the order is load-bearing in both directions.
+	# ABOVE the Leviathan because waking the boss ends the run in triumph and a
+	# finished run has no live bands. BELOW the dunk because the dunk holds the
+	# body in unbreathable air for twenty seconds and it comes out at 12 of 100
+	# hp — the seal check ends by mending the person (its own toll would otherwise
+	# be a debt), so running it here hands the Leviathan a WHOLE body instead of a
+	# nearly dead one.
+	print("    ~ post-dunk: outcome '%s', hp %.0f/%.0f, piloting %s, frac %.3f"
+		% [String(run.get("outcome")), pl.health, pl.max_health,
+			str(pl.is_piloting()), float(w.call("_player_altitude_frac"))])
+	await _check_dive_seal(w, pl, run, terrain, cx)
 	await _check_the_leviathan(w, pl, run, cx, terrain)
 	# ...and after all of it: opening runs is destructive, so the seed check goes
 	# last of all.
@@ -1217,7 +1230,7 @@ func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
 	var seed_a: int = int(run_a.get("seed_v"))
 	_ok(seed_a == int(w.get("world_seed")),
 		"the run's seed IS the sky's, so there is one number to quote (%d)" % seed_a)
-	var ground_a := _ring_signature(terrain)
+	var ground_a := await _ring_ground(w, terrain)
 
 	# A MARK THE NEXT RUN MUST NOT INHERIT: one stone cell deep under the ring,
 	# far below the burst of generation a new run fires around its launch deck.
@@ -1238,8 +1251,10 @@ func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
 	_ok(int(w.get("world_seed")) == seed_b, "...and the sky is re-seeded with it")
 	_ok(not terrain.is_solid(mark),
 		"...the previous run's ground is GONE, not built over")
-	_ok(_ring_signature(terrain) != ground_a,
-		"...so the islands a run flies through are a different set")
+	var diff_b := _ring_diff(await _ring_ground(w, terrain), ground_a)
+	_ok(int(diff_b[0]) >= 4 and int(diff_b[1]) > 0,
+		"...so the islands a run flies through are a different set (%d of %d shared GROUND chunks changed)"
+			% [int(diff_b[1]), int(diff_b[0])])
 	_ok(DiveRun.garrison_all(seed_a, 3.0).hash()
 			!= DiveRun.garrison_all(seed_b, 3.0).hash(),
 		"...with a different garrison standing in it")
@@ -1260,22 +1275,125 @@ func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
 	_ok(int((w.get("dive") as Object).get("seed_v")) == seed_a
 			and int(w.get("world_seed")) == seed_a,
 		"a pinned seed re-opens that run's sky")
-	_ok(_ring_signature(terrain) == ground_a,
-		"...with the same islands in the same places, cell for cell")
+	# ...AND THE GROUND IS THE SAME GROUND, chunk by chunk over everything both
+	# readings hold. The shared count is asserted too, so a pin that happened to
+	# leave nothing loaded cannot pass this by comparing an empty set.
+	#
+	# NOT "ZERO DISAGREE", and the allowance is named rather than fudged: an
+	# island is painted as a lattice REGION, so a chunk on the EDGE of what has
+	# been generated is finished in the reading that streamed past it and
+	# half-painted in the one that stopped there. Two readings of the same seed
+	# differ there with nothing wrong (measured: 2 of 94). Filtering those out by
+	# requiring four resident neighbours was tried and starves the sample to
+	# nothing, so the claim is stated as what it is — the same ground everywhere
+	# but the generation frontier, over a sample big enough to mean it.
+	var diff_c := _ring_diff(await _ring_ground(w, terrain), ground_a)
+	_ok(int(diff_c[0]) >= 32 and int(diff_c[1]) * 10 <= int(diff_c[0]),
+		"...with the same islands in the same places, cell for cell (%d shared GROUND chunks, %d disagree at the generation frontier)"
+			% [int(diff_c[0]), int(diff_c[1])])
 	w.call("end_dive")
 	await w.get_tree().physics_frame
 
 
-## WHICH CHUNKS HOLD GROUND, AND HOW MUCH OF IT IS SOLID — a fingerprint of one
-## seed's sky. Sampling cells around the launch deck was tried first and is
-## worthless: depth 1 sits in the ring's updraft column, which the generator
-## deliberately keeps clear, so every seed fingerprints as the same empty air.
-func _ring_signature(terrain) -> int:
-	var packed := PackedInt64Array()
+## WHAT THE GROUND ACTUALLY IS, PER PLACE: {chunk coord -> hash of that chunk's
+## cells}. Sampling cells around the launch deck was tried first and is worthless
+## — depth 1 sits in the ring's updraft column, which the generator deliberately
+## keeps clear, so every seed fingerprints as the same empty air.
+##
+## PER CHUNK, AND NOT ONE NUMBER FOR THE WHOLE SKY, because the sky is STREAMED.
+## The first shape of this was `hash([resident chunk coords, total_solid_cells])`,
+## and that fingerprints the STREAMER as much as the ground: the same seed,
+## re-pinned, reported "123 chunks / 68,420 solid" against the original's "92 /
+## 53,108" — identical ground, more of it loaded, because two dives and a flight
+## across the ring had happened in between. Any check that flies further than the
+## one that wrote it would have failed it, which is how this was found. Comparing
+## chunk BY chunk, over the ones both readings hold, is the claim the check
+## actually makes: the same islands, in the same places, cell for cell.
+## A reading of the run's ISLANDS, taken at the same places every time.
+##
+## THE FINGERPRINT ALONE IS NOT ENOUGH, and the reason is the sharpest thing this
+## check knows: one physics frame after `begin_dive`, the only ground loaded is
+## the burst around the LAUNCH DECK — and the deck is a stamped shelf, identical
+## under every seed. Comparing two runs there compares the one part of the sky
+## that cannot differ. Measured: a fresh seed changed **0 of 56 shared ground
+## chunks**, and the check passed anyway for years' worth of rounds, because the
+## signature it used also hashed which chunks happened to be RESIDENT and that
+## always moved. So each reading first STREAMS THE SAME FIXED DEEP PLACES —
+## seed-independent world coordinates, three rungs' worth, well off the deck —
+## and only then fingerprints. Now "a different set of islands" is a claim about
+## islands: it went from 0 of 56 shared ground chunks changed to 6 of 62.
+const RING_PROBE_PX := 14000.0
+
+
+func _ring_ground(w: Node, terrain) -> Dictionary:
+	var x0: float = (w.call("dive_landing_pos", 1) as Vector2).x
+	# FIVE SPOTS, not three: the sample has to be wide enough that "a different
+	# seed moved the islands" cannot come down to a couple of chunks. Three gave
+	# 2 of 58 changed on one boot, which is true but is one unlucky seed away
+	# from a check that reports nothing.
+	var spots := [
+		Vector2(x0 + 60000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(2))),
+		Vector2(x0 - 60000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(3))),
+		Vector2(x0 + 30000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(4))),
+		Vector2(x0 - 30000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(5))),
+		Vector2(x0 + 90000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(6))),
+	]
+	# GENERATE, THEN STREAM, and in that order — draining alone was the third
+	# thing this helper got wrong. `update_streaming` only makes RESIDENT what has
+	# already been PAINTED: it loads regions, it does not create them. Five deep
+	# drains therefore added nothing an unvisited sky had not already got, and the
+	# reading stayed the deck's (measured: still 56 shared ground chunks, 0
+	# changed, exactly the deck-only number). `IslandGen.ensure_generated` is what
+	# paints, and it is budgeted per call, so it is called until it stops making
+	# anything — the same idiom the picket check uses to guarantee itself clear
+	# air (DECISIONS 2026-08-30: generate first, and only then touch the ground).
+	var seed_now := int(w.get("world_seed"))
+	for pass_i in 40:
+		if IslandGen.ensure_generated(terrain, seed_now, spots, RING_PROBE_PX, 24) == 0:
+			break
+		if pass_i % 8 == 7:
+			await process_frame
+	for spot in spots:
+		await _drain_streaming(terrain, RING_PROBE_PX, spot, RING_PROBE_PX)
+	return _ring_fingerprint(terrain)
+
+
+func _ring_fingerprint(terrain) -> Dictionary:
+	var out := {}
 	for c in (terrain.chunk_coords() as Array):
-		packed.append(int((c as Vector2i).y) * 1000000 + int((c as Vector2i).x))
-	packed.sort()
-	return hash([packed, int(terrain.total_solid_cells())])
+		var bytes := terrain.chunk_bytes(c as Vector2i) as PackedByteArray
+		var solid := 0
+		for b in bytes:
+			if b != 0:   # TerrainDB.Type.AIR is 0 and must stay 0 (terrain_db.gd)
+				solid += 1
+		out[c as Vector2i] = [hash(bytes), solid]
+	return out
+
+
+## Compare two fingerprints over the chunks they BOTH hold **that actually
+## contain ground**, as [shared chunks with ground, how many of those disagree].
+##
+## THE "WITH GROUND" IS THE WHOLE POINT. Most of a dive sky is air, and an air
+## chunk is byte-identical under every seed — so comparing all shared chunks
+## answers "is the sky still mostly empty" (yes, always) instead of "is this a
+## different set of islands". Measured while rewriting this: a fresh seed left
+## `0 of 56 shared chunks changed`, and all 56 were empty. The old signature hid
+## that behind a residency term that happened to differ, which is to say it
+## passed the "a new run is a new sky" claim for the wrong reason.
+func _ring_diff(a: Dictionary, b: Dictionary) -> Array:
+	var shared := 0
+	var differ := 0
+	for k in a:
+		if not b.has(k):
+			continue
+		var ra := a[k] as Array
+		var rb := b[k] as Array
+		if int(ra[1]) == 0 and int(rb[1]) == 0:
+			continue   # air on both sides — identical under every seed
+		shared += 1
+		if int(ra[0]) != int(rb[0]):
+			differ += 1
+	return [shared, differ]
 
 
 
@@ -1891,7 +2009,18 @@ func _check_the_breath(w: Node, pl, boss: Ship, roof: Rect2, cpx: float) -> void
 		for i in 4:
 			await w.get_tree().physics_frame
 			_hold_body(pl, safe)
-		var toward: Vector2 = (maw - picket.global_position).normalized()
+		# ONE INSTANT, BOTH READINGS. `maw` above is four frames old, the picket
+		# has been falling and being pulled the whole time, and `extra_wind` is
+		# LAST tick's stamp -- so the direction the wind had and the direction the
+		# maw is in were measured at different moments, and near the maw that
+		# angle moves fast. It failed on roughly every other run of this suite
+		# (267, 294 and 528 px/s of perfectly good breath, pointing a few degrees
+		# stale) and passed on the ones in between, which is a race, not a bug in
+		# the breath. Ask the boss where its maw is NOW, re-stamp the weather at
+		# the positions everything is at NOW, then compare the two.
+		var maw_now: Vector2 = kai.maw_world()
+		w.call("_dive_weather", 0.0)
+		var toward: Vector2 = (maw_now - picket.global_position).normalized()
 		var wind: Vector2 = picket.get("extra_wind")
 		_ok(wind.length() > 0.0 and wind.normalized().dot(toward) > 0.9,
 			"a picket in the breath is stamped with it too (%.0f px/s toward the maw)"
@@ -2509,6 +2638,469 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	Tunables.reset_all()
 
 
+## THE DESCENT SEAL, in a real sky (DESIGN_DESCENT.md, owner rulings §0).
+##
+## Only an 8× run can see any of this: the band is 4,483 px of a 64,038 px rung,
+## and the whole ruling turns on how a rate-controlled hull behaves inside an
+## airstream measured against `dive_dive_rate`. Four claims, and the seal is only
+## the gate the owner asked for if all four hold:
+##
+##   1. a NEUTRAL stick inside a live band is CARRIED OUT of the top — drifting
+##      into a seal warns you, it does not kill you (DESCENT §4.4);
+##   2. a FULL DOWN stick crosses, in the time `SEAL_AIR_SPEED` was tuned for
+##      (≈ 30 % of `dive_ship_integrity` at 300 hp/s — DESCENT §3.3);
+##   3. a garrison hull feels nothing inside ITS OWN depth's band and the full
+##      stream inside anyone else's (§0 call 7, "symmetric with one exception");
+##   4. the band DIES when the world reports its last key killed — and a CULL is
+##      not a kill (§2.4).
+##
+## Run at the same air floor as `_check_dive_picket_holds_its_rung` and for the
+## same measured reason: at the shipped floor a balloon ship cannot hold a rung
+## at all, and a crossing time measured on a hull that is falling anyway would be
+## measuring gravity.
+func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
+	if pl == null or not is_instance_valid(pl) or run == null or terrain == null:
+		_ok(false, "a body, a run and terrain to seal")
+		return
+	# WHERE THE PERSON WAS STANDING WHEN THIS CHECK STARTED. Everything after this
+	# one (the dunk, the Leviathan) holds the body somewhere of its own choosing
+	# and assumes it is ON FOOT — so this check gives the helm back and puts them
+	# down where it found them. Leaving the person PILOTING was the subtlest
+	# failure of the round: the dunk's own `_hold_body` cannot move a pilot, so
+	# the body rode the parked hull for twenty seconds, took 88 of its 100 hp, and
+	# the run was lost inside a Leviathan check that says nothing about seals.
+	var body_was: Vector2 = pl.global_position
+	# PUT BACK WHAT WAS HERE, NOT WHAT THE DEFAULTS SAY. This check used to end on
+	# `Tunables.reset_all()`, and that is a hammer in the middle of a suite whose
+	# checks hand each other a world: the DUNK, immediately above, sets
+	# `dive_zone_wind_mult` to 0 and never restores it, so everything after it —
+	# the Leviathan's breath check included — is written against a sky with the
+	# ring's wind off. `reset_all` turned it back on, the breath check's picket was
+	# then stamped with breath PLUS a ring draft, and its "the wind points at the
+	# maw" direction test failed on a round that has nothing to do with seals.
+	# (Seen twice; it passed on the run in between, which is what a suite-order
+	# coupling looks like from the outside.) So: save exactly what this check
+	# touches, restore exactly that.
+	var levers := {}
+	for lever in ["dive_air_floor", "dive_ceiling_mult", "dive_seal_grind",
+			"fall_damage"]:
+		levers[lever] = Tunables.get_num(lever)
+	for lever in ["dive_zones_enabled", "dive_assistant"]:
+		levers[lever] = Tunables.get_bool(lever)
+	Tunables.set_value("dive_air_floor", 0.85)
+	# THE SEAL ALONE. The ring's drafts and the closing sky are ±600 px/s of the
+	# same axis at 8×, and that they STACK with a band is the design's own ruling
+	# (DESCENT §2.5 — it is why the far side of the ring is the puncher's tile).
+	# But a crossing TIME measured with them on is measuring three winds, so the
+	# other two are switched off for the duration and restored at the end.
+	Tunables.set_value("dive_zones_enabled", false)
+	Tunables.set_value("dive_ceiling_mult", 0.0)
+	var band := DiveRun.seal_band(2)
+	var top_y: float = float(w.call("dive_altitude_y", float(band[0])))
+	var bot_y: float = float(w.call("dive_altitude_y", float(band[1])))
+	var band_px := bot_y - top_y
+	_ok(band_px > 0.0, "depth 2's band is %.0f px of air at 8×" % band_px)
+	# AN EMPTY COLUMN TO FLY IT IN. The dive world has islands at every altitude —
+	# that is the whole point of the shadow rule — and a hull parked inside one is
+	# measuring stone, not wind. (This cost the first run of this check: the hull
+	# "rose 1,088 px in 15 s" because it was sitting on a rock.)
+	var band_at: Vector2 = await _open_air(w, terrain, pl,
+		Vector2(cx, (top_y + bot_y) * 0.5))
+	var band_x := band_at.x
+
+	# THE HULL: the run's own COMMITTED starter, flown from the helm through the
+	# real input map. Nothing here is a stand-in — a candidate hull sitting on the
+	# deck has no driver and no power, so its props deliver nothing and every number
+	# measured on one would be measuring gravity. Board it, let `_tick_dive` commit
+	# the run (which thaws it, arms its integrity pool and stamps the rate-controlled
+	# stick on it), and fly.
+	var cand: Ship = null
+	for s2 in (w.get("fleet").call("ships") as Array):
+		var c2 := s2 as Ship
+		if c2 == null or not is_instance_valid(c2):
+			continue
+		if c2.faction == 0 and c2.creature_kind == "" and c2.has_helm() \
+				and not c2.is_nest and not c2.is_carcass():
+			cand = c2
+			break
+	_ok(cand != null, "a stock starter on the deck to fly at the seal")
+	if cand == null:
+		_restore_levers(levers)
+		return
+	pl.global_position = cand.to_global(cand.local_pos_of(cand.helm_cells[0]))
+	await w.get_tree().physics_frame
+	_ok(pl.board(cand, cand.helm_cells[0]), "...and the player takes its helm")
+	for i in 6:
+		await w.get_tree().physics_frame
+	var hull := w.get("local_ship") as Ship
+	_ok(hull != null and is_instance_valid(hull) and bool(run.get("committed")),
+		"the run is COMMITTED to it — pool armed, rate stick stamped")
+	if hull == null or not is_instance_valid(hull):
+		_restore_levers(levers)
+		return
+	run.garrison_killed.clear()
+
+	var beta: float = float(w.call("dive_beta_of", hull))
+	_ok(absf(beta - DiveRun.BETA_REF) < DiveRun.BETA_REF * 0.15,
+		"the committed starter's β is %.2f — BETA_REF is %.2f (mass %.0f, beam %.0f px)"
+			% [beta, DiveRun.BETA_REF, hull.mass, hull.solid_bounds.size.x])
+
+	# --- 1. A DRIFTER IS EJECTED -------------------------------------------
+	# Parked dead centre with the stick neutral. The rate controller station-keeps
+	# relative to the AIR (`Ship._physics_process`, `v_up` measured against
+	# `wind.y`), so "hold still" inside a rising band means "ride it up".
+	#
+	# GRIND OFF for this one measurement, and for a stated reason: a drifter is
+	# ejected in a handful of seconds and the toll would take a third of the pool
+	# doing it, which is the DESIGN — but it would also leave nothing to measure
+	# the crossing's real bill with two sections down. The toll gets its own
+	# section, at the shipped rate, on a full pool.
+	Tunables.set_value("dive_seal_grind", 0.0)
+	_park_at(hull, pl, Vector2(band_x, (top_y + bot_y) * 0.5))
+	await w.get_tree().physics_frame
+	var y0 := hull.global_position.y
+	var lift_s := -1.0
+	for i in 900:
+		await w.get_tree().physics_frame
+		if hull.global_position.y < top_y:
+			lift_s = float(i + 1) / 60.0
+			break
+	_ok(lift_s > 0.0,
+		"a neutral stick is carried UP out of a live band in %.1f s (drift %.0f px, wind %.0f) — you must MEAN a crossing"
+			% [lift_s, hull.global_position.y - y0, hull.extra_wind.y])
+
+	# --- 2. ...AND A COMMITTED DIVE CROSSES, AND IS BILLED FOR IT ----------
+	# From the top lip, stick hard down, until the bottom lip, at the SHIPPED
+	# grind — so the number this prints is the bill the owner actually pays, not
+	# arithmetic about one. `SEAL_AIR_SPEED` is tuned against exactly this: the
+	# crossing must land near 30 % of `dive_ship_integrity` (DESCENT §3.3).
+	# Driven through the real input map — `Input.action_press` works headless
+	# (godot-quirks), and a piloted hull reads the map, not `net_set_controls`.
+	#
+	# THE POOL IS DELIBERATELY DEEPENED FOR THE MEASUREMENT and the bill is
+	# reported against the SHIPPED figure: at 300 hp/s a crossing that goes wrong
+	# empties a 3,000 pool in ten seconds, the hull explodes, and the run is lost
+	# out from under every check that follows this one (the dunk, the Leviathan).
+	# A measurement must not be able to end the thing it is measuring.
+	Tunables.set_value("dive_seal_grind", levers["dive_seal_grind"])
+	var pool := Tunables.get_num("dive_ship_integrity")
+	_park_at(hull, pl, Vector2(band_x, top_y + 4.0))
+	hull.hull_integrity_max = pool * 20.0
+	hull.hull_integrity = hull.hull_integrity_max
+	await w.get_tree().physics_frame
+	var before := hull.hull_integrity
+	Input.action_press("ship_down")
+	var cross_s := -1.0
+	for i in 900:
+		await w.get_tree().physics_frame
+		if not is_instance_valid(hull):
+			break
+		if hull.global_position.y > bot_y:
+			cross_s = float(i + 1) / 60.0
+			break
+	Input.action_release("ship_down")
+	_ok(is_instance_valid(hull), "the crossing did not destroy the hull outright")
+	if not is_instance_valid(hull):
+		_restore_levers(levers)
+		return
+	var sites := DiveRun.seal_sites(hull.solid_bounds.size.x, DiveRun.BEAM_REF)
+	var paid := before - hull.hull_integrity
+	print("    ~ the seal: band %.0f px, crossing %.2f s at %.0f px/s, %d sites, %.0f hp (%.0f%% of %.0f)"
+		% [band_px, cross_s, band_px / maxf(cross_s, 0.001), sites, paid,
+			paid / pool * 100.0, pool])
+	_ok(cross_s > 0.0, "a full DOWN stick crosses the band in %.2f s" % cross_s)
+	_ok(paid > 0.0, "...and the grind BILLED it (%.0f hp of structure)" % paid)
+	_ok(paid / pool > 0.15 and paid / pool < 0.55,
+		"...for %.0f%% of the hull's pool at %d sites (target ≈ 30 %%)"
+			% [paid / pool * 100.0, sites])
+
+	# --- 2b. THE GRIND'S OWN RATE ------------------------------------------
+	# The grind is `rate × time` and nothing else, so a second parked in a band
+	# costs `sites × dive_seal_grind` whichever way the hull is pointing. Measured
+	# over two seconds rather than asserted from the constants, because the site
+	# count is derived from a live beam and the tick is a 4 Hz accumulator.
+	#
+	# THE ASSISTANT IS SENT AWAY FOR THIS ONE MEASUREMENT. A run posts a crewman
+	# at the repair station and `repair_cell` refunds mended structure into the
+	# integrity pool (v0.140.0), which is ~150 hp/s of the 300 the seal takes —
+	# that is why the crossing above bills 22 % of the pool net where the gross
+	# grind is 44 %. Both numbers are real; this one is the seal's.
+	Tunables.set_value("dive_assistant", false)
+	hull.menders_running = false
+	_park_at(hull, pl, Vector2(band_x, (top_y + bot_y) * 0.5))
+	hull.hull_integrity = hull.hull_integrity_max
+	await w.get_tree().physics_frame
+	var hov0 := hull.hull_integrity
+	for i in 120:
+		await w.get_tree().physics_frame
+		if not is_instance_valid(hull):
+			break
+	var per_s := (hov0 - hull.hull_integrity) / 2.0 if is_instance_valid(hull) else 0.0
+	var want_s := float(sites) * Tunables.get_num("dive_seal_grind")
+	_ok(per_s > want_s * 0.7 and per_s < want_s * 1.3,
+		"parked in a live band, unmended, the hull sheds %.0f hp/s — %d sites × %.0f (%.0f expected, %.1f s to kill a %.0f pool)"
+			% [per_s, sites, Tunables.get_num("dive_seal_grind"), want_s,
+				pool / maxf(per_s, 1.0), pool])
+	Tunables.set_value("dive_assistant", true)
+	if is_instance_valid(hull):
+		hull.hull_integrity = hull.hull_integrity_max
+
+	# --- 2c. A BODY CANNOT CROSS (§3.5) ------------------------------------
+	# Dropped into the band from above at a real falling speed. The band must
+	# THROW IT BACK OUT OF THE TOP — a shipless run does not get past a live seal
+	# — and charge it on the way. The person is stepped off the helm for this and
+	# put straight back after.
+	if pl.is_piloting():
+		pl.disembark()
+	await w.get_tree().physics_frame
+	# NEAR THE TOP LIP, and deliberately: a body pays 18 hp/s of ONE life, so a
+	# climb from the band's centre spends most of a run's health proving a point
+	# the first few hundred pixels already prove. (Propping the pool up instead
+	# does not work — `Player` clamps health to its max, so the loop ran the
+	# person to death and lost the run under every check that followed.)
+	#
+	# THE PERSON IS MENDED TO FULL FIRST, AND PUT BACK AFTER. A run has ONE life:
+	# a body that walked into this check already hurt by the picket checks above
+	# can be killed by four seconds of toll, and a run lost HERE fails the dunk
+	# and the Leviathan several minutes later with nothing pointing back. (It did,
+	# on one seed in five.) The pool is restored below, so the check still costs
+	# the run exactly nothing.
+	Tunables.set_value("fall_damage", 0.0)
+	var hp0: float = pl.health
+	pl.health = pl.max_health
+	var entry := top_y + band_px * 0.15
+	pl.global_position = Vector2(band_x, entry)
+	pl.velocity = Vector2.ZERO
+	var thrown := false
+	for i in 120:
+		await w.get_tree().physics_frame
+		pl.velocity.x = 0.0
+		if pl.global_position.y < top_y:
+			thrown = true
+			break
+	var body_paid: float = pl.max_health - pl.health
+	pl.health = pl.max_health
+	_ok(thrown,
+		"a body standing in a live band is thrown OUT of the top (%.0f px up, %.1f hp paid)"
+			% [entry - pl.global_position.y, body_paid])
+	_ok(body_paid > 1.0,
+		"...and it paid %.1f hp for the attempt (toll %.0f/s)"
+			% [body_paid, DiveRun.SEAL_BODY_TOLL])
+	# ...and one DROPPED into it at speed never reaches the far side. The band's
+	# net acceleration on a body is upward everywhere inside it, so the deepest a
+	# fall can reach is `v² / 2a` — a fraction of a 4,483 px band.
+	#
+	# LANDINGS ARE OFF for this drop: a body thrown in at 8,000 px/s that finds a
+	# rock under the band dies of the LANDING, not of the seal, and that ends the
+	# run under every check downstream. This measures how deep the wind lets a
+	# fall get; `fall_damage` is somebody else's lever and it goes straight back.
+	Tunables.set_value("fall_damage", 0.0)
+	pl.global_position = Vector2(band_x, top_y + 4.0)
+	pl.velocity = Vector2(0.0, 8000.0)
+	var deepest_y: float = pl.global_position.y
+	for i in 90:
+		await w.get_tree().physics_frame
+		pl.velocity.x = 0.0
+		deepest_y = maxf(deepest_y, pl.global_position.y)
+		if pl.global_position.y < top_y:
+			break
+	_ok(deepest_y < bot_y,
+		"a body dropped into it only reaches %.0f px of %.0f — a shipless run cannot pass a live seal"
+			% [deepest_y - top_y, band_px])
+	# ...and the person is put back WHOLE, not back to the number they walked in
+	# with. This check spends twenty-odd seconds of world, and GRIT regen would
+	# have mended them over that time anyway — clamping the pool back down to the
+	# entry number is not neutral, it is a debt handed to the next check, and it
+	# is what made the dunk's twenty seconds of deep air fatal on some seeds.
+	Tunables.set_value("fall_damage", levers["fall_damage"])
+	pl.health = pl.max_health
+	if hp0 < pl.max_health:
+		print("    ~ the body walked in at %.0f hp and leaves mended (regen would have)"
+			% hp0)
+	_ok(String(run.get("outcome")) == "",
+		"the body's toll never spent the run's one life (outcome '%s', %.0f hp)"
+			% [String(run.get("outcome")), pl.health])
+	pl.global_position = hull.to_global(hull.local_pos_of(hull.helm_cells[0]))
+	pl.velocity = Vector2.ZERO
+	await w.get_tree().physics_frame
+	pl.board(hull, hull.helm_cells[0])
+	for i in 3:
+		await w.get_tree().physics_frame
+	if is_instance_valid(hull):
+		hull.hull_integrity = hull.hull_integrity_max
+
+	# --- 3. SYMMETRIC, WITH ONE EXCEPTION (§0 call 7) ---------------------
+	var mid := Vector2(band_x, (top_y + bot_y) * 0.5)
+	var stream: float = float(w.call("dive_seal_speed_at", mid, beta, 0))
+	_ok(stream > 0.0, "the live band at depth 2 blows %.0f px/s upward" % stream)
+	_ok(is_zero_approx(float(w.call("dive_seal_speed_at", mid, beta, 2))),
+		"...but depth 2's OWN garrison feels nothing in it — the band is its house")
+	_ok(is_equal_approx(float(w.call("dive_seal_speed_at", mid, beta, 3)), stream),
+		"...while a picket from depth 3 caught in it pays the full stream")
+	# MASS BEATS IT, in the world rather than on paper.
+	var dart: float = float(w.call("dive_seal_speed_at", mid, beta * 6.0, 0))
+	_ok(dart < stream * 0.3,
+		"a dart 6× as dense per beam feels %.0f px/s, not %.0f — ruling 3, measured"
+			% [dart, stream])
+
+	# --- 4. THE LOCK ------------------------------------------------------
+	var tw := Tunables.get_num("dive_zone_tile_widths")
+	for k in DiveRun.depth_keys(run.seed_v, 2, tw):
+		run.mark_garrison_killed(String(k))
+	_ok(run.seal_open(run.seed_v, 2, tw)
+			and is_zero_approx(float(w.call("dive_seal_speed_at", mid, beta, 0))),
+		"kill depth 2's last standing picket and the band stops blowing — for good")
+	run.garrison_killed.clear()
+
+	# THE KEY RIDES THE BODY, and a death writes it down.
+	var key := String(DiveRun.depth_keys(run.seed_v, 4, tw)[0])
+	var marked := w.call("_dive_spawn_picket", "hulk",
+		pl.global_position + Vector2(12000.0, 0.0), key) as Ship
+	await w.get_tree().physics_frame
+	_ok(marked != null and marked.garrison_key == key,
+		"a materialized picket carries its roster key (%s)" % key)
+	if marked != null:
+		w.call("_dive_explode_ship", marked)
+		_ok(run.garrison_is_killed(key), "...and its death marks that key KILLED")
+
+	# ...BUT A CULL IS NOT A KILL (§2.4). The survivor goes back to PENDING, which
+	# is the whole reason a half-fought seal can never deadlock.
+	var key2 := String(DiveRun.depth_keys(run.seed_v, 4, tw)[0])
+	run.garrison_killed.erase(key2)
+	run.mark_garrison_spawned(key2)
+	var doomed := w.call("_dive_spawn_picket", "hulk",
+		pl.global_position + Vector2(12000.0, 0.0), key2) as Ship
+	await w.get_tree().physics_frame
+	# ...and then flown away from. Moved rather than born out there: a spawn
+	# point past the world's own edge is not a spawn at all.
+	if doomed != null and is_instance_valid(doomed):
+		doomed.global_position = pl.global_position + Vector2(0.0, 400000.0)
+	w.call("_dive_cull_the_wake", 2.0)
+	_ok(not run.garrison_is_spawned(key2),
+		"the wake cull hands a culled entry back to PENDING")
+	_ok(not run.garrison_is_killed(key2), "...and never counts it as dead")
+	if doomed != null and is_instance_valid(doomed):
+		doomed.queue_free()
+
+	# --- 5. WHAT THE PAINTER IS HANDED (slice 7's data half) ---------------
+	# `SealBands` holds no logic, so the only testable seam is the provider: plain
+	# Rects, bools and counts, and only the bands the camera could see.
+	_park_at(hull, pl, Vector2(band_x, (top_y + bot_y) * 0.5))
+	await w.get_tree().physics_frame
+	var rows: Array = w.call("seal_bands")
+	var here: Dictionary = {}
+	for r_v in rows:
+		var r := r_v as Dictionary
+		if int(r.get("depth", 0)) == 2:
+			here = r
+	_ok(not here.is_empty(),
+		"the painter is handed the band it is looking at (%d visible)" % rows.size())
+	if not here.is_empty():
+		var rr := here.get("rect", Rect2()) as Rect2
+		_ok(absf(rr.size.y - band_px) < 2.0,
+			"...as a world-space rect of the right height (%.0f px vs %.0f)"
+				% [rr.size.y, band_px])
+		_ok(rr.position.y <= top_y + 1.0 and rr.end.y >= bot_y - 1.0,
+			"...spanning the band's own lips")
+		_ok(bool(here.get("live", false)) and int(here.get("of", 0)) > 0,
+			"...marked LIVE with a count on it (%d of %d left)"
+				% [int(here.get("left", 0)), int(here.get("of", 0))])
+	# ...and a cleared band still reaches the painter, marked dead, so the layer
+	# can draw the reward instead of simply losing the band.
+	for k5 in DiveRun.depth_keys(run.seed_v, 2, tw):
+		run.mark_garrison_killed(String(k5))
+	var dead_rows: Array = w.call("seal_bands")
+	var dead_here := false
+	for r_v2 in dead_rows:
+		var r2 := r_v2 as Dictionary
+		if int(r2.get("depth", 0)) == 2 and not bool(r2.get("live", true)):
+			dead_here = true
+	_ok(dead_here, "a cleared band is still handed over, marked dead")
+	# ...and the status row the HUD counts down carries the same answer.
+	run.set("depth", 2)
+	var st := w.call("dive_status") as Dictionary
+	var seal_row := st.get("seal", {}) as Dictionary
+	_ok(not seal_row.is_empty() and not bool(seal_row.get("live", true))
+			and int(seal_row.get("left", -1)) == 0,
+		"dive_status agrees with it (%s)" % seal_row)
+	# ...AND LEAVE THE SKY OPEN BEHIND IT. Every band of this run is marked dead
+	# on the way out, deliberately, because the checks that follow fly this same
+	# hull for another twenty seconds with nobody at the stick: a hull left
+	# hovering near a live band SINKS into it (measured: 0.708 → 0.657 of the
+	# world's height in one dunk), is ground apart at 300 hp/s, and takes the
+	# person at its helm down with the husk — 88 hp, then a lost run, in a check
+	# five minutes away that says nothing about seals. The seal has been measured
+	# by here; what the rest of the suite needs from it is that it is not in the
+	# way. (Parking higher was tried first and only moved the seed at which it
+	# happens.)
+	var tw_all := Tunables.get_num("dive_zone_tile_widths")
+	for d_all in range(2, DiveRun.DEPTHS):
+		for k_all in DiveRun.depth_keys(run.seed_v, d_all, tw_all):
+			run.mark_garrison_killed(String(k_all))
+	# HAND THE RUN BACK OTHERWISE AS IT WAS FOUND. The dunk runs twenty seconds of
+	# world after this and the Leviathan check needs a live run at the end of it.
+	# Leaving the committed hull PARKED IN A LIVE BAND fails both: at 300 hp/s it
+	# grinds through a 3,000 pool in ten seconds, explodes, and drops the person
+	# aboard — a lost run, on some seeds, several checks later, with nothing
+	# pointing back here. So the hull goes back to open air, with a full pool and
+	# the levers reset.
+	#
+	# ABOVE the band rather than at the rung's own altitude, which was the first
+	# fix and was worse: the rung IS the landing shelf, so parking there dropped
+	# the hull onto stone and twenty seconds of grinding contact took 88 hp off
+	# the person at its helm — half the seeds then lost the run inside the dunk.
+	# This altitude is inside the empty column `_open_air` already certified.
+	if is_instance_valid(hull):
+		hull.hull_integrity_max = pool
+		hull.hull_integrity = pool
+		_park_at(hull, pl, Vector2(band_x, (top_y + bot_y) * 0.5 - band_px * 1.4))
+		await w.get_tree().physics_frame
+	var still_live := 0
+	for d_live in range(2, DiveRun.DEPTHS):
+		if bool(w.call("dive_seal_live", d_live)):
+			still_live += 1
+	_ok(still_live == 0,
+		"...and the run is handed on with every band dead (%d still blowing)"
+			% still_live)
+	# The helm goes back and the person goes back to their own feet.
+	if pl.is_piloting():
+		pl.disembark()
+	pl.global_position = body_was
+	pl.velocity = Vector2.ZERO
+	await w.get_tree().physics_frame
+	print("    ~ after the seal: outcome '%s', body %.0f hp, altitude %.3f, piloting %s"
+		% [String(run.get("outcome")), pl.health,
+			float(w.call("_player_altitude_frac")), str(pl.is_piloting())])
+	_ok(String(run.get("outcome")) == "" and not pl.is_piloting(),
+		"the seal check hands the run back alive, with the person on their own feet")
+	_restore_levers(levers)
+
+
+## Put back exactly the levers a check borrowed, at the values it found them at.
+##
+## NOT `Tunables.reset_all()`: the checks in this file hand each other a live
+## world, and several of them leave a lever set on purpose for everything that
+## follows (the dunk parks `dive_zone_wind_mult` at 0 so the sky above the
+## Leviathan is still). Resetting to DEFAULTS silently un-does those, and the
+## round that pays for it is whichever one runs next.
+func _restore_levers(levers: Dictionary) -> void:
+	for lever in levers:
+		Tunables.set_value(String(lever), levers[lever])
+
+
+## Put the committed hull (and the body riding it) at `at`, stopped. The player
+## is AT THE HELM for every seal measurement, which is what keeps the wake cull
+## (measured from the nearest player) from freeing the hull mid-run and what
+## stops a body left in mid-air falling into the lava and ending the run.
+func _park_at(hull: Ship, pl, at: Vector2) -> void:
+	hull.global_position = at
+	hull.linear_velocity = Vector2.ZERO
+	hull.angular_velocity = 0.0
+	if pl != null and is_instance_valid(pl):
+		pl.global_position = at
+		pl.velocity = Vector2.ZERO
+
+
 func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
 	if pl == null or not is_instance_valid(pl) or run == null:
 		_ok(false, "a body and a run to garrison around")
@@ -2740,9 +3332,14 @@ func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
 	else:
 		_ok(true, "the cap was full, so this surge added nothing (correct)")
 
-	# --- 4b. A CLEARED SKY STAYS CLEARED -----------------------------------
-	# The wake cull frees a picket you left behind. That entry must NOT come back
-	# the next time you fly through: it is spent, for the rest of the run.
+	# --- 4b. A *KILLED* SKY STAYS CLEARED ----------------------------------
+	# THIS CLAIM WAS INVERTED BY THE DESCENT SEAL (DESCENT §2.4 / §10.4, owner
+	# call 4). It used to read "a cleared sky stays cleared": the wake cull
+	# CONSUMED an entry, so a picket you flew away from never came back. With a
+	# seal locked to the standing garrison that rule locks the door forever — the
+	# survivors of a half-fought rung would be marked spawned, gone, and not dead,
+	# and the band could never open. So the cull now UNMARKS: `garrison_spawned`
+	# means "has a body right now", and only a KILL is permanent.
 	var was_marked: Dictionary = (run.get("garrison_spawned") as Dictionary).duplicate()
 	for sid5 in (w.get("_dive_surged") as Array):
 		var pk4 := instance_from_id(sid5) as Ship
@@ -2752,23 +3349,30 @@ func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
 	_ok((w.get("_dive_surged") as Array).is_empty(),
 		"the wake cull clears what the run left behind (%d left)"
 			% (w.get("_dive_surged") as Array).size())
-	var unmarked := 0
+	var still_marked := 0
+	var wrongly_killed := 0
 	for key2 in was_marked:
-		if not bool(run.call("garrison_is_spawned", String(key2))):
-			unmarked += 1
-	_ok(unmarked == 0,
-		"...without un-marking a single entry it freed (%d forgotten)" % unmarked)
+		if bool(run.call("garrison_is_spawned", String(key2))):
+			still_marked += 1
+		if bool(run.call("garrison_is_killed", String(key2))):
+			wrongly_killed += 1
+	_ok(was_marked.size() > 0 and still_marked == 0,
+		"...handing every entry it freed back to PENDING (%d of %d still held)"
+			% [still_marked, was_marked.size()])
+	_ok(wrongly_killed == 0,
+		"...and counting none of them dead — a cull is not a kill (%d)" % wrongly_killed)
 	w.call("_dive_materialize_garrison", 10.0)
-	var ghosts := 0
+	var returned := 0
 	for sid6 in (w.get("_dive_surged") as Array):
 		var pk5 := instance_from_id(sid6) as Ship
 		if pk5 == null or not is_instance_valid(pk5):
 			continue
 		for key3 in was_marked:
 			if pk5.global_position.distance_to(places[key3] as Vector2) < 1.0:
-				ghosts += 1
-	_ok(ghosts == 0,
-		"...so nothing you already cleared is ever reborn there (%d ghosts)" % ghosts)
+				returned += 1
+	_ok(returned > 0,
+		"...so a garrison you left alive is standing there again when you come back (%d)"
+			% returned)
 
 
 ## MACHINES PLACE AS BUNDLES at 8× (owner 2026-08-25: "an engine will never
