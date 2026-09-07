@@ -3311,6 +3311,19 @@ func _check_dive(world: Node, fleet) -> void:
 	# and extraction is the counter's free PASSAGE HOME row, which banks the pot
 	# at the deepest-scaled premium into the real wallet.
 	world.call("begin_dive")
+	# THE LADDER IS OFF FOR THIS BLOCK and the RING'S WIND is switched on for it,
+	# which between them are the two halves of Q-V (DESIGN_DESCENT §11). The seal
+	# is now two columns of wind loops whose calm carries everything in the sky
+	# DOWNWARD at the stack's own speed, for the whole run — so "below the ceiling
+	# the closing sky lets go" would read the ladder's carry (measured: vy 25 at
+	# 1×) and call it the leash. And the v0.141 ring's up/down drafts, which the
+	# tile-lean check below is about, default OFF now that the ladder replaced
+	# them; the lever and everything it drives survive, so this is still a live
+	# claim — it is just no longer the default sky. Both restored at the end.
+	var ladder_was := Tunables.get_bool("dive_ladder_enabled")
+	var ring_wind_was := Tunables.get_num("dive_zone_wind_mult")
+	Tunables.set_value("dive_ladder_enabled", false)
+	Tunables.set_value("dive_zone_wind_mult", 1.0)
 	await _dive_take_a_hull(world, fleet)
 	var closing = world.get("dive")
 	if closing != null and pl != null and is_instance_valid(pl):
@@ -3372,6 +3385,8 @@ func _check_dive(world: Node, fleet) -> void:
 				"crossing the ring's edge loops you in from the other side (x-cx %.0f)"
 					% (pl.global_position.x - cx))
 			pl.global_position = was_at
+		Tunables.set_value("dive_ladder_enabled", ladder_was)
+		Tunables.set_value("dive_zone_wind_mult", ring_wind_was)
 		# THE SHIP IS NOT YOUR LIFE (v0.115.0, owner): destroying the committed
 		# hull must NOT end the run — it goes SHIPLESS, and the body plays on.
 		var hull3 = world.get("local_ship")
