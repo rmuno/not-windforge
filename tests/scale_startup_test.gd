@@ -938,18 +938,20 @@ func _check_dive_scene_boots() -> void:
 	# advance the run out from under the garrison checks above (they measure a
 	# live world with nothing awaited between the set-up and the assertion).
 	await _check_dive_picket_holds_its_rung(w, pl, cx)
-	await _check_dive_seal(w, pl, run, terrain, cx)
 	# THE DUNK, above the Leviathan on purpose: a picket spawn refuses a finished
 	# run, and the check below is the whole of §5.1's sharp knowledge.
-	print("    ~ pre-dunk: outcome '%s', hp %.0f/%.0f, piloting %s, frac %.3f"
-		% [String(run.get("outcome")), pl.health, pl.max_health,
-			str(pl.is_piloting()), float(w.call("_player_altitude_frac"))])
 	await _check_the_dunk(w, pl, terrain)
+	# THE SEAL, between them, and the order is load-bearing in both directions.
+	# ABOVE the Leviathan because waking the boss ends the run in triumph and a
+	# finished run has no live bands. BELOW the dunk because the dunk holds the
+	# body in unbreathable air for twenty seconds and it comes out at 12 of 100
+	# hp — the seal check ends by mending the person (its own toll would otherwise
+	# be a debt), so running it here hands the Leviathan a WHOLE body instead of a
+	# nearly dead one.
 	print("    ~ post-dunk: outcome '%s', hp %.0f/%.0f, piloting %s, frac %.3f"
 		% [String(run.get("outcome")), pl.health, pl.max_health,
 			str(pl.is_piloting()), float(w.call("_player_altitude_frac"))])
-	# ...and LAST OF ALL, the floor: waking the Leviathan ENDS the run in
-	# triumph, so nothing can follow it (the seal reads `outcome` too).
+	await _check_dive_seal(w, pl, run, terrain, cx)
 	await _check_the_leviathan(w, pl, run, cx, terrain)
 
 	w.queue_free()
