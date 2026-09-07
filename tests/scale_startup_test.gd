@@ -2609,6 +2609,22 @@ func _check_dive_seam_is_seamless(w: Node, pl, rect: Rect2, ring_w: float,
 ## So: jam the stick the way a dying driver did, take the driver away, and give
 ## it three real seconds at depth 2 with nobody near it. The run's own stamps
 ## (the air floor, the rate-controlled stick) are the only thing holding it up.
+## `Tunables.reset_all()` — but the LADDER stays off (Q-V).
+##
+## The check below resets the whole registry five times, and since v0.159.0 that
+## one call puts a 1,000 px/s conveyor back over the entire sky for everything
+## that follows it in this scene: the DUNK runs twenty seconds of world right
+## after, the body it holds is carried a rung and a half into the deep, and the
+## run is `lost` several checks later inside the Leviathan with nothing pointing
+## back here. (Measured exactly that way, twice.) `_check_dive_scene_boots`
+## switches the ladder off for the whole scene and `_check_dive_ladder` turns it
+## back on for its own measurements; a blanket reset is the one thing that can
+## undo that, so it does not get to.
+func _reset_but_hold_the_ladder() -> void:
+	Tunables.reset_all()
+	Tunables.set_value("dive_ladder_enabled", false)
+
+
 func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	var picket: Ship = null
 	for sid in (w.get("_dive_surged") as Array):
@@ -2664,7 +2680,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	await _step_the_wake_held(w)
 	if not is_instance_valid(picket):
 		_ok(false, "the picket survives the frame that parks it (the wake cull took it)")
-		Tunables.reset_all()
+		_reset_but_hold_the_ladder()
 		return
 	# JAM THE STICK, then kill the driver: exactly the sequence a shell through
 	# the panel produces.
@@ -2679,7 +2695,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 		await _step_the_wake_held(w)
 	if not is_instance_valid(picket):
 		_ok(false, "the picket outlives its own measurement (the wake cull took it)")
-		Tunables.reset_all()
+		_reset_but_hold_the_ladder()
 		return
 	var centred_fall: float = picket.global_position.y - y0
 	_ok(is_zero_approx(picket.thrust_input.y),
@@ -2696,7 +2712,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	await _step_the_wake_held(w)
 	if not is_instance_valid(picket):
 		_ok(false, "...and survives the frame that re-parks it (the wake cull took it)")
-		Tunables.reset_all()
+		_reset_but_hold_the_ladder()
 		return
 	_ok(not is_zero_approx(picket.thrust_input.y),
 		"...and the world does not fight a stick set on purpose (one centring, not a loop)")
@@ -2704,7 +2720,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 		await _step_the_wake_held(w)
 	if not is_instance_valid(picket):
 		_ok(false, "...and outlives the counterfactual too (the wake cull took it)")
-		Tunables.reset_all()
+		_reset_but_hold_the_ladder()
 		return
 	var jammed_fall: float = picket.global_position.y - rung_y
 	_ok(centred_fall < jammed_fall * 0.7,
@@ -2713,7 +2729,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	_ok(picket.air_density_at(picket.global_position.y) >= Tunables.get_num("dive_air_floor") - 0.001,
 		"...in the run's floored air (%.2f at depth 2, real air 0.23)"
 			% picket.air_density_at(picket.global_position.y))
-	Tunables.reset_all()
+	_reset_but_hold_the_ladder()
 
 
 ## THE WAKE CULL IS NOT WHAT THE CHECK ABOVE MEASURES — and it can quietly end it.
