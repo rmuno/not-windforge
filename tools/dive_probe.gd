@@ -255,6 +255,20 @@ func _initialize() -> void:
 	print("\n=== THE DIVE — headless playtest (8x, the shipped scene) ===")
 	print("boot: %d ships, player at %s" % [fleet.ships().size(), str(pl.global_position)])
 
+	# RE-FLY A REPORTED RUN. `-- --seed N` pins the run's ladder, outposts,
+	# garrison and floating rock, so a before/after on a fix is the SAME dive
+	# twice rather than two different ones. The probe has printed the seed since
+	# v0.149.0 and nothing could hand it back. Set HERE and not in the first line
+	# of _initialize: `load`ing a mode script before the world scene has pulled
+	# the global class cache in fails to parse (`DiveCards` not declared) —
+	# CODEMAP §4, the --script class-cache trap.
+	var args := OS.get_cmdline_user_args()
+	var si := args.find("--seed")
+	if si >= 0 and si + 1 < args.size():
+		(load("res://modes/dive_run.gd") as GDScript).set("seed_forced",
+			int(args[si + 1]))
+		print("SEED FORCED: %d" % int(args[si + 1]))
+
 	world.call("begin_dive")
 	await _frames(10)
 	_report("on the launch deck")

@@ -366,6 +366,22 @@ var creature_kind := ""
 var hull_integrity := 0.0
 var hull_integrity_max := 0.0
 
+## ONE CONTACT, ONE POOL BILL (v0.153.0, found by tools/dive_probe.gd). While a
+## crush walk is spending itself inward, `damage_cell` BANKS its structural loss
+## here instead of draining `hull_integrity`, and `_settle_crush_pool_bill`
+## charges the pool once for the whole contact, capped by `dive_crush_pool_cap`.
+## -1.0 means "no walk in progress" — every other damage path (shots, fire,
+## blasts, the mouth) drains the pool directly, exactly as before.
+##
+## Why: the walk destroys many cells legitimately and each one used to bill, so
+## a bill was really "hp along the whole inward line" — a whale ram or a landing
+## slab spends a budget in the hundreds of thousands and the walk marches tens of
+## 100-hp hull cells deep, which is a 3,000 pool several times over from ONE
+## touch. Measured: one terrain crash billed 237,391 of damage and took the whole
+## pool at depth 4 (seed 565218463). BLOCKS are untouched by this — the same
+## cells still come off; only the pool stops being billed per cell.
+var _crush_pool_bill := -1.0
+
 ## HOW MUCH OF `hull_integrity_max` THE RUN'S CARDS PAID FOR (v0.140.0). The Dive
 ## deck's flat `max_hp` channel raises the POOL while you are aboard, and the
 ## world stamps it every tick — so, exactly like `Player.bonus_max_health`, the
@@ -2666,6 +2682,9 @@ func _process(delta: float) -> void:
 			step = Vector2i(0, -1)
 		var walk := cell
 		var remaining := available
+		# Open this contact's pool account: every `damage_cell` in the walk banks
+		# into it instead of draining, and it is settled ONCE below.
+		_crush_pool_bill = 0.0
 		while blocks.has(walk) and remaining > 0.0:
 			var hp: float = blocks[walk]["hp"]
 			# A cell may RESIST the crush (gasbags deform, they don't shatter —
@@ -2685,6 +2704,9 @@ func _process(delta: float) -> void:
 				break
 			remaining -= cost
 			walk += step
+		# Settle the contact's pool bill: once, capped. Before the emit below so
+		# a hull that dies to this contact dies with the number it earned.
+		_settle_crush_pool_bill()
 		# Collision damage landed: float a number at the world contact point
 		# (owner 2026-08-22). `available - remaining` is what the hull actually
 		# absorbed — zero when a fully immune/whiffed crush changed nothing.
@@ -3067,6 +3089,31 @@ func grant_bonus_integrity(bonus: float) -> void:
 	hull_integrity = clampf(hull_integrity + maxf(gained, 0.0), 0.0, hull_integrity_max)
 
 
+## Charge the pool for ONE crush contact and close its account (v0.153.0).
+##
+## The bill banked by the walk is "structural hp really removed, cell by cell
+## along the inward line" — the right shape, the wrong SIZE at 8×: a crush budget
+## is momentum-sized (hundreds of thousands) while a cell is 100 hp, so a single
+## ram or landing walks tens of cells deep and bills a 3,000 pool many times over.
+## `dive_crush_pool_cap` is the ceiling, as a share of the hull's own
+## `hull_integrity_max`, so it reads the same on your 3,000 pool, on a picket's
+## 600, and on a pool a card has widened: "one contact can cost at most this much
+## of the ship". 1.0 restores the uncapped bill.
+##
+## Only the POOL is capped. Every block the walk destroyed still goes — a ram
+## still takes a bite out of the hull you can see, it just cannot also delete the
+## run in a single touch. No-op on an unarmed hull, which is every ship outside a
+## Dive run.
+func _settle_crush_pool_bill() -> void:
+	var bill := _crush_pool_bill
+	_crush_pool_bill = -1.0
+	if bill <= 0.0 or hull_integrity_max <= 0.0:
+		return
+	var cap := clampf(Tunables.get_num("dive_crush_pool_cap"), 0.0, 1.0) \
+		* hull_integrity_max
+	hull_integrity = maxf(0.0, hull_integrity - minf(bill, cap))
+
+
 ## `crush` marks the COLLISION path (the crush walk above), which has already
 ## divided its bruise by the struck cell's `collision_resist` and must not be
 ## armoured twice. Everything else — every shot, the mouth grab, fire, a blast —
@@ -3151,7 +3198,12 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 		elif shade_bucket(blocks[c]["hp"], hp_max) != was:
 			shade_moved = true
 	if hull_integrity_max > 0.0 and structural > 0.0:
-		hull_integrity = maxf(0.0, hull_integrity - structural)
+		# INSIDE A CRUSH WALK the bill is banked, not spent: one contact bills the
+		# pool once, capped (see `_crush_pool_bill` / `_settle_crush_pool_bill`).
+		if _crush_pool_bill >= 0.0:
+			_crush_pool_bill += structural
+		else:
+			hull_integrity = maxf(0.0, hull_integrity - structural)
 	damaged.emit(cell, amount)
 	if dead.is_empty():
 		if shade_moved:

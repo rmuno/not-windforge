@@ -230,8 +230,17 @@ static func xp_for_level(level: int) -> int:
 	return XP_BASE + XP_STEP * maxi(0, level)
 
 
+## A PROBE HOOK, not a game dial: non-zero forces the next run's `seed_v`, so a
+## reported `tools/dive_probe.gd` run can be RE-FLOWN after a fix. The probe has
+## printed the seed since v0.149.0 ("a probe run is only quotable with it
+## printed") and nothing could hand it back, which made every before/after
+## comparison a different ladder. Static, and written only by
+## `tools/dive_probe.gd --seed N`; the game never touches it.
+static var seed_forced := 0
+
+
 func _init() -> void:
-	seed_v = randi()
+	seed_v = seed_forced if seed_forced != 0 else randi()
 
 
 # --- The pure ladder --------------------------------------------------------

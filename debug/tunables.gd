@@ -123,6 +123,13 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 3000.0, "min": 200.0, "max": 60000.0, "step": 100.0,
 		"note": "next commit",
 		"tip": "Integrity pool your hull dies as a unit at. A siege deals roughly 100 hp/s of structure, so 3000 is about half a minute undefended."},   # world._tick_dive commit branch
+	# ONE CONTACT CANNOT BE THE WHOLE RUN (v0.153.0, tools/dive_probe.gd). The
+	# crush walk bills the pool for every cell it destroys inward, which is a
+	# momentum-sized number at 8x — one whale ram or one landing slab emptied
+	# 3,000 several times over. Blocks are untouched; only the POOL is capped.
+	{"id": "dive_crush_pool_cap", "label": "Crush cap, share of pool", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 0.15, "min": 0.02, "max": 1.0, "step": 0.01,
+		"tip": "Most of your integrity pool ONE collision can cost, as a share of its max. 0.15 = a ram is a seventh of the run; 1 is the old uncapped bill."},   # Ship._settle_crush_pool_bill
 	{"id": "dive_picket_integrity", "label": "Picket integrity", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 600.0, "min": 50.0, "max": 20000.0, "step": 50.0,
 		"note": "next spawn",

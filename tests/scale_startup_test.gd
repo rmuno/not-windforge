@@ -249,6 +249,9 @@ func _initialize() -> void:
 	# ...and in the same empty sky, the shipped starter's CANOPY under fire and
 	# under a graze — the two symptoms dive_probe measured at v0.149.0.
 	await _check_the_canopy_is_not_one_unit()
+	# ...and the contact that killed the pilot at depth 4 once the canopy was
+	# fixed: one crush bill against the whole integrity pool.
+	await _check_one_contact_bills_the_pool_once()
 
 	_finish()
 
@@ -509,6 +512,153 @@ func _check_the_canopy_is_not_one_unit() -> void:
 		% [lost, before_bags])
 	grazed.queue_free()
 	await process_frame
+
+
+## ONE CONTACT, ONE POOL BILL (v0.153.0). `tools/dive_probe.gd` at v0.151.0 lost
+## the hull at depth 4 to a SINGLE neutral-whale ram — `HULL BILL: ram 199891
+## (99%, 1 contact)`, 814 blocks gone, the grid nowhere near ground down — and at
+## seed 565218463 the same shape killed it as one TERRAIN crash billed 237,391.
+## The cause is not the ram: the crush walk destroys cell after cell inward and
+## `damage_cell` billed the integrity pool for EVERY one, so a contact's real
+## price was "hp along the whole inward line". A crush budget is momentum-sized
+## (hundreds of thousands at 8×) and a hull cell is 100 hp, so thirty cells of
+## walk IS a 3,000 pool — one touch, whatever the touch was.
+##
+## The fix caps the POOL bill per contact at `dive_crush_pool_cap` × the hull's
+## own max; the BLOCKS are untouched, which is the half this check has to prove
+## as loudly as the other. And the check breaks the fix on purpose (the lever at
+## 1.0) so it is a regression test that has been SEEN to fail.
+##
+## HERE and not in the 1× suite for the standing reason (CODEMAP §2): the whole
+## disagreement is the eightfold — at scale 1 a crush budget is 64× smaller and a
+## walk that reaches thirty cells does not exist on a starter eight cells tall.
+func _check_one_contact_bills_the_pool_once() -> void:
+	print("\n=== one crush contact bills the integrity pool once, capped (8x) ===\n")
+	var cells: Dictionary = ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/starter.ship"), 8)
+	var pool: float = Tunables.get_num("dive_ship_integrity")
+	var share: float = Tunables.get_num("dive_crush_pool_cap")
+
+	# A WHALE-SIZED RAM, driven through the real `_process` walk rather than
+	# arithmetic. Solve the budget back through the conversion at 8× — the same
+	# idiom the graze check uses — and let the creature multiplier do its work:
+	#   available = (impulse - THRESHOLD·unit³) · SCALE / unit², then × ram_mult.
+	const RAM_BUDGET := 200000.0
+	var ram_mult: float = Tunables.get_num("creature_ram_damage")
+	var impulse: float = Tunables.get_num("impact_damage_threshold") * 512.0 \
+		+ RAM_BUDGET / ram_mult * 64.0 / Tunables.get_num("impact_damage_scale")
+
+	var billed := 0.0
+	var lost := 0
+	var alive := 0.0
+	for capped in [true, false]:
+		# The second pass is the fix BROKEN on purpose: cap 1.0 is the old
+		# uncapped bill, and it must still empty the pool.
+		Tunables.set_value("dive_crush_pool_cap", share if capped else 1.0)
+		var hull := _arena_ship(cells)
+		hull.gravity_scale = 0.0
+		hull.global_position = Vector2.ZERO
+		hull.hull_integrity_max = pool
+		hull.hull_integrity = pool
+		await process_frame
+		var before := hull.blocks.size()
+		# Struck on the beam, along the ship's widest row, so the walk has the
+		# most hull it can possibly find in front of it — the worst case, which
+		# is exactly the case that emptied the pool.
+		var aim := _widest_row_entry(hull)
+		hull._pending_impacts.append({
+			"pos": hull.local_pos_of(aim) + Vector2(-Ship.CELL * 0.5, 0.0),
+			"impulse": impulse,
+			"normal": Vector2.RIGHT,   # a body shouldering INTO the hull's flank
+			"immune": false,
+			"creature": true,          # ...and it is a creature, so ×ram_mult
+		})
+		await process_frame
+		await process_frame
+		if capped:
+			billed = pool - hull.hull_integrity
+			lost = before - hull.blocks.size()
+			alive = hull.hull_integrity
+		else:
+			_ok(hull.hull_integrity <= 0.0,
+				"the same contact with the cap OFF (1.0) still empties the pool"
+					+ " (%.0f left) — the bug this pins" % hull.hull_integrity)
+		hull.queue_free()
+		await process_frame
+	Tunables.set_value("dive_crush_pool_cap", share)
+
+	var cap := share * pool
+	_ok(absf(billed - cap) < 0.01,
+		"a %.0f-budget ram bills the pool %.0f, its whole-contact cap (%.0f%% of %.0f)"
+			% [RAM_BUDGET, billed, 100.0 * share, pool])
+	_ok(alive > 0.0,
+		"...and the hull is still flying afterwards (%.0f of %.0f integrity left)"
+			% [alive, pool])
+	_ok(lost >= 20,
+		"...while the blocks STILL come off: %d cells crushed out of the hull" % lost)
+	print("    ~ before the fix this one contact billed the pool the hp of its whole")
+	print("      inward walk — %.0f of a %.0f pool, the run over in one touch"
+		% [pool, pool])
+
+	# THE ENGINE BANK, the next biggest single unit a hit can reach now that the
+	# canopy is 24 balloons (v0.151.0's "found on the way"). It is one contiguous
+	# "E" cluster of 192 cells at 8×, so every one of them takes a shell's amount
+	# — but the POOL is billed once, which is the v0.149.0 fix holding on the
+	# biggest unit left. Measured here so the number is on the record.
+	var bank := _arena_ship(cells)
+	bank.gravity_scale = 0.0
+	bank.global_position = Vector2.ZERO
+	bank.hull_integrity_max = pool
+	bank.hull_integrity = pool
+	await process_frame
+	var engines: Array[Vector2i] = []
+	for c in bank.blocks:
+		if int(bank.blocks[c]["type"]) == BlockDB.Type.ENGINE:
+			engines.append(c)
+	engines.sort()
+	if engines.is_empty():
+		_ok(false, "the shipped starter has an engine bank to shoot")
+		bank.queue_free()
+		return
+	var unit: Array = bank._component_members(engines[engines.size() / 2])
+	var e_pool := bank.hull_integrity
+	bank.damage_cell(engines[engines.size() / 2], 20.0)
+	var e_billed := e_pool - bank.hull_integrity
+	_ok(absf(e_billed - 20.0) < 0.01,
+		"a 20-hp shell into the %d-cell ENGINE bank bills the pool 20, not %d × 20 (%.0f)"
+			% [unit.size(), unit.size(), e_billed])
+	print("    ~ the bank is %d cells of the starter's %d; every cell still takes the"
+		% [unit.size(), engines.size()])
+	print("      hit as one unit (%d hp each, so four shells cost the whole bank in"
+		% int(BlockDB.max_hp(BlockDB.Type.ENGINE)))
+	print("      BLOCKS) — the canopy's problem an order smaller, and pool-safe")
+	bank.queue_free()
+	await process_frame
+
+
+## The leftmost HULL cell of the row with the most hull in it: where a beam-on
+## contact enters the longest run of plain, cell-by-cell structure. HULL and not
+## "any block" on purpose — a gasbag or a machine is a COMPONENT, so the first
+## bite erases the whole unit including the walk's own next step and the crush
+## stops after one cell (which is what the canopy check measures). The hull band
+## is the case that emptied the pool.
+func _widest_row_entry(s: Ship) -> Vector2i:
+	var rows := {}
+	for c in s.blocks:
+		if int(s.blocks[c]["type"]) != BlockDB.Type.HULL:
+			continue
+		rows[c.y] = int(rows.get(c.y, 0)) + 1
+	var best_row := 0
+	var best_n := -1
+	for y in rows:
+		if int(rows[y]) > best_n:
+			best_n = int(rows[y])
+			best_row = int(y)
+	var best_x := 1 << 30
+	for c in s.blocks:
+		if c.y == best_row and int(s.blocks[c]["type"]) == BlockDB.Type.HULL:
+			best_x = mini(best_x, c.x)
+	return Vector2i(best_x, best_row)
 
 
 ## Every GASBAG cell of a ship, in a stable order.
