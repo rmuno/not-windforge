@@ -3819,6 +3819,23 @@ func _test_dive_seal() -> void:
 	_check(run.seal_open(sv, 2, tw), "...and OPEN the moment the last one dies")
 	_check(run.seal_progress(sv, 2, tw) == [keys.size(), keys.size()],
 		"the HUD count agrees with the lock")
+	# THE MEMO SAYS THE SAME THING AS THE FUNCTION IT CACHES. `seal_open` is read
+	# by the weather stamp, the toll and the door's one notification every frame,
+	# and each read used to rebuild the whole ring — a Dictionary per garrison
+	# entry, 60 times a second, for an answer fixed at `begin_dive`. The cache is
+	# keyed on the arguments, so this also pins that a different seed or a retuned
+	# tile width gets its own answer instead of the first one asked for.
+	var memo_same := true
+	for d_m in range(2, DiveRun.DEPTHS):
+		if run.depth_roster(sv, d_m, tw) != DiveRun.depth_keys(sv, d_m, tw):
+			memo_same = false
+		if run.depth_roster(sv, d_m, tw) != DiveRun.depth_keys(sv, d_m, tw):
+			memo_same = false   # ...and again, off the cache this time
+	_check(memo_same, "the roster memo answers exactly what depth_keys computes")
+	_check(run.depth_roster(sv + 1, 2, tw) == DiveRun.depth_keys(sv + 1, 2, tw)
+			and run.depth_roster(sv, 2, tw * 2.0)
+				== DiveRun.depth_keys(sv, 2, tw * 2.0),
+		"...and a different seed or tile width is a different memo, not a stale one")
 
 	# A CULLED SURVIVOR IS NOT A DEAD ONE. The cull unmarks it (so it comes back
 	# when you return); only a kill writes the permanent record.

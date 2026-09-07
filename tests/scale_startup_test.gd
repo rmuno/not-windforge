@@ -985,7 +985,7 @@ func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
 	var seed_a: int = int(run_a.get("seed_v"))
 	_ok(seed_a == int(w.get("world_seed")),
 		"the run's seed IS the sky's, so there is one number to quote (%d)" % seed_a)
-	var ground_a := _ring_signature(terrain)
+	var ground_a := _ring_fingerprint(terrain)
 
 	# A MARK THE NEXT RUN MUST NOT INHERIT: one stone cell deep under the ring,
 	# far below the burst of generation a new run fires around its launch deck.
@@ -1006,8 +1006,10 @@ func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
 	_ok(int(w.get("world_seed")) == seed_b, "...and the sky is re-seeded with it")
 	_ok(not terrain.is_solid(mark),
 		"...the previous run's ground is GONE, not built over")
-	_ok(_ring_signature(terrain) != ground_a,
-		"...so the islands a run flies through are a different set")
+	var diff_b := _ring_diff(_ring_fingerprint(terrain), ground_a)
+	_ok(int(diff_b[0]) >= 4 and int(diff_b[1]) > 0,
+		"...so the islands a run flies through are a different set (%d of %d shared GROUND chunks changed)"
+			% [int(diff_b[1]), int(diff_b[0])])
 	_ok(DiveRun.garrison_all(seed_a, 3.0).hash()
 			!= DiveRun.garrison_all(seed_b, 3.0).hash(),
 		"...with a different garrison standing in it")
@@ -1028,22 +1030,67 @@ func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
 	_ok(int((w.get("dive") as Object).get("seed_v")) == seed_a
 			and int(w.get("world_seed")) == seed_a,
 		"a pinned seed re-opens that run's sky")
-	_ok(_ring_signature(terrain) == ground_a,
-		"...with the same islands in the same places, cell for cell")
+	# ...AND THE GROUND IS THE SAME GROUND, chunk by chunk over everything both
+	# readings hold. The shared count is asserted too, so a pin that happened to
+	# leave nothing loaded cannot pass this by comparing an empty set.
+	var diff_c := _ring_diff(_ring_fingerprint(terrain), ground_a)
+	_ok(int(diff_c[0]) >= 4 and int(diff_c[1]) == 0,
+		"...with the same islands in the same places, cell for cell (%d shared GROUND chunks, %d disagree)"
+			% [int(diff_c[0]), int(diff_c[1])])
 	w.call("end_dive")
 	await w.get_tree().physics_frame
 
 
-## WHICH CHUNKS HOLD GROUND, AND HOW MUCH OF IT IS SOLID — a fingerprint of one
-## seed's sky. Sampling cells around the launch deck was tried first and is
-## worthless: depth 1 sits in the ring's updraft column, which the generator
-## deliberately keeps clear, so every seed fingerprints as the same empty air.
-func _ring_signature(terrain) -> int:
-	var packed := PackedInt64Array()
+## WHAT THE GROUND ACTUALLY IS, PER PLACE: {chunk coord -> hash of that chunk's
+## cells}. Sampling cells around the launch deck was tried first and is worthless
+## — depth 1 sits in the ring's updraft column, which the generator deliberately
+## keeps clear, so every seed fingerprints as the same empty air.
+##
+## PER CHUNK, AND NOT ONE NUMBER FOR THE WHOLE SKY, because the sky is STREAMED.
+## The first shape of this was `hash([resident chunk coords, total_solid_cells])`,
+## and that fingerprints the STREAMER as much as the ground: the same seed,
+## re-pinned, reported "123 chunks / 68,420 solid" against the original's "92 /
+## 53,108" — identical ground, more of it loaded, because two dives and a flight
+## across the ring had happened in between. Any check that flies further than the
+## one that wrote it would have failed it, which is how this was found. Comparing
+## chunk BY chunk, over the ones both readings hold, is the claim the check
+## actually makes: the same islands, in the same places, cell for cell.
+func _ring_fingerprint(terrain) -> Dictionary:
+	var out := {}
 	for c in (terrain.chunk_coords() as Array):
-		packed.append(int((c as Vector2i).y) * 1000000 + int((c as Vector2i).x))
-	packed.sort()
-	return hash([packed, int(terrain.total_solid_cells())])
+		var bytes := terrain.chunk_bytes(c as Vector2i) as PackedByteArray
+		var solid := 0
+		for b in bytes:
+			if b != 0:   # TerrainDB.Type.AIR is 0 and must stay 0 (terrain_db.gd)
+				solid += 1
+		out[c as Vector2i] = [hash(bytes), solid]
+	return out
+
+
+## Compare two fingerprints over the chunks they BOTH hold **that actually
+## contain ground**, as [shared chunks with ground, how many of those disagree].
+##
+## THE "WITH GROUND" IS THE WHOLE POINT. Most of a dive sky is air, and an air
+## chunk is byte-identical under every seed — so comparing all shared chunks
+## answers "is the sky still mostly empty" (yes, always) instead of "is this a
+## different set of islands". Measured while rewriting this: a fresh seed left
+## `0 of 56 shared chunks changed`, and all 56 were empty. The old signature hid
+## that behind a residency term that happened to differ, which is to say it
+## passed the "a new run is a new sky" claim for the wrong reason.
+func _ring_diff(a: Dictionary, b: Dictionary) -> Array:
+	var shared := 0
+	var differ := 0
+	for k in a:
+		if not b.has(k):
+			continue
+		var ra := a[k] as Array
+		var rb := b[k] as Array
+		if int(ra[1]) == 0 and int(rb[1]) == 0:
+			continue   # air on both sides — identical under every seed
+		shared += 1
+		if int(ra[0]) != int(rb[0]):
+			differ += 1
+	return [shared, differ]
 
 
 

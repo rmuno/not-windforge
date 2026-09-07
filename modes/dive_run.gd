@@ -1607,10 +1607,34 @@ func mark_garrison_killed(key: String) -> void:
 	garrison_killed[key] = true
 
 
+## The roster memo: `depth_keys` answers, by "seed:depth:tile_widths".
+##
+## THE ROSTER IS A PURE FUNCTION OF THE RUN'S SEED and it never changes inside a
+## run, but `depth_keys` REBUILDS it — the whole ring, a Dictionary allocated per
+## garrison entry — and the live half asks for it on the hot path: `seal_open` is
+## read by the weather stamp, the toll and `_dive_say_the_seal` every frame. That
+## was the whole ring re-derived 60 times a second to answer a question whose
+## answer is fixed at `begin_dive`. Memoized here rather than at the call sites so
+## no future caller can miss it, and keyed on the arguments so a pinned seed or a
+## retuned tile width is a different memo rather than a stale one.
+var _depth_keys_memo := {}
+
+
+## `depth_keys`, cached for the life of the run. Same answer, computed once.
+func depth_roster(sv: int, d: int, tile_widths: float) -> Array:
+	var memo_key := "%d:%d:%f" % [sv, d, tile_widths]
+	var hit = _depth_keys_memo.get(memo_key)
+	if hit != null:
+		return hit as Array
+	var keys := depth_keys(sv, d, tile_widths)
+	_depth_keys_memo[memo_key] = keys
+	return keys
+
+
 ## [killed, total] for depth `d`'s garrison — what the HUD counts down and what
 ## `seal_open` decides on.
 func seal_progress(sv: int, d: int, tile_widths: float) -> Array:
-	var keys := depth_keys(sv, d, tile_widths)
+	var keys := depth_roster(sv, d, tile_widths)
 	var dead := 0
 	for k in keys:
 		if garrison_killed.has(String(k)):
