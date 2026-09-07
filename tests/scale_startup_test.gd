@@ -2564,6 +2564,23 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 	# the body rode the parked hull for twenty seconds, took 88 of its 100 hp, and
 	# the run was lost inside a Leviathan check that says nothing about seals.
 	var body_was: Vector2 = pl.global_position
+	# PUT BACK WHAT WAS HERE, NOT WHAT THE DEFAULTS SAY. This check used to end on
+	# `Tunables.reset_all()`, and that is a hammer in the middle of a suite whose
+	# checks hand each other a world: the DUNK, immediately above, sets
+	# `dive_zone_wind_mult` to 0 and never restores it, so everything after it —
+	# the Leviathan's breath check included — is written against a sky with the
+	# ring's wind off. `reset_all` turned it back on, the breath check's picket was
+	# then stamped with breath PLUS a ring draft, and its "the wind points at the
+	# maw" direction test failed on a round that has nothing to do with seals.
+	# (Seen twice; it passed on the run in between, which is what a suite-order
+	# coupling looks like from the outside.) So: save exactly what this check
+	# touches, restore exactly that.
+	var levers := {}
+	for lever in ["dive_air_floor", "dive_ceiling_mult", "dive_seal_grind",
+			"fall_damage"]:
+		levers[lever] = Tunables.get_num(lever)
+	for lever in ["dive_zones_enabled", "dive_assistant"]:
+		levers[lever] = Tunables.get_bool(lever)
 	Tunables.set_value("dive_air_floor", 0.85)
 	# THE SEAL ALONE. The ring's drafts and the closing sky are ±600 px/s of the
 	# same axis at 8×, and that they STACK with a band is the design's own ruling
@@ -2602,7 +2619,7 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 			break
 	_ok(cand != null, "a stock starter on the deck to fly at the seal")
 	if cand == null:
-		Tunables.reset_all()
+		_restore_levers(levers)
 		return
 	pl.global_position = cand.to_global(cand.local_pos_of(cand.helm_cells[0]))
 	await w.get_tree().physics_frame
@@ -2613,7 +2630,7 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 	_ok(hull != null and is_instance_valid(hull) and bool(run.get("committed")),
 		"the run is COMMITTED to it — pool armed, rate stick stamped")
 	if hull == null or not is_instance_valid(hull):
-		Tunables.reset_all()
+		_restore_levers(levers)
 		return
 	run.garrison_killed.clear()
 
@@ -2659,7 +2676,7 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 	# empties a 3,000 pool in ten seconds, the hull explodes, and the run is lost
 	# out from under every check that follows this one (the dunk, the Leviathan).
 	# A measurement must not be able to end the thing it is measuring.
-	Tunables.reset("dive_seal_grind")
+	Tunables.set_value("dive_seal_grind", levers["dive_seal_grind"])
 	var pool := Tunables.get_num("dive_ship_integrity")
 	_park_at(hull, pl, Vector2(band_x, top_y + 4.0))
 	hull.hull_integrity_max = pool * 20.0
@@ -2678,7 +2695,7 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 	Input.action_release("ship_down")
 	_ok(is_instance_valid(hull), "the crossing did not destroy the hull outright")
 	if not is_instance_valid(hull):
-		Tunables.reset_all()
+		_restore_levers(levers)
 		return
 	var sites := DiveRun.seal_sites(hull.solid_bounds.size.x, DiveRun.BEAM_REF)
 	var paid := before - hull.hull_integrity
@@ -2789,7 +2806,7 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 	# have mended them over that time anyway — clamping the pool back down to the
 	# entry number is not neutral, it is a debt handed to the next check, and it
 	# is what made the dunk's twenty seconds of deep air fatal on some seeds.
-	Tunables.reset("fall_damage")
+	Tunables.set_value("fall_damage", levers["fall_damage"])
 	pl.health = pl.max_health
 	if hp0 < pl.max_health:
 		print("    ~ the body walked in at %.0f hp and leaves mended (regen would have)"
@@ -2950,7 +2967,19 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 			float(w.call("_player_altitude_frac")), str(pl.is_piloting())])
 	_ok(String(run.get("outcome")) == "" and not pl.is_piloting(),
 		"the seal check hands the run back alive, with the person on their own feet")
-	Tunables.reset_all()
+	_restore_levers(levers)
+
+
+## Put back exactly the levers a check borrowed, at the values it found them at.
+##
+## NOT `Tunables.reset_all()`: the checks in this file hand each other a live
+## world, and several of them leave a lever set on purpose for everything that
+## follows (the dunk parks `dive_zone_wind_mult` at 0 so the sky above the
+## Leviathan is still). Resetting to DEFAULTS silently un-does those, and the
+## round that pays for it is whichever one runs next.
+func _restore_levers(levers: Dictionary) -> void:
+	for lever in levers:
+		Tunables.set_value(String(lever), levers[lever])
 
 
 ## Put the committed hull (and the body riding it) at `at`, stopped. The player
