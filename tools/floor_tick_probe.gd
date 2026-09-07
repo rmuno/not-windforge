@@ -181,10 +181,17 @@ func _initialize() -> void:
 	var phys_rows: Array = []
 	var idle_rows: Array = []
 	var sys_rows: Array = []
+	var inner_rows: Array = []
 	for r in perf.rows(ticks):
 		if String(r[0]).begins_with("sys: "):
 			# Already counted inside the `world` row — carried for its PEAK.
 			sys_rows.append(r)
+		elif String(r[0]).begins_with("in: "):
+			# A slice of a row that is ALREADY in the total (a brain inside
+			# `sys: swim`, a grid walk inside a brain). Printed apart and never
+			# summed, or the attribution would count the same microsecond twice —
+			# which is the one property that makes it worth reading.
+			inner_rows.append(r)
 		elif String(r[0]).begins_with("probe: "):
 			probe_ms += float(r[1])
 		elif String(r[0]).begins_with("idle: "):
@@ -244,6 +251,15 @@ func _initialize() -> void:
 			continue
 		print("%-34s %9.3f %9.3f" % [String(r[0]), float(r[1]), float(r[3])])
 	print("%-34s %9.3f" % ["SYS TOTAL", sys_total])
+
+	if not inner_rows.is_empty():
+		print("\n--- ...and INSIDE those rows (already counted above) ---")
+		print("%-34s %9s %9s %9s" % ["slice", "ms/tick", "calls", "worst"])
+		for r in inner_rows:
+			if float(r[1]) < 0.005:
+				continue
+			print("%-34s %9.3f %9.1f %9.3f"
+				% [String(r[0]).substr(4), float(r[1]), float(r[2]), float(r[3])])
 
 	# THE NUMBER THE OWNER SEES. Godot runs up to `max_physics_steps_per_frame`
 	# catch-up steps per drawn frame; once a tick overruns its budget the frame

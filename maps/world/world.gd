@@ -2452,6 +2452,16 @@ func _dive_step_out(ship: Ship) -> void:
 
 ## One frame of the run. Reads the altitude, hands it to the model, and gives
 ## the events bodies.
+## Bill the work since `t0` to one slice of the run's tick, and hand back a fresh
+## stamp for the next one — so a chain of calls reads as one line each rather
+## than three. Rows are "in: ..." because they are already inside `sys: dive`;
+## the probe prints them apart and never sums them (tools/floor_tick_probe.gd).
+func _bill_dive_slice(name: String, t0: int) -> int:
+	if TickPerf.on:
+		TickPerf.bill("in: dive " + name, t0)
+	return Time.get_ticks_usec()
+
+
 func _tick_dive(delta: float) -> void:
 	if dive == null or dive.outcome != "":
 		return
@@ -2580,15 +2590,25 @@ func _tick_dive(delta: float) -> void:
 		# difference the frame the pool grows, and does nothing on the thousand
 		# ticks after that (it is idempotent by design).
 		player.grant_bonus_health(_dive_add("max_hp"))
+	# THE RUN'S OWN LEDGER. `sys: dive` is one number for a dozen subsystems, and
+	# on the 2026-09-07 floor capture it was the biggest of them — so each slice
+	# bills itself while a probe holds the stopwatch (debug/tick_perf.gd). Cost
+	# when off: one call and one clock read per slice per tick, ~1 us total.
+	var t_sl := Time.get_ticks_usec()
 	_dive_nudge_if_stuck(delta)
+	t_sl = _bill_dive_slice("nudge", t_sl)
 	_dive_keep_the_hunt()
+	t_sl = _bill_dive_slice("hunt", t_sl)
 	# The XP channel, made physical: motes bob where things died and fly to
 	# whoever gets close enough (owner 2026-09-02).
 	_dive_tick_scrap(delta)
+	t_sl = _bill_dive_slice("scrap", t_sl)
 	_dive_cull_the_wake(delta)
+	t_sl = _bill_dive_slice("cull", t_sl)
 	# THE SKY WAS ALREADY POPULATED (owner 2026-09-01): the run's standing
 	# garrison was decided with the seed; this is only where it gets bodies.
 	_dive_materialize_garrison(delta)
+	t_sl = _bill_dive_slice("garrison", t_sl)
 	# THE WIND RING replaces the corridor while it is on: the corridor pushes
 	# you back to the centre line, and the ring's whole point is that LEAVING
 	# the centre is the game. Turning zones off (F2) brings the corridor back.
@@ -2596,18 +2616,23 @@ func _tick_dive(delta: float) -> void:
 		_dive_hold_the_ring(delta)
 	else:
 		_hold_the_corridor(delta)
+	t_sl = _bill_dive_slice("ring", t_sl)
 	# THE LADDER runs its conveyor and resolves this tick's rectangles FIRST, so
 	# the weather stamp, the grind and the painter are all handed the same sky.
 	_dive_advance_ladder(delta)
+	t_sl = _bill_dive_slice("ladder", t_sl)
 	# ...and ONE wind vector carries everything that is weather (review §3.2):
 	# the tile's lean and the closing sky, composed, stamped, felt by both sides.
 	_dive_weather(delta)
+	t_sl = _bill_dive_slice("weather", t_sl)
 	# ...and the seal's other half: the wind decides whether you CAN cross, the
 	# grind decides what crossing is worth (DESCENT §3). After the weather stamp,
 	# so a hull is billed for the band it is actually flying in this frame.
 	_dive_seal_toll(delta)
+	t_sl = _bill_dive_slice("seal toll", t_sl)
 	_dive_say_the_seal()
 	_dive_watch_integrity()
+	t_sl = _bill_dive_slice("integrity", t_sl)
 	# Keep the card draft's offer filled while one is owed, so the HUD always has
 	# three to paint and the number keys have something to pick. The moment an
 	# offer APPEARS, the world holds its breath (owner: "getting a card should
@@ -3014,18 +3039,14 @@ func _dive_scan_shelter(pos: Vector2) -> bool:
 	var steps := int(reach / cell_w)
 	if steps <= 0:
 		return false
+	# Two horizontal runs, walked a CHUNK at a time (Terrain.any_solid_in_row):
+	# the same ~70 cells the two `is_solid` loops here used to visit one at a
+	# time, each re-deriving the chunk the row never leaves. Left first, because
+	# an open left side is the common answer and it costs nothing to find.
 	var here := terrain.world_to_cell(pos)
-	var left := false
-	for i in range(1, steps + 1):
-		if terrain.is_solid(Vector2i(here.x - i, here.y)):
-			left = true
-			break
-	if not left:
+	if not terrain.any_solid_in_row(here, -1, steps):
 		return false
-	for i in range(1, steps + 1):
-		if terrain.is_solid(Vector2i(here.x + i, here.y)):
-			return true
-	return false
+	return terrain.any_solid_in_row(here, 1, steps)
 
 
 ## A hull's ballistic coefficient: mass per pixel of BEAM (the frontal measure a
@@ -6740,7 +6761,16 @@ func _creature_swim(delta: float) -> void:
 			# current: it is a pointer, not an action, and a stale one would
 			# dangle the moment the body woke.
 			continue
-		ai.tick(delta, target)
+		# Billed PER BRAIN while a probe holds the stopwatch (debug/tick_perf.gd).
+		# `sys: swim` is one number for every creature in the sky; which KIND of
+		# brain is spending it is the question a fix needs answered, and a
+		# 28,096-cell boss and a 900-cell critter are not the same finding.
+		if TickPerf.on:
+			var t_ai := Time.get_ticks_usec()
+			ai.tick(delta, target)
+			TickPerf.bill("in: swim " + ship.perf_label(), t_ai)
+		else:
+			ai.tick(delta, target)
 		# A basilisk's spit is a PROJECTILE, and projectiles are spawned by the
 		# world — one spawn path, as with every gun. The brain raises a request
 		# and the world takes it.
@@ -8420,6 +8450,14 @@ func _physics_process(delta: float) -> void:
 
 
 func _tick_physics(delta: float) -> void:
+	# WHAT AN OVERRUN LOOKS LIKE (the F2 Perf lever). Stamped every tick like the
+	# run's own dials, so a flick lands the same frame — and it is the one setting
+	# here that decides nothing about the game and everything about how a machine
+	# that cannot keep up FAILS: 8 (the engine default, and what every measurement
+	# in this project assumes) keeps time correct and pays for it in frames; 2-3
+	# stops trying to catch up, so the world runs slow instead of freezing. See
+	# the registry note in debug/tunables.gd.
+	Engine.max_physics_steps_per_frame = Tunables.get_int("physics_catchup_steps")
 	var recording: bool = _whale_diag != null and _whale_diag.enabled
 	_sys_timing = sys_timing_forced or recording
 	_step_systems(delta)

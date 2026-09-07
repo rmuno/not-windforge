@@ -1543,6 +1543,16 @@ func rebuild() -> void:
 	TickPerf.bill("rebuild " + perf_label(), t0)
 
 
+## Bill one phase of a rebuild and hand back a fresh stamp for the next — the
+## same shape as world._bill_dive_slice, and "in: " for the same reason (these
+## rows are already inside the `rebuild <body>` row; the probe prints them apart
+## and never sums them).
+func _bill_rebuild_phase(name: String, t0: int) -> int:
+	if TickPerf.on:
+		TickPerf.bill("in: rebuild " + name, t0)
+	return Time.get_ticks_usec()
+
+
 func _do_rebuild() -> void:
 	rebuild_count += 1
 	# Instrumentation: count every rebuild so the diagnostic can surface a
@@ -1576,7 +1586,14 @@ func _do_rebuild() -> void:
 	helm_cells.clear()
 	door_cells.clear()
 	repair_cells.clear()
+	# PHASE STAMPS. A rebuild is the biggest single thing a body does — measured
+	# at ~50 ms on a 3,600-cell hull and ~80 ms on a 10,000-cell kraken, which is
+	# three to five whole frames of hitch — and it is five different walks of the
+	# same grid. Each bills itself while a probe holds the stopwatch, so the next
+	# session does not have to guess which walk is the bill (debug/tick_perf.gd).
+	var t_ph := Time.get_ticks_usec()
 	_derive_prop_axes()
+	t_ph = _bill_rebuild_phase("prop axes", t_ph)
 	var smin := Vector2i(1 << 30, 1 << 30)
 	var smax := Vector2i(-(1 << 30), -(1 << 30))
 	for cell in blocks:
@@ -1628,7 +1645,9 @@ func _do_rebuild() -> void:
 		Vector2(smin) * CELL - Vector2.ONE * CELL * 0.5,
 		Vector2(smax - smin + Vector2i.ONE) * CELL)
 
+	t_ph = _bill_rebuild_phase("grid walk", t_ph)
 	_rebuild_glyph_clusters()
+	t_ph = _bill_rebuild_phase("glyph clusters", t_ph)
 
 	_wash_props.clear()
 	for cluster in _glyph_clusters:
@@ -1655,8 +1674,11 @@ func _do_rebuild() -> void:
 	if not _has_core:
 		thrust_input = Vector2.ZERO
 
+	t_ph = _bill_rebuild_phase("aggregate", t_ph)
 	_rebuild_collider()
+	t_ph = _bill_rebuild_phase("collider", t_ph)
 	_sync_skin_sectors()
+	t_ph = _bill_rebuild_phase("skin", t_ph)
 
 	# rebuild() is called exactly when the grid changes structurally, which is
 	# exactly when clients need the new grid. One hook covers building, mining,
@@ -2439,6 +2461,15 @@ func unsupported_weight() -> float:
 ## the near third of the jet.
 const WASH_RANGE_CELLS := 8.0   ## jet length, in cells (×scale_unit)
 const WASH_ACCEL := 2600.0      ## px/s² at full power (×scale_unit)
+
+
+## Does this body have propellers at all? The answer `wash_accel_at` opens with,
+## made askable from OUTSIDE — so a caller sweeping every ship in the sky can
+## build its list once instead of calling into a body per shell per tick (see
+## Shot._ships_with_wash: a creature has no props, and at the Dive floor most of
+## the sky is creature).
+func has_wash() -> bool:
+	return not _wash_props.is_empty()
 
 
 func wash_accel_at(global_pos: Vector2) -> Vector2:
