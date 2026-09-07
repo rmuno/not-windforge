@@ -3963,7 +3963,8 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		await world.get_tree().physics_frame
 		_ok(pl.board(starter, starter.helm_cells[0]), "boarded the starter at its helm")
 		await world.get_tree().physics_frame
-		var x0: float = starter.global_position.x
+		var berth: Vector2 = starter.global_position
+		var x0: float = berth.x
 		Input.action_press("ship_right")
 		for i in 240:
 			await world.get_tree().physics_frame
@@ -3972,15 +3973,34 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		# 800 -> 4000 (owner 2026-09-01, "extremely slow in every way"): the root
 		# was the air the props breathe, strangled in the thin start air (0.15).
 		# The floor is `dive_air_floor` now (0.85, and LIFT feels it too), and the
-		# same hull covers ~11,700 px here — `tools/lateral_probe.gd` measures
-		# 5,030 px/s peak, a ring tile in 3 s. This bound GUARDS the floor: drop
-		# it back toward 0.15 and this reddens instead of the owner finding out
-		# in play.
-		_ok(dx > 4000.0,
+		# same hull covered ~11,700 px here.
+		# 4000 -> 9000 (2026-09-07): propellers are rated 1.5x
+		# (BlockDB.PROP_STRENGTH), so the old bound encoded the old force. THIS
+		# CHECK, measured both ways on the one build: 19,874 px with the dial at 1.0,
+		# 29,811 px at the shipped 1.5. (`tools/lateral_probe.gd` on seed 565218463
+		# says the same thing in speed — peak 7,884 -> 11,797 px/s, so a 9,216 px
+		# ring tile is crossed in 0.78 s instead of 1.17 s.)
+		# The bound keeps the OLD MARGIN and deliberately sits UNDER the 1.0 figure:
+		# its job is still to guard THE AIR FLOOR — drop the floor back toward 0.15
+		# and this reddens instead of the owner finding out in play — not to be a
+		# second, weaker copy of the dial's own gate. What pins the 1.5 itself is
+		# `run_tests._test_prop_strength_is_the_base_dial`.
+		_ok(dx > 9000.0,
 			"four seconds of full right moves the starter briskly (%.0f px)" % dx)
 		_ok(starter.power_supply() >= starter.active_draw() * 0.95,
 			"...without browning out (supply %.0f vs draw %.0f)"
 				% [starter.power_supply(), starter.active_draw()])
+		# BACK TO THE BERTH BEFORE ANYTHING VERTICAL IS MEASURED (2026-09-07).
+		# Everything below reads the hull where the burn above left it, and the burn
+		# is now 50 % longer (props are rated 1.5x): a hull that ends downrange
+		# INSIDE something reads 0 px/s of sink, 0 px/s in the vacuum and 0 px/s on a
+		# full DOWN stick — three claims about the air, all failing, none of them
+		# about the air. Seen twice in four runs before this line went in, and it was
+		# a coin-flip on the terrain roll long before the props got stronger. The
+		# berth was clear enough to moor a ship in, so it is the honest place to
+		# measure a hull hanging in open air.
+		_park_at(starter, pl, berth)
+		await world.get_tree().physics_frame
 
 		# THE AIR FLOOR IS REAL AUTHORITY (DESIGN_DIVE_REVIEW §1.3). Measured on
 		# this hull at the deck: weight 501,652,476, buoyancy at the shipped

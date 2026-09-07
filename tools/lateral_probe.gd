@@ -19,6 +19,14 @@ func _initialize() -> void:
 	var fleet = world.get("fleet")
 	var pl = world.get("player")
 	print("\n=== LATERAL PROBE (the starter, in a run) ===")
+	# ONE BINARY, ONE SKY, TWO DIAL SETS — the dive_probe idiom (v0.160.0)
+	# brought here, so a thrust A/B is two runs of one build rather than two
+	# checkouts whose other differences ride along in the numbers:
+	#   -- --seed 565218463 --lever prop_strength=1.0
+	var pinned := _int_arg("--seed")
+	if pinned != 0:
+		world.call("pin_dive_seed", pinned)
+	_apply_lever_args()
 	world.call("begin_dive")
 	for i in 10:
 		await world.get_tree().physics_frame
@@ -107,3 +115,32 @@ LOFT:   %d blocks, %.0f px wide, mass %.0f (boarded %s)" % [
 			loft.global_position.x - lx0, peak2,
 			loft.get("_total_hthrust"), loft.linear_damp])
 	quit()
+
+
+## `--seed N` — user args survive `--script` after a bare `--`.
+func _int_arg(name: String) -> int:
+	var args := OS.get_cmdline_user_args()
+	var i := args.find(name)
+	return int(args[i + 1]) if i >= 0 and i + 1 < args.size() else 0
+
+
+## `--lever id=value`, repeatable: set F2 levers before the run opens. Prints
+## what it set — a probe run is only quotable with its conditions printed.
+func _apply_lever_args() -> void:
+	var args := OS.get_cmdline_user_args()
+	var set_line := ""
+	for i in args.size():
+		if String(args[i]) != "--lever" or i + 1 >= args.size():
+			continue
+		var pair := String(args[i + 1]).split("=", true, 1)
+		if pair.size() != 2:
+			continue
+		var id := pair[0]
+		if Tunables.def(id).is_empty():
+			print("LEVERS: no such lever '%s' — ignored" % id)
+			continue
+		var value: Variant = pair[1].to_lower() in ["1", "true", "on"] \
+			if String(Tunables.def(id)["kind"]) == "bool" else float(pair[1])
+		set_line += "%s=%s " % [id, str(Tunables.set_value(id, value))]
+	if set_line != "":
+		print("LEVERS: %s(everything else at its shipped default)" % set_line)

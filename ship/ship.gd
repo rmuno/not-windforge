@@ -2426,7 +2426,12 @@ func _tick_physics(delta: float) -> void:
 
 	var ratio := _power_ratio()
 
-	var prop_norm := _fp_norm(BlockDB.Type.PROPELLER)
+	# Footprint normalisation × the PROP STRENGTH dial (BlockDB.PROP_STRENGTH,
+	# 1.5 since 2026-09-07). This one local is the whole propulsion gain: the
+	# hover capability below and BOTH axes' forces read it, and nothing else
+	# does — `active_draw()` derives its own `_fp_norm`, so a stronger prop is
+	# not a hungrier one. The Dive's `thrust` card multiplies on top of it.
+	var prop_norm := _fp_norm(BlockDB.Type.PROPELLER) * Tunables.get_num("prop_strength")
 	var v_input := thrust_input.y
 	if _hover_engaged:
 		var capability := _total_vthrust * prop_norm * ratio * density * scale_unit
@@ -4812,12 +4817,12 @@ func power_supply() -> float:
 ## PICTURE of the real values, never a second computation that can drift from
 ## flight. All spatial quantities (com) are ship-LOCAL px, so the overlay draws
 ## them in the ship's frame. Thrust totals carry the same footprint
-## normalisation flight uses (a component's rating at this scale), so the arrows
+## normalisation flight uses AND the prop strength dial, so the arrows
 ## are proportional to the authority the ship actually has.
 func engineering_readout() -> Dictionary:
 	var draw := active_draw()
 	var supply := power_supply()
-	var prop_norm := _fp_norm(BlockDB.Type.PROPELLER)
+	var prop_norm := _fp_norm(BlockDB.Type.PROPELLER) * Tunables.get_num("prop_strength")
 	return {
 		"com": center_of_mass,
 		"lift_ratio": lift_ratio(),
