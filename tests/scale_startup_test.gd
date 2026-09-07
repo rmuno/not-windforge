@@ -2883,20 +2883,6 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 		% [band_px, span_px / float(Tunables.get_int("dive_ladder_rungs")),
 			sink_px, wall_px])
 
-	# AN EMPTY COLUMN TO FLY IT IN. The dive world has islands at every altitude
-	# and a hull parked inside one is measuring stone, not wind — and since
-	# ruling 8 a hull inside one is also SHELTERED, which would read as "the
-	# ladder is off".
-	var air_at: Vector2 = await _open_air(w, terrain, pl, Vector2(cx, calm_at))
-	var lane_x := air_at.x
-	# ...but `_open_air` walks EAST in 9,000 px steps and the sinking column is
-	# only 134,800 px wide, so the lane it found has to be re-checked: a point
-	# that walked out of the column is a point with no ladder in it.
-	var lane_hit: Dictionary = w.call("dive_ladder_at", Vector2(lane_x, calm_at))
-	_ok(String(lane_hit.get("part", "")) == "calm",
-		"...found %0.f px of empty air still inside the calm (%s)"
-			% [lane_x - cx, lane_hit.get("part", "")])
-
 	# THE HULL: the run's own COMMITTED starter, flown from the helm through the
 	# real input map. A candidate on the deck has no driver and no power.
 	var cand: Ship = null
@@ -2929,6 +2915,44 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 		"the committed starter's β is %.2f — BETA_REF is %.2f (mass %.0f, beam %.0f px)"
 			% [beta, DiveRun.BETA_REF, hull.mass, hull.solid_bounds.size.x])
 
+	# AN EMPTY COLUMN TO FLY IT IN, CERTIFIED BY FLYING IN IT. The dive world has
+	# islands at every altitude — that is the whole point of ruling 8 — and a hull
+	# parked inside one measures stone, not wind: it reads 0 px/s of carry, which
+	# is indistinguishable from "the ladder is off" and is exactly how this check
+	# failed one run in three. A terrain scan alone is not enough either, because
+	# an UNSTREAMED chunk answers AIR to `is_solid` and then materializes rock
+	# under the measurement. So the lane is chosen the only way that cannot lie:
+	# put the hull there, let the sky have it for half a second, and keep the
+	# first candidate the ladder actually MOVES. All candidates stay inside the
+	# sinking column (its half-width is 65,000 px) so the answer is always a lane
+	# in the calm and never a corridor.
+	var lane_x := cx
+	var lane_found := false
+	var tried := 0
+	for dx in [0.0, 14000.0, -14000.0, 28000.0, -28000.0, 42000.0, -42000.0]:
+		var try_x := cx + float(dx)
+		if String((w.call("dive_ladder_at", Vector2(try_x, calm_at))
+				as Dictionary).get("part", "")) != "calm":
+			continue
+		tried += 1
+		await _drain_streaming(terrain, 9000.0, Vector2(try_x, calm_at), 9000.0)
+		_park_at(hull, pl, Vector2(try_x, calm_at))
+		await w.get_tree().physics_frame
+		for i in 30:
+			await w.get_tree().physics_frame
+		if not is_instance_valid(hull):
+			break
+		if absf(hull.linear_velocity.y) > sink_px * 0.4:
+			lane_x = try_x
+			lane_found = true
+			break
+	_ok(lane_found,
+		"a lane of empty calm to fly in, %.0f px off the column's centre line (%d tried)"
+			% [lane_x - cx, tried])
+	if not lane_found or not is_instance_valid(hull):
+		_hand_back_the_sky(w, pl, levers, body_was)
+		return
+
 	# --- 2. RULING 5: THE CALM CARRIES YOU DOWN ---------------------------
 	# The rate controller station-keeps relative to the AIR (`Ship`: `v_up` is
 	# measured against `wind.y`), so a neutral stick inside a moving rectangle
@@ -2958,6 +2982,39 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 	_ok(driven > carried * 1.5,
 		"...and a full DOWN stick OUTRUNS the carry: %.0f px/s against %.0f (%.2f×)"
 			% [driven, carried, driven / maxf(carried, 1.0)])
+
+	# --- 2b. A WALL IS AN AIRSTREAM TOO, AND THE HULL RIDES IT ------------
+	# HERE, BEFORE THE GRIND, and that ordering is this check's own scar: two
+	# seconds of the shipped grind chews 500 hp out of the plating and takes
+	# GASBAGS with it, so a hull measured in a wall AFTER the toll is a hull that
+	# can no longer hold altitude — it read 2,175 px/s where the field says 1,435
+	# and the failure looked like a wind bug. Grind still off from the carry.
+	var col_half: float = float(w.call("_dive_tile_w")) \
+		* float((w.get("_dive_ladder_conf") as Dictionary).get("cw", 2.0))
+	var wall_x := lane_x
+	for probe_x in [cx - col_half + band_px * 0.5, cx + col_half - band_px * 0.5]:
+		var ph: Dictionary = w.call("dive_ladder_at", Vector2(float(probe_x), calm_at))
+		if String(ph.get("zone", "")) == "band":
+			wall_x = float(probe_x)
+			break
+	var wall_hit: Dictionary = w.call("dive_ladder_at", Vector2(wall_x, calm_at))
+	_ok(String(wall_hit.get("zone", "")) == "band",
+		"the sinking column's wall is %.0f px off its centre line (%s)"
+			% [wall_x - cx, wall_hit.get("part", "")])
+	_park_at(hull, pl, Vector2(wall_x, calm_at))
+	await w.get_tree().physics_frame
+	for i in 90:
+		await w.get_tree().physics_frame
+	var vy_wall: float = hull.linear_velocity.y if is_instance_valid(hull) else 0.0
+	# Compared against the FIELD at that point rather than a constant: `wall_x`
+	# is whichever wall the probe found (the up-wall if an island stood in the
+	# down-wall), and both answers are legitimate. What is asserted is that the
+	# hull goes where the composed vector says it goes.
+	var wall_field: Vector2 = w.call("dive_ladder_wind_at", Vector2(wall_x, calm_at), beta)
+	_ok(absf(vy_wall - wall_field.y) < maxf(absf(wall_field.y) * 0.35, 250.0),
+		"a stalled hull in the %s wall goes where the wall says: %.0f px/s against the field's %.0f"
+			% [wall_hit.get("part", "?"), vy_wall, wall_field.y])
+
 
 	# --- 3. ...AND OUT THROUGH THE BOTTOM BAND, BILLED FOR IT -------------
 	# Parked just above the bottom band with the stick hard down, at the SHIPPED
@@ -3008,18 +3065,6 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 	# costs `sites × dive_seal_grind`. Measured over two seconds rather than
 	# asserted from the constants, because the site count comes off a live beam.
 	# THE ASSISTANT IS AWAY: `repair_cell` refunds ~150 hp/s into the pool.
-	var col_half: float = float(w.call("_dive_tile_w")) \
-		* float((w.get("_dive_ladder_conf") as Dictionary).get("cw", 2.0))
-	var wall_x := lane_x
-	for probe_x in [cx - col_half + band_px * 0.5, cx + col_half - band_px * 0.5]:
-		var ph: Dictionary = w.call("dive_ladder_at", Vector2(float(probe_x), calm_at))
-		if String(ph.get("zone", "")) == "band":
-			wall_x = float(probe_x)
-			break
-	var in_wall: Dictionary = w.call("dive_ladder_at", Vector2(wall_x, calm_at))
-	_ok(String(in_wall.get("zone", "")) == "band",
-		"the sinking column's wall is %.0f px off its centre line (%s)"
-			% [wall_x - cx, in_wall.get("part", "")])
 	_park_at(hull, pl, Vector2(wall_x, calm_at))
 	hull.hull_integrity = hull.hull_integrity_max
 	await w.get_tree().physics_frame
@@ -3095,19 +3140,8 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 	_ok(up_wall.y < down_wall.y,
 		"...while the UP-wall only slows one (%.0f px/s against the down-wall's %.0f, carry %.0f)"
 			% [up_wall.y, down_wall.y, sink_px])
-	# ONE FLOWN CONFIRMATION, in the wall the grind check already certified as
-	# open air: a stalled hull put in the down-wall really does sink faster than
-	# the stack, so the field above is not arithmetic about a hull that would
-	# behave some other way.
-	_park_at(hull, pl, Vector2(wall_x, calm_at))
-	await w.get_tree().physics_frame
-	for i in 90:
-		await w.get_tree().physics_frame
-	var vy_wall: float = hull.linear_velocity.y if is_instance_valid(hull) else 0.0
-	var wall_hit: Dictionary = w.call("dive_ladder_at", Vector2(wall_x, calm_at))
-	_ok(vy_wall > sink_px * 1.05 or String(wall_hit.get("part", "")) == "right",
-		"...and a stalled hull in the %s wall is carried at %.0f px/s, not held (stack %.0f)"
-			% [wall_hit.get("part", "?"), vy_wall, sink_px])
+	# ...and §2b already flew a stalled hull in one of these walls, so the vectors
+	# above are not arithmetic about a hull that would behave some other way.
 
 	# --- 6. RULING 9: EVERYTHING PAYS THE WALLS, AND A CLEAR BUYS TEMPO ---
 	# The seal's own-depth exemption is gone with the fixed bands it was written
