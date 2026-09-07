@@ -161,7 +161,7 @@ const _REGISTRY := [
 		"tip": "On, the boss's second phase pulls everything nearby toward its mouth. Off silences the inhale AND its tell; the phases and the phase-3 retreat stay."},   # KrakenAI._breath_armed
 	{"id": "dive_breath_mult", "label": "Breath strength", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 3.0, "step": 0.05,
-		"tip": "Multiplier on the inhale's airstream (672 px/s at the maw at 8x). Above ~1.4 it beats a full climb and starts to trap; 1.07 is the design's proposed 720."},   # world._dive_breath_at
+		"tip": "Multiplier on the inhale's airstream (528 px/s at the maw at 8x, measured at 34% stick authority). Above ~1.4 it beats what a starter's props deliver and traps; 1.36 is designer A's 720."},   # world._dive_breath_at
 	{"id": "dive_breath_period", "label": "Breath period", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 6.0, "min": 1.2, "max": 20.0, "step": 0.5,
 		"tip": "Seconds of one breath cycle: it rears for the first 1.2 s (the tell), then inhales for the rest. 1.2 or below makes the pull continuous."},   # KrakenAI.breath_pull
