@@ -2325,6 +2325,70 @@ func wash_accel_at(global_pos: Vector2) -> Vector2:
 	return out
 
 
+## WHERE THE DRAUGHT MEETS THIS BODY: the point of its own solid bounds nearest
+## `from` — its BACK when the emitter is above it, its flank when alongside.
+##
+## The wash sweep used to ask `wash_accel_at(body.global_position)`, and a
+## body's origin is half a body BELOW its own back (DESIGN_KRAKEN slice 5's open
+## item (b)): a whole half-body of the 1,024-px jet was spent reaching air the
+## animal was not standing in, and the design's ~2.7 g shove arrived as 0.17 g
+## net. The jet is a directional field, so the honest sample is the surface it
+## actually blows on — the same thing every "is it in the draught" question
+## means in the first place.
+##
+## MEASURED on one pinned sky (`dunk_probe -- --seed 892583619`): 0.17 g -> 1.22 g
+## net while the jet is on the animal, and 13.40 s -> 11.95 s to the core. FEWER
+## frames of contact (141 -> 20) buying a faster sink is the whole shape of it —
+## the old sample counted a long tail of feeble draught at the jet's far end,
+## where the new one lands near the strong end and actually moves the body.
+##
+## `from` IS THE PROP, not the emitting ship — pass `nearest_wash_prop`. A jet
+## starts at a propeller and only counts points inside that prop's own width
+## band (`half_width × 1.5`, ~192 px at 8×), so measuring toward a hull's ORIGIN
+## instead walks the sample sideways by however far that hull happens to draw
+## its lift columns from its origin — straight out of the band. (Measured: the
+## dunk went from 7.2 s to NEVER on that mistake.)
+##
+## ONE AXIS MOVES — the one the prop is mostly along — and the other keeps the
+## body's own origin, so the two cases that exist stay separate: a prop above
+## blows on the BACK directly under it, a prop alongside blows on the near
+## FLANK, and neither is ever traded for the other.
+##
+## AABB, not the grid: `solid_bounds` is derived at rebuild and is body-local px
+## already scaled (CODEMAP §2), so this is one clamp and no walk of an 11,000
+## cell dictionary in a per-frame sweep. Rotation is ignored for the same
+## reason — a creature's pose tilt is ±0.55 rad of cosmetic lean, and the sample
+## it moves stays on the body it is meant to be on.
+func wash_sample_toward(from: Vector2) -> Vector2:
+	var b := solid_bounds
+	if b.size == Vector2.ZERO:
+		return global_position
+	var rel := from - global_position
+	if absf(rel.x) >= absf(rel.y):
+		return global_position + Vector2(clampf(rel.x, b.position.x, b.end.x), 0.0)
+	return global_position + Vector2(0.0, clampf(rel.y, b.position.y, b.end.y))
+
+
+## THE GLOBAL CENTRE OF THE PROP NEAREST `pos` — where this ship's jet actually
+## comes from, and therefore the point a victim's surface has to be measured
+## toward (see `wash_sample_toward`). Its own origin when it has no props at all,
+## which is the old behaviour for anything that cannot blow anyway.
+##
+## Cheap by construction: `_wash_props` is one entry per propeller CLUSTER (a
+## handful even on a big hull), and the wash sweep only asks after its coarse
+## distance gate has already passed.
+func nearest_wash_prop(pos: Vector2) -> Vector2:
+	var best := global_position
+	var best_d := INF
+	for prop in _wash_props:
+		var at := to_global(prop["center"] as Vector2)
+		var d := at.distance_squared_to(pos)
+		if d < best_d:
+			best_d = d
+			best = at
+	return best
+
+
 ## Is anything blowing at all? A cheap gate for the world's per-frame wash
 ## sweep: a ship with no props, no power or no throttle open emits nothing, and
 ## most of the fleet is in that state most of the time.

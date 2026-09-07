@@ -1307,7 +1307,12 @@ func _check_the_dunk(w: Node, pl, terrain) -> void:
 		hull.thrust_input = Vector2(0.0, -1.0 if air > DUNK_KEEP_OFF else 0.0)
 		if air > DUNK_KEEP_OFF:
 			chasing += 1.0 / 60.0
-		if hull.wash_accel_at(beast.global_position) != Vector2.ZERO:
+		# Counted AT THE SAMPLE POINT the sweep itself uses — the animal's back
+		# since the sample-point fix, not its origin — or the instrumentation
+		# reports a jet the physics is not applying (it read 7 frames of 1,080
+		# while the dunk was working).
+		if hull.wash_accel_at(beast.wash_sample_toward(
+				hull.nearest_wash_prop(beast.global_position))) != Vector2.ZERO:
 			jet_frames += 1
 		await w.get_tree().physics_frame
 		_hold_body(pl, body_safe)
@@ -1631,6 +1636,9 @@ func _check_the_leviathan(w: Node, pl, run, cx: float, terrain) -> void:
 	boss.global_position = Vector2(cx, floor_y)
 	await w.get_tree().physics_frame
 
+	# --- 4b. THE BREATH ----------------------------------------------------
+	await _check_the_breath(w, pl, boss, roof, cpx)
+
 	# --- 5. THE WIN --------------------------------------------------------
 	# Through the REAL damage path: `damage_cell` is what a shell calls, it is
 	# what drains a living creature's shared pool, and it is what emits
@@ -1688,6 +1696,243 @@ func _check_the_leviathan(w: Node, pl, run, cx: float, terrain) -> void:
 		_ok(int(wallet.get("balance")) > wallet_before,
 			"...and it reached the permanent wallet (%d -> %d)"
 				% [wallet_before, int(wallet.get("balance"))])
+
+
+## THE BREATH, MEASURED ON THE REAL HULL (DESIGN_KRAKEN §7 slice 6; acceptance:
+## "stick authority inside the breath ≥ 25 %").
+##
+## `run_tests._test_the_breath` pins the model — the phases, the tell, the field,
+## the compose rule and the arithmetic of the acceptance. This is the half that
+## can only be answered at 8× with the shipped starter: what a FULL CLIMB
+## actually buys you inside a full inhale, through the rate controller, the air
+## density floor and the drag, none of which the arithmetic knows about.
+##
+## Everything the fight would otherwise contribute is levered off — the ring's
+## draft, the heave, the align, the wander and the grab — because a hull being
+## rammed measures a wrestle, and the wrestle is `tools/dive_probe.gd`'s job.
+func _check_the_breath(w: Node, pl, boss: Ship, roof: Rect2, cpx: float) -> void:
+	if boss == null or not is_instance_valid(boss):
+		return
+	print("\n    ~ THE BREATH (slice 6) ~")
+	# THE RUN HAS TO BE LIVE OR NONE OF THIS MEANS ANYTHING. `_tick_dive` returns
+	# on the first line when `outcome != ""`, so a run that ended earlier in this
+	# check stops stamping weather entirely and EVERY field reading below comes
+	# back 0 — six failures that all say "the breath does not blow" and none that
+	# say why. Named here so the cascade can never be mistaken for the model.
+	var run_now = w.get("dive")
+	_ok(run_now != null and String(run_now.get("outcome")) == "",
+		"the run is live when the breath is measured (outcome '%s')"
+			% (String(run_now.get("outcome")) if run_now != null else "no run"))
+	var ai = w.call("_whale_ai_for", boss)
+	_ok(ai is KrakenAI and bool(ai.get("breathes")),
+		"the floor's resident is armed to breathe (an ordinary hunter is not)")
+	if not (ai is KrakenAI):
+		return
+	var kai := ai as KrakenAI
+	Tunables.set_value("dive_zone_wind_mult", 0.0)
+	Tunables.set_value("whale_push_accel", 0.0)
+	Tunables.set_value("whale_align_accel", 0.0)
+	Tunables.set_value("kraken_wildness", 0.0)
+	Tunables.set_value("kraken_grab_dps", 0.0)
+	# THE BODY IS OUT OF THIS but NOT far out of it, and both halves are load-
+	# bearing. Several seconds of world run follow and the deep has no floor but
+	# the core, so a person left to stand at the floor falls out of the world and
+	# takes the run with them (`world._dive_perish`) — hence the re-stamp in
+	# every loop below. And the wake cull frees a listed hull a rung and a half
+	# from the PLAYER, so parking the body in the safe air at the top would cull
+	# the very hull this check is flying (it did; the measurement came back
+	# holding a freed node).
+	var body_was: Vector2 = pl.global_position
+	var safe := boss.global_position + Vector2(-14000.0, -6000.0)
+	_hold_body(pl, safe)
+
+	# --- P1: no breath while it still has its blood ------------------------
+	boss.shared_health = boss.shared_health_max
+	_ok(kai.breath_phase() == 1 and is_zero_approx(kai.breath_pull()),
+		"at a full pool it is the hunter and nothing is inhaling")
+
+	# --- P2: the tell, then the pull ---------------------------------------
+	boss.shared_health = boss.shared_health_max * 0.5
+	await w.get_tree().physics_frame
+	_ok(kai.breath_phase() == 2, "half its pool puts it in P2, the breath")
+	kai.set("_breath_t", 0.05)
+	_ok(kai.breath_telling() and is_zero_approx(kai.breath_pull()),
+		"the cycle opens REARING, with no pull behind it yet")
+	# Between attacks the rear is what the body holds (a heave in flight still
+	# wins the pose — see KrakenAI._pose_tilt_target), so the attack in progress
+	# is ended before the pose is read.
+	kai.call("_end_attack")
+	_ok(is_equal_approx(absf(kai._pose_tilt_target()), Ship.POSE_MAX),
+		"...and the rear is a HELD pose at the full %.2f rad, not a velocity read"
+			% Ship.POSE_MAX)
+	kai.set("_breath_t",
+		DiveRun.BREATH_TELL_SECONDS + DiveRun.BREATH_RAMP + 0.1)
+	_ok(not kai.breath_telling() and is_equal_approx(kai.breath_pull(), 1.0),
+		"and once the rear is over it inhales at full strength")
+
+	# --- THE FIELD, in world coordinates -----------------------------------
+	var maw: Vector2 = kai.maw_world()
+	var scale := float(w.get("world_scale"))
+	var full := DiveRun.BREATH_SPEED * scale
+	var below := maw + Vector2(0.0, 6000.0)
+	await w.get_tree().physics_frame       # let _dive_weather see this tick's pull
+	var air: Vector2 = w.call("dive_weather_at", below, 0)
+	_ok(air.y < 0.0 and is_equal_approx(air.length(), full),
+		"6,000 px under the maw the air runs UP toward it at %.0f px/s (full is %.0f)"
+			% [air.length(), full])
+	var far: Vector2 = w.call("dive_weather_at",
+		maw + Vector2(0.0, DiveRun.BREATH_REACH * scale + 1000.0), 0)
+	_ok(far.is_equal_approx(Vector2.ZERO),
+		"past the %.0f px reach there is no breath at all (%.0f px/s)"
+			% [DiveRun.BREATH_REACH * scale, far.length()])
+	# IT DOES NOT INHALE ITSELF (designer A). The same point, asked FOR the boss.
+	var selfward: Vector2 = w.call("dive_weather_at", below, boss.get_instance_id())
+	_ok(selfward.is_equal_approx(Vector2.ZERO),
+		"the source is excluded from its own breath — a maw cannot swallow itself")
+	# SYMMETRIC: the depth's own pickets ride it, because the run stamps the
+	# weather on every body it is flying and the breath is now part of that.
+	var picket = w.call("_dive_spawn_picket", "hulk", maw + Vector2(3000.0, 6000.0))
+	if picket != null and is_instance_valid(picket):
+		for i in 4:
+			await w.get_tree().physics_frame
+			_hold_body(pl, safe)
+		var toward: Vector2 = (maw - picket.global_position).normalized()
+		var wind: Vector2 = picket.get("extra_wind")
+		_ok(wind.length() > 0.0 and wind.normalized().dot(toward) > 0.9,
+			"a picket in the breath is stamped with it too (%.0f px/s toward the maw)"
+				% wind.length())
+		picket.queue_free()
+	else:
+		_ok(false, "a picket could be put in the breath")
+
+	# --- THE ACCEPTANCE: ≥ 25 % STICK AUTHORITY ----------------------------
+	# The shipped starter, listed in the run so the weather reaches it, holding a
+	# FULL CLIMB from the same spot twice: once in the inhale, once with the F2
+	# lever off. The ratio is the authority the design asks for.
+	#
+	# THE WORST CASE IS A MAW BELOW YOU — the inhale then pulls exactly against
+	# the stick, and any other geometry only spends part of itself on the
+	# vertical. The den has a roof one body height over it, so for this
+	# measurement alone the boss is dropped into the open air BELOW the den
+	# (there is 21,937 px of it) and put back afterwards; a hull parked over the
+	# den itself would be measuring a climb into stone.
+	#
+	# The period goes to its "continuous" position too (a cycle no longer than
+	# the tell): a rear arriving mid-measurement would read as a lull in the
+	# wind, and the rhythm is pinned by `run_tests._test_the_breath` already.
+	var den_was := boss.global_position
+	Tunables.set_value("dive_breath_period", DiveRun.BREATH_TELL_SECONDS)
+	boss.global_position = den_was + Vector2(0.0, 9000.0)
+	boss.linear_velocity = Vector2.ZERO
+	await w.get_tree().physics_frame
+	maw = kai.maw_world()
+	var over_maw := maw - Vector2(0.0, 6000.0)
+	var hull: Ship = w.get("fleet").call("spawn_ship_from_cells",
+		ShipLayout.upscale_cells(ShipLayout.load_cells("res://ships/starter.ship"), 8),
+		over_maw, 0, 0.0, scale, 0)
+	if hull == null or not is_instance_valid(hull):
+		_ok(false, "a starter could be flown into the breath")
+		boss.global_position = den_was
+		return _reset_breath_levers()
+	(w.get("_dive_surged") as Array).append(hull.get_instance_id())
+	var taxed := await _climb_in_the_breath(w, pl, safe, hull, over_maw)
+	Tunables.set_value("dive_breath", false)
+	await w.get_tree().physics_frame
+	var free_climb := await _climb_in_the_breath(w, pl, safe, hull, over_maw)
+	Tunables.set_value("dive_breath", true)
+	Tunables.reset("dive_breath_period")
+	boss.global_position = den_was
+	boss.linear_velocity = Vector2.ZERO
+	var authority := taxed / maxf(free_climb, 0.001)
+	print("      ~ a full climb: %.0f px/s in still air, %.0f px/s inside the inhale"
+		% [free_climb, taxed])
+	_ok(free_climb > 0.0 and authority >= 0.25,
+		"STICK AUTHORITY INSIDE THE BREATH: %.0f %% of a free climb (the design asks >= 25 %%)"
+			% (authority * 100.0))
+	_ok(authority < 1.0,
+		"...and the inhale is a real tax, not decoration (%.0f px/s of climb lost)"
+			% (free_climb - taxed))
+	(w.get("_dive_surged") as Array).erase(hull.get_instance_id())
+	hull.queue_free()
+	await w.get_tree().physics_frame
+
+	# --- P3: THE SINK UNDER THE ROOF ---------------------------------------
+	boss.shared_health = boss.shared_health_max * 0.2
+	_ok(kai.breath_phase() == 3 and is_zero_approx(kai.breath_pull()),
+		"under 30 % it stops inhaling — P3 is the sink, and the throat is the door")
+	var den: Vector2 = kai.den_anchor
+	_ok(den != Vector2.INF, "it knows where its den is")
+	# Displaced out from under the slab and BELOW it — where a boss that came up
+	# to hunt you actually is. (Never above: the roof is up there, and dropping
+	# 28,096 blocks into stone measures a crush, not a withdrawal.)
+	boss.global_position = den + Vector2(8000.0, 6000.0)
+	boss.linear_velocity = Vector2.ZERO
+	var was := boss.global_position.distance_to(den)
+	for i in 90:
+		await w.get_tree().physics_frame
+		_hold_body(pl, safe)
+		if not is_instance_valid(boss):
+			break
+	if is_instance_valid(boss):
+		var now := boss.global_position.distance_to(den)
+		_ok(now < was,
+			"...and it withdraws to the den under its roof (%.0f -> %.0f px)"
+				% [was, now])
+		boss.global_position = den
+		boss.linear_velocity = Vector2.ZERO
+	else:
+		_ok(false, "...and it withdraws to the den under its roof")
+
+	# --- THE ROOF STILL STOPS THE DUNK -------------------------------------
+	# What changed this round is WHERE the wash is sampled (the victim's surface,
+	# not its origin), which moves the jet's bite HALF A BODY closer — so the
+	# roof's clearance is re-asserted against the back rather than the origin.
+	var jet := Ship.WASH_RANGE_CELLS * Ship.CELL * scale
+	var back := boss.global_position.y + boss.solid_bounds.position.y
+	var from_slab := back - roof.position.y   # a keel resting ON the slab's top
+	_ok(from_slab > jet,
+		"a hull standing on the roof is %.0f px from the boss's BACK — past the %.0f px jet"
+			% [from_slab, jet])
+	_ok(roof.size.y >= 4.0 * cpx and from_slab > jet + roof.size.y * 0.5,
+		"...with the slab itself (%.0f px) inside that gap, so the dunk stays a decision"
+			% roof.size.y)
+	boss.shared_health = boss.shared_health_max
+	_reset_breath_levers()
+	_hold_body(pl, body_was)
+	await w.get_tree().physics_frame
+
+
+## Hold a full CLIMB for a second and a half from `at`, and report the vertical
+## speed it settles at (px/s up). Re-parked each time so the two readings start
+## from the same place in the field; the person is held clear throughout, as
+## everywhere else in this check.
+func _climb_in_the_breath(w: Node, pl, safe: Vector2, hull: Ship,
+		at: Vector2) -> float:
+	hull.global_position = at
+	hull.linear_velocity = Vector2.ZERO
+	await w.get_tree().physics_frame
+	var sum := 0.0
+	var n := 0
+	for i in 90:
+		hull.thrust_input = Vector2(0.0, 1.0)   # a full climb, every frame
+		await w.get_tree().physics_frame
+		_hold_body(pl, safe)
+		if not is_instance_valid(hull):
+			return 0.0
+		if i >= 60:                              # the last half second only
+			sum += -hull.linear_velocity.y
+			n += 1
+	hull.thrust_input = Vector2.ZERO
+	return sum / maxf(float(n), 1.0)
+
+
+func _reset_breath_levers() -> void:
+	Tunables.reset("dive_zone_wind_mult")
+	Tunables.reset("whale_push_accel")
+	Tunables.reset("whale_align_accel")
+	Tunables.reset("kraken_wildness")
+	Tunables.reset("kraken_grab_dps")
+	Tunables.reset("dive_breath")
 
 
 ## THE GROUND IS ALREADY THERE WHEN YOU ARRIVE (owner 2026-09-02: *"the borders
