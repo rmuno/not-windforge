@@ -3950,7 +3950,8 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		await world.get_tree().physics_frame
 		_ok(pl.board(starter, starter.helm_cells[0]), "boarded the starter at its helm")
 		await world.get_tree().physics_frame
-		var x0: float = starter.global_position.x
+		var berth: Vector2 = starter.global_position
+		var x0: float = berth.x
 		Input.action_press("ship_right")
 		for i in 240:
 			await world.get_tree().physics_frame
@@ -3976,6 +3977,17 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		_ok(starter.power_supply() >= starter.active_draw() * 0.95,
 			"...without browning out (supply %.0f vs draw %.0f)"
 				% [starter.power_supply(), starter.active_draw()])
+		# BACK TO THE BERTH BEFORE ANYTHING VERTICAL IS MEASURED (2026-09-07).
+		# Everything below reads the hull where the burn above left it, and the burn
+		# is now 50 % longer (props are rated 1.5x): a hull that ends downrange
+		# INSIDE something reads 0 px/s of sink, 0 px/s in the vacuum and 0 px/s on a
+		# full DOWN stick — three claims about the air, all failing, none of them
+		# about the air. Seen twice in four runs before this line went in, and it was
+		# a coin-flip on the terrain roll long before the props got stronger. The
+		# berth was clear enough to moor a ship in, so it is the honest place to
+		# measure a hull hanging in open air.
+		_park_at(starter, pl, berth)
+		await world.get_tree().physics_frame
 
 		# THE AIR FLOOR IS REAL AUTHORITY (DESIGN_DIVE_REVIEW §1.3). Measured on
 		# this hull at the deck: weight 501,652,476, buoyancy at the shipped
