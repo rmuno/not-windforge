@@ -30,45 +30,108 @@ extends SceneTree
 ## body fell and died. Every seconds-per-depth number past depth 2, and the whole
 ## kraken scorecard, was measuring that keyboard habit and not the game.
 ##
-## What replaced it, in three rules (`_fly`):
-##   1. LOOK BEFORE YOU FALL. Three rays down the beam from the keel every tick,
-##      `dive_rate_max × LOOKAHEAD` long. The commanded descent is
-##      `(clearance - pad) / LOOKAHEAD` — so a clear column asks for full stick
-##      and a closing one asks for less, continuously. The stick is on/off, so
-##      the rate is flown bang-bang against the hull's real `linear_velocity.y`.
-##   2. EASE ONTO NOTHING. Inside the pad the pilot presses UP and climbs off.
-##      A landing is a WAYPOINT, not a mooring (`_dive_nudge_if_stuck` says so
-##      and `depth_of` proves it: a rung registers half a rung ABOVE its slab),
-##      so the lane it aims at is beside the slab, on the side the ladder leans
-##      next — the slalom flown, not the rock rammed.
-##   3. FIGHT BACK. A volley at the nearest hostile inside max-zoom sight every
-##      `turret_cadence`, aimed at a kraken's MEAT and at anything else's middle.
-##      Without it every kill and integrity number read as "the pilot never shot".
-##   4. GIVE THE WILDLIFE ROOM (`_dodge_wildlife`). Not a habit — a MEASURED
-##      bill: one neutral whale gliding into the hull at descent speed cost
-##      39,978 damage in a single frame and emptied the whole 3,000 integrity
-##      pool. Krakens and hostile hulls are NOT dodged; a hunter reaching you is
-##      the measurement, and a picket runs you down whatever you do.
+## THAT PILOT STILL FLEW INTO ROCK (v0.161.0). Measured on the three scorecard
+## seeds it ended `terrain 100 %` of the hull bill every time — depth 2, 2 and 3,
+## crash bills of 2.1 M, 0.7 M and 5.8 M — so depths 4-8, the kraken half of the
+## ladder and the Leviathan were all UNMEASURED, and DESIGN_KRAKEN slice 7 waits
+## on exactly those numbers. Two things were wrong and both were geometry:
+##
+##   * the lookahead was a ray down the CENTRE LINE of a 1,536 × 1,152 px body.
+##     A hull sliding out of a blocked column while still sinking travels
+##     DIAGONALLY at ~1,400 px/s and meets the slab with its SHOULDER; a centre
+##     ray passes through the gap the shoulder does not fit through. Every crash
+##     log ends with `closest the keel ever came to rock: 0 px` — the pilot never
+##     saw it at all;
+##   * the descent rate came from a fixed two-second lookahead rather than from
+##     what this hull can actually stop out of, so the pad was fiction: no term
+##     in it was the hull's authority, its mass, its air or its damage.
+##
+## What flies it now, in five rules (`_fly`, arithmetic in `tools/pilot_nav.gd`):
+##   1. LOOK WHERE YOU ARE GOING. A FAN of rays — five origins across the hull's
+##      skin, three directions each — down the heading, down the velocity vector
+##      and straight down, every tick. Rays start on the hull's SURFACE, not at
+##      its centre: a clearance measured from the middle of this body is
+##      three-quarters of a hull optimistic, which is the size of the pad itself.
+##   2. FLY THE SPEED THE ROOM ALLOWS. `PilotNav.safe_speed(room)` is the exact
+##      inverse of `stopping_distance(v)`, and the deceleration in it is
+##      MEASURED off this hull this run (`_measure_brake`: pressing UP commands
+##      `+climb_rate_max`, so the largest deceleration ever seen while the up
+##      stick was held is this hull's real authority, brownout and battle damage
+##      included), with a 30 % margin. The stick is on/off, so the commanded rate
+##      is flown bang-bang against the hull's own `linear_velocity.y`.
+##   3. GO AROUND, DON'T PUSH THROUGH. Seven candidate headings are scored every
+##      tick by `PilotNav.heading_score`, in which room MULTIPLIES the score — so
+##      a blocked heading is worth zero however well it points at the next rung,
+##      and the pilot can never talk itself into a wall because the wall lies
+##      toward the lane. Sideways has its own stopping distance and no rate
+##      controller to fly it, so when the room on that side runs short the
+##      lateral stick REVERSES (thrust is the only sideways brake a hull has).
+##   4. NOTICE WHEN NOTHING IS WORKING. If the deepest y reached has not improved
+##      in STUCK_SECS the column is a dead end: climb out for ESCAPE_SECS, commit
+##      to the OTHER side of the next slab (`_lane_flip`) and re-plan. The
+##      seconds spent doing it are REPORTED per rung — a pilot that spends the
+##      run escaping is measuring itself again, and the reader has to see that.
+##   5. FIGHT BACK, AND GIVE THE WILDLIFE ROOM — unchanged from v0.149.0. A
+##      volley at the nearest hostile inside max-zoom sight every
+##      `turret_cadence`, aimed at a kraken's MEAT and anything else's middle;
+##      and a bubble kept off everything except krakens, because one neutral
+##      whale gliding into the hull at descent speed cost 39,978 damage in a
+##      single frame. A hunter reaching you is the thing this probe TIMES, so
+##      krakens are never dodged.
 ##
 ## Names no `class_name` as a type on purpose: doing that inside a --script file
 ## compiles that script before the autoloads exist (CODEMAP §4).
 
 const STEP := 1.0 / 60.0
 
-## How many seconds of the current descent the pilot looks ahead. The vertical
-## controller is a P loop with HOVER_DAMP 2.0/s (τ = 0.5 s), so two seconds of
-## lookahead is ~4× the stopping distance it actually needs — deliberately fat,
-## because the thing being measured is the GAME and a probe that clips rock is
-## measuring itself.
-const LOOKAHEAD := 2.0
-## Air the pilot keeps under the keel at all times, in ship cells (× world scale).
-## Inside it the answer is UP, never "a bit less down".
+## Air the pilot keeps around the hull at all times, in ship cells (× world
+## scale). Inside it the answer is "stop", never "a bit less of the same".
 const KEEL_PAD_CELLS := 8.0
-## How far to either side the lane probes look, in hull widths.
-const SIDE_STEP_W := 1.5
-## Once committed to sliding one way, hold it this long before re-deciding —
-## without it the pilot dithers on the crest of a slab it is trying to leave.
-const SLIDE_HOLD := 1.5
+## Seconds of command lag the pilot budgets for before its braking bites — the
+## reaction term of `PilotNav.stopping_distance`. A bang-bang stick decides on
+## one physics frame and is read on the next, and the props then spend a frame
+## or two turning the descent's momentum around.
+const REACTION := 0.30
+## Rays across a fan's face, and how far to either side of the heading the fan
+## spreads. Five origins across a 1,536 px beam is one every ~350 px, which is
+## finer than any gap the hull could fit through anyway.
+const FAN_RAYS := 5
+const FAN_SPREAD := 0.38          ## radians, ~22°
+## THE CANDIDATE HEADINGS the pilot chooses between every tick: straight down,
+## two shallow diagonals, two sideways lanes that still sink, and two that climb
+## out to the side. Normalised at use.
+const HEADINGS := [
+	Vector2(0.0, 1.0), Vector2(-0.5, 1.0), Vector2(0.5, 1.0),
+	Vector2(-1.0, 0.45), Vector2(1.0, 0.45),
+	Vector2(-1.0, -0.35), Vector2(1.0, -0.35),
+]
+## How far a fan looks: the hull's own stopping distance with a margin, floored
+## so a stationary hull still sees the room it is about to move into.
+const HORIZON_MULT := 1.6
+const HORIZON_MIN_CELLS := 24.0
+## Scoring weights (`PilotNav.heading_score`) and the hold that stops the pilot
+## dithering on the crest of a slab it is trying to leave.
+const DOWN_WEIGHT := 0.75
+const LANE_WEIGHT := 0.35
+const HEADING_HOLD := 0.12
+const HEADING_HOLD_SECS := 1.5
+## Bang-bang dead band on the commanded descent rate, px/s.
+const RATE_HYST := 60.0
+## THE STUCK DETECTOR. If the deepest y reached has not improved by
+## STUCK_GAIN_PX inside STUCK_SECS the column the pilot chose is a dead end:
+## climb out for ESCAPE_SECS, commit to the OTHER side of the next slab, and
+## let the heading search start again from up there.
+const STUCK_GAIN_PX := 900.0
+const STUCK_SECS := 14.0
+const ESCAPE_SECS := 6.0
+## The deceleration the pilot assumes before it has measured any (px/s²), and
+## the margin it keeps off what it has measured.
+const DECEL_PRIOR := 500.0
+const DECEL_MARGIN := 0.7
+## A terrain contact EPISODE that bills more than this is a CRASH; anything less
+## is a graze. The per-depth crash count is the line that says whether the pilot
+## is flying the ladder or bouncing down it.
+const CRASH_HP := 500.0
 ## Hard stop, simulated seconds. The owner's design budget for a whole run is
 ## ten minutes; this is two minutes of slack on top so a run that overruns is
 ## REPORTED as an overrun rather than truncated into one.
@@ -81,6 +144,11 @@ const RUN_GUARD := 60.0 * 12.0
 ## anything it touches — before the autoloads exist (CODEMAP §4). This one
 ## touches nothing at all, so the preload is safe and the cache is irrelevant.
 const Score := preload("res://tools/combat_score.gd")
+## THE PILOT'S NAVIGATION ARITHMETIC, kept apart for the same reason and loaded
+## the same way: stopping distance, the ray fan's geometry and the heading score
+## decide whether the deep is ever REACHED, so "the pilot flew into rock" must
+## not be a possible reading of "the deep is unreachable".
+const Nav := preload("res://tools/pilot_nav.gd")
 
 var world: Node
 var fleet
@@ -187,6 +255,20 @@ var _ram_recent := 0.0
 var _ram_who := ""
 var terrain_hits := 0
 var ram_hits := 0
+## CRASHES, PER RUNG. `terrain_hits` counts every contact EPISODE, graze and
+## catastrophe alike, so a run that brushed a slab twice and a run that buried
+## itself in one print the same number. A crash is an episode that billed more
+## than CRASH_HP; the count is kept per depth because "the pilot cannot fly
+## depth 5" and "the pilot cannot fly at all" want different fixes.
+var crashes_d := {}         ## depth -> terrain episodes that billed over CRASH_HP
+var crashes_total := 0
+var _terrain_bill := 0.0    ## what the OPEN terrain episode has billed so far
+var crash_worst_d := {}     ## depth -> the biggest single episode bill there
+## ...and how many of those crashes the hull was already FALLING into (see
+## `falls`): a powerless hull hitting the floor is not a flying mistake, and it
+## is usually the biggest bill in the run.
+var crash_fall_d := {}
+var _fall_until := -1.0
 var _t := 0.0               ## the loop's clock, readable from the `damaged` handler
 ## Every single damage event over BIG_HIT, with what was touching the hull when
 ## it landed. One frame of hull-on-hull contact can bill five figures at 8×, and
@@ -224,6 +306,12 @@ var kraken_damage := 0.0
 var krakens_culled_alive := 0
 var krakens_perished := 0
 var kraken_seen := {}              ## depth -> distinct kraken bodies met at it
+## ...and the SAME TWO NUMBERS PER RUNG, so grab uptime prints at every depth
+## the run reached rather than once for the whole descent. A single run-wide
+## uptime cannot separate "the deep is unreadable" at depth 7 from "we barely
+## touched depth 5", which is exactly the distinction slice 7 is arguing over.
+var kgrab_d := {}                  ## depth -> frames a kraken had hold of us
+var kreach_d := {}                 ## depth -> frames a kraken was inside reach
 ## instance id -> the last pool we saw it with. A kraken that leaves this list
 ## without its pool having reached zero was freed alive.
 var _kraken_pools := {}
@@ -248,6 +336,7 @@ func _tally_krakens(t: float, depth: int, depth_started: float) -> void:
 	var hull = world.get("local_ship")
 	var brains: Dictionary = world.get("_whale_ais")
 	var touching := {}
+	var was_terrain := _terrain_recent > 0.0
 	_terrain_recent = maxf(0.0, _terrain_recent - STEP)
 	_ram_recent = maxf(0.0, _ram_recent - STEP)
 	if hull != null and is_instance_valid(hull):
@@ -325,7 +414,9 @@ func _tally_krakens(t: float, depth: int, depth_started: float) -> void:
 	_kraken_on_us = on_us
 	if in_reach:
 		kraken_reach_frames += 1
+		_bump(kreach_d, depth)
 	if holding:
+		_bump(kgrab_d, depth)
 		kraken_grab_frames += 1
 		kraken_hold += STEP
 		kraken_longest_hold = maxf(kraken_longest_hold, kraken_hold)
@@ -335,6 +426,28 @@ func _tally_krakens(t: float, depth: int, depth_started: float) -> void:
 		kraken_contact_frames += 1
 		if not kraken_first_contact.has(depth):
 			kraken_first_contact[depth] = t - depth_started
+	# THE TERRAIN EPISODE CLOSES HERE, one tail after the last contact — the only
+	# place that knows both that the contacts have stopped and which rung they
+	# happened on. Only the loop above can re-open it, so an episode that is
+	# still cold at the end of the tick is over.
+	if was_terrain and _terrain_recent <= 0.0:
+		_close_terrain_episode(depth)
+
+
+## One terrain contact episode is over: was it a CRASH or a graze?
+func _close_terrain_episode(depth: int) -> void:
+	if _terrain_bill >= CRASH_HP:
+		_bump(crashes_d, depth)
+		crashes_total += 1
+		crash_worst_d[depth] = maxf(float(crash_worst_d.get(depth, 0.0)), _terrain_bill)
+		# A HULL THAT WAS ALREADY FALLING did not fly into anything: it was
+		# carried into it by gravity with no stick left to argue. Without this
+		# split the biggest bill in a run reads as a piloting error, when the
+		# piloting error (if any) was thirty seconds earlier and had nothing to
+		# do with rock.
+		if _t <= _fall_until:
+			_bump(crash_fall_d, depth)
+	_terrain_bill = 0.0
 
 
 # --- THE COMBAT SCORECARD'S BOOKKEEPING ------------------------------------
@@ -745,6 +858,7 @@ func _initialize() -> void:
 				by = "kraken"
 			elif _terrain_recent > 0.0:
 				dmg_terrain += amount
+				_terrain_bill += amount
 				by = "terrain"
 			elif _ram_recent > 0.0:
 				dmg_ram += amount
@@ -752,7 +866,10 @@ func _initialize() -> void:
 			else:
 				dmg_shells += amount
 			if amount >= BIG_HIT and big_hits.size() < 24:
-				big_hits.append("    t=%5.1f  %-9.0f on one cell  <- %s" % [_t, amount, by]))
+				big_hits.append(("    t=%5.1f  %-9.0f on one cell  <- %-8s"
+					+ " | the pilot saw %.0f px under the keel and %.0f px along a"
+					+ " %.0f px/s travel, horizon %.0f") % [_t, amount, by,
+					_saw_down, _saw_travel, _saw_v.length(), _saw_horizon]))
 
 		# ...and the CRUSH, straight from the horse's mouth. `Ship.collision_damage`
 		# fires with what a contact actually spent on the grid, which is the one
@@ -872,6 +989,11 @@ func _initialize() -> void:
 	# THE BOOKS CLOSE WITH THE DESCENT. What follows is the climb home, and a
 	# shell fired there belongs to no rung.
 	_close_engagement()
+	# ...and so does the terrain episode that is still open. The run's LAST crash
+	# is usually the one that ended it, so leaving it unclosed would drop exactly
+	# the contact the reader came for.
+	if _terrain_bill > 0.0:
+		_close_terrain_episode(last_depth)
 	_scoring = false
 	rows.append(_row(last_depth, mark, t - depth_started,
 		int(met_by_depth.get(last_depth, 0))))
@@ -970,6 +1092,43 @@ func _initialize() -> void:
 			% [int(r["depth"]), float(r["secs"]), int(r["blocks"]), float(r["integ"]),
 				float(r["terrain"]), float(r["ram"]), float(r["shells"]), float(r["kraken"]),
 				int(r["kills"]), int(r["pickets"]), float(r["kcontact"])]))
+	# THE PILOT, RUNG BY RUNG (v0.161.0). Three questions the run-wide lines
+	# cannot answer, printed for EVERY depth the run reached — including the ones
+	# that cost nothing, because a blank row is the finding when the row above it
+	# is full:
+	#   * CRASHES — terrain contact episodes that billed over CRASH_HP. The
+	#     honest measure of whether the pilot is flying the ladder or bouncing
+	#     down it, and the number this whole round exists to drive to zero.
+	#   * STUCK — seconds the stuck detector spent climbing back out of a dead
+	#     end. Time the run spent measuring the AUTOPILOT rather than the game.
+	#   * GRAB UPTIME — held over time in reach, per rung (DESIGN_KRAKEN slice
+	#     7). A run-wide uptime cannot tell "depth 7's mouth is unreadable" from
+	#     "we barely touched depth 5".
+	print("\n--- the pilot, rung by rung ---")
+	print("  depth | crashes | of those, fell into | worst bill | stuck s | kraken reach s | grabbed s | uptime %")
+	var deepest_row := 1
+	for r in rows:
+		deepest_row = maxi(deepest_row, int(r["depth"]))
+	for dd in range(1, deepest_row + 1):
+		var reach_s: float = Score.frames_to_secs(int(kreach_d.get(dd, 0)), STEP)
+		var held_s: float = Score.frames_to_secs(int(kgrab_d.get(dd, 0)), STEP)
+		print("  %5d | %7d | %19d | %10s | %7.1f | %14.1f | %9.1f | %7.0f%%" % [
+			dd, int(crashes_d.get(dd, 0)), int(crash_fall_d.get(dd, 0)),
+			"-" if int(crashes_d.get(dd, 0)) == 0
+				else "%.0f" % float(crash_worst_d.get(dd, 0.0)),
+			float(stuck_d.get(dd, 0.0)), reach_s, held_s,
+			Score.uptime_pct(held_s, reach_s)])
+	print("PILOT:  %d crashes over %.0f s of diving | %d climb-outs from dead ends costing %.1f s | measured braking %.0f px/s² (best seen %.0f)"
+		% [crashes_total, t, escapes, stuck_secs, _decel, _decel_seen])
+	print("STICK:  %.0f s down | %.0f s up | %.0f s neutral (the hover holding station)"
+		% [secs_sinking, secs_climbing, secs_coasting])
+	print("TOO LATE: %d ticks (%.1f s) descending with less room under the keel than the descent needed to stop"
+		% [too_late, float(too_late) * STEP])
+	for l in late_lines:
+		print(l)
+	for l in falls:
+		print(l)
+
 	print("\n--- what the body and the hull actually took ---")
 	print("  body %.0f/%.0f" % [float(pl.health) if is_instance_valid(pl) else 0.0,
 		float(pl.max_health) if is_instance_valid(pl) else 0.0])
@@ -1015,10 +1174,52 @@ func _initialize() -> void:
 var _down := false
 var _up := false
 var _steer := 0
-var _slide := 0
-var _slide_hold := 0.0
 var _fire_cd := 0.0
 var _worst_clear := INF     ## closest the keel ever came to rock while descending
+## THE LAST THING THE PILOT SAW, one tick old, so a big-hit line can quote it.
+## "The hull hit rock" and "the hull hit rock it had been staring at for two
+## seconds" are different bugs behind the same damage number.
+var _saw_down := 0.0
+var _saw_travel := 0.0
+var _saw_horizon := 0.0
+var _saw_v := Vector2.ZERO
+## TOO LATE: ticks where the keel's clearance was already inside the descent's
+## own stopping distance. Not a crash — a crash is what follows one of these if
+## the brakes do not win — but it is the ONE line that separates "the fan is
+## blind" from "the fan sees and the hull cannot stop".
+var too_late := 0
+var late_lines: Array[String] = []
+## ...and the ticks where the hull was going down faster than the stick could
+## ever command. See the booking site: a fall is a different finding from a fast
+## descent, and the two used to print as the same number.
+var falls: Array[String] = []
+## THE MEASURED BRAKES (rule 2). `_decel_seen` is the largest deceleration this
+## hull has ever achieved with the up stick held; `_decel` is that with the
+## margin taken off, and it is what every stopping distance in the tick uses.
+var _decel := DECEL_PRIOR
+var _decel_seen := 0.0
+var _last_vy := 0.0
+## The heading the search settled on, and how long its hold bonus still runs.
+var _heading := Vector2.DOWN
+var _heading_t := 0.0
+## THE STUCK DETECTOR's state: the deepest y ever reached, how long since it
+## improved, and the climb-out that is running now.
+var _best_y := -INF
+var _stuck_t := 0.0
+var _escape_t := 0.0
+var _escape_dir := 1
+## Which side of the next slab the lane sits on, and the rung that choice was
+## made for — a flip is a reaction to THIS column, never a standing habit.
+var _lane_flip := false
+var _lane_depth := 0
+## What the pilot's own troubles cost, for the report: climb-outs spent, seconds
+## held by them (total and per rung), and the crashes those seconds bought off.
+var escapes := 0
+var stuck_secs := 0.0
+var stuck_d := {}           ## depth -> seconds the stuck detector held the descent
+var secs_climbing := 0.0    ## seconds with the up stick held (braking or escaping)
+var secs_sinking := 0.0     ## seconds with the down stick held
+var secs_coasting := 0.0    ## seconds on a neutral stick — the hover holding station
 
 # --- WHAT ENDED THE RUN -----------------------------------------------------
 # `lost / worn` means THE BODY died, and nothing in the old log said what hit
@@ -1091,10 +1292,74 @@ func _lane_x(d: int) -> float:
 		var after: Vector2 = world.call("dive_landing_pos", nd + 1)
 		if not is_zero_approx(after.x - here.x):
 			side = signf(after.x - here.x)
+	# BACK OFF AND GO AROUND. The stuck detector flips which side of the slab
+	# the lane sits on: the side the ladder leans next is the RIGHT default, but
+	# it is only a preference, and a run that has spent fourteen seconds not
+	# getting any deeper has proved that this seed put something in that lane.
+	if _lane_flip:
+		side = -side
 	return here.x + side * (span.x * 0.5 + beam * 0.9)
 
 
-## ONE TICK OF FLYING. Rays first, then the vertical rate, then the lane.
+## THE FAN. Minimum clearance from the hull's SKIN along `dir`, measured with
+## `rays` origins spread across the face pointing that way and `spread` slightly
+## fanned directions from each. Returns `length` when the whole fan is clear.
+##
+## This is rule 1 of the pilot, and the two arguments are the whole of it: a
+## single ray from the centre of a body this size was what let five runs in six
+## end `terrain 100 %` with the crash never appearing in the clearance log.
+func _clear_along(hull, b: Rect2, rid, dir: Vector2, length: float,
+		rays := FAN_RAYS, dir_count := 3) -> float:
+	var out := length
+	var dirs: Array = Nav.fan_dirs(dir, dir_count, FAN_SPREAD)
+	for o in Nav.fan_origins(b, dir, rays, 0.9):
+		var from: Vector2 = hull.to_global(o)
+		for dv in dirs:
+			out = minf(out, _ray(from, dv, length, rid))
+			if out <= 0.0:
+				return 0.0
+	return out
+
+
+## THIS HULL'S BRAKING, MEASURED (rule 2). Pressing UP commands `+climb_rate_max`
+## through the rate controller, which asks the v-props for everything they have —
+## so the largest deceleration ever seen while the up stick was held IS this
+## hull's authority in this air, with its brownout, its lost props and its
+## thinning atmosphere already inside the number. A margin comes off it because
+## the air keeps thinning on the way down: a stopping distance optimistic by
+## 30 % is a crash, one pessimistic by 30 % is a slow run.
+## A CONTACT IS NOT BRAKING, and this is the trap the first cut walked into: a
+## hull that hits rock loses its whole descent in ONE frame, which reads as
+## 146,897 px/s² of authority — after which every stopping distance is
+## effectively zero and the pilot dives at full stick into everything, having
+## "measured" that it can stop on a coin. Two guards, both from the hull itself:
+## no sample while anything is touching us, and a hard ceiling at the most the
+## v-props could possibly produce (`thrust × scale ÷ mass`, with the prop
+## normalisation, the power ratio and the air density all taken at 1.0, so the
+## ceiling is generous and still finite).
+func _measure_brake(hull, vy: float) -> void:
+	# A NEUTRAL STICK IS ALSO A BRAKE, and sampling it is what makes this number
+	# real: the rate controller's neutral target is zero vertical speed, so a
+	# descending hull on a centred stick is already asking the props for
+	# everything they have. Sampling the up stick alone left one second of
+	# evidence in a hundred-second run, and the prior standing in its place.
+	if not _down and vy > 60.0 and _terrain_recent <= 0.0 and _ram_recent <= 0.0 \
+			and not _kraken_on_us:
+		var ceiling: float = float(hull.get("_total_vthrust")) \
+			* float(hull.scale_unit) / maxf(hull.mass, 1.0)
+		var a: float = minf((_last_vy - vy) / STEP, ceiling)
+		if a > _decel_seen:
+			_decel_seen = a
+			# The prior is a STARTING GUESS, not a floor. Leaving it as a floor
+			# made "measured" decorative on the shipped starter, whose real
+			# authority (480 px/s²) is below the guess — and an optimistic
+			# stopping distance is the one direction this number must not err in.
+			_decel = maxf(100.0, _decel_seen * DECEL_MARGIN)
+	_last_vy = vy
+
+
+## ONE TICK OF FLYING: measure the brakes, check for a dead end, fan the rays,
+## pick a heading, then fly the fastest speed the room allows down it.
 func _fly(d: int) -> void:
 	var hull = world.get("local_ship")
 	if hull == null or not is_instance_valid(hull) or hull.blocks.is_empty():
@@ -1106,44 +1371,88 @@ func _fly(d: int) -> void:
 	var unit: float = maxf(float(hull.scale_unit), 1.0)
 	var pad := 16.0 * KEEL_PAD_CELLS * unit          # Ship.CELL × cells × scale
 	var sink_max: float = maxf(float(hull.dive_rate_max), 240.0)
-	var reach := pad + sink_max * LOOKAHEAD
-
-	# --- 1. LOOK. Three rays down the beam, two lane probes to either side. ---
-	var keel_y: float = b.end.y
-	var cx: float = b.get_center().x
-	var clear := reach
-	for f in [-0.45, 0.0, 0.45]:
-		var from: Vector2 = hull.to_global(Vector2(cx + beam * f, keel_y))
-		clear = minf(clear, _ray(from, Vector2.DOWN, reach, rid))
-	var side_step := beam * SIDE_STEP_W
-	var left := _ray(hull.to_global(Vector2(cx - side_step, keel_y)),
-		Vector2.DOWN, reach, rid)
-	var right := _ray(hull.to_global(Vector2(cx + side_step, keel_y)),
-		Vector2.DOWN, reach, rid)
-	# ...and ONE RAY ALONG THE TRAVEL, which is `ShipAI._avoid`'s idiom and the
-	# case straight-down rays cannot see: a hull sliding out of a blocked column
-	# at 1,500 px/s while still sinking is moving DIAGONALLY, and the rock it
-	# meets is the slab's SHOULDER, not anything under the keel. Folding it into
-	# `clear` slows the descent and trips the sidestep at once.
 	var vel: Vector2 = hull.linear_velocity
-	if vel.length() > 60.0:
-		var lead := vel.length() * LOOKAHEAD * 0.6 + b.size.length() * 0.5
-		var ahead := _ray(hull.to_global(b.get_center()), vel.normalized(), lead, rid)
-		if ahead < lead:
-			clear = minf(clear, maxf(ahead - b.size.length() * 0.5, 0.0))
-	# THE CEILING IS ALSO ROCK. Pressing UP out of a blocked column into an
-	# overhang is the same crash upside down, and nothing looked up before.
-	var head := _ray(hull.to_global(Vector2(cx, b.position.y)), Vector2.UP,
-		pad * 2.0, rid)
-	if hull.linear_velocity.y > 0.0:
-		_worst_clear = minf(_worst_clear, clear)
+	_measure_brake(hull, vel.y)
+	# A NEW RUNG IS A NEW PLAN. The lane's flip is a reaction to one column being
+	# a dead end; carrying it down to the next rung would fly the slalom
+	# backwards for the rest of the run.
+	if d != _lane_depth:
+		_lane_depth = d
+		_lane_flip = false
+		_stuck_t = 0.0
+		_best_y = hull.global_position.y
 
-	# --- 2. THE VERTICAL RATE. `(clearance - pad) / LOOKAHEAD` is the fastest
-	# descent this column can still be stopped out of; below the pad the answer
-	# is UP, because a rung is not something to settle onto gently, it is
-	# something to be beside.
-	# ...and GIVE THE WILDLIFE ROOM. A neutral whale that glides into a hull
-	# descending at 960 px/s bills `creature_ram_damage` × the episode's
+	# --- 0. IS ANYTHING WORKING? (rule 4) --------------------------------
+	var here_y: float = hull.global_position.y
+	if here_y > _best_y + STUCK_GAIN_PX:
+		_best_y = here_y
+		_stuck_t = 0.0
+	else:
+		_stuck_t += STEP
+	if _escape_t > 0.0:
+		_escape_t -= STEP
+		stuck_secs += STEP
+		stuck_d[d] = float(stuck_d.get(d, 0.0)) + STEP
+	elif _stuck_t >= STUCK_SECS:
+		_escape_t = ESCAPE_SECS
+		_escape_dir = -_escape_dir
+		_lane_flip = not _lane_flip
+		_stuck_t = 0.0
+		_best_y = here_y
+		escapes += 1
+
+	# --- 1. LOOK (rule 1). Fans, from the hull's skin, not its centre. ----
+	var horizon: float = maxf(Nav.stopping_distance(
+			maxf(vel.length(), sink_max), _decel, REACTION) * HORIZON_MULT,
+		16.0 * HORIZON_MIN_CELLS * unit)
+	var down_clear := _clear_along(hull, b, rid, Vector2.DOWN, horizon)
+	if vel.y > 0.0:
+		_worst_clear = minf(_worst_clear, down_clear)
+	# WHAT THE PILOT COULD SEE, kept for one tick so a crash line can quote it.
+	# "The hull hit rock" and "the hull hit rock it had been looking straight at
+	# for two seconds" are different bugs and the same damage number.
+	_saw_v = vel
+	_saw_down = down_clear
+	_saw_horizon = horizon
+	# A FALL IS NOT A DESCENT. The rate stick commands a speed the props hold; if
+	# the hull is going down faster than the stick could ever ask for, something
+	# else has it — thin air, lost lift, a current — and the vertical axis is out
+	# of the pilot's hands until that changes. Booked once, with everything the
+	# diagnosis needs, because it is not visible in any other line.
+	if vel.y > sink_max * 1.5:
+		_fall_until = _t + 2.0
+	if vel.y > sink_max * 2.0 and falls.size() < 6:
+		falls.append("    t=%5.1f d%d  FALLING at vy %.0f (stick tops out at %.0f) | y %.0f | mass %.0f | lift %.0f vs weight %.0f | air density %.4f (floor %.2f) | wind %s | %s"
+			% [_t, d, vel.y, sink_max, hull.global_position.y, hull.mass,
+				float(hull.get("_total_lift")), hull.mass * 980.0 * hull.gravity_scale,
+				float(hull.call("air_density_at", hull.global_position.y)),
+				float(hull.get("air_density_floor")), str(hull.get("extra_wind")),
+				_gear(hull)])
+	# ...and the pilot's own quality control: is the keel already INSIDE the room
+	# this descent needs to stop? Every crash before this round happened with no
+	# such moment anywhere in the log, which is what said the old lookahead was
+	# blind rather than merely slow.
+	var need_down: float = Nav.stopping_distance(maxf(vel.y, 0.0), _decel, REACTION) + pad
+	if vel.y > 60.0 and down_clear < need_down:
+		too_late += 1
+		if late_lines.size() < 8:
+			late_lines.append("    t=%5.1f d%d  keel sees %.0f px, needs %.0f to stop from vy %.0f (fan horizon %.0f, air %s, rate cap %.0f)"
+				% [_t, d, down_clear, need_down, vel.y, horizon,
+					str(hull.get("extra_wind")), sink_max])
+	# ALONG THE TRAVEL — the case straight-down rays structurally cannot see: a
+	# hull sliding out of a blocked column while still sinking is moving
+	# DIAGONALLY, and the rock it meets is the slab's SHOULDER.
+	var travel_clear := horizon
+	var speed := vel.length()
+	if speed > 60.0:
+		travel_clear = _clear_along(hull, b, rid, vel / speed, horizon)
+	_saw_travel = travel_clear
+	# THE CEILING IS ALSO ROCK. Climbing out of a blocked column into an
+	# overhang is the same crash upside down.
+	var head := _clear_along(hull, b, rid, Vector2.UP, pad * 2.5, 3, 1)
+
+	# ...and GIVE THE WILDLIFE ROOM (rule 5). A neutral whale that glides into a
+	# hull descending at 960 px/s bills `creature_ram_damage` × the episode's
 	# momentum: MEASURED 39,978 damage in ONE frame against a 3,000 integrity
 	# pool. Rays do not save you from it — the body is moving too, and a whale is
 	# wider than the beam — so the pilot keeps a bubble the way a player who has
@@ -1165,12 +1474,58 @@ func _fly(d: int) -> void:
 		_veto_held = 0.0
 	if _veto_t > 0.0:
 		dodge.y = 0.0
-	var want_v := clampf((clear - pad) / LOOKAHEAD, 0.0, sink_max)
-	var vy: float = hull.linear_velocity.y
-	var climb := (clear <= pad or dodge.y > 0.0) and head > pad
-	if dodge.y < 0.0:
-		want_v = 0.0
-	var sink := not climb and vy < want_v - 60.0
+
+	# --- 2. PICK A HEADING (rule 3) --------------------------------------
+	var lane_off: float = _lane_x(d) - hull.to_global(b.get_center()).x
+	_heading_t = maxf(0.0, _heading_t - STEP)
+	var best := Vector2.DOWN
+	var best_score := -1.0
+	for h in HEADINGS:
+		var dir: Vector2 = (h as Vector2).normalized()
+		var c: float = down_clear if dir.is_equal_approx(Vector2.DOWN) \
+			else _clear_along(hull, b, rid, dir, horizon, 3, 1)
+		var sc: float = Nav.heading_score(c, horizon, dir,
+			Nav.lane_gain(lane_off, dir.x, horizon), DOWN_WEIGHT, LANE_WEIGHT)
+		if _heading_t > 0.0 and dir.dot(_heading) > 0.98:
+			sc += HEADING_HOLD
+		if sc > best_score:
+			best_score = sc
+			best = dir
+	if not best.is_equal_approx(_heading):
+		_heading = best
+		_heading_t = HEADING_HOLD_SECS
+	# ESCAPING OVERRIDES THE SEARCH. The search is what got stuck; a dead end
+	# scores its own walls consistently, so the way out has to be commanded.
+	if _escape_t > 0.0:
+		var e := Vector2(float(_escape_dir), -0.6).normalized()
+		if _clear_along(hull, b, rid, e, horizon, 3, 1) < horizon * 0.4:
+			_escape_dir = -_escape_dir
+			e = Vector2(float(_escape_dir), -0.6).normalized()
+		best = e
+		_heading = e
+
+	# --- 3. THE VERTICAL STICK (rule 2). The fastest descent this column can
+	# still be stopped out of, from THIS hull's measured authority — and zero
+	# whenever anything says stop, because a rung is not something to settle onto
+	# gently, it is something to be beside.
+	var v_safe: float = minf(
+		Nav.safe_speed(maxf(down_clear - pad, 0.0), _decel, REACTION), sink_max)
+	# ...and the same rule down the TRAVEL vector, converted back to its vertical
+	# share. A hull crossing the slalom is mostly moving sideways, and a hard
+	# veto on a short travel fan would stop the descent every time the lane's far
+	# wall came into view — which is most of the descent. Its VERTICAL component
+	# is the only part the down stick can spend, so that is the part it caps.
+	if speed > 60.0 and vel.y > 0.0:
+		v_safe = minf(v_safe, Nav.safe_speed(maxf(travel_clear - pad, 0.0),
+			_decel, REACTION) * (vel.y / speed))
+	if best.y <= 0.0 or dodge.y != 0.0 or _escape_t > 0.0:
+		v_safe = 0.0
+	var vy: float = vel.y
+	var climb: bool = (v_safe <= 0.0 and (vy > 0.0 or down_clear <= pad)) \
+		or _escape_t > 0.0 or dodge.y > 0.0
+	if head <= pad * 0.6 and _escape_t <= 0.0:
+		climb = false          # nothing above to climb into
+	var sink := not climb and vy < v_safe - RATE_HYST
 	if _up != climb:
 		_up = climb
 		if climb:
@@ -1183,34 +1538,36 @@ func _fly(d: int) -> void:
 			Input.action_press("ship_down")
 		else:
 			Input.action_release("ship_down")
+	# WHERE THE STICK ACTUALLY WENT. A run that takes twice as long as the
+	# owner's budget is a finding either way, but "descending slowly through
+	# thick country" and "spending half the run climbing back out" are different
+	# findings, and the elapsed time alone cannot tell them apart.
+	if _up:
+		secs_climbing += STEP
+	elif _down:
+		secs_sinking += STEP
+	else:
+		secs_coasting += STEP
 
-	# --- 3. THE LANE. Clear column: fly the slalom's lane. Blocked column:
-	# slide to the roomier side and hold that choice, so the pilot walks off a
-	# slab instead of dithering on its crest.
-	_slide_hold = maxf(0.0, _slide_hold - STEP)
-	var want := 0
+	# --- 4. THE LATERAL STICK. The heading's own x, unless the wildlife bubble
+	# overrules it — and never accelerating into rock: sideways has a stopping
+	# distance of its own and NO rate controller to fly it, so when the room on
+	# that side runs short the stick reverses. Thrust is the only sideways brake
+	# a hull has.
+	var want: int = Nav.steer_sign(best.x, 0.20)
 	if not is_zero_approx(dodge.x):
 		want = 1 if dodge.x > 0.0 else -1
-		_slide = 0
-	elif clear < pad + b.size.y:
-		if _slide == 0 or _slide_hold <= 0.0:
-			_slide = 1 if right >= left else -1
-			_slide_hold = SLIDE_HOLD
-		want = _slide
-	else:
-		_slide = 0
-		var off: float = _lane_x(d) - hull.to_global(Vector2(cx, keel_y)).x
-		if absf(off) > beam * 0.4:
-			want = 1 if off > 0.0 else -1
-	# ...and never fly INTO the thing you are sliding past. The beam ray is
-	# `_avoid`'s idiom (combat/ship_ai.gd): current travel plus half the hull.
+	var need_x := Nav.stopping_distance(absf(vel.x), _decel, REACTION) + pad * 0.6
 	if want != 0:
-		var edge := Vector2(cx + beam * 0.5 * float(want), b.get_center().y)
-		var side_reach := beam * 0.35 + absf(hull.linear_velocity.x) * 0.6
-		if _ray(hull.to_global(edge), Vector2(float(want), 0.0), side_reach, rid) \
-				< side_reach * 0.95:
-			want = 0
-			_slide_hold = 0.0
+		if _clear_along(hull, b, rid, Vector2(float(want), 0.0),
+				maxf(need_x, 1.0), 3, 1) < need_x:
+			want = -want if absf(vel.x) > 40.0 \
+				and signf(vel.x) == signf(float(want)) else 0
+	if want == 0 and absf(vel.x) > 40.0:
+		# Drifting sideways with no reason to: the drift needs room too.
+		var drift := Vector2(signf(vel.x), 0.0)
+		if _clear_along(hull, b, rid, drift, maxf(need_x, 1.0), 3, 1) < need_x:
+			want = -int(signf(vel.x))
 	if want != _steer:
 		if _steer != 0:
 			Input.action_release("ship_right" if _steer > 0 else "ship_left")
