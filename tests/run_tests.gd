@@ -2307,7 +2307,7 @@ func _test_hull_integrity() -> void:
 		"overkill on a balloon drains one cell's remaining hp, never the cluster's (%.0f)"
 			% (bag_pool - bag.hull_integrity))
 
-	# --- A SHELL IS WORTH SOMETHING (v0.159.0) --------------------------------
+	# --- A SHELL IS WORTH SOMETHING (v0.160.0) --------------------------------
 	# `pool_mult` scales the POOL BILL of one hit and nothing else. The struck
 	# cell still loses exactly `amount`, so the visible bite is what it always
 	# was — the same split v0.155.0's crush cap made.
@@ -2358,7 +2358,7 @@ func _test_hull_integrity() -> void:
 	# (DESCENT §3.4). The refund is `damage_cell`'s exact mirror — hp really
 	# restored, never the amount asked for.
 	#
-	# ...AT SHARE 1.0, which stopped being the shipped default in v0.159.0 (see
+	# ...AT SHARE 1.0, which stopped being the shipped default in v0.160.0 (see
 	# the block below). The MIRROR is the contract these lines hold, so they wind
 	# the share back to where v0.140.0 left it and pin it there.
 	Tunables.set_value("dive_mend_refund", 1.0)
@@ -2399,7 +2399,7 @@ func _test_hull_integrity() -> void:
 		"an unarmed hull refunds nothing, because it has no pool to refund into")
 	plain.queue_free()
 
-	# --- ...BUT ONLY A SHARE OF IT (v0.159.0) --------------------------------
+	# --- ...BUT ONLY A SHARE OF IT (v0.160.0) --------------------------------
 	# The refund and the drain were never the same size. A hit bills the pool ONCE
 	# for the struck COMPONENT (v0.149.0); the repair that undoes it pays per
 	# CELL, and at 8x that component is 64 cells — so mending one hole refunded up

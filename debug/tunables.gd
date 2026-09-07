@@ -152,7 +152,7 @@ const _REGISTRY := [
 	{"id": "dive_crush_pool_cap", "label": "Crush cap, share of pool", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 0.15, "min": 0.02, "max": 1.0, "step": 0.01,
 		"tip": "Most of your integrity pool ONE collision can cost, as a share of its max. 0.15 = a ram is a seventh of the run; 1 is the old uncapped bill."},   # Ship._settle_crush_pool_bill
-	# A SHELL IS WORTH SOMETHING (v0.159.0, off the v0.157.0 scorecard: ~1,400
+	# A SHELL IS WORTH SOMETHING (v0.160.0, off the v0.157.0 scorecard: ~1,400
 	# shells across three seeds, ZERO kills either way, gunnery 0.3-0.6 % of the
 	# damage a run takes). These two are the whole balance change, and either one
 	# alone puts the old fight back. Sized on three probe seeds at 1.5 (see the

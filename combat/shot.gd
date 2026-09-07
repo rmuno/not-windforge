@@ -228,7 +228,7 @@ func _physics_process(delta: float) -> void:
 				# snap is a no-op there. See Ship.nearest_solid_cell.
 				var cell := ship.nearest_solid_cell(
 					(hit["position"] as Vector2) + velocity.normalized() * Ship.CELL * 0.4)
-				# A SHELL IS WORTH SOMETHING (v0.159.0). Gunfire — and only
+				# A SHELL IS WORTH SOMETHING (v0.160.0). Gunfire — and only
 				# gunfire — carries a multiplier on the INTEGRITY POOL bill it
 				# leaves behind; the blocks it breaks are untouched. Rock, rams,
 				# fire and a kraken's teeth never come through here, so their

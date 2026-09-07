@@ -1449,7 +1449,7 @@ func _seed_from_args() -> int:
 
 ## `--lever id=value`, repeatable: set F2 levers before the run opens.
 ##
-## A BALANCE ROUND'S BEFORE AND AFTER HAVE TO BE THE SAME BINARY (v0.159.0). The
+## A BALANCE ROUND'S BEFORE AND AFTER HAVE TO BE THE SAME BINARY (v0.160.0). The
 ## seed pins the sky; this pins the dials, so "what did changing the shell's
 ## worth do" is one build, one seed, two lever sets — rather than two checkouts
 ## whose OTHER differences ride along in the numbers. Prints what it set, because
@@ -1548,7 +1548,7 @@ func _components_line(hull) -> String:
 	var pool: float = hull.hull_integrity_max
 	# The pool bill of one shell into that cluster: capped at the cell's own hp
 	# (v0.149.0, a component is billed once), then multiplied by WHAT A SHELL IS
-	# WORTH (v0.159.0) — the same cap-then-scale order Ship.damage_cell uses, so
+	# WORTH (v0.160.0) — the same cap-then-scale order Ship.damage_cell uses, so
 	# this line quotes the arithmetic the game will actually run rather than the
 	# pre-lever number it printed for two rounds.
 	var cell_hp := 0.0

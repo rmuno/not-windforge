@@ -643,7 +643,7 @@ func _check_one_contact_bills_the_pool_once() -> void:
 	await process_frame
 
 
-## A SHELL HAS TO BE WORTH SOMETHING (v0.159.0, off the v0.157.0 scorecard).
+## A SHELL HAS TO BE WORTH SOMETHING (v0.160.0, off the v0.157.0 scorecard).
 ##
 ## Three seeds at 8× fired ~1,400 shells and killed NOTHING: a picket's 600 pool
 ## against a 20-damage shell was 30 landed hits, at about one shell a second,

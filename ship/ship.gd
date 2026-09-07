@@ -3197,7 +3197,7 @@ func _settle_crush_pool_bill() -> void:
 ## armoured twice. Everything else — every shot, the mouth grab, fire, a blast —
 ## is a hit ON A CELL and pays the creature's shell tax below.
 ##
-## `pool_mult` — WHAT A SHELL IS WORTH (v0.159.0, F2 "Shell cost to integrity").
+## `pool_mult` — WHAT A SHELL IS WORTH (v0.160.0, F2 "Shell cost to integrity").
 ## Multiplies THE INTEGRITY POOL BILL of this hit and nothing else: blocks come
 ## off for exactly `amount` either way, the way v0.155.0's crush cap left the
 ## visible bite alone. Only `Shot` passes anything but 1.0, so rock, rams, fire
@@ -3274,7 +3274,7 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 	# and a picket's 600 pool died to any shell that found its bag. The pool now
 	# bills the component as the one part it is: the struck cell's own loss.
 	var structural := minf(amount, maxf(blocks[cell]["hp"], 0.0)) if blocks.has(cell) else 0.0
-	# A SHELL IS WORTH SOMETHING (v0.159.0). The cap above is right — the pool
+	# A SHELL IS WORTH SOMETHING (v0.160.0). The cap above is right — the pool
 	# measures the ship being destroyed, not a weapon's number — but at 8× it made
 	# a 20-hp shell a 150th of a 3,000 pool, so a whole depth of enemy gunnery cost
 	# 20 net and the mender out-healed it before the next volley. `pool_mult` is
@@ -3905,7 +3905,7 @@ func repair_cell(cell: Vector2i, amount: float) -> bool:
 	return true
 
 
-## HOW MUCH OF A REPAIR COMES BACK AS INTEGRITY (v0.159.0, F2 "Mend refund to
+## HOW MUCH OF A REPAIR COMES BACK AS INTEGRITY (v0.160.0, F2 "Mend refund to
 ## integrity"). 1.0 is the v0.140.0 behaviour this replaces the default of.
 ##
 ## The refund and the drain were never the same size. A hit bills the pool ONCE
@@ -4269,7 +4269,7 @@ func _request_damage(cell: Vector2i, amount: float, pool_mult := 1.0) -> void:
 		return
 	# Same incremental / coalesced path as net_damage_cell — a client's shots
 	# must not each fire a full rebuild on the server either. The shell's worth
-	# rides the request (v0.159.0): the server owns the pool, and a client's
+	# rides the request (v0.160.0): the server owns the pool, and a client's
 	# shell has to bill it the same as the server's own.
 	_apply_combat_damage(cell, amount, pool_mult)
 
