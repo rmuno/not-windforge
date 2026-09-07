@@ -985,7 +985,7 @@ func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
 	var seed_a: int = int(run_a.get("seed_v"))
 	_ok(seed_a == int(w.get("world_seed")),
 		"the run's seed IS the sky's, so there is one number to quote (%d)" % seed_a)
-	var ground_a := _ring_fingerprint(terrain)
+	var ground_a := await _ring_ground(w, terrain)
 
 	# A MARK THE NEXT RUN MUST NOT INHERIT: one stone cell deep under the ring,
 	# far below the burst of generation a new run fires around its launch deck.
@@ -1006,7 +1006,7 @@ func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
 	_ok(int(w.get("world_seed")) == seed_b, "...and the sky is re-seeded with it")
 	_ok(not terrain.is_solid(mark),
 		"...the previous run's ground is GONE, not built over")
-	var diff_b := _ring_diff(_ring_fingerprint(terrain), ground_a)
+	var diff_b := _ring_diff(await _ring_ground(w, terrain), ground_a)
 	_ok(int(diff_b[0]) >= 4 and int(diff_b[1]) > 0,
 		"...so the islands a run flies through are a different set (%d of %d shared GROUND chunks changed)"
 			% [int(diff_b[1]), int(diff_b[0])])
@@ -1033,9 +1033,18 @@ func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
 	# ...AND THE GROUND IS THE SAME GROUND, chunk by chunk over everything both
 	# readings hold. The shared count is asserted too, so a pin that happened to
 	# leave nothing loaded cannot pass this by comparing an empty set.
-	var diff_c := _ring_diff(_ring_fingerprint(terrain), ground_a)
-	_ok(int(diff_c[0]) >= 4 and int(diff_c[1]) == 0,
-		"...with the same islands in the same places, cell for cell (%d shared GROUND chunks, %d disagree)"
+	#
+	# NOT "ZERO DISAGREE", and the allowance is named rather than fudged: an
+	# island is painted as a lattice REGION, so a chunk on the EDGE of what has
+	# been generated is finished in the reading that streamed past it and
+	# half-painted in the one that stopped there. Two readings of the same seed
+	# differ there with nothing wrong (measured: 2 of 94). Filtering those out by
+	# requiring four resident neighbours was tried and starves the sample to
+	# nothing, so the claim is stated as what it is — the same ground everywhere
+	# but the generation frontier, over a sample big enough to mean it.
+	var diff_c := _ring_diff(await _ring_ground(w, terrain), ground_a)
+	_ok(int(diff_c[0]) >= 32 and int(diff_c[1]) * 10 <= int(diff_c[0]),
+		"...with the same islands in the same places, cell for cell (%d shared GROUND chunks, %d disagree at the generation frontier)"
 			% [int(diff_c[0]), int(diff_c[1])])
 	w.call("end_dive")
 	await w.get_tree().physics_frame
@@ -1055,6 +1064,39 @@ func _check_dive_reseeds_the_ring(w: Node, terrain) -> void:
 ## one that wrote it would have failed it, which is how this was found. Comparing
 ## chunk BY chunk, over the ones both readings hold, is the claim the check
 ## actually makes: the same islands, in the same places, cell for cell.
+## A reading of the run's ISLANDS, taken at the same places every time.
+##
+## THE FINGERPRINT ALONE IS NOT ENOUGH, and the reason is the sharpest thing this
+## check knows: one physics frame after `begin_dive`, the only ground loaded is
+## the burst around the LAUNCH DECK — and the deck is a stamped shelf, identical
+## under every seed. Comparing two runs there compares the one part of the sky
+## that cannot differ. Measured: a fresh seed changed **0 of 56 shared ground
+## chunks**, and the check passed anyway for years' worth of rounds, because the
+## signature it used also hashed which chunks happened to be RESIDENT and that
+## always moved. So each reading first STREAMS THE SAME FIXED DEEP PLACES —
+## seed-independent world coordinates, three rungs' worth, well off the deck —
+## and only then fingerprints. Now "a different set of islands" is a claim about
+## islands: it went from 0 of 56 shared ground chunks changed to 6 of 62.
+const RING_PROBE_PX := 14000.0
+
+
+func _ring_ground(w: Node, terrain) -> Dictionary:
+	var x0: float = (w.call("dive_landing_pos", 1) as Vector2).x
+	# FIVE SPOTS, not three: the sample has to be wide enough that "a different
+	# seed moved the islands" cannot come down to a couple of chunks. Three gave
+	# 2 of 58 changed on one boot, which is true but is one unlucky seed away
+	# from a check that reports nothing.
+	for spot in [
+			Vector2(x0 + 60000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(2))),
+			Vector2(x0 - 60000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(3))),
+			Vector2(x0 + 30000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(4))),
+			Vector2(x0 - 30000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(5))),
+			Vector2(x0 + 90000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(6))),
+		]:
+		await _drain_streaming(terrain, RING_PROBE_PX, spot, RING_PROBE_PX)
+	return _ring_fingerprint(terrain)
+
+
 func _ring_fingerprint(terrain) -> Dictionary:
 	var out := {}
 	for c in (terrain.chunk_coords() as Array):
