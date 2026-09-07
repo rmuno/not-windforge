@@ -4360,6 +4360,10 @@ func _check_dive_verbs(world: Node, fleet) -> void:
 		# kraken rounds ran ahead of this in the merged suite).
 		for bc in hull.blocks:
 			hull.blocks[bc]["hp"] = BlockDB.max_hp(int(hull.blocks[bc]["type"]))
+		# ...and Field Medic NOT held for the plain reading: the draft the picker
+		# took a few lines up is drawn from the run's own RNG, so one boot in
+		# several hands card 1 = Field Medic and both readings come out equal.
+		(run.get("cards") as Array).erase("field_medic")
 		hull.blocks[medic_cell]["hp"] = 1.0
 		world.set("_mender_clock", 0.0)
 		world.call("_update_menders", 0.2)
