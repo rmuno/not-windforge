@@ -1914,7 +1914,18 @@ func _check_the_breath(w: Node, pl, boss: Ship, roof: Rect2, cpx: float) -> void
 		for i in 4:
 			await w.get_tree().physics_frame
 			_hold_body(pl, safe)
-		var toward: Vector2 = (maw - picket.global_position).normalized()
+		# ONE INSTANT, BOTH READINGS. `maw` above is four frames old, the picket
+		# has been falling and being pulled the whole time, and `extra_wind` is
+		# LAST tick's stamp -- so the direction the wind had and the direction the
+		# maw is in were measured at different moments, and near the maw that
+		# angle moves fast. It failed on roughly every other run of this suite
+		# (267, 294 and 528 px/s of perfectly good breath, pointing a few degrees
+		# stale) and passed on the ones in between, which is a race, not a bug in
+		# the breath. Ask the boss where its maw is NOW, re-stamp the weather at
+		# the positions everything is at NOW, then compare the two.
+		var maw_now: Vector2 = kai.maw_world()
+		w.call("_dive_weather", 0.0)
+		var toward: Vector2 = (maw_now - picket.global_position).normalized()
 		var wind: Vector2 = picket.get("extra_wind")
 		_ok(wind.length() > 0.0 and wind.normalized().dot(toward) > 0.9,
 			"a picket in the breath is stamped with it too (%.0f px/s toward the maw)"
