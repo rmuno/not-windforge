@@ -160,6 +160,7 @@ func _initialize() -> void:
 	await _test_upscaled_props_keep_their_axis()
 	await _test_scale_unit_preserves_feel()
 	await _test_thrust_mult_scales_the_props()
+	await _test_prop_strength_is_the_base_dial()
 	await _test_components_die_as_a_whole()
 	await _test_shots_respect_factions()
 	await _test_a_shell_books_its_own_outcome()
@@ -10583,6 +10584,88 @@ func _test_thrust_mult_scales_the_props() -> void:
 	var ratio := dx1 / dx0 if dx0 > 0.0 else 0.0
 	_check(ratio > 1.15 and ratio < 1.45,
 		"a 1.3x mult buys ~30%% more ground in the same time (ratio %.2f)" % ratio)
+
+
+## PROPELLERS ARE RATED 1.5x (owner 2026-09-07: "I picked the 35% more thrust
+## card and that actually felt more like what I want the game to play. So, let's
+## make that the default… propellers should be that much stronger. This applies
+## to both vertical and horizontal motion").
+##
+## Four claims, and the last two are the ones that could go wrong quietly:
+##   * the base dial is 1.5, and the F2 lever agrees with the constant;
+##   * BOTH AXES carry it. The two `apply_central_force` calls read one local, so
+##     a future edit could easily give one axis the dial and not the other;
+##   * POWER DRAW DOES NOT FOLLOW. `draw` is a sibling column of `thrust` in
+##     BlockDB and the starter has ~15 % of supply spare (2,304,000 against
+##     2,003,200 with the h-props running, `tools/lateral_probe.gd`); a 1.5x bill
+##     would brown it out. The owner asked for stronger props, not hungrier ones;
+##   * the CARD still stacks on top, multiplicatively — `Ship.thrust_mult` is a
+##     separate channel and stays 1.0, so a taken card still reads as a card.
+func _test_prop_strength_is_the_base_dial() -> void:
+	_t("propellers are rated 1.5x by default, and the card stacks on top")
+	_check_approx(BlockDB.PROP_STRENGTH, 1.5, 0.0001,
+		"BlockDB.PROP_STRENGTH is 1.5 — the propeller's rated force")
+	var row := Tunables.def("prop_strength")
+	_check(not row.is_empty() and row["group"] == "World",
+		"the F2 lever is global (World), not a Dive-only dial")
+	_check_approx(float(row["default"]), BlockDB.PROP_STRENGTH, 0.0001,
+		"...and its default mirrors the constant (%.2f)" % float(row["default"]))
+	_check_approx(Tunables.get_num("prop_strength"), 1.5, 0.0001,
+		"a fresh session flies at 1.5")
+
+	var cells := {
+		Vector2i(0, 0): BlockDB.Type.HULL,
+		Vector2i(1, 0): BlockDB.Type.ENGINE,
+		Vector2i(2, 0): BlockDB.Type.PROPELLER,   # side-mounted → horizontal
+		Vector2i(0, 1): BlockDB.Type.PROPELLER,   # hung below   → vertical
+	}
+	# One run per (lever, card, axis). Each ship is built, throttled for a
+	# second and freed, so nothing carries between measurements.
+	var run := func(strength: float, card: float, axis: String) -> float:
+		Tunables.set_value("prop_strength", strength)
+		var s := _make_ship(cells)
+		s.position = Vector2(0, -1000)
+		s.gravity_scale = 0.0   # the question is prop force, not the fall
+		s.thrust_mult = card
+		if axis == "x":
+			s.thrust_input.x = 1.0
+		else:
+			s.thrust_input.y = 1.0
+		await _step(60)
+		var moved: float = s.position.x if axis == "x" else 1000.0 - s.position.y
+		s.queue_free()
+		await process_frame
+		return moved
+
+	for axis in ["x", "y"]:
+		var axis_name := "sideways" if axis == "x" else "upward"
+		var old: float = await run.call(1.0, 1.0, axis)
+		var now: float = await run.call(1.5, 1.0, axis)
+		var carded: float = await run.call(1.5, 1.35, axis)
+		_check(old > 1.0, "the props move the hull %s at the old rating (%.1f px)"
+			% [axis_name, old])
+		_check_approx(now / maxf(old, 0.001), 1.5, 0.06,
+			"%s: 1.5x props are 1.5x the force (ratio %.2f)"
+				% [axis_name, now / maxf(old, 0.001)])
+		_check_approx(carded / maxf(old, 0.001), 1.5 * 1.35, 0.10,
+			"...and the thrust card multiplies ON TOP: 1.5 x 1.35 = %.3f (ratio %.2f)"
+				% [1.5 * 1.35, carded / maxf(old, 0.001)])
+
+	# The power bill is written by `draw`, which the dial never touches.
+	var billed := _make_ship(cells)
+	billed.thrust_input = Vector2(1.0, 1.0)
+	Tunables.set_value("prop_strength", 1.0)
+	var draw_old := billed.active_draw()
+	Tunables.set_value("prop_strength", 4.0)
+	var draw_max := billed.active_draw()
+	_check(draw_old > 0.0 and is_equal_approx(draw_old, draw_max),
+		"a stronger prop is not a hungrier one (draw %.0f at 1.0, %.0f at 4.0)"
+			% [draw_old, draw_max])
+	_check_approx(billed.thrust_mult, 1.0, 0.0001,
+		"the card's channel is untouched — thrust_mult still starts at 1.0")
+	billed.queue_free()
+	await process_frame
+	Tunables.reset_all()
 
 
 ## Owner: named components (E, H, D, P, T…) are destroyed as a whole —
