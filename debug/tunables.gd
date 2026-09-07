@@ -132,6 +132,13 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 3000.0, "min": 200.0, "max": 60000.0, "step": 100.0,
 		"note": "next commit",
 		"tip": "Integrity pool your hull dies as a unit at. A siege deals roughly 100 hp/s of structure, so 3000 is about half a minute undefended."},   # world._tick_dive commit branch
+	# ONE CONTACT CANNOT BE THE WHOLE RUN (v0.155.0, tools/dive_probe.gd). The
+	# crush walk bills the pool for every cell it destroys inward, which is a
+	# momentum-sized number at 8x — one whale ram or one landing slab emptied
+	# 3,000 several times over. Blocks are untouched; only the POOL is capped.
+	{"id": "dive_crush_pool_cap", "label": "Crush cap, share of pool", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 0.15, "min": 0.02, "max": 1.0, "step": 0.01,
+		"tip": "Most of your integrity pool ONE collision can cost, as a share of its max. 0.15 = a ram is a seventh of the run; 1 is the old uncapped bill."},   # Ship._settle_crush_pool_bill
 	{"id": "dive_picket_integrity", "label": "Picket integrity", "group": "Dive",
 		"kind": KIND_FLOAT, "default": 600.0, "min": 50.0, "max": 20000.0, "step": 50.0,
 		"note": "next spawn",
@@ -153,6 +160,18 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 1.0, "min": 0.25, "max": 6.0, "step": 0.25,
 		"note": "next depth 8",
 		"tip": "Clear air between the Leviathan's back and the roof's underside, in body heights. 1 is a body's room to rear and heave."},   # world._dive_cut_den_roof
+	# THE BREATH (DESIGN_KRAKEN §6 phase 2). The Leviathan's inhale is a WIND —
+	# one more term of the run's weather — so its levers sit with the run's other
+	# weather rather than in Combat with the grab.
+	{"id": "dive_breath", "label": "The Leviathan inhales", "group": "Dive",
+		"kind": KIND_BOOL, "default": true,
+		"tip": "On, the boss's second phase pulls everything nearby toward its mouth. Off silences the inhale AND its tell; the phases and the phase-3 retreat stay."},   # KrakenAI._breath_armed
+	{"id": "dive_breath_mult", "label": "Breath strength", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 1.0, "min": 0.0, "max": 3.0, "step": 0.05,
+		"tip": "Multiplier on the inhale's airstream (528 px/s at the maw at 8x, measured at 34% stick authority). Above ~1.4 it beats what a starter's props deliver and traps; 1.36 is designer A's 720."},   # world._dive_breath_at
+	{"id": "dive_breath_period", "label": "Breath period", "group": "Dive",
+		"kind": KIND_FLOAT, "default": 6.0, "min": 1.2, "max": 20.0, "step": 0.5,
+		"tip": "Seconds of one breath cycle: it rears for the first 1.2 s (the tell), then inhales for the rest. 1.2 or below makes the pull continuous."},   # KrakenAI.breath_pull
 	{"id": "dive_assistant", "label": "Assistant mans repairs", "group": "Dive",
 		"kind": KIND_BOOL, "default": true,
 		"tip": "On, a run posts an assistant at the repair station. Off means no station and no crew — the X wand is the only mend."},   # world._dive_post_the_assistant

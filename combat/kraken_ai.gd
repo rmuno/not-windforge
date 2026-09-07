@@ -164,6 +164,39 @@ var prey_player: Node2D = null
 var grabbing_player := false
 
 
+## --- THE BREATH (DESIGN_KRAKEN §6, designer A §2.1) -------------------------
+## The Leviathan's inhale, and the only thing about it that lives in the brain:
+## a CLOCK and a PHASE. The wind itself is `DiveRun`'s pure model and the world's
+## one weather stamp (`world.dive_weather_at`) — a creature that applied its own
+## suction force would be a second airstream, and the run has exactly one.
+##
+## Three phases off the pool alone (§6), so the fight has no state machine to
+## desync and the body's own wound shade IS the phase read-out (see
+## `DiveRun.BREATH_PHASE_2`):
+##
+##   P1 100–70 %  the hunter: coil, heave, glide. No breath.
+##   P2  70–30 %  THE BREATH: rear (the tell) … inhale … rear …, forever.
+##   P3   < 30 %  THE SINK: it breaks off, retreats under its roof and holds.
+##                The dunk is off the table; the throat is the only door.
+##
+## Only the FLOOR'S RESIDENT breathes — `breathes` is set by the world at the
+## wake. A common hunter with a kraken brain is untouched, byte for byte.
+var breathes := false
+## Where it retreats to in P3 (the den, under the roof), handed in at the wake.
+## Vector2.INF = nowhere to go, and the sink is then just a broken-off fight.
+var den_anchor := Vector2.INF
+## The breath's own clock. Advances only while it is alive and breathing, so the
+## first inhale of a fight always opens with a full tell.
+var _breath_t := 0.0
+
+## How hard it swims home in P3, px/s² ×scale_unit. Between the align (360) and
+## the heave (1,100): a deliberate withdrawal, not a rout and not another charge.
+const SINK_ACCEL := 620.0
+## How near the den counts as home — in BODY HEIGHTS, so a re-authored Leviathan
+## keeps its own tolerance. Inside it the swim bladder does the holding.
+const SINK_HOLD_HEIGHTS := 0.5
+
+
 func tick(delta: float, target: Node2D) -> void:
 	if whale == null or not is_instance_valid(whale):
 		return
@@ -178,14 +211,30 @@ func tick(delta: float, target: Node2D) -> void:
 	# from inside the damage walk is the one thing that branch is not written to
 	# survive.
 	_reap_dead_roots()
-	# Aggression: hunt on sight. A WILD kraken keeps itself provoked while a
-	# living prey is around, so the inherited align→push→glide ram runs
-	# immediately (the whale only rams AFTER being hit; the kraken does not
-	# wait). A tamed one stops hunting — but stays dangerous (below).
-	if not tamed and not ridden and prey_ship != null and is_instance_valid(prey_ship) \
+	# THE BREATH'S CLOCK, and only while it is a living thing that breathes: a
+	# carcass does not inhale, and a hunter never did.
+	var sinking := false
+	if breathes and _is_alive() and not tamed and not ridden:
+		_breath_t += delta
+		sinking = breath_phase() == 3
+	if sinking:
+		# P3, THE SINK (§6): it stops hunting and withdraws under its roof. The
+		# anger is CLEARED rather than merely un-restamped, because every shot
+		# that brought it to 30 % re-provoked it for `whale_anger_seconds` —
+		# leave that standing and the inherited doctrine keeps ramming through
+		# the retreat. The pull below is applied after the base tick.
+		_provoked_until = -1.0e12
+		_end_attack()
+	elif not tamed and not ridden and prey_ship != null and is_instance_valid(prey_ship) \
 			and not prey_ship.is_carcass():
+		# Aggression: hunt on sight. A WILD kraken keeps itself provoked while a
+		# living prey is around, so the inherited align→push→glide ram runs
+		# immediately (the whale only rams AFTER being hit; the kraken does not
+		# wait). A tamed one stops hunting — but stays dangerous (below).
 		_provoked_until = Time.get_ticks_msec() + HUNT_RESTAMP_MS
 	super.tick(delta, target)
+	if sinking:
+		_swim_to_the_den()
 	# A LITTLE WILD, always (owner 2026-08-24 — krakens are tameable but "a
 	# little wild in their movement"): a living kraken never sits still. A
 	# deterministic two-frequency wander force rides on top of whatever the
@@ -268,8 +317,14 @@ func _coil_accel() -> Vector2:
 ## flat broadside is an owner ruling, not a bug.
 ##
 ## Between attacks (`Phase.NONE`) it falls back to the inherited velocity pose,
-## so a roaming or aligning kraken still pitches into its own motion.
+## so a roaming or aligning kraken still pitches into its own motion — except
+## while it REARS FOR THE BREATH, which is the one pose in the fight that has to
+## be held against the body's own motion (designer A: "brain-driven instead of
+## velocity-driven"). An attack in flight still wins: the heave is the louder
+## statement, and the two never need to be read at once.
 func _pose_tilt_target() -> float:
+	if _phase == Phase.NONE and breath_telling():
+		return Ship.POSE_MAX * float(whale.visual_facing)
 	if _phase == Phase.NONE or _push_dir == Vector2.ZERO:
 		return super._pose_tilt_target()
 	var d := -_push_dir if _phase == Phase.COIL else _push_dir
@@ -279,6 +334,78 @@ func _pose_tilt_target() -> float:
 	# the identical transform the inherited velocity pose applies.
 	return clampf(atan2(d.y, absf(d.x)), -Ship.POSE_MAX, Ship.POSE_MAX) \
 		* float(whale.visual_facing)
+
+
+## --- THE BREATH, read off the body ------------------------------------------
+## Everything here is a thin read over `DiveRun`'s pure model plus this body's
+## own pool: the brain owns the CLOCK, the model owns the SHAPE, and the world
+## owns the WIND. Three owners, no duplicated arithmetic.
+
+## This body's pool as a fraction. 1.0 for anything with no pool at all (an
+## arena fixture), which reads as phase 1 — no breath, no sink.
+func pool_frac() -> float:
+	if whale == null or not is_instance_valid(whale) or whale.shared_health_max <= 0.0:
+		return 1.0
+	return clampf(whale.shared_health / whale.shared_health_max, 0.0, 1.0)
+
+
+## 1 the hunter, 2 the breath, 3 the sink (DESIGN_KRAKEN §6). A body that does
+## not breathe is always in phase 1: it has no phases to be in.
+func breath_phase() -> int:
+	if not breathes:
+		return 1
+	return DiveRun.breath_phase(pool_frac())
+
+
+## THE F2 SWITCH, in one place, so the lever turns off the tell and the pull
+## together — a rear that announces nothing is worse than no rear at all.
+func _breath_armed() -> bool:
+	return breathes and _is_alive() and not tamed and not ridden \
+		and Tunables.get_bool("dive_breath") and breath_phase() == 2
+
+
+## IS IT REARING RIGHT NOW — the tell, held for `DiveRun.BREATH_TELL_SECONDS`
+## before every inhale.
+func breath_telling() -> bool:
+	if not _breath_armed():
+		return false
+	return DiveRun.breath_telling(_breath_t, Tunables.get_num("dive_breath_period"))
+
+
+## HOW HARD IT IS INHALING this tick, 0..1. The world multiplies this by the
+## field and the F2 strength; 0 covers "not breathing", "rearing" and "levered
+## off" alike, so the world has exactly one number to ask for.
+func breath_pull() -> float:
+	if not _breath_armed():
+		return 0.0
+	return DiveRun.breath_cycle(_breath_t, Tunables.get_num("dive_breath_period"))
+
+
+## WHERE THE AIR IS GOING: the maw in world space — the pinned derived bite
+## point, which is the mouth for the grab and therefore the mouth for the
+## breath. Public because the world needs it to place the field; `_mouth_world`
+## stays the internal name the grab paths already use.
+func maw_world() -> Vector2:
+	return _mouth_world()
+
+
+## P3, THE SINK: swim back to the den and hold there, under the roof. Applied
+## AFTER the base tick so it rides on top of the swim bladder (which is what
+## actually holds the altitude once it arrives) rather than replacing it.
+##
+## Not a new movement mode — a central force toward a point, which is what every
+## other branch of this brain already is. It stops pushing inside a half body
+## height of home, so the arrival is a settle rather than an oscillation.
+func _swim_to_the_den() -> void:
+	if den_anchor == Vector2.INF or whale == null or not is_instance_valid(whale):
+		return
+	var to := den_anchor - whale.global_position
+	var hold := maxf(whale.solid_bounds.size.y, whale.scale_unit * Ship.CELL) \
+		* SINK_HOLD_HEIGHTS
+	if to.length() <= hold:
+		return
+	whale.apply_central_force(to.normalized() * SINK_ACCEL * whale.scale_unit
+		* whale.mass)
 
 
 ## --- The heave's arithmetic, pure ------------------------------------------

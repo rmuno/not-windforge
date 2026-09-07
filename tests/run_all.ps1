@@ -89,9 +89,15 @@ if ($LASTEXITCODE -ne 0) { $failed += "net_smoke" }
 
 # SAFETY NET: no test Godot may outlive the runner (a hung headless process is
 # invisible load on the play machine). CONSOLE-exe only -- the owner editor
-# is the GUI exe and must never be touched.
-Get-Process "Godot_v4.6-stable_win64_console" -ErrorAction SilentlyContinue |
-    Stop-Process -Force -ErrorAction SilentlyContinue
+# is the GUI exe and must never be touched. SCOPED TO THIS PROJECT'S PATH
+# (2026-09-06): four worktrees run suites at once on the owner's box, and the
+# unscoped kill took the OTHER runners' Godots down mid-run (an import killed
+# under a sibling -> stale class cache -> "Ship" not declared -> nine suites
+# failed at once). Match on the --path this runner passes.
+$projKey = (Resolve-Path $project).Path.TrimEnd('\').Replace('/', '\')
+Get-CimInstance Win32_Process -Filter "Name = 'Godot_v4.6-stable_win64_console.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and ($_.CommandLine.Replace('/', '\') -like "*$projKey*") } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 # WEB RENDERER GUARD (owner 2026-08-25): editor re-saves of project.godot have
 # twice DROPPED the [rendering] section, and without the gl_compatibility web

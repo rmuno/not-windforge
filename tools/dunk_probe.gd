@@ -3,6 +3,12 @@ extends SceneTree
 ## THE DUNK, MEASURED (DESIGN_KRAKEN §5.1 / §7 slice 5).
 ##
 ##   godot --headless --path . --script tools/dunk_probe.gd
+##   godot --headless --path . --script tools/dunk_probe.gd -- --seed 892583619
+##
+## The second form pins the run's seed, which is the only way two of these
+## numbers are comparable: since v0.154.0 the seed decides the GROUND, so a
+## fresh run drops the prey down a different column with a different amount of
+## air under it. Every run prints its own seed — feed it back to re-fly it.
 ##
 ## The design's headline piece of sharp knowledge is a claim about shipped code,
 ## not a feature: *"a kraken is held up by MUSCLE, not lift; your lift props blow
@@ -57,8 +63,18 @@ func _initialize() -> void:
 	pl = world.get("player")
 	print("\n=== THE DUNK — headless measurement (8x, the shipped scene) ===")
 
+	# FLY THE SAME SKY TWICE. Since v0.154.0 a run rolls a fresh seed and that
+	# seed decides the GROUND, not just the ladder — so this probe picks a
+	# different open column over the lava on every boot, and its "seconds to the
+	# core" is a different fall each time. A before/after on one code change is
+	# only a measurement if both halves flew the same sky.
+	var pinned := _seed_from_args()
+	if pinned != 0:
+		world.call("pin_dive_seed", pinned)
 	world.call("begin_dive")
 	await _frames(10)
+	print("SEED: %d%s" % [int((world.get("dive") as Object).get("seed_v")),
+		"  (pinned)" if pinned != 0 else "  (fresh — pass it back as --seed to re-fly it)"])
 	var hull = _nearest_hull()
 	if hull == null:
 		print("!! no candidate hull on the deck — nothing to hover with")
@@ -91,11 +107,13 @@ func _measure_the_dunk() -> void:
 		% [floor_y, lava, lava - floor_y])
 
 	# HOW CLOSE MUST YOU HOVER? The jet is `WASH_RANGE_CELLS` 8 cells long
-	# (1,024 px at 8×) and the world samples it at the prey's ORIGIN
-	# (`_apply_prop_wash` asks `body.global_position`), which is half a body
-	# BELOW its own back. That is not a rhetorical question — it is the
-	# difference between a move and a myth. Sampled as a pure function of the
-	# hull, with no second body in the reading at all.
+	# (1,024 px at 8×). It used to be sampled at the prey's ORIGIN, half a body
+	# BELOW its own back, which spent that half body of jet on air the animal was
+	# not standing in — the 7.2 s this probe first measured. Since 2026-09-06 the
+	# sweep samples `Ship.wash_sample_toward(nearest_wash_prop)`: the prey's own
+	# SURFACE, facing the prop. This table is still a pure function of the hull,
+	# with no second body in the reading at all — what changed is how far down it
+	# a given animal now counts as standing.
 	var prop := _lift_prop(hull)
 	print("\n  the jet, along its own axis (px below a lift prop's centre):")
 	for along in [1100.0, 1024.0, 1000.0, 900.0, 700.0, 500.0, 300.0, 150.0]:
@@ -104,10 +122,11 @@ func _measure_the_dunk() -> void:
 		print("    %5.0f px down the jet -> %7.0f px/s^2 (%.2f g)"
 			% [along, a.y, a.y / (980.0 * 8.0)])
 	var below_prop: float = hull.solid_bounds.end.y - prop.y
-	print("    the prop sits %.0f px above this hull's own keel, so a prey whose origin"
+	print("    the prop sits %.0f px above this hull's own keel, so the jet reaches"
 		% below_prop)
-	print("    is H px under its own back leaves (1024 - %.0f - H) px of clear air."
+	print("    (1024 - %.0f) px of clear air below that keel — and it is the prey's"
 		% below_prop)
+	print("    BACK that has to be inside it now, not its origin half a body lower.")
 
 	# THE PREY. Placed over OPEN LAVA, well off the landing column and well below
 	# the rungs: a body dropped on a slab is ejected by it the moment terrain
@@ -216,7 +235,12 @@ func _run_the_dunk(beast, lava: float) -> void:
 			lost = "the hull was destroyed at t=%.2f s — you cannot ride it down and live" % t
 			break
 		_hold_hull()
-		var wash: Vector2 = hull2.wash_accel_at(beast.global_position) * mult
+		# READ WHERE THE SWEEP READS. `_apply_prop_wash` samples the prey's own
+		# surface facing the nearest prop, so instrumentation that still asked at
+		# the origin would report a jet the physics is not applying (and did:
+		# 7 frames of 1,080 px/s² while the dunk was in fact working).
+		var wash: Vector2 = hull2.wash_accel_at(beast.wash_sample_toward(
+			hull2.nearest_wash_prop(beast.global_position))) * mult
 		if wash != Vector2.ZERO:
 			jet_frames += 1
 			# The NET acceleration the prey actually gets while the jet is on it:
@@ -272,15 +296,16 @@ func _run_the_dunk(beast, lava: float) -> void:
 ## Park the hull with a LIFT PROP directly over the prey's origin, `along` px up
 ## the jet. Both details are load-bearing and cost this probe two rewrites:
 ##
-##   * `Ship.wash_accel_at` samples ONE point (the world's per-frame sweep asks
-##     for `body.global_position`) and rejects it unless it is inside a prop's
-##     own width band (`half_width × 1.5`, ~192 px at 8×). "Directly above it"
-##     therefore means above a PROP, not above the hull — park by hull origin and
-##     whether the jet bites at all is an accident of where starter.ship happens
-##     to draw its lift columns.
+##   * `Ship.wash_accel_at` samples ONE point and rejects it unless it is inside
+##     a prop's own width band (`half_width × 1.5`, ~192 px at 8×). "Directly
+##     above it" therefore means above a PROP, not above the hull — park by hull
+##     origin and whether the jet bites at all is an accident of where
+##     starter.ship happens to draw its lift columns.
 ##   * The jet is `WASH_RANGE_CELLS` 8 cells long — 1,024 px at 8× — measured
-##     from the PROP's centre, and the prey's origin sits half a body below its
-##     back. So the useful axis is distance-along-the-jet, not clear air.
+##     from the PROP's centre. So the useful axis is distance-along-the-jet, not
+##     clear air. Since the sample-point fix the point being tested is the prey's
+##     BACK rather than its origin, which buys the jet back the half body it was
+##     spending on empty air.
 ##
 ## Velocity is zeroed on both: this measures the jet, not whatever the two were
 ## doing beforehand.
@@ -372,7 +397,10 @@ func _measure_the_roof() -> void:
 		await world.get_tree().physics_frame
 		if not is_instance_valid(boss) or not is_instance_valid(hull):
 			break
-		if hull.wash_accel_at(boss.global_position) != Vector2.ZERO:
+		# At the sweep's own sample point (the boss's BACK, facing the prop) —
+		# which is the harder test for the roof, being half a body nearer.
+		if hull.wash_accel_at(boss.wash_sample_toward(
+				hull.nearest_wash_prop(boss.global_position))) != Vector2.ZERO:
 			jet += 1
 	var moved: float = (boss.global_position.y - y0) if is_instance_valid(boss) else INF
 	print("  slab %.0f x %.0f px; the boss's back sits %.0f px under it"
@@ -382,11 +410,34 @@ func _measure_the_roof() -> void:
 	print("  after %.0f s of hovering on the roof the boss moved %.0f px (%s) and spent"
 		% [ROOF_SECONDS, moved, "DOWN" if moved > 0.0 else "UP"])
 	print("  %d of %d frames inside the jet" % [jet, int(ROOF_SECONDS * 60.0)])
-	print("  THE ROOF %s the dunk." % ("PREVENTS" if jet == 0 and moved < 400.0
+	# THE VERDICT IS THE SINK, NOT THE JET. The roof's whole job is that a hull
+	# parked on it cannot drop the boss into the core, and the honest test of that
+	# is whether the boss went DOWN. Folding "no frame of jet at all" into the
+	# same sentence read a boss that RISES 1,538 px as a failed roof the moment
+	# one frame of jitter clipped the draught (it did, once the sample point moved
+	# to the back). The clearance is a separate line now, because it is a separate
+	# fact — and a thin one is worth saying out loud without calling it a loss.
+	print("  THE ROOF %s the dunk." % ("PREVENTS" if moved < 400.0
 		else "DID NOT PREVENT"))
+	if jet > 0:
+		print("  !! the clearance is THIN: %d frame(s) put the boss's BACK inside the"
+			% jet)
+		print("     jet even so. The slab holds it, but not with room to spare.")
 
 
 ## --- plumbing ---------------------------------------------------------------
+
+## The seed asked for on the command line, or 0 for a fresh one. User args
+## survive `--script` and land in `OS.get_cmdline_user_args()` after a bare `--`,
+## the same idiom `tools/dive_probe.gd --seed N` and `tests/pilot_test.gd
+## --scale 8` already use.
+func _seed_from_args() -> int:
+	var args := OS.get_cmdline_user_args()
+	var i := args.find("--seed")
+	if i >= 0 and i + 1 < args.size():
+		return int(args[i + 1])
+	return 0
+
 
 func _frames(n: int) -> void:
 	for i in n:

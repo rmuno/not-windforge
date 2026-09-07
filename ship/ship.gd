@@ -366,6 +366,22 @@ var creature_kind := ""
 var hull_integrity := 0.0
 var hull_integrity_max := 0.0
 
+## ONE CONTACT, ONE POOL BILL (v0.155.0, found by tools/dive_probe.gd). While a
+## crush walk is spending itself inward, `damage_cell` BANKS its structural loss
+## here instead of draining `hull_integrity`, and `_settle_crush_pool_bill`
+## charges the pool once for the whole contact, capped by `dive_crush_pool_cap`.
+## -1.0 means "no walk in progress" — every other damage path (shots, fire,
+## blasts, the mouth) drains the pool directly, exactly as before.
+##
+## Why: the walk destroys many cells legitimately and each one used to bill, so
+## a bill was really "hp along the whole inward line" — a whale ram or a landing
+## slab spends a budget in the hundreds of thousands and the walk marches tens of
+## 100-hp hull cells deep, which is a 3,000 pool several times over from ONE
+## touch. Measured: one terrain crash billed 237,391 of damage and took the whole
+## pool at depth 4 (seed 565218463). BLOCKS are untouched by this — the same
+## cells still come off; only the pool stops being billed per cell.
+var _crush_pool_bill := -1.0
+
 ## HOW MUCH OF `hull_integrity_max` THE RUN'S CARDS PAID FOR (v0.140.0). The Dive
 ## deck's flat `max_hp` channel raises the POOL while you are aboard, and the
 ## world stamps it every tick — so, exactly like `Player.bonus_max_health`, the
@@ -2309,6 +2325,70 @@ func wash_accel_at(global_pos: Vector2) -> Vector2:
 	return out
 
 
+## WHERE THE DRAUGHT MEETS THIS BODY: the point of its own solid bounds nearest
+## `from` — its BACK when the emitter is above it, its flank when alongside.
+##
+## The wash sweep used to ask `wash_accel_at(body.global_position)`, and a
+## body's origin is half a body BELOW its own back (DESIGN_KRAKEN slice 5's open
+## item (b)): a whole half-body of the 1,024-px jet was spent reaching air the
+## animal was not standing in, and the design's ~2.7 g shove arrived as 0.17 g
+## net. The jet is a directional field, so the honest sample is the surface it
+## actually blows on — the same thing every "is it in the draught" question
+## means in the first place.
+##
+## MEASURED on one pinned sky (`dunk_probe -- --seed 892583619`): 0.17 g -> 1.22 g
+## net while the jet is on the animal, and 13.40 s -> 11.95 s to the core. FEWER
+## frames of contact (141 -> 20) buying a faster sink is the whole shape of it —
+## the old sample counted a long tail of feeble draught at the jet's far end,
+## where the new one lands near the strong end and actually moves the body.
+##
+## `from` IS THE PROP, not the emitting ship — pass `nearest_wash_prop`. A jet
+## starts at a propeller and only counts points inside that prop's own width
+## band (`half_width × 1.5`, ~192 px at 8×), so measuring toward a hull's ORIGIN
+## instead walks the sample sideways by however far that hull happens to draw
+## its lift columns from its origin — straight out of the band. (Measured: the
+## dunk went from 7.2 s to NEVER on that mistake.)
+##
+## ONE AXIS MOVES — the one the prop is mostly along — and the other keeps the
+## body's own origin, so the two cases that exist stay separate: a prop above
+## blows on the BACK directly under it, a prop alongside blows on the near
+## FLANK, and neither is ever traded for the other.
+##
+## AABB, not the grid: `solid_bounds` is derived at rebuild and is body-local px
+## already scaled (CODEMAP §2), so this is one clamp and no walk of an 11,000
+## cell dictionary in a per-frame sweep. Rotation is ignored for the same
+## reason — a creature's pose tilt is ±0.55 rad of cosmetic lean, and the sample
+## it moves stays on the body it is meant to be on.
+func wash_sample_toward(from: Vector2) -> Vector2:
+	var b := solid_bounds
+	if b.size == Vector2.ZERO:
+		return global_position
+	var rel := from - global_position
+	if absf(rel.x) >= absf(rel.y):
+		return global_position + Vector2(clampf(rel.x, b.position.x, b.end.x), 0.0)
+	return global_position + Vector2(0.0, clampf(rel.y, b.position.y, b.end.y))
+
+
+## THE GLOBAL CENTRE OF THE PROP NEAREST `pos` — where this ship's jet actually
+## comes from, and therefore the point a victim's surface has to be measured
+## toward (see `wash_sample_toward`). Its own origin when it has no props at all,
+## which is the old behaviour for anything that cannot blow anyway.
+##
+## Cheap by construction: `_wash_props` is one entry per propeller CLUSTER (a
+## handful even on a big hull), and the wash sweep only asks after its coarse
+## distance gate has already passed.
+func nearest_wash_prop(pos: Vector2) -> Vector2:
+	var best := global_position
+	var best_d := INF
+	for prop in _wash_props:
+		var at := to_global(prop["center"] as Vector2)
+		var d := at.distance_squared_to(pos)
+		if d < best_d:
+			best_d = d
+			best = at
+	return best
+
+
 ## Is anything blowing at all? A cheap gate for the world's per-frame wash
 ## sweep: a ship with no props, no power or no throttle open emits nothing, and
 ## most of the fleet is in that state most of the time.
@@ -2666,6 +2746,9 @@ func _process(delta: float) -> void:
 			step = Vector2i(0, -1)
 		var walk := cell
 		var remaining := available
+		# Open this contact's pool account: every `damage_cell` in the walk banks
+		# into it instead of draining, and it is settled ONCE below.
+		_crush_pool_bill = 0.0
 		while blocks.has(walk) and remaining > 0.0:
 			var hp: float = blocks[walk]["hp"]
 			# A cell may RESIST the crush (gasbags deform, they don't shatter —
@@ -2685,6 +2768,9 @@ func _process(delta: float) -> void:
 				break
 			remaining -= cost
 			walk += step
+		# Settle the contact's pool bill: once, capped. Before the emit below so
+		# a hull that dies to this contact dies with the number it earned.
+		_settle_crush_pool_bill()
 		# Collision damage landed: float a number at the world contact point
 		# (owner 2026-08-22). `available - remaining` is what the hull actually
 		# absorbed — zero when a fully immune/whiffed crush changed nothing.
@@ -3067,6 +3153,31 @@ func grant_bonus_integrity(bonus: float) -> void:
 	hull_integrity = clampf(hull_integrity + maxf(gained, 0.0), 0.0, hull_integrity_max)
 
 
+## Charge the pool for ONE crush contact and close its account (v0.155.0).
+##
+## The bill banked by the walk is "structural hp really removed, cell by cell
+## along the inward line" — the right shape, the wrong SIZE at 8×: a crush budget
+## is momentum-sized (hundreds of thousands) while a cell is 100 hp, so a single
+## ram or landing walks tens of cells deep and bills a 3,000 pool many times over.
+## `dive_crush_pool_cap` is the ceiling, as a share of the hull's own
+## `hull_integrity_max`, so it reads the same on your 3,000 pool, on a picket's
+## 600, and on a pool a card has widened: "one contact can cost at most this much
+## of the ship". 1.0 restores the uncapped bill.
+##
+## Only the POOL is capped. Every block the walk destroyed still goes — a ram
+## still takes a bite out of the hull you can see, it just cannot also delete the
+## run in a single touch. No-op on an unarmed hull, which is every ship outside a
+## Dive run.
+func _settle_crush_pool_bill() -> void:
+	var bill := _crush_pool_bill
+	_crush_pool_bill = -1.0
+	if bill <= 0.0 or hull_integrity_max <= 0.0:
+		return
+	var cap := clampf(Tunables.get_num("dive_crush_pool_cap"), 0.0, 1.0) \
+		* hull_integrity_max
+	hull_integrity = maxf(0.0, hull_integrity - minf(bill, cap))
+
+
 ## `crush` marks the COLLISION path (the crush walk above), which has already
 ## divided its bruise by the struck cell's `collision_resist` and must not be
 ## armoured twice. Everything else — every shot, the mouth grab, fire, a blast —
@@ -3151,7 +3262,12 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 		elif shade_bucket(blocks[c]["hp"], hp_max) != was:
 			shade_moved = true
 	if hull_integrity_max > 0.0 and structural > 0.0:
-		hull_integrity = maxf(0.0, hull_integrity - structural)
+		# INSIDE A CRUSH WALK the bill is banked, not spent: one contact bills the
+		# pool once, capped (see `_crush_pool_bill` / `_settle_crush_pool_bill`).
+		if _crush_pool_bill >= 0.0:
+			_crush_pool_bill += structural
+		else:
+			hull_integrity = maxf(0.0, hull_integrity - structural)
 	damaged.emit(cell, amount)
 	if dead.is_empty():
 		if shade_moved:
