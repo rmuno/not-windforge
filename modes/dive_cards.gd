@@ -52,7 +52,10 @@ extends RefCounted
 ##   flags: ["flag_name"]                    — a RULE turned on, not a number moved
 ##     The third channel, and the smallest (v0.134.0). Some cards do not scale
 ##     anything: they lift a restriction or arm a one-shot. A flag is held or it
-##     is not, and the world asks `_dive_flag("x")`.
+##     is not, and it is read WHERE IT FIRES (`DiveRun.flag`), not stamped on a
+##     body from the world's tick the way a dial is — which is why there is no
+##     `world._dive_flag` twin of `_dive_mod`/`_dive_add` (deleted 2026-09-07: a
+##     one-shot has to be spent as well as read, so the reader lives on the run).
 ##     flags wired today: "second_heart" (the first lethal blow of a run leaves
 ##     you at 1 HP instead; the run model spends it once — `DiveRun.spend_second_heart`).
 ##   procs: [{on, effect, amount}]           — fired when the world emits `on`
@@ -337,7 +340,8 @@ const DIALS := ["damage", "fire_rate", "hull_repair", "thrust", "dive_rate",
 ## differently — a missing multiplier is 1.0 and a missing addend is 0.0, and a
 ## key in the wrong one would silently do nothing at all.
 const ADDS := ["max_hp"]
-## Rule switches a `flags` entry may name (the world's `_dive_flag` call sites).
+## Rule switches a `flags` entry may name, read through `DiveRun.flag` at the
+## moment the rule fires (see the `flags:` note in the header).
 const FLAGS := ["second_heart"]
 
 
