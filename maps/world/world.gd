@@ -290,6 +290,11 @@ func _apply_boot_mode() -> void:
 	var chosen := GameMode.take()
 	if dive_native:
 		begin_dive()
+		# TAKEN HERE TOO. `take_try_path` is a one-reader latch, and this early
+		# return used to skip it — so a blueprint the drafting table sent out to be
+		# flown survived a Dive boot and re-spawned itself in the NEXT expedition.
+		# A run does not fly somebody's draft; taking it is what forgets it.
+		GameMode.take_try_path()
 		return
 	match chosen:
 		GameMode.SANDBOX:
@@ -1242,6 +1247,16 @@ func backdrop_status() -> Variant:
 func begin_dive() -> void:
 	if Net.is_online() and not Net.is_server():
 		return
+	# A SECOND RUN STARTS FROM NOTHING. `begin_dive` is reachable with a run
+	# already live (the F2 debug window's own button, pressed twice), and it reset
+	# the MODEL while leaving the previous run's WORLD standing: the old launch
+	# deck, its outposts, its husks (the list was cleared without freeing a single
+	# body) and its whole picket list, which run two then kept stamping, hunting
+	# and counting against its own cap. Tearing the old one down first is exactly
+	# what `end_dive` is for, and on the ordinary path (title → PLAY → [3]) there
+	# is no run here, so this never fires.
+	if dive != null:
+		end_dive()
 	dive = DiveRun.new()
 	_dive_shipless = 0.0
 	_dive_went_shipless = false
@@ -1306,6 +1321,33 @@ func end_dive() -> void:
 	if is_instance_valid(player):
 		player.fall_damage_mult = 1.0
 		player.grant_bonus_health(0.0)
+	# ...AND SO DOES EVERY OTHER HULL THE RUN WAS FLYING. `_tick_dive` stamps the
+	# run's whole flight model on every listed vessel — the floored air, the rate
+	# stick and its two speeds — and `_dive_spawn_picket` arms its integrity pool;
+	# `_dive_weather` stamps the airstream on ALL of them, creatures included.
+	# Clearing the LIST left those bodies in the world still breathing the run's
+	# air, still flying its controller and still carrying a stale downdraft, which
+	# is the exact leak the local-hull block above exists to prevent. Same reset,
+	# same reasons, one loop.
+	for sid in _dive_surged:
+		var flown := instance_from_id(sid) as Ship
+		if flown == null or not is_instance_valid(flown):
+			continue
+		flown.air_density_floor = 0.0
+		flown.rate_control = false
+		flown.climb_rate_max = 0.0
+		flown.dive_rate_max = 0.0
+		flown.extra_wind = Vector2.ZERO
+		flown.hull_integrity_max = 0.0
+		flown.hull_integrity = 0.0
+		flown.card_integrity_bonus = 0.0
+		flown.modulate = Color(Color.WHITE, flown.modulate.a)
+	# A DRAFT NEVER OUTLIVES ITS RUN. The picker holds the tree (`get_tree().paused`),
+	# and the only thing that lets go is taking a card — so a run torn down with an
+	# offer still open (quit to title from the pause menu, a ledger dismissed on the
+	# same frame) left the NEXT scene booted paused, with nothing left alive that
+	# knew to release it.
+	_dive_unpause_draft()
 	dive = null
 	_dive_shipless = 0.0
 	_dive_pressing = 0.0
@@ -4021,7 +4063,15 @@ func dive_status() -> Variant:
 		return null
 	var out := dive.ledger()
 	out["depths"] = DiveRun.DEPTHS
-	out["shipless"] = not dive.committed
+	# "NO SHIP" IS ABOUT RIGHT NOW, NOT ABOUT WHETHER YOU EVER TOOK ONE. This read
+	# `not dive.committed`, so once the hull you committed to blew apart the gauge
+	# claimed you still had one: `shipless` false, `hull_frac` -1, and the HUD
+	# therefore painted NOTHING where the hull line goes — no percentage and no
+	# "no ship" — in the one state the player most needs told about. The run model
+	# keeps `committed` for what it is for (which ending fires); the painter asks
+	# the live question.
+	out["shipless"] = not (is_instance_valid(local_ship)
+		and local_ship.hull_integrity_max > 0.0)
 	out["depth_label"] = DiveRun.depth_label(dive.depth)
 	out["headline"] = DiveRun.outcome_line(out)
 	# Hull integrity (v0.111.0): the committed hull's pool as a fraction, or -1
@@ -7899,6 +7949,14 @@ func _build_target(cursor: Vector2) -> Ship:
 ## per-cell can_place_at holds down the whole chain. Returns whether the
 ## stamp was placed.
 func try_build_block(ship: Ship, cell: Vector2i) -> bool:
+	# THE DIVE IS NOT A BUILDING GAME (docs/KEYBINDINGS.md: Q place is "no" in a
+	# run). `dive_style()` already turned off the palette, the ghost, terrain
+	# painting and digging — but the two verbs that actually WRITE a grid sat in
+	# `_process` outside every one of those gates, so Q still stamped a block and
+	# C still severed one inside a live run. Gated at the VERB rather than at the
+	# keypress, so the refusal is one predicate the suite can call directly.
+	if dive_style():
+		return false
 	if ship == null or not is_instance_valid(ship):
 		return false
 	# snapped_stamp magnetises a bundle to the nearest legal spot around the
@@ -7920,6 +7978,8 @@ func try_build_block(ship: Ship, cell: Vector2i) -> bool:
 ## snapshotted first: removals can sever, and severing mid-walk must not
 ## re-derive the machine.
 func try_remove_block(ship: Ship, cell: Vector2i) -> bool:
+	if dive_style():
+		return false   # see try_build_block — a run does not deconstruct either
 	if ship == null or not is_instance_valid(ship) or not ship.has_block(cell):
 		return false
 	var type: int = ship.blocks[cell]["type"]
