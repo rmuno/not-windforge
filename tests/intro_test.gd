@@ -32,6 +32,10 @@ func _initialize() -> void:
 	# a full run used to wipe the real bestiary + card gallery. Redirect first,
 	# before anything can touch disk.
 	Profile.path = "user://profile_test.json"
+	# ...and the SAVED SHIPS shelf (Q-T): the Dive's launch deck moors what it
+	# finds there, so every suite gets its own empty scratch directory rather
+	# than the owner's real one (or another suite's fixtures).
+	ShipLayout.user_dir = "user://ships_test_intro"
 	print("\n=== intro scene ===\n")
 	var packed: PackedScene = load("res://maps/intro/intro.tscn")
 	_ok(packed != null, "maps/intro/intro.tscn loads")

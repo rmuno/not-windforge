@@ -31,6 +31,26 @@ const MAPROOM := "maproom"
 ## it, so a later reset or reload does not silently re-enter a mode.
 static var pending := EXPEDITION
 
+## THE DRAFTING TABLE'S "TRY IT" (owner arc Q-T, 2026-09-02): a `.ship` path the
+## next world should spawn in front of the player, then forget. Same static-var
+## trick as `pending`, for the same reason — the table is its own scene and the
+## world is another one, and the choice has to cross that boundary without a
+## second autoload.
+##
+## Its presence ALSO puts the world in the quiet boot (`world._booting_quiet`):
+## you are looking at one design, and the pod, the krakens, the hulk, the trainer
+## and the boss are all somebody else's content in that moment.
+static var try_path := ""
+
+
+## Take the try-file, leaving nothing behind. One reader, once — exactly like
+## `take()`, and for the same reason: a stale path would re-spawn the design into
+## the next world the player opens, including a reset of this one.
+static func take_try_path() -> String:
+	var chosen := try_path
+	try_path = ""
+	return chosen
+
 
 static func is_known(name: String) -> bool:
 	return name in [EXPEDITION, SANDBOX, DIVE, BUILDER, MAPROOM]

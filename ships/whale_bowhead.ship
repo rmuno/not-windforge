@@ -1,6 +1,11 @@
 # barrelback.ship — a bowhead-style tank of the pod
 # short, extremely fat, deep-bodied barrel; huge blunt head leads on the right,
 # stubby tail flukes tuck to the left. The roundest, deepest whale in the sky.
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Bowhead Whale
+kind whale
+
 origin 10 4
 .........WWWWWW...
 ......WWWWWWWWWWW.

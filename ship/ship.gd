@@ -426,6 +426,17 @@ const FACTION_WRECK := 3
 ## networked client must log its own sightings.
 var variety := ""
 
+## WHAT KILLING THIS BODY PAYS IN A DIVE, from its blueprint's `bounty` header
+## (owner arc Q-T). −1 means "no override": the run falls back to
+## `DiveRun.KIND_COIN` by `creature_kind`, exactly as it always has. Set at spawn
+## from `ShipLayout.load_meta`, so a headerless stock file is worth what it was
+## worth yesterday.
+##
+## LOCAL like `variety`, and for the same reason: the Dive is single-player, the
+## credit happens on the machine that spawned the body, and a payload field costs
+## wire budget for a mode that has no wire. Promote it the day a run replicates.
+var bounty := -1
+
 ## --- Tethered lift balloons (carcass-as-airship, owner 2026-08-23) ------------
 ## Helium balloons bolted onto a body's cell by cable(s): EXTERNAL lift you attach
 ## to a corpse (which has none of its own) to fly it. Buoyancy alone only floats;
@@ -2638,7 +2649,10 @@ func _process(delta: float) -> void:
 			# ridden-mining immunity is gone: durability is EARNED by shell, not a
 			# flag, so a half-mined nose loses its armor exactly as its shell strips.
 			var billed := available * factor / BlockDB.collision_resist(blocks[cell]["type"])
-			damage_cell(cell, billed, false)
+			# crush=true: the bruise is ALREADY divided by this cell's armour on
+			# the line above, so the living branch must not tax it a second time
+			# (the shell tax there is for SHOTS — see damage_cell).
+			damage_cell(cell, billed, false, [], true)
 			# A living creature's crash also floats a number at the contact point
 			# (owner 2026-08-22) — coalesced by the listener so a crush against a
 			# wall shows one growing number, not a spray.
@@ -2677,7 +2691,7 @@ func _process(delta: float) -> void:
 			# rebuild_now=false: ONE rebuild after the whole batch — the
 			# belly-flop freeze was a full rebuild (11k-block greedy merge)
 			# per crunched cell, all in a single frame.
-			var died := damage_cell(walk, remaining / resist, false)
+			var died := damage_cell(walk, remaining / resist, false, [], true)
 			_rebuild_dirty = _rebuild_dirty or died
 			var cost := hp * resist  # budget this cell soaks before it breaks
 			if remaining < cost:
@@ -3067,17 +3081,37 @@ func grant_bonus_integrity(bonus: float) -> void:
 	hull_integrity = clampf(hull_integrity + maxf(gained, 0.0), 0.0, hull_integrity_max)
 
 
+## `crush` marks the COLLISION path (the crush walk above), which has already
+## divided its bruise by the struck cell's `collision_resist` and must not be
+## armoured twice. Everything else — every shot, the mouth grab, fire, a blast —
+## is a hit ON A CELL and pays the creature's shell tax below.
 func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
-		dead_out: Array = []) -> bool:
+		dead_out: Array = [], crush := false) -> bool:
 	if not blocks.has(cell):
 		return false
 	# A LIVING creature absorbs everything into its shared pool — blocks
 	# break only on a carcass (see "Creature body" above). Still emits
 	# `damaged`, so provocation works; still redraws, so the wound shows.
 	if shared_health_max > 0.0 and shared_health > 0.0:
+		# THE THROAT IS REAL (v0.147.0, DESIGN_KRAKEN §1.1 / jam #3 finding 1).
+		# Until now this branch threw the struck cell away: shell and meat were
+		# identical to gunfire, though the bodies are AUTHORED as a shell casing
+		# around a meat interior and jam #2's anatomy ruling depends on the
+		# difference. Now a shot into SHELL drains the pool at
+		# 1/`creature_shell_resist` and a shot into exposed meat drains 1:1, so
+		# aiming — the coil's opening throat, the glide's exposed flank — is the
+		# skill that shortens a 1,200-pool kraken from 120 seconds to 30.
+		#
+		# A NEW LEVER, not `collision_resist`: `block_db.gd` warns in as many
+		# words that combat must never read that column, or a vessel's gasbag
+		# (resist 10) goes bullet-resistant. And CREATURES ONLY, because a
+		# vessel has no shared pool and never reaches this branch at all.
+		var drained := amount
+		if not crush and int(blocks[cell]["type"]) == BlockDB.Type.SHELL:
+			drained = amount / maxf(Tunables.get_num("creature_shell_resist"), 1.0)
 		var pool_bucket := shade_bucket(shared_health, shared_health_max)
-		shared_health = maxf(0.0, shared_health - amount)
-		damaged.emit(cell, amount)
+		shared_health = maxf(0.0, shared_health - drained)
+		damaged.emit(cell, drained)
 		flash_hit()   # a quick red pulse so a landed hit READS (charter §5)
 		# Whole-body wound shading has 6 visible steps. The step is a uniform
 		# darkening, so it lands as a per-tile self_modulate — no repaint at
@@ -3106,17 +3140,25 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 	var dead: Array[Vector2i] = []
 	var shade_moved := false
 	# Structural hp REALLY removed this hit — what an armed hull's integrity
-	# pool drains by. Capped at each cell's remaining hp on purpose: a 9999
+	# pool drains by. Capped at the struck cell's remaining hp on purpose: a 9999
 	# overkill on a 60 hp block costs the pool 60, so integrity measures the
-	# ship actually being destroyed, never a weapon's number. (A component's
-	# cells all take the hit, and all of them count — components are valuable.)
-	var structural := 0.0
+	# ship actually being destroyed, never a weapon's number.
+	#
+	# A COMPONENT DRAINS THE POOL ONCE, NOT ONCE PER CELL (2026-09-06, found by
+	# tools/dive_probe.gd). A component's cells all take the hit as ONE unit —
+	# that is the owner's rule for machines and balloons — and this loop used to
+	# add every member's loss to the pool. At 1× a component was one cell and
+	# the two readings agreed; at 8× the starter's canopy is a 1,536-cell
+	# cluster, so ONE 20-hp shell into a gasbag drained 30,720 against a 3,000
+	# pool — the whole run's life, ten times over, with zero blocks destroyed —
+	# and a picket's 600 pool died to any shell that found its bag. The pool now
+	# bills the component as the one part it is: the struck cell's own loss.
+	var structural := minf(amount, maxf(blocks[cell]["hp"], 0.0)) if blocks.has(cell) else 0.0
 	for c in members:
 		if not blocks.has(c):
 			continue  # cluster map can be stale mid-batch
 		var hp_max := BlockDB.max_hp(blocks[c]["type"])
 		var was := shade_bucket(blocks[c]["hp"], hp_max)
-		structural += minf(amount, maxf(blocks[c]["hp"], 0.0))
 		blocks[c]["hp"] -= amount
 		if blocks[c]["hp"] <= 0.0:
 			dead.append(c)
@@ -4232,9 +4274,32 @@ func _paint_glyphs(on: CanvasItem) -> void:
 ## once across the cluster's bounds, scaled to fit. Owner spec for the 8×
 ## world: a 4×4 generator reads "E", propeller slabs read "P(V)"/"P(H)"
 ## by axis, doors carry two Ds at 25% and 75% of their height.
+##
+## EXCEPT BALLOONS, WHICH CLUSTER BY TILE (2026-09-06, v0.151.0). A cluster is
+## the unit `damage_cell` hits as one — every member takes the amount — and for
+## gasbags CONTIGUITY made that unit the ship's whole lift at 8×. The starter's
+## 24 authored gasbag cells upscale to ONE contiguous 1,536-cell region, so two
+## 20-hp turret shells popped the entire canopy (a gasbag cell has 35 hp) and a
+## single terrain graze deleted all 1,536 blocks in one crush walk — measured by
+## `tools/dive_probe.gd` at v0.149.0. The owner's "the blimp sections should be
+## one unit" rule was authored when a bag was a few cells at 1×; at 8× the same
+## words mean something 64× bigger than they meant.
+##
+## So a balloon UNIT is one AUTHORED cell: the `s × s`-aligned tile a cell
+## upscaled into (`ShipLayout.upscale_cells` maps authored `cell` to
+## `cell * s .. cell * s + s - 1`, so that tile IS the authored cell). Two
+## adjacent gasbag cells join only inside the same tile. Hand-placed bags at 8×
+## — the 4×4 `BUNDLE_8X` stamp — fall into whichever 8×8 tile they occupy, so a
+## unit is up to four stamps: still a bag-sized part, never the canopy.
+## At `s == 1` there is no tile and this is byte-identical to before.
+##
+## MACHINES (E / P(H) / P(V) / T / H / R / D) keep contiguity: they are RATED
+## components whose footprint IS the part, and a 4×4 engine taking a hit as one
+## machine is the rule working as intended.
 func _rebuild_glyph_clusters() -> void:
 	_glyph_clusters.clear()
 	_component_of.clear()
+	var s: int = maxi(1, int(round(scale_unit)))
 	var visited := {}
 	for cell in blocks:
 		if visited.has(cell):
@@ -4242,6 +4307,9 @@ func _rebuild_glyph_clusters() -> void:
 		var key := _glyph_key(cell)
 		if key == "":
 			continue
+		# Only balloons are tiled, and only when the grid was actually upscaled.
+		var tiled := key == "G" and s > 1
+		var tile := _tile_of(cell, s)
 		visited[cell] = true
 		var queue: Array[Vector2i] = [cell]
 		var cells: Array[Vector2i] = []
@@ -4251,9 +4319,14 @@ func _rebuild_glyph_clusters() -> void:
 			cells.append(c)
 			rect = rect.merge(Rect2(local_pos_of(c) - Vector2.ONE * CELL * 0.5, Vector2.ONE * CELL))
 			for n in _neighbours(c):
-				if not visited.has(n) and blocks.has(n) and _glyph_key(n) == key:
-					visited[n] = true
-					queue.append(n)
+				if visited.has(n) or not blocks.has(n) or _glyph_key(n) != key:
+					continue
+				# A tile is a rectangle and the fill never leaves it, so the seed's
+				# tile is every member's tile — one compare, no per-step bookkeeping.
+				if tiled and _tile_of(n, s) != tile:
+					continue
+				visited[n] = true
+				queue.append(n)
 		# Turrets get a firing arc: a 180° half-plane facing AWAY from the
 		# mounting (owner; matches the original). Hung under a strut →
 		# bears downward; bolted to a wall → bears outboard; corner mounts
@@ -4268,6 +4341,17 @@ func _rebuild_glyph_clusters() -> void:
 		for c in cells:
 			_component_of[c] = _glyph_clusters.size()
 		_glyph_clusters.append({"key": key, "rect": rect, "cells": cells, "facing": facing})
+
+
+## The `s × s`-aligned tile a live cell sits in — i.e. the AUTHORED cell it was
+## upscaled from (`ShipLayout.upscale_cells`). Balloons cluster by this, so one
+## authored gasbag cell is one balloon however big the world's scale is.
+##
+## `floori` over a FLOAT division on purpose: GDScript's int / int truncates
+## toward zero, which would fold cells −7..7 into one tile on a hull built out
+## past its own origin (place/deconstruct freely produce negative cells).
+static func _tile_of(cell: Vector2i, s: int) -> Vector2i:
+	return Vector2i(floori(float(cell.x) / float(s)), floori(float(cell.y) / float(s)))
 
 
 ## Propellers cluster by axis; gasbags cluster as balloons (one unit, no

@@ -170,6 +170,10 @@ var _dive_loft: Ship = null
 ## (owner 2026-08-30: "every level having some landmass … guardrailed and semi
 ## forced progress"), cut lazily one rung ahead of you.
 var _dive_landings := {}
+## The DEN'S ROOF, in world px — the slab cut over the Leviathan when it wakes
+## (`_dive_cut_den_roof`). Empty until depth 8; kept so the suite can measure the
+## thing rather than re-derive it, and cleared with the run.
+var _dive_den_roof := Rect2()
 ## This run's shelf size, sized against the hulls (see _dive_shelf_span).
 var _dive_shelf := Vector2.ZERO
 ## The launch deck this run raised, and the blueprint it was raised from — the
@@ -267,7 +271,11 @@ func _booting_the_dive() -> bool:
 ## own scene (maps/editor/), which never boots a world at all. `export_ship`
 ## (F2) stays: exporting what you built to a hull mid-expedition is still a verb.
 func _booting_quiet() -> bool:
-	return _booting_the_dive()
+	# ...and the DRAFTING TABLE’S "TRY IT" (Q-T): a world booted to look at ONE
+	# blueprint has no business spawning the pod, the krakens, the hulk, the
+	# trainer and the boss around it. This is the gate the retired mid-air
+	# Shipyard used, put back to the one use that still makes sense.
+	return _booting_the_dive() or GameMode.try_path != ""
 
 
 ## Open in whatever the boot decided, EXACTLY ONCE.
@@ -282,6 +290,11 @@ func _apply_boot_mode() -> void:
 	var chosen := GameMode.take()
 	if dive_native:
 		begin_dive()
+		# TAKEN HERE TOO. `take_try_path` is a one-reader latch, and this early
+		# return used to skip it — so a blueprint the drafting table sent out to be
+		# flown survived a Dive boot and re-spawned itself in the NEXT expedition.
+		# A run does not fly somebody's draft; taking it is what forgets it.
+		GameMode.take_try_path()
 		return
 	match chosen:
 		GameMode.SANDBOX:
@@ -290,6 +303,91 @@ func _apply_boot_mode() -> void:
 			begin_dive()
 		_:
 			pass   # expedition: the world is already the world
+	# ...and if the drafting table sent a blueprint out to be flown, put it in
+	# front of the body. TAKEN, like the mode, so a reset does not re-spawn it.
+	_spawn_try_ship(GameMode.take_try_path())
+
+
+## THE DRAFTING TABLE’S "TRY IT" (owner arc Q-T, 2026-09-02): boot a quiet world
+## with ONE blueprint in it, spawned through the SAME functions the game spawns
+## that kind of thing with. That last part is the whole value — a preview that
+## went down its own code path would be a preview of a different game.
+##
+##   vessel (or a file with no `kind`): a FROZEN faction-0 hull beside you, moored
+##     the way a launch-deck candidate is, so you can walk to it and take its helm.
+##   a creature kind: itself, faction 2, a screen away — alive, and it will notice
+##     you the way its brain always does.
+##   nest: the structure, frozen, a screen away, like a site’s own.
+##
+## Never fatal: an unreadable or unparseable file says so and leaves you in an
+## ordinary world.
+func _spawn_try_ship(path: String) -> void:
+	if path == "" or player == null or not is_instance_valid(player):
+		return
+	var text := FileAccess.get_file_as_string(path)
+	var cells := ShipLayout.parse(text)
+	if cells.is_empty():
+		_notify("that blueprint did not parse — nothing to try")
+		return
+	# Same granularity guard as the launch deck: a `scale N` file is already at
+	# that granularity and must not be upscaled again (the eightfold family).
+	var fs := maxi(1, ShipLayout.file_scale(text))
+	if world_scale % fs != 0:
+		_notify("that .ship is scale %d — this world is %d, and %d does not divide it"
+			% [fs, world_scale, fs])
+		return
+	var up := world_scale / fs
+	var meta := ShipLayout.parse_meta(text)
+	var kind := String(meta.get("kind", "vessel"))
+	var at := player.global_position
+	var body: Ship = null
+	if ShipEdit.is_creature_kind(kind):
+		# ONE SCREEN AWAY: close enough to see whole, far enough that a whale
+		# does not spawn inside the body looking at it.
+		at += Vector2(TRY_CREATURE_GAP * float(world_scale), 0.0)
+		match kind:
+			"kraken", "kraken_leviathan":
+				body = _spawn_one_kraken(path, at)
+			"basilisk":
+				body = _spawn_one_basilisk(at, path)
+			"critter":
+				body = _spawn_one_critter(at, path)
+			_:
+				body = _spawn_one_whale(path, at)
+	elif kind == "nest":
+		at += Vector2(TRY_CREATURE_GAP * float(world_scale), 0.0)
+		body = fleet.spawn_ship_from_cells(
+			ShipLayout.upscale_cells(cells, up), at, 0, 0.0,
+			float(world_scale), 2, {"is_nest": true})
+		if body != null:
+			body.freeze = true
+			body.rebuild()
+	else:
+		# A VESSEL moors like a launch-deck candidate: frozen (an unfrozen hull
+		# with lift climbs away while you walk toward it — the bug that took four
+		# rewrites of the deck), faction 0, helm boardable, its own width to one
+		# side so it is not spawned on top of you.
+		body = fleet.spawn_ship_from_cells(
+			ShipLayout.upscale_cells(cells, up),
+			at, 0, 0.0, float(world_scale), 0)
+		if body != null:
+			body.bounty = int(meta.get("bounty", -1))
+			# Rebuilt before it is measured: `solid_bounds` is what decides how
+			# far to one side it moors, and a hull spawned on top of the body is
+			# the launch deck's oldest bug in a new place.
+			body.rebuild()
+			_park_candidate(body, at + Vector2(
+				body.solid_bounds.size.x * 0.6 + 400.0 * float(world_scale), 0.0))
+	if body == null:
+		_notify("could not spawn that blueprint here")
+		return
+	var shown := String(meta.get("name", path.get_file().get_basename()))
+	_notify("Trying %s (%s)." % [shown, kind])
+
+
+## How far from the body a tried CREATURE stands — authored 1× like every other
+## world distance, so it is a screen at 8× rather than eight of them.
+const TRY_CREATURE_GAP := 900.0
 ## The edge POI markers (maps/world/edge_markers.gd): a pointing triangle with an
 ## icon in it for every near thing that is currently off-screen. Fed by
 ## edge_marker_targets(); paints nothing when that is empty.
@@ -970,7 +1068,9 @@ func _edge_marker_kind(ship: Ship) -> String:
 		# hanging over it is the only invitation it makes.
 		return ""
 	match ship.creature_kind:
-		"whale_city":
+		# The floor's resident wears the crown whichever body it is wearing: the
+		# city-whale stand-in an expedition still lairs, and the Leviathan itself.
+		"whale_city", "kraken_leviathan":
 			return "boss"
 		"whale":
 			return "whale"
@@ -1046,7 +1146,7 @@ func edge_marker_targets() -> Array:
 			# ambient clutter, and the floor's resident is the run's
 			# destination, like the next landing's marker before it.
 			var boss_in_run := dive != null and dive.outcome == "" \
-				and ship.creature_kind == "whale_city"
+				and _dive_is_the_boss(ship)
 			if d2 > range2 and not boss_in_run:
 				continue
 			var kind := _edge_marker_kind(ship)
@@ -1065,7 +1165,8 @@ func edge_marker_targets() -> Array:
 		var td2 := focus.distance_squared_to(_trainer.global_position)
 		if td2 <= range2:
 			out.append({"pos": _trainer.global_position, "kind": "dock",
-				"dist": sqrt(td2), "color": Color(0.95, 0.86, 0.45)})
+				"dist": sqrt(td2), "color": Color(0.95, 0.86, 0.45),
+				"id": _trainer.get_instance_id()})
 
 	# PLACES you have found. A place you BROKE gets no arrow — the map keeps that
 	# record; the edge is for things that still want your attention.
@@ -1077,7 +1178,8 @@ func edge_marker_targets() -> Array:
 		if sd2 > range2:
 			continue
 		out.append({"pos": sp, "kind": "site", "dist": sqrt(sd2),
-			"color": SpawnSites.kind_color(site["kind"])})
+			"color": SpawnSites.kind_color(site["kind"]),
+			"id": "site:%s" % str(site.get("coord", sp))})
 
 	# THE NEXT LANDING DOWN. In a run this is the one thing you must be able to
 	# find, so it ignores the range gate the rest of the markers obey and keeps a
@@ -1085,8 +1187,17 @@ func edge_marker_targets() -> Array:
 	# steps. Reuses the "site" icon: it IS a place.
 	if dive != null and dive.outcome == "" and dive.depth < DiveRun.DEPTHS:
 		var lp := dive_landing_pos(dive.depth + 1)
+		# THE COPY OF IT THAT IS ACTUALLY NEAREST. In a ring the landing exists once
+		# per lap, and the raw position is the one near the centre line: a run at the
+		# seam would be pointed the long way round, and the arrow would FLIP the
+		# instant the wrap fired. Ring-nearest, so it points the same way either side
+		# of the crossing and the seam has one less tell.
+		lp.x = RingSpace.nearest_x(lp.x, focus.x)
 		out.append({"pos": lp, "kind": "site", "dist": focus.distance_to(lp),
-			"color": Color(0.62, 0.86, 0.78), "near_min": 0.55})
+			"color": Color(0.62, 0.86, 0.78), "near_min": 0.55,
+			# A stable key, so the fade-in ramp does not restart the marker at zero
+			# alpha every time the wrap moves the world under it.
+			"id": "landing:%d" % (dive.depth + 1)})
 
 	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return float(a["dist"]) < float(b["dist"]))
@@ -1136,6 +1247,16 @@ func backdrop_status() -> Variant:
 func begin_dive() -> void:
 	if Net.is_online() and not Net.is_server():
 		return
+	# A SECOND RUN STARTS FROM NOTHING. `begin_dive` is reachable with a run
+	# already live (the F2 debug window's own button, pressed twice), and it reset
+	# the MODEL while leaving the previous run's WORLD standing: the old launch
+	# deck, its outposts, its husks (the list was cleared without freeing a single
+	# body) and its whole picket list, which run two then kept stamping, hunting
+	# and counting against its own cap. Tearing the old one down first is exactly
+	# what `end_dive` is for, and on the ordinary path (title → PLAY → [3]) there
+	# is no run here, so this never fires.
+	if dive != null:
+		end_dive()
 	dive = DiveRun.new()
 	_dive_shipless = 0.0
 	_dive_went_shipless = false
@@ -1143,6 +1264,7 @@ func begin_dive() -> void:
 	_dive_materialized = 0
 	_dive_held_in_view = 0
 	_dive_landings.clear()
+	_dive_den_roof = Rect2()
 	_dive_chunks_cut = {}
 	_dive_shelf = Vector2.ZERO
 	_dive_deck_cells = {}
@@ -1199,6 +1321,33 @@ func end_dive() -> void:
 	if is_instance_valid(player):
 		player.fall_damage_mult = 1.0
 		player.grant_bonus_health(0.0)
+	# ...AND SO DOES EVERY OTHER HULL THE RUN WAS FLYING. `_tick_dive` stamps the
+	# run's whole flight model on every listed vessel — the floored air, the rate
+	# stick and its two speeds — and `_dive_spawn_picket` arms its integrity pool;
+	# `_dive_weather` stamps the airstream on ALL of them, creatures included.
+	# Clearing the LIST left those bodies in the world still breathing the run's
+	# air, still flying its controller and still carrying a stale downdraft, which
+	# is the exact leak the local-hull block above exists to prevent. Same reset,
+	# same reasons, one loop.
+	for sid in _dive_surged:
+		var flown := instance_from_id(sid) as Ship
+		if flown == null or not is_instance_valid(flown):
+			continue
+		flown.air_density_floor = 0.0
+		flown.rate_control = false
+		flown.climb_rate_max = 0.0
+		flown.dive_rate_max = 0.0
+		flown.extra_wind = Vector2.ZERO
+		flown.hull_integrity_max = 0.0
+		flown.hull_integrity = 0.0
+		flown.card_integrity_bonus = 0.0
+		flown.modulate = Color(Color.WHITE, flown.modulate.a)
+	# A DRAFT NEVER OUTLIVES ITS RUN. The picker holds the tree (`get_tree().paused`),
+	# and the only thing that lets go is taking a card — so a run torn down with an
+	# offer still open (quit to title from the pause menu, a ledger dismissed on the
+	# same frame) left the NEXT scene booted paused, with nothing left alive that
+	# knew to release it.
+	_dive_unpause_draft()
 	dive = null
 	_dive_shipless = 0.0
 	_dive_pressing = 0.0
@@ -1227,6 +1376,7 @@ func end_dive() -> void:
 			post.queue_free()
 	_dive_outposts.clear()
 	_dive_landings.clear()
+	_dive_den_roof = Rect2()
 	_dive_chunks_cut = {}
 	_dive_shelf = Vector2.ZERO
 	# The unchosen candidate goes with the run — unless you took it, in which
@@ -1403,15 +1553,23 @@ func _build_launch_deck() -> void:
 	for ship in parked:
 		_park_candidate(ship as Ship, _dive_park_at(ship as Ship, at, i))
 		i += 1
-	# ...and the owner's own Blueprint Loft ship as the second candidate, so
-	# whatever they design in the Loft is a hull they can dive with. Made ONCE
-	# and reused: a run prop that respawned per dive would litter the sky.
-	if is_instance_valid(_dive_loft):
-		_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, 1))
-	else:
-		_dive_loft = _spawn_loft_at(at + Vector2(span.x, span.y))
-		if _dive_loft != null:
-			_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, 1))
+	# THE PLAYER’S OWN SAVED SHIPS ARE CANDIDATES (owner arc Q-T, 2026-09-02):
+	# the starter first — it was parked above — then every vessel in
+	# `ShipLayout.user_dir`, in name order, until the berths run out. Designing a
+	# hull on the drafting table and diving with it is now one save and one door,
+	# with no code in between.
+	i += _moor_saved_candidates(at, i)
+	# ...and the owner's own Blueprint Loft ship fills whatever berth is STILL
+	# free, so a player who has saved nothing gets exactly the deck they had
+	# yesterday. Made ONCE and reused: a run prop that respawned per dive would
+	# litter the sky.
+	if _dive_berth_taken.size() < dive_berth_positions().size():
+		if is_instance_valid(_dive_loft):
+			_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, i))
+		else:
+			_dive_loft = _spawn_loft_at(at + Vector2(span.x, span.y))
+			if _dive_loft != null:
+				_park_candidate(_dive_loft, _dive_park_at(_dive_loft, at, i))
 
 	# EVERY CANDIDATE IS IN THE SKY NOW, so re-measure the landing size before a
 	# single rung of the ladder is cut. The first measurement happened above,
@@ -1430,6 +1588,74 @@ func _build_launch_deck() -> void:
 		# body is 144 px tall at 8x, so 160 px of clearance is plenty.
 		player.global_position = Vector2(at.x,
 			at.y - 20.0 * float(world_scale))
+
+
+## MOOR THE PLAYER’S SAVED VESSELS, in name order, into whatever berths are left
+## after the starter. Returns how many were moored.
+##
+## Two refusals, and the difference between them is the point:
+##
+##   A FILE THAT WILL NOT PARSE IS SKIPPED IN SILENCE. `user://ships` is a
+##   directory a player can put anything in — a half-typed export, a text file
+##   they renamed — and the boot of a run is the worst possible place to raise
+##   it. It costs a candidate, not the run.
+##
+##   A HULL TOO WIDE FOR EVERY HATCH IS SKIPPED OUT LOUD, once. That one is not
+##   a broken file, it is a design decision meeting the deck’s geometry, and the
+##   player is the only one who can fix it (`DiveDeck.BERTH_BUFFER_CELLS` is
+##   clearance for the climb out — a hull wider than its hatch drives itself into
+##   the walkway either side). Silently missing candidates are the bug this deck
+##   keeps producing; that is why it says the name.
+##
+## Creatures and nests saved in the same directory are not vessels and are simply
+## not candidates — the `kind` header is what says so.
+func _moor_saved_candidates(at: Vector2, start_index: int) -> int:
+	var berths := dive_berth_positions()
+	if berths.is_empty():
+		return 0
+	var widest := 0.0
+	for b in berths:
+		widest = maxf(widest, float((b as Dictionary)["width"]))
+	var cell_px := Ship.CELL * float(world_scale)
+	var moored := 0
+	var warned := false
+	for entry in ShipEdit.ship_files(ShipLayout.user_dir):
+		if _dive_berth_taken.size() >= berths.size():
+			break
+		var path := String(entry)
+		var text := FileAccess.get_file_as_string(path)
+		var meta := ShipLayout.parse_meta(text)
+		var kind := String(meta.get("kind", "vessel"))
+		if kind != "vessel" and kind != "":
+			continue
+		var cells := ShipLayout.parse(text)
+		if cells.is_empty():
+			continue   # unreadable / not a blueprint — never break the boot
+		# GRANULARITY, not shape. `user://ships` already holds F2 `export_ship`
+		# files, which carry a `scale` header because they were serialized out of
+		# a live 8× world. Upscaling one of those AGAIN is the eightfold family,
+		# and it would land here as "my saved ship is a hundred thousand pixels
+		# wide" — the exact bug that cost the launch deck four rewrites.
+		var fs := maxi(1, ShipLayout.file_scale(text))
+		if world_scale % fs != 0:
+			continue
+		var hull := fleet.spawn_ship_from_cells(
+			ShipLayout.upscale_cells(cells, world_scale / fs), at, 0, 0.0,
+			float(world_scale), 0)
+		if hull == null:
+			continue
+		hull.bounty = int(meta.get("bounty", -1))
+		hull.rebuild()   # solid_bounds is what the berth check reads
+		if not DiveDeck.fits(hull.solid_bounds.size.x, widest, cell_px):
+			if not warned:
+				warned = true
+				_notify("%s is too wide for the deck"
+					% String(ShipEdit.row_for(path, "user")["name"]))
+			hull.queue_free()
+			continue
+		_park_candidate(hull, _dive_park_at(hull, at, start_index + moored))
+		moored += 1
+	return moored
 
 
 ## Where a candidate moors. FOURTH layout, and the first three are kept written
@@ -1878,7 +2104,16 @@ func _dive_cull_the_wake(delta: float) -> void:
 		# exemption and the crown marker, not for the wake — culling the
 		# floor's resident because you climbed a couple of rungs would delete
 		# the run's whole destination.
-		if ship.creature_kind == "whale_city":
+		if _dive_is_the_boss(ship):
+			kept.append(id)
+			continue
+		# ...AND A HUNTER IS NEVER CULLED WHILE IT LIVES (DESIGN_KRAKEN §1.4,
+		# DESCENT §0 call 4: *"you either kill them and they don't return, or
+		# you don't kill them and they come after you"*). Distance ends a
+		# gunboat's chase; it does not talk a kraken out of the deep. A CARCASS
+		# is litter like any other — `is_carcass()` is a drained pool, so the
+		# living test is the pool itself.
+		if KRAKEN_KINDS.has(ship.creature_kind) and ship.shared_health > 0.0:
 			kept.append(id)
 			continue
 		if DiveRun.nearest_distance(ship.global_position, foci) < far:
@@ -2307,12 +2542,19 @@ func dive_weather_at(pos: Vector2) -> Vector2:
 	# do this only because the hover assist fought it to a standstill, which is
 	# exactly the double-counting on the vertical axis this round deleted. Once
 	# you have been down, the ring is the sky at every altitude, deck included.
+	#
+	# THE DRAFT IS A FIELD (v0.143.0, the owner's "the vertical wind bands could be
+	# a bit wider"): the kind is no longer the tile you are standing in but the
+	# nearest draft's, and the multiplier carries its STRENGTH — 1 in the band,
+	# smoothstepped to nothing at its edge. A hull half a tile past the downdraft
+	# therefore still rides some of it, which is what lets the draft span the seam
+	# instead of stopping half a tile short of it on both sides.
 	var kind := ""
 	var zone_mult := 0.0
 	if Tunables.get_bool("dive_zones_enabled") and dive.deepest > 1:
-		var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
-		kind = DiveRun.zone_kind(DiveRun.zone_index((pos.x - cx) / _dive_tile_w()))
-		zone_mult = Tunables.get_num("dive_zone_wind_mult")
+		var draft := dive_draft_at(pos)
+		kind = String(draft["kind"])
+		zone_mult = Tunables.get_num("dive_zone_wind_mult") * float(draft["strength"])
 	# ...and the closing sky, gated on `deepest > 1` exactly as the old force was,
 	# so the launch deck stays an unhurried place.
 	var over := 0.0
@@ -2503,14 +2745,14 @@ func _dive_explode_ship(ship: Ship) -> void:
 		# nothing. An enemy killed by a provoked WHALE credits nobody either;
 		# turning the sky's neutral third party is its own reward.
 		if _dive_kill_is_yours(ship.last_attacker_id):
-			_dive_credit_kill("hulk")
+			_dive_credit_kill("hulk", ship.bounty)
 		# ...but the SCRAP falls whoever killed it (owner 2026-09-02: "if a
 		# kraken kills an enemy ship, I guess the player can still get that
 		# exp"). No attribution question is asked: the XP channel is spatial now,
 		# so a picket that flew into a cliff still leaves its shards hanging
 		# there for whoever comes past. It is the reward channel — a death that
 		# paid nothing at all is the thing this replaces.
-		_dive_drop_scrap("hulk", ship.global_position)
+		_dive_drop_scrap("hulk", ship.global_position, ship.bounty)
 	_notify("Your ship blows apart!" if was_mine else "Their ship blows apart!")
 	if was_mine:
 		local_ship = null   # the ship-loss grace takes it from here
@@ -2585,10 +2827,59 @@ func _dive_leave_a_husk(ship: Ship) -> void:
 
 ## Drop a `kind` death's worth of scrap at `at`. No attribution, by design: this
 ## is the reward channel now, so a death with zero interaction still pays.
-func _dive_drop_scrap(kind: String, at: Vector2) -> void:
+func _dive_drop_scrap(kind: String, at: Vector2, bounty := -1) -> void:
 	if dive == null or dive.outcome != "" or _dive_scrap == null:
 		return
-	_dive_scrap.spawn(at, DiveRun.scrap_for(kind, dive.depth), float(world_scale))
+	_dive_scrap.spawn(at, DiveRun.scrap_for(kind, dive.depth, bounty), float(world_scale))
+
+
+## THE HOARD (DESIGN_KRAKEN §4, v0.148.0). "The source's krakens carry swallowed
+## loot; every plan has a sealed cavity. On death the cavity drops a SECOND scrap
+## cloud." `kraken_hoard_mult` × the kill's own scrap, at the CAVITY's world
+## position — the sealed interior air pocket `Ship.cavity_cells` latched at spawn,
+## which is precisely the complement of the exterior flood `KrakenAI`'s mouth
+## finder reads (one definition of "sealed", two users).
+##
+## WHERE IT LANDS — the call this round had to make. The design's §4 says both
+## "at the cavity's position" AND "a carcass FALLS: a kraken killed over open
+## lava drops its hoard into the core". Those are two different drops, because
+## SCRAP HAS NO BODY: a mote is a position and a value (`combat/scrap.gd` is pure
+## by construction), so a cloud hangs exactly where it is dropped while the
+## carcass falls away from it. Chosen: **the cavity, at the moment of death.**
+##   * It is the one that needs no new system. Dropping at the carcass's REST
+##     position means watching a corpse fall, deciding when it has settled, and
+##     a silent failure mode where the body is eaten by the core and the reward
+##     simply never appears — a reward you cannot see is not risk/reward, it is
+##     a bug report.
+##   * The lesson survives, in the form the engine actually supports: the hoard
+##     hangs at the ALTITUDE you chose to fight at. Kill it low over the core and
+##     you must fly down into the heat to collect; kill it high, or over the den's
+##     roof, and the cloud is somewhere you can reach. Position still decides the
+##     reward — it is just your position, not the corpse's.
+##   * And it READS: the second cloud appears in the same breath as the first, at
+##     the animal's belly rather than under it, which is what makes it legible as
+##     the thing it swallowed.
+## Kraken-kinds only (the design's ruling), and only a body that actually has a
+## sealed cavity — a whale's stomach is a mining reward and stays one.
+func _dive_drop_hoard(kind: String, body: Ship, bounty: int) -> void:
+	if dive == null or dive.outcome != "" or _dive_scrap == null:
+		return
+	if not kind.begins_with("kraken"):
+		return
+	var mult := Tunables.get_num("kraken_hoard_mult")
+	if mult <= 0.0:
+		return
+	var cavity: Dictionary = body.cavity_cells()
+	if cavity.is_empty():
+		return
+	var sum := Vector2.ZERO
+	for cell in cavity:
+		sum += body.local_pos_of(cell as Vector2i)
+	var at := body.to_global(body._mirror_point(sum / float(cavity.size())))
+	var worth := int(round(float(DiveRun.scrap_for(kind, dive.depth, bounty)) * mult))
+	if worth <= 0:
+		return
+	_dive_scrap.spawn(at, worth, float(world_scale))
 
 
 ## THE ABSORPTION RADIUS, in world px. Authored at 1x and scaled, like every
@@ -2788,6 +3079,15 @@ func _dive_native_world_px() -> Rect2:
 ## middle. Identical arithmetic for every non-dive scene, so nothing moves there.
 func map_world_rect() -> Rect2:
 	return _world_rect
+
+
+## The DRAFT at one world point: `{kind, strength}` (see `DiveRun.draft_strength`).
+## One place where the tile offset is computed, so the wind, the HUD label and any
+## future map painting can never disagree about where the band reaches.
+func dive_draft_at(pos: Vector2) -> Dictionary:
+	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+	return DiveRun.draft_strength((pos.x - cx) / _dive_tile_w(),
+		Tunables.get_num("dive_draft_band_tiles"))
 
 
 ## Which ring tile the player is in right now (0 = the updraft you start in).
@@ -3351,15 +3651,55 @@ func _dive_surge() -> void:
 		else "under sail"])
 
 
-## The floor's resident. Until the Leviathan encounter is built (BACKLOG), the
-## existing city-whale boss body stands in: it already lairs in every world and
-## already has a boss-tier pool, so the depth-8 beat is playable now and the
-## bespoke fight replaces this one call.
+## THE LEVIATHAN'S BODY (DESIGN_KRAKEN, jam #3 designer D). 52 × 25 authored
+## cells — a shell-cased spear whose only soft skin is an eleven-cell THROAT and
+## a crown of six bare-MEAT arms, so the derived mouth
+## (`KrakenAI._compute_mouth_local`) lands OUTSIDE the jaws, in the arms. Its
+## pool / bounty / taming tier ride the file's own headers (Q-T), which is why
+## nothing here names a number.
+const LEVIATHAN_PATH := "res://ships/kraken_leviathan.ship"
+
+## The two kraken `creature_kind`s: the hunter of depths 4–7 and the floor's
+## resident. Both route to `KrakenAI`, and neither is ever culled while it is
+## alive (DESIGN_KRAKEN §1.4). Only `kraken` is in `DiveRun.KIND_COIN` — the
+## Leviathan's worth rides its blueprint's own `bounty 900`, which overrides the
+## table for coins AND for scrap, so the kind never needs a row.
+const KRAKEN_KINDS := ["kraken", "kraken_leviathan"]
+
+
+## IS THIS BODY THE RUN'S DESTINATION? The one predicate, replacing the three
+## `creature_kind == "whale_city"` string tests a run used to make (the edge
+## marker's crown, the wake cull's exemption, and now the win). Getting the cull
+## one wrong frees the run's destination at a rung and a half, which is why this
+## is a function and not three literals.
+##
+## The Leviathan is the boss wherever it stands. The CITY-WHALE still counts in a
+## dive hosted by an EXPEDITION world (`begin_dive` from F2 or the boot chooser),
+## because that world lairs one and it was the depth-8 stand-in until this round;
+## the Dive's own scene has no city-whale to confuse it with.
+func _dive_is_the_boss(ship: Ship) -> bool:
+	if ship == null or not is_instance_valid(ship):
+		return false
+	if ship.creature_kind == "kraken_leviathan":
+		return true
+	return ship.creature_kind == "whale_city" and not dive_native
+
+
+## THE FLOOR HAS A KRAKEN (DESIGN_KRAKEN §7 slice 1). Depth 8's arrival wakes THE
+## LEVIATHAN itself now — the city-whale stand-in is retired from the run (an
+## expedition's own arcology is untouched, it just no longer gets spawned by one).
+##
+## It comes UP AT YOU: spawned at the player's own x, at the DEN — the ladder's
+## floor rung (`depth_altitude(DEPTHS)`, altitude fraction 0.10) — which is a good
+## way below where the run reads depth 8 (the rung boundary is ~0.154). The lava
+## surface is at 0.06, so the den keeps ~23,600 px of clear air beneath it: room
+## for the DUNK, which is the sharp kill (§5.1).
 func _dive_wake_leviathan() -> void:
 	if player == null or not is_instance_valid(player):
 		return
-	var boss := _spawn_boss_at(player.global_position
-		+ Vector2(3400.0 * float(world_scale), 0.0))
+	var den := Vector2(player.global_position.x,
+		dive_altitude_y(DiveRun.depth_altitude(DiveRun.DEPTHS)))
+	var boss := _spawn_one_kraken(LEVIATHAN_PATH, den)
 	# THE FLOOR'S RESIDENT JOINS THE RUN'S BOOKS (owner 2026-09-01: "I don't
 	# see the leviathan near the bottom level"): outside `_dive_surged` it was
 	# one dormancy scan from sleeping where it stood — the sleeping-hunters
@@ -3368,7 +3708,49 @@ func _dive_wake_leviathan() -> void:
 	# and hunting; the edge markers give it the crown at ANY range in a run.
 	if boss != null and is_instance_valid(boss):
 		_dive_surged.append(boss.get_instance_id())
+		_dive_cut_den_roof(boss)
 		_notify("Something vast stirs at the floor.")
+
+
+## THE ROOF (DESIGN_KRAKEN §5.2 — owner: *"ideally the boss has a mini ceiling
+## above it so that it doesn't just randomly die to falling ships"*).
+##
+## A kraken is held aloft by MUSCLE, not lift, so anything hovering over it
+## shoves it down — your lift props at ~2.7 g, and the lava is what it lands in.
+## That is the sharp kill, and a roof is what keeps it a DECISION: under the slab
+## the boss cannot be dunked and the run's own falling husks land on stone
+## instead of on the fight. The lava stays OPEN either side — no walls, because a
+## cave would make the endgame a siege (owner call 2).
+##
+## Cut with `_cut_landing`'s idiom and for its reason: GENERATE the neighbourhood
+## first, stamp second. A region that has not been generated yet is one lazy
+## island pass away from being repainted over the slab half a minute after you
+## arrive (DECISIONS 2026-08-30).
+##
+## Two F2 levers, both measured in the BODY (so a re-authored Leviathan carries
+## its own roof with it): width in body widths, and the gap in body heights.
+const DIVE_DEN_ROOF_CELLS := 6      ## slab thickness in terrain cells (≥4: nothing tunnels)
+func _dive_cut_den_roof(body: Ship) -> void:
+	if terrain == null or body == null or not is_instance_valid(body):
+		return
+	var bounds := body.solid_bounds
+	if bounds.size == Vector2.ZERO:
+		return
+	# `solid_bounds` IS ALREADY WORLD PIXELS (CODEMAP §2 — the eightfold bug).
+	var w := bounds.size.x * maxf(Tunables.get_num("dive_den_roof_widths"), 0.0)
+	if w <= 0.0:
+		return   # the lever's OFF position: no roof, the dunk is always on
+	var gap := bounds.size.y * maxf(Tunables.get_num("dive_den_roof_gap_heights"), 0.0)
+	var cp := maxf(terrain.cell_px(), 1.0)
+	var thick := float(DIVE_DEN_ROOF_CELLS) * cp
+	var mid_x := body.global_position.x + bounds.get_center().x
+	var under := body.global_position.y + bounds.position.y - gap   # the slab's UNDERSIDE
+	var slab := Rect2(Vector2(mid_x - w * 0.5, under - thick), Vector2(w, thick))
+	IslandGen.ensure_generated(terrain, world_seed, [slab.get_center()],
+		w * 0.5 + thick, 64)
+	_stone(slab.position, slab.size)
+	terrain.flush_rebuilds()
+	_dive_den_roof = slab
 
 
 ## The escape landed: move the banked coins into the permanent wallet. THIS is
@@ -3398,10 +3780,12 @@ func _dive_kill_is_yours(attacker_id: int) -> bool:
 	return is_instance_valid(local_ship) and attacker_id == local_ship.get_instance_id()
 
 
-func _dive_credit_kill(kind: String) -> void:
+## `bounty` is the dead body's `Ship.bounty` — its blueprint's own price, or −1
+## for "use the kind table", which is every stock file (Q-T).
+func _dive_credit_kill(kind: String, bounty := -1) -> void:
 	if dive == null or dive.outcome != "":
 		return
-	var coins := dive.credit_kill(kind)
+	var coins := dive.credit_kill(kind, bounty)
 	if coins > 0 and _pickups != null and player != null and is_instance_valid(player):
 		_pickups.add(player.global_position + Vector2(0.0, -120.0 * world_scale),
 			"+%d coins" % coins, float(world_scale))
@@ -3824,12 +4208,32 @@ func dive_status() -> Variant:
 		return null
 	var out := dive.ledger()
 	out["depths"] = DiveRun.DEPTHS
-	out["shipless"] = not dive.committed
+	# "NO SHIP" IS ABOUT RIGHT NOW, NOT ABOUT WHETHER YOU EVER TOOK ONE. This read
+	# `not dive.committed`, so once the hull you committed to blew apart the gauge
+	# claimed you still had one: `shipless` false, `hull_frac` -1, and the HUD
+	# therefore painted NOTHING where the hull line goes — no percentage and no
+	# "no ship" — in the one state the player most needs told about. The run model
+	# keeps `committed` for what it is for (which ending fires); the painter asks
+	# the live question.
+	out["shipless"] = not (is_instance_valid(local_ship)
+		and local_ship.hull_integrity_max > 0.0)
 	out["depth_label"] = DiveRun.depth_label(dive.depth)
 	out["headline"] = DiveRun.outcome_line(out)
 	# Hull integrity (v0.111.0): the committed hull's pool as a fraction, or -1
 	# when no armed hull is flying (shipless, or pre-commit).
-	out["zone"] = DiveRun.zone_label(dive_zone()) 		if Tunables.get_bool("dive_zones_enabled") else ""
+	# THE SKY YOU ARE IN, by the DRAFT rather than by the tile line: the bands are
+	# wider than one tile now, so "am I in the downdraft" is a question about the
+	# field, not about which twelfth of the ring your x rounds to.
+	var draft_x := 0.0
+	if player != null and is_instance_valid(player):
+		var dcx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
+		draft_x = (player.global_position.x - dcx) / _dive_tile_w()
+	var band := Tunables.get_num("dive_draft_band_tiles")
+	out["zone"] = ""
+	if Tunables.get_bool("dive_zones_enabled"):
+		out["zone"] = DiveRun.draft_label(draft_x, band)
+	# ...and how wide the bands are, so the map room could paint them one day.
+	out["draft_band_tiles"] = band
 	out["hull_frac"] = -1.0
 	if is_instance_valid(local_ship) and local_ship.hull_integrity_max > 0.0:
 		out["hull_frac"] = clampf(
@@ -4397,6 +4801,14 @@ func _stream_terrain() -> void:
 	if camera != null and is_instance_valid(camera):
 		var half: Vector2 = get_viewport_rect().size * 0.5 / camera.zoom
 		terrain.primary_range_px = maxf(half.x, half.y)
+	# ...and the CAP on that range is the MAX-ZOOM frame, not a magic chunk count
+	# (owner 2026-09-02: "if I zoom out as much as possible … this also causes
+	# terrain to load in half way on the screen"). Terrain's own fallback cap was
+	# `20 * subdiv / 8` chunks = 10,240 px at subdiv 4, under the ~14,321 px
+	# half-width of a max-zoom frame, so the widest view was clipped by a constant
+	# that never learned the zoom rule. One chunk of margin past the horizon, the
+	# same margin the radius itself carries.
+	terrain.primary_cap_px = max_view_horizon_px() + terrain.chunk_px()
 	# TIERED (the subdiv-8 lag fix): the PLAYER (+ their ship — the camera)
 	# streams render-range terrain; every OTHER ship gets only a collision
 	# bubble. See Terrain.update_streaming.
@@ -4413,6 +4825,9 @@ func _stream_terrain() -> void:
 				primary.append(ship.global_position)
 			else:
 				secondary.append(ship.global_position)
+	# THE FAR SIDE OF THE SEAM IS A PRIMARY FOCUS TOO, from a carry-width out.
+	# See `_ring_mirror_foci` — this is the fix for the wrap's visible hiccup.
+	primary.append_array(_ring_mirror_foci(primary))
 	# Lazy generation runs ahead of promotion: regions whose islands could
 	# reach any focus generate first (amortized), so a chunk always promotes
 	# with its data present. Budget 2/frame — a fresh area trickles in over a
@@ -4447,6 +4862,49 @@ func _stream_terrain() -> void:
 			else terrain.chunk_px() * terrain.subdiv * 2.0) * GEN_LOOKAHEAD,
 			max_view_width_px()))
 	terrain.update_streaming(primary, secondary)
+
+
+## THE FAR SIDE OF THE SEAM, PRE-WARMED (owner 2026-09-02: the looping borders
+## "just glitch out for a moment when traversing the threshold").
+##
+## The wrap itself is already invisible: everything in frame moves by exactly one
+## circumference in one frame (`_dive_wrap_ring`), and the terrain DATA is
+## periodic, so the ground at x IS the ground at x ± period. What is not instant
+## is the LIVE terrain — chunks are nodes and colliders, and they are promoted
+## ONE per frame, nearest-first (`Terrain.PROMOTE_PER_CALL`, which is 1 because a
+## promote is a full chunk rebuild and two a frame was a measured stutter). After
+## a 400,000 px shift nothing on the far side is live, so the ground filled in a
+## chunk a frame for tens of frames. That gap is the glitch, and it is a
+## STREAMING problem, not a wrap problem.
+##
+## So do not promote faster — start EARLIER. Once a primary focus is within one
+## carry-width of the seam (the same `_dive_wrap_carry_px` bubble the wrap
+## itself moves), its MIRROR POINT one circumference the other way is added as a
+## full primary focus. The far side then promotes incrementally over the seconds
+## you spend flying at the seam, and is already live the frame the wrap fires.
+##
+## Demotion needs no special case: the instant after the wrap, the side you came
+## from is the mirror of where you now are, so it is still held — the hysteresis
+## falls out of the same rule, and a body pacing back and forth over the line
+## never thrashes. Empty (and free) in every world that is not a ring.
+func _ring_mirror_foci(points: Array) -> Array:
+	var out: Array = []
+	if not RingSpace.active() or points.is_empty():
+		return out
+	var ring_w := RingSpace.period
+	# How far from the ring's centre a focus has to be before its mirror is worth
+	# streaming: anything nearer than this is more than a carry-width from either
+	# seam, and the far side cannot come into frame before it is asked for again.
+	var edge := ring_w * 0.5 - _dive_wrap_carry_px()
+	for p_v in points:
+		var p: Vector2 = p_v
+		var off := p.x - RingSpace.centre
+		if absf(off) <= edge:
+			continue
+		# The image on the OTHER side of the nearer seam — the ground that is about
+		# to be underneath this focus.
+		out.append(Vector2(p.x - signf(off) * ring_w, p.y))
+	return out
 
 
 ## How much wider than the visible half-extent terrain generates (`_stream_terrain`).
@@ -4491,6 +4949,13 @@ func _spawn_hulk_at(pos: Vector2) -> Ship:
 		pos, 0, 0.0, float(world_scale), 1)
 	if hulk == null:
 		return null
+	# A VESSEL reads its headers too (Q-T): ships/hulk.ship is the worked example
+	# — `kind vessel`, `role gunboat`, `bounty 35` — and the bounty is what a Dive
+	# picket kill pays. 35 is exactly what DiveRun.KIND_COIN already said, so the
+	# example changes what is written down and not what the game does.
+	var hulk_meta := ShipLayout.load_meta(hulk_path)
+	hulk.bounty = int(hulk_meta.get("bounty", -1))
+	hulk.body_tint = ShipLayout.meta_tint(hulk_meta, hulk.body_tint)
 	# Crewed, never automated (owner): a driver stands at the panel, a
 	# gunner at the gun. The gun fires only while its gunner is aboard.
 	_spawn_crewman(hulk, "H", "driver")
@@ -4564,25 +5029,36 @@ func _spawn_whale() -> void:
 ## Single-player / server path only today. If whales ever spawn in a live session,
 ## the pool must ride the spawn payload instead — post-spawn fields are server-only
 ## (godot-quirks).
+## THE BLUEPRINT IS THE OVERRIDE LAYER (owner arc Q-T, 2026-09-02). Every
+## constant below is now a `meta.get(key, <today’s constant>)`, so a file with no
+## headers spawns byte-identically to how it did before headers existed — and a
+## file that names a pool, a taming tier, a tint, a brain or a bounty gets the
+## creature it drew instead of the one the code assumed.
 func _spawn_one_whale(path: String, pos: Vector2) -> Ship:
+	var meta := ShipLayout.load_meta(path)
 	# TAGGED "whale" (the boss overrides to "whale_city" post-spawn): whale-family
 	# deaths feed the ecology meter, and the tag has to ride the payload so it
 	# survives the wire and a save (from_data reads it), not a server-only field.
 	# Every whale-family kind still routes to WhaleAI (the _whale_ai_for default).
+	# `kind vessel` in a file means "not a creature at all", which is "" here.
+	var tag := String(meta.get("kind", "whale"))
+	if tag == "vessel":
+		tag = ""
 	var whale := fleet.spawn_ship_from_cells(
 		ShipLayout.upscale_cells(ShipLayout.load_cells(path), world_scale),
-		pos, 0, 0.0, float(world_scale), 2, {"creature_kind": "whale"})
+		pos, 0, 0.0, float(world_scale), 2, {"creature_kind": tag})
 	if whale == null:
 		return null
-	var hp := Tunables.get_num("whale_health")
+	var hp := float(meta.get("health", Tunables.get_num("whale_health")))
 	whale.shared_health = hp
 	whale.shared_health_max = hp
 	# A whale is the HIGH taming tier (needs LORE Master Trader) and a mining-
 	# capable mount — ride_mine_pulse only drills tame_level>=2 creatures.
-	whale.tame_level = 2
+	whale.tame_level = int(meta.get("tame", 2))
 	# Cosmetic per-variant tint gives the pod visible variety beyond silhouette
 	# (WhaleSpawn.tint_for; body_tint is documented cosmetic).
-	whale.body_tint = WhaleSpawn.tint_for(path)
+	whale.body_tint = ShipLayout.meta_tint(meta, WhaleSpawn.tint_for(path))
+	whale.bounty = int(meta.get("bounty", -1))
 	# The bestiary variety tag, from the body plan itself. The boss overrides its
 	# creature_kind to whale_city post-spawn, but BOSS_PATH's basename is already
 	# "whale_city", so its variety needs no special-case.
@@ -4656,8 +5132,10 @@ func _spawn_boss_at(at: Vector2) -> Ship:
 	var boss := _spawn_one_whale(BOSS_PATH, pos)
 	if boss == null:
 		return null
-	boss.creature_kind = "whale_city"   # id only; the AI still defaults to WhaleAI
-	var hp := Tunables.get_num("boss_health")
+	var meta := ShipLayout.load_meta(BOSS_PATH)
+	# id only; the AI still defaults to WhaleAI. The blueprint may say otherwise.
+	boss.creature_kind = String(meta.get("kind", "whale_city"))
+	var hp := float(meta.get("health", Tunables.get_num("boss_health")))
 	boss.shared_health = hp
 	boss.shared_health_max = hp
 	boss.rebuild()
@@ -4692,21 +5170,33 @@ func _spawn_critters() -> void:
 ## Spawn ONE critter at `pos`, returning it (null if the spawner is not ready).
 ## Mirrors _spawn_one_whale's pool-then-rebuild ordering; small pool, tame_level 1
 ## (the low taming bar), and a nimbler ride than a whale (ride_speed_mult > 1).
-func _spawn_one_critter(pos: Vector2) -> Ship:
+## `path` is a PARAMETER (Q-T) rather than the hard-coded critter: this is the
+## smallest spawn function in the file that builds a whole creature, which makes
+## it the cheapest world-side hook for "spawn the body plan in THIS file" — the
+## drafting table’s TRY IT and the suites’ fixture creature both come through
+## here. The default is unchanged, so every existing caller is untouched.
+const CRITTER_PATH := "res://ships/critter.ship"
+func _spawn_one_critter(pos: Vector2, path := CRITTER_PATH) -> Ship:
+	var meta := ShipLayout.load_meta(path)
 	# Tagged "critter" so a meadow death is never miscounted as a whale by the
 	# ecology meter (both were "" before and both use WhaleAI). Rides the payload
 	# for the same wire/save reasons as the whale tag.
+	var tag := String(meta.get("kind", "critter"))
+	if tag == "vessel":
+		tag = ""
 	var critter := fleet.spawn_ship_from_cells(
-		ShipLayout.upscale_cells(ShipLayout.load_cells("res://ships/critter.ship"), world_scale),
-		pos, 0, 0.0, float(world_scale), 2, {"creature_kind": "critter"})
+		ShipLayout.upscale_cells(ShipLayout.load_cells(path), world_scale),
+		pos, 0, 0.0, float(world_scale), 2, {"creature_kind": tag})
 	if critter == null:
 		return null
-	critter.shared_health = CRITTER_HEALTH
-	critter.shared_health_max = CRITTER_HEALTH
-	critter.tame_level = 1            # the LOW taming bar (Beast Whisperer)
+	var hp := float(meta.get("health", CRITTER_HEALTH))
+	critter.shared_health = hp
+	critter.shared_health_max = hp
+	critter.tame_level = int(meta.get("tame", 1))   # the LOW bar (Beast Whisperer)
 	critter.ride_speed_mult = 1.6     # nimbler than a whale
-	critter.body_tint = Color(0.80, 0.90, 0.78)
-	critter.variety = "critter"       # the bestiary tag (its own single silhouette)
+	critter.body_tint = ShipLayout.meta_tint(meta, Color(0.80, 0.90, 0.78))
+	critter.bounty = int(meta.get("bounty", -1))
+	critter.variety = CreatureLog.variety_from_path(path)   # the bestiary tag
 	critter.rebuild()
 	return critter
 
@@ -4776,22 +5266,25 @@ func _spawn_kraken() -> void:
 ## after it: `pos` rides the spawn payload, and a post-spawn nudge would exist on
 ## the server only (godot-quirks).
 func _spawn_one_kraken(path: String, pos: Vector2) -> Ship:
+	var meta := ShipLayout.load_meta(path)
 	var cells := ShipLayout.upscale_cells(ShipLayout.load_cells(path), world_scale)
 	var spawn_pos := WhaleSpawn.clear_spawn_pos(
 		terrain, pos, WhaleSpawn.footprint_of(cells), float(world_scale))
 	var kraken := fleet.spawn_ship_from_cells(cells, spawn_pos, 0, 0.0, float(world_scale), 2)
 	if kraken == null:
 		return null
-	kraken.shared_health = KRAKEN_HEALTH
-	kraken.shared_health_max = KRAKEN_HEALTH
-	kraken.creature_kind = "kraken"   # → KrakenAI (two-ended)
+	var hp := float(meta.get("health", KRAKEN_HEALTH))
+	kraken.shared_health = hp
+	kraken.shared_health_max = hp
+	kraken.creature_kind = String(meta.get("kind", "kraken"))   # → KrakenAI (two-ended)
 	# TAMEABLE at the TOP tier (owner 2026-08-24, reversing the untameable
 	# ruling: "you can tame krakens, they just are a little wild in their
 	# movement and always do damage if you touch their mouth parts"). tame_level
 	# 3 keeps it OUTSIDE the whale (==2) and critter (==1) startup filters while
 	# gating on Master Trader + — Stats.taming_level() must reach it.
-	kraken.tame_level = 3
-	kraken.body_tint = Color(0.78, 0.82, 0.74)
+	kraken.tame_level = int(meta.get("tame", 3))
+	kraken.body_tint = ShipLayout.meta_tint(meta, Color(0.78, 0.82, 0.74))
+	kraken.bounty = int(meta.get("bounty", -1))
 	kraken.variety = CreatureLog.variety_from_path(path)   # the bestiary tag
 	kraken.rebuild()
 	# Latch the sealed LOOT CAVITY now, while the body is whole. The map cannot be
@@ -4805,24 +5298,27 @@ func _spawn_one_kraken(path: String, pos: Vector2) -> Ship:
 ## rebuild ordering as every other creature (a living creature must rebuild after
 ## its pool is set or it keeps the precise collider for life), and the same
 ## deep-spawn keep-out, since an eyrie can sit against an island.
-func _spawn_one_basilisk(pos: Vector2) -> Ship:
+const BASILISK_PATH := "res://ships/basilisk.ship"
+func _spawn_one_basilisk(pos: Vector2, path := BASILISK_PATH) -> Ship:
+	var meta := ShipLayout.load_meta(path)
 	var cells := ShipLayout.upscale_cells(
-		ShipLayout.load_cells("res://ships/basilisk.ship"), world_scale)
+		ShipLayout.load_cells(path), world_scale)
 	var spawn_pos := WhaleSpawn.clear_spawn_pos(
 		terrain, pos, WhaleSpawn.footprint_of(cells), float(world_scale))
 	var beast := fleet.spawn_ship_from_cells(cells, spawn_pos, 0, 0.0,
 		float(world_scale), 2)
 	if beast == null:
 		return null
-	var hp := Tunables.get_num("basilisk_health")
+	var hp := float(meta.get("health", Tunables.get_num("basilisk_health")))
 	beast.shared_health = hp
 	beast.shared_health_max = hp
-	beast.creature_kind = "basilisk"   # → BasiliskAI (stand off and spit)
+	beast.creature_kind = String(meta.get("kind", "basilisk"))   # → BasiliskAI
 	# Top taming tier, like a kraken: a fire-breathing serpent is not an early
 	# mount. It stays outside the whale (2) and critter (1) startup filters.
-	beast.tame_level = 3
-	beast.body_tint = Color(0.86, 0.72, 0.52)
-	beast.variety = "basilisk"        # the bestiary tag (its own single silhouette)
+	beast.tame_level = int(meta.get("tame", 3))
+	beast.body_tint = ShipLayout.meta_tint(meta, Color(0.86, 0.72, 0.52))
+	beast.bounty = int(meta.get("bounty", -1))
+	beast.variety = CreatureLog.variety_from_path(path)   # the bestiary tag
 	beast.rebuild()
 	return beast
 
@@ -4990,6 +5486,12 @@ func debug_spawn(kind: String, at: Vector2) -> Ship:
 			return _spawn_one_basilisk(at)
 		"boss", "city":
 			return _spawn_boss_at(at)
+		"leviathan":
+			# THE floor's resident, on demand (standing order: a new spawnable
+			# ships with its F2 button in the same round). Its pool, bounty and
+			# taming tier come from the file's headers, so this is the same body
+			# a run wakes at depth 8 — minus the roof, which is the run's.
+			return _spawn_one_kraken(LEVIATHAN_PATH, at)
 		"loft":
 			return _spawn_loft_at(at)
 		"kraken":
@@ -5036,9 +5538,13 @@ func export_ship() -> String:
 	for cell in local_ship.blocks:
 		types[cell] = int(local_ship.blocks[cell]["type"])
 	var text := ShipLayout.serialize(types, world_scale)
-	if not DirAccess.dir_exists_absolute("user://ships"):
-		DirAccess.make_dir_recursive_absolute("user://ships")
-	var path := "user://ships/built_%d.ship" % int(Time.get_unix_time_from_system())
+	# THE SAME SHELF THE DRAFTING TABLE SAVES TO, through the same redirectable
+	# name (Q-T): these files are launch-deck candidates now, and a suite writing
+	# into the owner’s real `user://ships` would put scratch hulls on their deck.
+	if not DirAccess.dir_exists_absolute(ShipLayout.user_dir):
+		DirAccess.make_dir_recursive_absolute(ShipLayout.user_dir)
+	var path := ShipLayout.user_dir.path_join(
+		"built_%d.ship" % int(Time.get_unix_time_from_system()))
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f != null:
 		f.store_string(text)
@@ -5623,7 +6129,20 @@ func _update_dormancy(delta: float) -> void:
 		return
 
 	var points := Dormancy.foci(self)
-	var sleep_at := Tunables.get_num("dormant_range_px")
+	# FLOORED AT THE MAX-ZOOM HORIZON (owner 2026-09-02: "the 'max zoom as if on
+	# ship' doesn't seem to be fully recognized - if I zoom out as much as possible
+	# I can see that creatures toward the edge of the screen are updating super
+	# slow"). The lever's 12,000 px predates the max-zoom rule and is SHORTER than
+	# the ~16,432 px half-diagonal of a max-zoom frame, so bodies plainly on screen
+	# were out of the simulation and moving on the 3 s dormant tick. The standing
+	# rule (v0.128.0) is "the boundary of all active players as if they were using
+	# a ship's MAX ZOOM"; this is that boundary plus a tenth of margin, so a body
+	# must be genuinely OFF the widest frame the game can show before it may sleep.
+	# The lever still RAISES the range — it can no longer lower it below the view.
+	# `dormant_max_awake` is untouched: that is the physics bound, and a crowd in
+	# frame is still capped by it.
+	var sleep_at := maxf(Tunables.get_num("dormant_range_px"),
+		max_view_horizon_px() * 1.1)
 	# HYSTERESIS: wake closer in than you sleep out, or a body hovering on the
 	# boundary flips every scan — and each flip is a physics-space entry, the
 	# one thing this feature exists to avoid.
@@ -5919,17 +6438,34 @@ func _announce_eco() -> void:
 func _on_creature_perished(kind: String, body: Ship = null) -> void:
 	# THE DIVE pays coins for ANY creature death (the ecology below cares only
 	# about whales) — the mode's whole economy is "kill things on the way down".
-	_dive_credit_kill(kind)
+	# A blueprint's own `bounty` header overrides the kind table, when the dead
+	# body carries one (Q-T). `body` is optional, so the bare-kind call the suites
+	# make still means "the table".
+	var bounty := body.bounty if body != null and is_instance_valid(body) else -1
+	_dive_credit_kill(kind, bounty)
 	# ...and the XP half hangs in the air over the corpse (owner 2026-09-02).
 	# Unattributed on purpose: a whale that took its revenge on a kraken has
 	# still left something worth flying through.
 	if body != null and is_instance_valid(body):
-		_dive_drop_scrap(kind, body.global_position)
+		_dive_drop_scrap(kind, body.global_position, bounty)
 		# ...and if it was standing garrison, its death opens its depth's seal
 		# (DESCENT §2.4). A creature never explodes through `_dive_explode_ship`,
 		# so this is the same line said at the other death site.
 		if dive != null and not body.garrison_key.is_empty():
 			dive.mark_garrison_killed(body.garrison_key)
+		_dive_drop_hoard(kind, body, bounty)
+	# THE RUN'S WIN (DESIGN_KRAKEN §7 slice 1). Killing the floor's resident is
+	# the only thing that ends a run in TRIUMPH, and until this round nothing in
+	# the world ever called `DiveRun.triumph()` — depth 8 was unwinnable.
+	#
+	# ORDER MATTERS: the bounty is credited ABOVE, into the pot, because
+	# `_dive_credit_kill` refuses a finished run — and `triumph()` banks the pot.
+	# Then the same two steps the passage-home branch of `try_buy_stock` takes:
+	# the model sets the outcome and the banked figure, `_dive_bank` moves it into
+	# the permanent wallet and prints the ledger's line.
+	if dive != null and dive.outcome == "" and _dive_is_the_boss(body):
+		dive.triumph()
+		_dive_bank()
 	if not Tunables.get_bool("eco_enabled") or not WHALE_KINDS.has(kind):
 		return
 	kraken_ascendancy = clampf(
@@ -6128,7 +6664,9 @@ func _build_nest(site: Dictionary, path: String) -> Ship:
 	# (both are `shared`/`shared_max`, which the wire and the save already
 	# carry), so a client and a reloaded world agree on how much fight is left
 	# in a place.
-	var pool := SpawnSites.nest_pool(site["kind"])
+	# The blueprint may name its own pool (Q-T); the site table is the default.
+	var pool := float(ShipLayout.load_meta(path).get(
+		"health", SpawnSites.nest_pool(site["kind"])))
 	var nest := fleet.spawn_ship_from_cells(cells, pos, 0, 0.0, float(world_scale),
 		SpawnSites.nest_faction(site["kind"]),
 		{"is_nest": true, "site_x": coord.x, "site_y": coord.y,
@@ -6234,8 +6772,11 @@ func _whale_ai_for(creature: Ship) -> WhaleAI:
 		# are WhaleAI, so the swim loop / taming / riding paths are identical.
 		var ai: WhaleAI
 		match creature.creature_kind:
-			"kraken":
-				ai = KrakenAI.new()      # two-ended deep hunter: ram + mouth grab
+			"kraken", "kraken_leviathan":
+				# Two-ended deep hunter: ram + mouth grab. THE LEVIATHAN IS A
+				# KRAKEN, not a re-skinned whale (jam #3, judge 1): its own kind
+				# so the run can name it, the same brain so the grammar is shared.
+				ai = KrakenAI.new()
 			"basilisk":
 				ai = BasiliskAI.new()    # stands off and spits fire
 			_:
@@ -6244,7 +6785,15 @@ func _whale_ai_for(creature: Ship) -> WhaleAI:
 		ai.home = creature.global_position
 		_whale_ais[id] = ai
 		creature.damaged.connect(
-			func(_cell: Vector2i, _amount: float) -> void:
+			func(cell: Vector2i, amount: float) -> void:
+				# WHERE the hit landed matters to a kraken (v0.148.0,
+				# DESIGN_KRAKEN §1.2): a hit on one of its ARMS drains that
+				# arm's own pool as well as the shared one, and an arm at zero
+				# comes off. Routed HERE because this is already the one place
+				# a creature's brain hears about damage — a second `damaged`
+				# connection would be a second copy of the same wire.
+				if ai is KrakenAI:
+					(ai as KrakenAI).absorb_hit(cell, amount)
 				# Retaliate against the ACTUAL attacker: Shot stamps the
 				# shooter's id onto the ship just before the damage lands, so
 				# resolving it here hands the brain who to ram (the on-foot
@@ -7559,6 +8108,14 @@ func _build_target(cursor: Vector2) -> Ship:
 ## per-cell can_place_at holds down the whole chain. Returns whether the
 ## stamp was placed.
 func try_build_block(ship: Ship, cell: Vector2i) -> bool:
+	# THE DIVE IS NOT A BUILDING GAME (docs/KEYBINDINGS.md: Q place is "no" in a
+	# run). `dive_style()` already turned off the palette, the ghost, terrain
+	# painting and digging — but the two verbs that actually WRITE a grid sat in
+	# `_process` outside every one of those gates, so Q still stamped a block and
+	# C still severed one inside a live run. Gated at the VERB rather than at the
+	# keypress, so the refusal is one predicate the suite can call directly.
+	if dive_style():
+		return false
 	if ship == null or not is_instance_valid(ship):
 		return false
 	# snapped_stamp magnetises a bundle to the nearest legal spot around the
@@ -7580,6 +8137,8 @@ func try_build_block(ship: Ship, cell: Vector2i) -> bool:
 ## snapshotted first: removals can sever, and severing mid-walk must not
 ## re-derive the machine.
 func try_remove_block(ship: Ship, cell: Vector2i) -> bool:
+	if dive_style():
+		return false   # see try_build_block — a run does not deconstruct either
 	if ship == null or not is_instance_valid(ship) or not ship.has_block(cell):
 		return false
 	var type: int = ship.blocks[cell]["type"]

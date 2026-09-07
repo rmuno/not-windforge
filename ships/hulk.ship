@@ -14,6 +14,15 @@
 # A grid row may START with '#' (hull) ? that is the whole reason for
 # the rule.
 
+# THE HEADER VOCABULARY (Q-T, 2026-09-02) — the worked example. These lines are
+# what the spawn code used to assume: this file is a vessel, its role is a
+# gunboat, and killing it in a Dive pays 35 coins at depth 1 (exactly what
+# DiveRun.KIND_COIN["hulk"] already said — the number moved into the file it
+# describes, it did not change).
+name Patrol Cutter
+kind vessel
+role gunboat
+bounty 35
 origin 24 32
 GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG........
 GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG........

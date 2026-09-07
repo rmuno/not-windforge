@@ -1,6 +1,11 @@
 # NARWHAL — medium whale, signature ivory tusk spiking forward (+x)
 # from a solid 3-tall head. Forked fluke tapers left; 1-cell enclosed
 # stomach cavity amidships.
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Narwhal
+kind whale
+
 origin 13 2
 ......WWWWWWWWWWWWWWW.......
 WWWWWWWWWMMMMMMMWWWWWWWW....

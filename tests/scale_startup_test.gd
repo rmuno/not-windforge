@@ -17,6 +17,11 @@ func _initialize() -> void:
 	# a full run used to wipe the real bestiary + card gallery. Redirect first,
 	# before anything can touch disk.
 	Profile.path = "user://profile_test.json"
+	# ...and the SAVED SHIPS shelf (Q-T). This suite is the one that actually
+	# SEEDS it: a saved vessel is a launch-deck candidate now, and the deck is 8×
+	# geometry, which the legacy 1× suite structurally cannot see (CODEMAP §2).
+	ShipLayout.user_dir = "user://ships_test_scale"
+	_seed_saved_ships()
 	print("\n=== 8x default startup ===\n")
 
 	# 8x IS the main scene now (owner verdict 2026-08-18); this boots the
@@ -225,6 +230,11 @@ func _initialize() -> void:
 	# so every check above it would otherwise be counting a world it rearranged.
 	await _check_dive_deck_at_8x(world)
 
+	# ...and AFTER even that, because it is the most destructive check in the file:
+	# it generates ground across a whole max-zoom frame and runs the dormancy scan
+	# by hand. Nothing above it would survive being measured afterwards.
+	await _check_max_zoom_reaches_the_frame(world)
+
 	# ...and LAST OF ALL, a SECOND, SEPARATE boot: the Dive's own scene. It
 	# cannot share the world above, because the whole point of it is the world
 	# that world is NOT.
@@ -232,7 +242,463 @@ func _initialize() -> void:
 	await process_frame
 	await _check_dive_scene_boots()
 
+	# ...and then, with no world left in the tree at all, the one measurement
+	# that needs an empty sky: can a kraken catch a hull that is falling?
+	await _check_the_heave_catches_a_diving_hull()
+	await _check_the_crown_grabs_and_the_maw_shelters()
+	# ...and in the same empty sky, the shipped starter's CANOPY under fire and
+	# under a graze — the two symptoms dive_probe measured at v0.149.0.
+	await _check_the_canopy_is_not_one_unit()
+
 	_finish()
+
+
+## CAN A KRAKEN CATCH YOU? (v0.147.0, DESIGN_KRAKEN §1.5 / jam #3 designer C's
+## arithmetic.) The owner's complaint was that krakens are easy to avoid, and
+## the reason is pure geometry at 8×: the inherited heave is HORIZONTAL-only
+## while the Dive's whole verb is DOWN, so one 4-second attack is thrown at a
+## line a hull falling at the rate stick's 1,920 px/s left in the first half
+## second — C's cycle nets the hull +7,222 px, every cycle, forever.
+##
+## HERE and not in the 1× suite for the standing reason (CODEMAP §2): every
+## number in it — the dive rate, the align band, the grab reach, the heave's
+## peak — is a screen-scale distance, and at scale 1 the whole disagreement is
+## eight times smaller than the constants that make it.
+##
+## Run twice against the same start: once with the shipped levers, and once with
+## `kraken_push_vertical` 1.0 / `kraken_lead_seconds` 0 / `kraken_coil_seconds` 0,
+## which is exactly the brain that shipped before this slice. The second number
+## is the bug, measured; the first is the fix, measured; and the pair IS the
+## break-the-fix, because three levers put the old behaviour back.
+func _check_the_heave_catches_a_diving_hull() -> void:
+	print("\n=== the heave finds a diving hull (8x) ===\n")
+	# A sky, so the lead point's lava clamp is live, and an arena far from
+	# anything either boot above left behind.
+	var kept_bounds := Airspace.bounds
+	Airspace.bounds = Rect2(Vector2(-400000.0, -600000.0),
+		Vector2(800000.0, 600000.0))
+	var dive_rate: float = Tunables.get_num("dive_dive_rate") * 8.0
+	var now := await _time_to_contact(dive_rate)
+	Tunables.set_value("kraken_push_vertical", 1.0)
+	Tunables.set_value("kraken_lead_seconds", 0.0)
+	Tunables.set_value("kraken_coil_seconds", 0.0)
+	var before := await _time_to_contact(dive_rate)
+	Tunables.reset_all()
+	Airspace.bounds = kept_bounds
+	print("    TIME TO CONTACT: shipped %s | the old horizontal-only ram %s (cap %.0f s)"
+		% [("%.1f s" % now) if now > 0.0 else "never",
+			("%.1f s" % before) if before > 0.0 else "never", CATCH_SECONDS])
+	# A BOUND, not the measurement: a number pinned tight would redden on every
+	# tuning pass, and a number not pinned at all is not a test. Measured at
+	# 3.9 s the day this was written, against C's target of under 25 s in a real
+	# descent; CATCH_BOUND leaves three times that headroom and would still
+	# catch the heave going flat again.
+	_ok(now > 0.0 and now <= CATCH_BOUND,
+		"a kraken above a hull diving at the stick's %.0f px/s reaches it inside %.0f s (%s)"
+			% [dive_rate, CATCH_BOUND, ("%.1f s" % now) if now > 0.0 else "NEVER"])
+	_ok(before <= 0.0 or before > now * 1.5,
+		"...where the horizontal-only ram it replaced could not (%s)"
+			% [("%.1f s" % before) if before > 0.0
+				else "never, in %.0f s" % CATCH_SECONDS])
+
+
+## MOUTHS ARE CLUSTERS, AT 8× (DESIGN_KRAKEN §1.2 / §5.4, v0.148.0).
+##
+## The 1× suite pins the anatomy off the `.ship` files (`meat_clusters`,
+## `throat_index`, an arm's own pool). What only 8× can answer is the GEOMETRY
+## the fight is made of, because every distance in it is a screen-scale one:
+## `kraken_grab_reach` 70 × 8 = 560 px against a 6,656-px body.
+##
+## Two claims, and they are the two halves of D's fight:
+##   * THE CROWN GRABS. A hull that touches an ARM's reach and nothing else is
+##     grabbed. Before this slice the boss had exactly one bite bubble and six
+##     decorative arms.
+##   * THE MAW SHELTERS. A hull parked in the jaws is inside the boss and out of
+##     every site's reach — the accident both judges ruled to KEEP, and the
+##     reason the throat's site is still the pinned derived centroid rather than
+##     the throat cluster's own middle (see `KrakenAI`'s header, decision 3).
+func _check_the_crown_grabs_and_the_maw_shelters() -> void:
+	print("\n=== the crown grabs, the maw shelters (8x) ===\n")
+	var boss := _arena_ship(ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/kraken_leviathan.ship"), 8))
+	boss.faction = 2
+	boss.creature_kind = "kraken_leviathan"
+	boss.shared_health_max = 3600.0
+	boss.shared_health = boss.shared_health_max
+	boss.position = Vector2(0.0, -420000.0)
+	await process_frame
+	var ai := KrakenAI.new()
+	ai.whale = boss
+	ai.home = boss.global_position
+	var sites := ai.site_worlds()
+	var reach := Tunables.get_num("kraken_grab_reach") * 8.0
+	_ok(sites.size() == 7,
+		"the boss brings seven grab sites to the fight: a throat and six arms (%d)"
+			% sites.size())
+	if sites.size() < 7:
+		boss.queue_free()
+		return
+	# A HULL ON AN ARM, and nowhere near the throat's own bubble.
+	var arm: Vector2 = sites[1]
+	_ok(arm.distance_to(sites[0]) > reach,
+		"...and arm 1 reaches %.0f px from the throat's bite, well past its %.0f px"
+			% [arm.distance_to(sites[0]), reach])
+	var hull := _arena_ship({
+		Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HULL,
+		Vector2i(0, 1): BlockDB.Type.HULL, Vector2i(1, 1): BlockDB.Type.HULL,
+	})
+	hull.faction = 0
+	hull.gravity_scale = 0.0
+	hull.global_position = arm
+	await process_frame
+	var hp0 := 0.0
+	for cell in hull.blocks:
+		hp0 += float(hull.blocks[cell]["hp"])
+	ai.tick(1.0 / 60.0, hull)
+	var hp1 := 0.0
+	for cell in hull.blocks:
+		hp1 += float(hull.blocks[cell]["hp"])
+	_ok(ai.grabbing and ai.grab_sites_latched >= 1,
+		"a hull touching an ARM's reach and not the throat's IS grabbed (%d site(s))"
+			% ai.grab_sites_latched)
+	_ok(hp1 < hp0, "...and the arm chews it (%.0f -> %.0f hp)" % [hp0, hp1])
+
+	# THE MAW. The throat's flesh, where the jaws close — and 1,000+ px from the
+	# derived bite, which sits out among the crown.
+	var maw := boss.to_global(boss._mirror_point(
+		KrakenAI.cluster_centroid(ai.throat_cells()) * Ship.CELL))
+	hull.global_position = maw
+	await process_frame
+	var nearest := INF
+	for s in sites:
+		nearest = minf(nearest, maw.distance_to(s))
+	ai.grabbing = false
+	ai.tick(1.0 / 60.0, hull)
+	_ok(not ai.grabbing and ai.grab_sites_latched == 0,
+		"a hull parked IN THE MAW is out of every site's reach (nearest %.0f px, reach %.0f)"
+			% [nearest, reach])
+	print("    ~ the throat's flesh is %.0f px from the derived bite; the bite's bubble"
+		% maw.distance_to(sites[0]))
+	print("      stops short of the aperture, which is what makes the jaws a shelter")
+	hull.queue_free()
+	boss.queue_free()
+	ai.whale = null
+	await process_frame
+
+
+## THE CANOPY IS NOT ONE UNIT (v0.151.0). `tools/dive_probe.gd` measured both
+## symptoms at v0.149.0 on the shipped starter at 8×: the 24 authored gasbag
+## cells upscale into ONE contiguous 1,536-cell "G" cluster, `damage_cell` hits
+## every cell of the struck cluster, and so
+##   * two 20-hp turret shells popped the ENTIRE lift (a gasbag cell has 35 hp),
+##   * one terrain GRAZE deleted all 1,536 blocks in a single crush walk.
+## Balloons cluster by the `scale_unit` tile an authored cell became now, so a
+## unit is 64 cells and the canopy is 24 of them.
+##
+## HERE and not in the 1× suite for the standing reason (CODEMAP §2): at scale 1
+## the tile is the cell and the bug does not exist — the whole disagreement is
+## `upscale_cells`, which the legacy suite never runs on the starter. Measured on
+## fresh arena copies of the shipped file, in the empty sky the checks above
+## leave behind, so nothing else in this suite is counting a canopy we shot.
+func _check_the_canopy_is_not_one_unit() -> void:
+	print("\n=== the canopy is 24 balloons, not one 1,536-cell unit (8x) ===\n")
+	var cells: Dictionary = ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/starter.ship"), 8)
+	var canopy := _arena_ship(cells)
+	canopy.gravity_scale = 0.0
+	canopy.global_position = Vector2.ZERO  # sea level: lift_ratio reads real air
+	# ARMED, exactly as a run arms your hull — the pool is the other half of what
+	# a shell into the canopy used to cost.
+	canopy.hull_integrity_max = Tunables.get_num("dive_ship_integrity")
+	canopy.hull_integrity = canopy.hull_integrity_max
+	await process_frame
+
+	var bags := _bag_cells(canopy)
+	_ok(bags.size() == 1536,
+		"the shipped starter's canopy is %d cells at 8x" % bags.size())
+	if bags.is_empty():
+		canopy.queue_free()
+		return
+	var floats_before := canopy.lift_ratio()
+	var mass_before := canopy.mass
+
+	# (a) ONE SHELL REACHES ONE BALLOON. 20 hp into a canopy cell: 64 cells hurt
+	# (its 8×8 tile), 1,472 pristine. Before: all 1,536, and the pool billed once
+	# for the lot (v0.149.0) but every block still took the hit.
+	var aim: Vector2i = bags[bags.size() / 2]
+	var full := BlockDB.max_hp(BlockDB.Type.GASBAG)
+	var pool_before := canopy.hull_integrity
+	canopy.damage_cell(aim, 20.0)
+	var hurt := 0
+	for c in bags:
+		if canopy.has_block(c) and float(canopy.blocks[c]["hp"]) < full - 0.01:
+			hurt += 1
+	_ok(hurt == 64,
+		"one 20-hp shell damages exactly its own balloon — 64 cells, not 1,536 (%d)"
+			% hurt)
+	_ok(absf((pool_before - canopy.hull_integrity) - 20.0) < 0.01,
+		"...and bills the integrity pool 20 (%.0f of %.0f left)"
+			% [canopy.hull_integrity, canopy.hull_integrity_max])
+
+	# The SECOND shell kills that balloon (35 hp a cell, 40 taken) — the pair that
+	# used to pop the whole canopy. One tile goes; the other 23 hold the ship up.
+	canopy.damage_cell(aim, 20.0)
+	await process_frame
+	await process_frame
+	var left := _bag_cells(canopy).size()
+	_ok(left == 1472,
+		"two shells cost ONE balloon: %d canopy cells left of 1,536 (was 0)" % left)
+
+	# (c) AND IT STILL FLOATS. Before, two shells took every gasbag with them and
+	# the hull became a brick — the run over on a picket's second round.
+	var floats_after := canopy.lift_ratio()
+	_ok(floats_after > 1.0,
+		"the shot hull still lifts its own weight (ratio %.3f, was %.3f before the hit)"
+			% [floats_after, floats_before])
+	print("    ~ mass %.0f -> %.0f, lift ratio %.3f -> %.3f"
+		% [mass_before, canopy.mass, floats_before, floats_after])
+
+	# The CONTRAST, measured rather than asserted from memory: the same hull with
+	# the whole canopy gone — what the old rule handed you — cannot hold itself up.
+	var bald := _arena_ship(cells)
+	bald.gravity_scale = 0.0
+	bald.global_position = Vector2.ZERO
+	await process_frame
+	for c in _bag_cells(bald):
+		bald.blocks.erase(c)
+	bald.rebuild()
+	_ok(bald.lift_ratio() < 1.0,
+		"...where a hull that lost the WHOLE canopy is a brick (ratio %.3f)"
+			% bald.lift_ratio())
+	bald.queue_free()
+	canopy.queue_free()
+	await process_frame
+
+	# (b) THE GRAZE. A crush budget of 600,000 — the size dive_probe billed per
+	# crash (1,765,755 over three) — driven into the canopy from above through the
+	# real _process walk, not arithmetic. The walk kills the tile it entered and
+	# then finds its next step already gone, so it stops: a few balloons at worst,
+	# never the lift.
+	var grazed := _arena_ship(cells)
+	grazed.gravity_scale = 0.0
+	grazed.global_position = Vector2.ZERO
+	await process_frame
+	var before_bags := _bag_cells(grazed).size()
+	var top: Vector2i = _bag_cells(grazed)[0]
+	# Solve the budget back through _process's conversion at 8×:
+	#   available = (impulse - THRESHOLD * unit³) * SCALE / unit²
+	var impulse: float = Tunables.get_num("impact_damage_threshold") * 512.0 \
+		+ 600000.0 * 64.0 / Tunables.get_num("impact_damage_scale")
+	grazed._pending_impacts.append({
+		"pos": grazed.local_pos_of(top) + Vector2(0.0, -Ship.CELL * 0.5),
+		"impulse": impulse,
+		"normal": Vector2.DOWN,   # the ground pushing INTO the canopy from above
+		"immune": false,
+	})
+	await process_frame
+	await process_frame
+	var after_bags := _bag_cells(grazed).size()
+	var lost := before_bags - after_bags
+	_ok(lost > 0, "the graze really bit the canopy (%d cells)" % lost)
+	_ok(lost <= 192,
+		"...a few balloons at most — %d cells lost, bound 192 (three tiles), not 1,536"
+			% lost)
+	_ok(grazed.lift_ratio() > 1.0,
+		"and the grazed hull still flies home (ratio %.3f)" % grazed.lift_ratio())
+	print("    ~ a 600,000 crush budget into the canopy: %d of %d cells lost"
+		% [lost, before_bags])
+	grazed.queue_free()
+	await process_frame
+
+
+## Every GASBAG cell of a ship, in a stable order.
+func _bag_cells(s: Ship) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	for c in s.blocks:
+		if int(s.blocks[c]["type"]) == BlockDB.Type.GASBAG:
+			out.append(c)
+	out.sort()
+	return out
+
+
+## How long the hunt is given before it is called a miss, and how far above and
+## across the kraken starts — inside a max-zoom frame (~16,432 px half-diagonal),
+## so this is a hunter you can WATCH fail to reach you, not one out of range.
+const CATCH_SECONDS := 25.0
+const CATCH_BOUND := 12.0
+const CATCH_START := Vector2(4000.0, -6000.0)
+
+
+## Seconds until a kraken started at CATCH_START has hold of the hull or is
+## standing on it; -1 if it never does inside CATCH_SECONDS. The hull's velocity
+## is written every frame because that IS the rate stick (`Ship.rate_control`
+## drives toward a RATE, not a force) — and it stops mattering the instant the
+## measurement ends, which is the first frame of contact.
+func _time_to_contact(dive_rate: float) -> float:
+	var hull := _arena_ship(ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/starter.ship"), 8))
+	hull.faction = 0
+	hull.position = Vector2(0.0, -300000.0)
+	var kraken := _arena_ship(ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/kraken_c.ship"), 8))
+	kraken.faction = 2
+	kraken.creature_kind = "kraken"
+	kraken.shared_health_max = 1200.0 * 8.0
+	kraken.shared_health = kraken.shared_health_max
+	kraken.position = hull.position + CATCH_START
+	await process_frame
+	var ai := KrakenAI.new()
+	ai.whale = kraken
+	ai.home = kraken.global_position
+	var t := -1.0
+	for i in int(CATCH_SECONDS * 60.0):
+		hull.linear_velocity = Vector2(0.0, dive_rate)
+		ai.tick(1.0 / 60.0, hull)
+		await physics_frame
+		if ai.grabbing or hull.get_colliding_bodies().has(kraken):
+			t = float(i) / 60.0
+			break
+	hull.queue_free()
+	kraken.queue_free()
+	await process_frame
+	return t
+
+
+## A ship in the empty arena: 8× granularity, real gravity, nothing else.
+func _arena_ship(cells: Dictionary) -> Ship:
+	var s := Ship.new()
+	for cell in cells:
+		var type: int = cells[cell]
+		s.blocks[cell] = {"type": type, "hp": BlockDB.max_hp(type)}
+	root.add_child(s)
+	s.scale_unit = 8.0
+	s.gravity_scale = 8.0
+	s.rebuild()
+	return s
+
+
+## "AS IF THEY WERE USING A SHIP'S MAX ZOOM" (the standing owner rule since
+## v0.128.0), applied to the two radii that never learned it — owner 2026-09-02:
+## *"The 'max zoom as if on ship' doesn't seem to be fully recognized - if I zoom
+## out as much as possible I can see that creatures toward the edge of the screen
+## are updating super slow (per the 'far away, delay updates' process). But this
+## also causes terrain to load in half way on the screen."*
+##
+## Both numbers were authored before the rule and both were SHORTER than the
+## frame they have to cover:
+##   * dormancy slept at `dormant_range_px` = 12,000 px, against a max-zoom
+##     half-diagonal of ~16,432 — bodies in plain sight left the simulation and
+##     moved on the 3 s dormant tick;
+##   * terrain's promote radius capped at `20 * subdiv / 8` chunks = 10,240 px at
+##     subdiv 4, against a max-zoom half-WIDTH of ~14,321 — the ground stopped
+##     ~70% of the way to the screen edge.
+##
+## Here rather than in the 1× suite for the usual reason: every number in it is a
+## screen-scale distance (CODEMAP §2), and at scale 1 the frame is 8× smaller
+## than the constants and both bugs are invisible.
+func _check_max_zoom_reaches_the_frame(w: Node) -> void:
+	var terrain = w.get("terrain")
+	var pl = w.get("player")
+	if terrain == null or pl == null or not is_instance_valid(pl):
+		_ok(false, "a world with a player and terrain to measure")
+		return
+	var half_w: float = float(w.call("max_view_width_px")) * 0.5
+	var horizon: float = float(w.call("max_view_horizon_px"))
+	var cpx: float = float(terrain.call("chunk_px"))
+	print("    ~ max-zoom frame: half-width %.0f px, half-diagonal %.0f px, chunk %.0f px"
+		% [half_w, horizon, cpx])
+	Tunables.reset_all()
+
+	# --- DORMANCY: nothing inside the widest frame may sleep ----------------
+	var at: Vector2 = pl.global_position
+	var probe: Ship = w.call("debug_spawn", "critter",
+		at + Vector2(half_w * 0.9, 0.0))
+	_ok(probe != null, "a creature at 0.9 x the max-zoom half-width (%.0f px out)"
+		% (half_w * 0.9))
+	if probe != null and is_instance_valid(probe):
+		probe.freeze = true
+		# The decision scan runs on its own cadence; give it several periods.
+		for i in 4:
+			w.call("_update_dormancy", 0.5)
+		_ok(not probe.dormant,
+			"...is STILL SIMULATED, not ticking every 3 s (dormancy's floor is the frame)")
+		# ...and the feature still works: well outside the frame, it sleeps.
+		probe.global_position = at + Vector2(horizon * 3.0, 0.0)
+		for i in 4:
+			w.call("_update_dormancy", 0.5)
+		_ok(probe.dormant,
+			"...while three horizons out it sleeps, so the feature still pays for itself")
+		probe.queue_free()
+		await process_frame
+
+	# --- TERRAIN: the ground reaches the frame's edge ------------------------
+	# `primary_range_px` is stamped here rather than by winding the camera, because
+	# the camera is hard-locked and re-derives its zoom every frame. This IS the
+	# number `_stream_terrain` writes at max zoom-out: half the widest frame.
+	var target_x := at.x + half_w * 0.9
+	IslandGen.ensure_generated(terrain, int(w.get("world_seed")),
+		[at, Vector2(target_x, at.y), Vector2(target_x, at.y - half_w),
+			Vector2(target_x, at.y + half_w)], half_w, 4096)
+	# MOST OF THIS WORLD IS SKY, and where an island happens to fall is the
+	# generator's business — so the probe is PLANTED rather than hunted for: a
+	# patch of stone exactly 12 chunks out, in the band between the old cap
+	# (10 chunks = 10,240 px) and the max-zoom frame's edge (14,322 px). That band
+	# IS the bug, and this makes the measurement independent of the world seed.
+	# `set_cell` is a generation write, not a dig: it is not recorded as an edit.
+	var home: Vector2i = terrain.call("chunk_of_cell",
+		terrain.call("world_to_cell", at))
+	var ground := home + Vector2i(12, 0)
+	var cell0 := ground * Terrain.CHUNK + Vector2i(4, 4)
+	terrain.call("fill_rect", Rect2i(cell0, Vector2i(8, 8)), TerrainDB.Type.STONE)
+	terrain.call("flush_rebuilds")
+	_ok((terrain.get("_chunks") as Dictionary).has(ground),
+		"a probe chunk of ground %.0f px out — past the old cap, inside the frame"
+			% (12.0 * cpx))
+	# Measured from that chunk's own altitude, so the only distance in play is the
+	# horizontal one the report is about.
+	var focus := Vector2(at.x, (float(ground.y) + 0.5) * cpx)
+
+	var old_live := await _drain_streaming(terrain, 0.0, focus, half_w)
+	var old_r: int = int(terrain.call("_primary_promote_r"))
+	var old_has: bool = (terrain.get("_live") as Dictionary).has(ground)
+	var new_live := await _drain_streaming(terrain, horizon + cpx, focus, half_w)
+	var new_r: int = int(terrain.call("_primary_promote_r"))
+	var new_has: bool = (terrain.get("_live") as Dictionary).has(ground)
+	print("    ~ live chunks at max zoom-out: %d (old cap r=%d = %.0f px) -> %d (max-zoom cap r=%d = %.0f px)"
+		% [old_live, old_r, float(old_r) * cpx, new_live, new_r, float(new_r) * cpx])
+	_ok(float(new_r) * cpx >= half_w,
+		"the promote radius now reaches the frame's own edge (%.0f px vs half-width %.0f)"
+			% [float(new_r) * cpx, half_w])
+	_ok(float(old_r) * cpx < half_w,
+		"...which the old %d-chunk cap did not (%.0f px - the owner's 'half way on the screen')"
+			% [old_r, float(old_r) * cpx])
+	_ok(new_has,
+		"A CHUNK WITH GROUND IN IT AT 0.9 x THE HALF-WIDTH IS LIVE after the drain")
+	_ok(not old_has,
+		"...and was NOT under the old cap, which is the report, reproduced")
+	_ok(new_live < 900,
+		"...and the live set is still a set, not the world (%d chunks)" % new_live)
+	Tunables.reset_all()
+
+
+## Run the streamer at a given `primary_cap_px` until its queue drains, and
+## report how many chunks ended up live. `update_streaming` promotes inside the
+## call, so this costs iterations, not seconds.
+func _drain_streaming(terrain, cap_px: float, focus: Vector2,
+		range_px: float) -> int:
+	for i in 2000:
+		# Re-stamped every pass: the world's own `_stream_terrain` runs on the
+		# frames this awaits and would put the live camera's numbers straight back.
+		terrain.set("primary_cap_px", cap_px)
+		terrain.set("primary_range_px", range_px)
+		var before: int = (terrain.get("_live") as Dictionary).size()
+		terrain.call("update_streaming", [focus], [])
+		if (terrain.get("_live") as Dictionary).size() == before \
+				and bool(terrain.get("_last_scan_drained")):
+			break
+		if i % 120 == 119:
+			await process_frame
+	return (terrain.get("_live") as Dictionary).size()
 
 
 ## THE DIVE'S OWN SCENE (owner 2026-09-01: "we just keep reusing the same world
@@ -383,6 +849,8 @@ func _check_dive_scene_boots() -> void:
 	# and a surge is born hostile and mortal.
 	if pl != null and is_instance_valid(pl):
 		await _check_dive_seam_is_seamless(w, pl, rect, ring_w, cx, terrain)
+		await _check_dive_seam_prewarms_the_mirror(w, pl, ring_w, cx, terrain)
+		_check_dive_draft_spans_the_seam(w, pl, tile_w, cx)
 		pl.global_position = Vector2(cx, pl.global_position.y)
 		pl.velocity = Vector2.ZERO
 	w.call("_dive_surge")
@@ -471,10 +939,712 @@ func _check_dive_scene_boots() -> void:
 	# live world with nothing awaited between the set-up and the assertion).
 	await _check_dive_picket_holds_its_rung(w, pl, cx)
 	await _check_dive_seal(w, pl, run, cx)
+	# THE DUNK, above the Leviathan on purpose: a picket spawn refuses a finished
+	# run, and the check below is the whole of §5.1's sharp knowledge.
+	await _check_the_dunk(w, pl, terrain)
+	# ...and LAST OF ALL, the floor: waking the Leviathan ENDS the run in
+	# triumph, so nothing can follow it (the seal reads `outcome` too).
+	await _check_the_leviathan(w, pl, run, cx, terrain)
 
 	w.queue_free()
 	await process_frame
 
+
+
+
+## THE DUNK (DESIGN_KRAKEN §5.1, measured by `tools/dunk_probe.gd`, v0.148.0).
+##
+## The design's headline piece of sharp knowledge is a claim about SHIPPED code:
+## a kraken is held up by muscle alone, your lift props blow down, so hovering
+## over one where there is no roof sinks it into the core. Nothing had ever run
+## it. The probe did, and the numbers are the reason this check is shaped the
+## way it is:
+##
+##   * THE JET IS SHORT AND IT IS SAMPLED AT THE PREY'S ORIGIN. 8 cells =
+##     1,024 px from the prop's centre (`Ship.WASH_RANGE_CELLS`), and
+##     `world._apply_prop_wash` asks `body.global_position` — half a body BELOW
+##     its own back. On the shipped starter that leaves ~440 px of clear air at
+##     0.32 g and ~240 px at 0.84 g. You hover almost ON it, or not at all.
+##   * SO THE DUNK IS A RIDE, NOT A SHOVE. The animal falls out of the jet in
+##     under a second, and getting it back means diving after it — during which
+##     the props blow the other way (`wash_accel_at` reads the stick's sign), so
+##     the jet is off. The measured descent is a stutter at ~1,200 px/s, which is
+##     under the hull's own 1,920 px/s dive rate. It is 3–6 s of committed
+##     hovering per ~5,000 px, exactly what §5.1 asked for, and it is nowhere
+##     near instant — so `wash_push_mult` was NOT turned down (see the report).
+##   * AND THE ROOF ANSWERS IT. Over the den's slab the jet never reaches the
+##     boss at all.
+##
+## The pilot here is a stick, not a teleport: the hull flies the same rate
+## controller the run stamps on every listed hull, and the only input is the
+## neutral/down toggle a chasing player makes. The bound is twice the measured
+## time — tight enough to catch the jet going flat, loose enough to survive a
+## tuning pass.
+const DUNK_DROP_PX := 6000.0     ## how much air the prey starts with over the core
+const DUNK_BOUND_SECONDS := 18.0 ## 2x the measured 8.2 s over that drop
+const DUNK_KEEP_OFF := 350.0     ## clear air the chase refuses to close (a crash is not a hover)
+
+
+func _check_the_dunk(w: Node, pl, terrain) -> void:
+	if pl == null or not is_instance_valid(pl) or terrain == null:
+		return
+	print("\n=== the dunk: a hunter under a hovering starter (8x) ===\n")
+	# STILL AIR AND A STILL ANIMAL. The ring's up/down draft lifts a hull AND a
+	# kraken (v0.141.0's one-vector doctrine — measured carrying both upward at
+	# ~3,600 px/s at the floor), and a hunting kraken heaves away. Both are real,
+	# and both are somebody else's measurement: this one is muscle-versus-jet.
+	Tunables.set_value("dive_zone_wind_mult", 0.0)
+	Tunables.set_value("whale_push_accel", 0.0)
+	Tunables.set_value("whale_align_accel", 0.0)
+	Tunables.set_value("kraken_wildness", 0.0)
+	var lava: float = LavaCore.surface_y_for(w.get("_world_rect") as Rect2,
+		float((w.get("_lava_core") as Node).get("top_frac")))
+	var at := await _open_air(w, terrain, pl, Vector2(
+		pl.global_position.x + 14000.0, lava - DUNK_DROP_PX))
+	# THE BODY IS OUT OF THIS. Twenty seconds of world run below, and the deep
+	# has no floor but the core — so the person is held far above and aside for
+	# the duration and put back afterwards. (The run ends in LOSS otherwise, and
+	# the Leviathan's own check, which follows, has nothing left to win.)
+	var body_was: Vector2 = pl.global_position
+	var body_safe := Vector2(at.x - 30000.0, lava - 60000.0)
+	_hold_body(pl, body_safe)
+	# ONE BODY PLAN, PINNED. `_dive_spawn_picket("kraken")` rolls one of five
+	# varieties per boot, and a different silhouette puts the origin the wash is
+	# sampled at a different distance under the jet — the check read 7.2 s on one
+	# plan and NEVER on another in the same merged suite. The dunk is a claim
+	# about the jet versus muscle, not about which kraken you met, so it is
+	# measured on the ammonite; the variety spread is the dunk probe's job.
+	var beast: Ship = w.call("_spawn_one_kraken", "res://ships/kraken_c.ship", at)
+	if beast != null and is_instance_valid(beast):
+		(w.get("_dive_surged") as Array).append(beast.get_instance_id())
+	_ok(beast != null and is_instance_valid(beast), "a hunter is at the floor over open lava")
+	if beast == null or not is_instance_valid(beast):
+		return _reset_dunk_levers()
+	for i in 60:
+		await w.get_tree().physics_frame
+		_hold_body(pl, body_safe)
+		if not is_instance_valid(beast):
+			break
+	if not is_instance_valid(beast):
+		_ok(false, "...and it survived long enough to be dunked")
+		return _reset_dunk_levers()
+	beast.linear_velocity = Vector2.ZERO
+	var drop: float = lava - (beast.global_position.y + beast.solid_bounds.end.y)
+	_ok(drop > 1000.0, "it holds the deep by MUSCLE, %.0f px of air under its keel" % drop)
+
+	# The hull: the shipped starter, flying the run's own rate controller (the
+	# world stamps that on everything in `_dive_surged`, so listing it is all
+	# this needs).
+	var hull: Ship = w.get("fleet").call("spawn_ship_from_cells",
+		ShipLayout.upscale_cells(ShipLayout.load_cells("res://ships/starter.ship"), 8),
+		beast.global_position + Vector2(0.0, -6000.0), 0, 0.0,
+		float(w.get("world_scale")), 0)
+	_ok(hull != null and is_instance_valid(hull), "a starter is above it")
+	if hull == null or not is_instance_valid(hull):
+		return _reset_dunk_levers()
+	(w.get("_dive_surged") as Array).append(hull.get_instance_id())
+	await w.get_tree().physics_frame
+	var prop := Vector2.ZERO
+	for p in (hull.get("_wash_props") as Array):
+		if bool((p as Dictionary)["vertical"]):
+			prop = (p as Dictionary)["center"] as Vector2
+			break
+	_ok(prop != Vector2.ZERO, "...with lift props to blow with")
+	# Park a prop 700 px down its own jet — 0.84 g at the prey's origin, and
+	# ~240 px of clear air. "Directly above it" means above a PROP: the wash is
+	# rejected outside a prop's own width band.
+	hull.global_position = Vector2(beast.global_position.x - prop.x,
+		beast.global_position.y - 700.0 - prop.y)
+	hull.linear_velocity = Vector2.ZERO
+	hull.thrust_input = Vector2.ZERO
+	await w.get_tree().physics_frame
+
+	var t := 0.0
+	var eaten := false
+	var jet_frames := 0
+	var chasing := 0.0
+	for i in int(DUNK_BOUND_SECONDS * 60.0):
+		if not is_instance_valid(beast) or not is_instance_valid(hull):
+			break
+		# THE STICK, and nothing else: neutral is the hover (which IS the
+		# downwash), DOWN is the chase. Written every frame because the run
+		# stamps the rest of the flight envelope every frame too.
+		var air: float = (beast.global_position.y + beast.solid_bounds.position.y) \
+			- (hull.global_position.y + hull.solid_bounds.end.y)
+		hull.thrust_input = Vector2(0.0, -1.0 if air > DUNK_KEEP_OFF else 0.0)
+		if air > DUNK_KEEP_OFF:
+			chasing += 1.0 / 60.0
+		if hull.wash_accel_at(beast.global_position) != Vector2.ZERO:
+			jet_frames += 1
+		await w.get_tree().physics_frame
+		_hold_body(pl, body_safe)
+		t += 1.0 / 60.0
+		if not is_instance_valid(beast):
+			eaten = true
+			break
+		if LavaCore.is_in_core(w.get("_world_rect") as Rect2,
+				float((w.get("_lava_core") as Node).get("top_frac")),
+				beast.global_position.y + beast.solid_bounds.end.y):
+			eaten = true
+			break
+	if is_instance_valid(hull):
+		hull.thrust_input = Vector2.ZERO
+	print("    ~ the dunk: %.1f s over %.0f px (%.0f px/s), %d frames of jet, %.1f s of chasing"
+		% [t, drop, drop / maxf(t, 0.001), jet_frames, chasing])
+	_ok(eaten and t <= DUNK_BOUND_SECONDS,
+		"a hunter under a hovering starter sinks into the core in %s (bound %.0f s)"
+			% [("%.1f s" % t) if eaten else "NEVER", DUNK_BOUND_SECONDS])
+	_ok(t >= 1.0,
+		"...and it is never instant — the design's committed hovering, not a button (%.1f s)" % t)
+	if is_instance_valid(beast):
+		beast.queue_free()
+	if is_instance_valid(hull):
+		(w.get("_dive_surged") as Array).erase(hull.get_instance_id())
+		hull.queue_free()
+	_reset_dunk_levers()
+	pl.global_position = body_was
+	pl.velocity = Vector2.ZERO
+	await w.get_tree().physics_frame
+
+
+## Every live scrap mote's value, summed.
+func _scrap_value(field) -> int:
+	var total := 0
+	if field == null:
+		return total
+	for m in (field.call("active") as Array):
+		total += int(m["value"])
+	return total
+
+
+## Keep the person out of the measurement (and out of the core).
+func _hold_body(pl, at: Vector2) -> void:
+	if pl != null and is_instance_valid(pl):
+		pl.global_position = at
+		pl.velocity = Vector2.ZERO
+
+
+func _reset_dunk_levers() -> void:
+	Tunables.reset("dive_zone_wind_mult")
+	Tunables.reset("whale_push_accel")
+	Tunables.reset("whale_align_accel")
+	Tunables.reset("kraken_wildness")
+
+
+## A point near `want` with a genuinely EMPTY column around it. The deep still
+## has islands in it, and a body teleported into one is fired out at 14,000 px/s
+## (measured — the probe reported that ejection as a dunk for one run). The
+## player is moved to each candidate first, because an ungenerated chunk answers
+## "not solid" to everything.
+func _open_air(w: Node, terrain, pl, want: Vector2) -> Vector2:
+	for step in 12:
+		var at := want + Vector2(float(step) * 9000.0, 0.0)
+		# Streamed by draining the streamer AT the candidate rather than by
+		# standing the player there: the deep has no ground, and a body parked
+		# over the core for the seconds this takes simply falls into it (which
+		# is how this check first reported the run as LOST).
+		await _drain_streaming(terrain, 9000.0, at, 9000.0)
+		var clear := true
+		for dx in [-3000.0, -1500.0, 0.0, 1500.0, 3000.0]:
+			for dy in [-8000.0, -6000.0, -4000.0, -2000.0, 0.0, 2000.0]:
+				if bool(terrain.call("is_solid",
+						terrain.call("world_to_cell", at + Vector2(dx, dy)))):
+					clear = false
+					break
+			if not clear:
+				break
+		if clear:
+			return at
+	return want
+
+
+## THE FLOOR HAS A KRAKEN, AND KILLING IT WINS (DESIGN_KRAKEN §7 slice 1).
+##
+## Here rather than in the 1× suite because every claim below is 8× GEOMETRY —
+## the den's altitude against the lava, a 6,656-px body, a roof measured in body
+## widths, and a hull dropped onto it (CODEMAP: `solid_bounds` is already world
+## px, and the legacy suite cannot see an eightfold error).
+##
+## Five things, in the order the round built them: the body, its collider against
+## the authored crown (judge 1's risk 2 — a boxed crown would delete the maw's
+## 1.6-cell shelter margin), the ROOF, the cull's exemption, and the WIN.
+func _check_the_leviathan(w: Node, pl, run, cx: float, terrain) -> void:
+	if pl == null or not is_instance_valid(pl) or run == null or terrain == null:
+		return
+	var floor_y: float = w.call("dive_altitude_y",
+		DiveRun.depth_altitude(DiveRun.DEPTHS))
+	run.set("depth", DiveRun.DEPTHS)
+	run.set("deepest", DiveRun.DEPTHS)
+	pl.global_position = Vector2(cx, floor_y)
+	pl.velocity = Vector2.ZERO
+	await w.get_tree().physics_frame
+
+	# --- 1. THE BODY -------------------------------------------------------
+	w.call("_dive_wake_leviathan")
+	var boss: Ship = null
+	for sid in (w.get("_dive_surged") as Array):
+		var s := instance_from_id(sid) as Ship
+		if s != null and is_instance_valid(s) and s.creature_kind == "kraken_leviathan":
+			boss = s
+	_ok(boss != null, "waking the floor spawns a kraken_leviathan, not a city-whale")
+	if boss == null:
+		return
+	_ok(is_equal_approx(boss.shared_health_max, 3600.0),
+		"its pool is the file's own `health 3600` (%.0f)" % boss.shared_health_max)
+	_ok(boss.tame_level == 9,
+		"`tame 9` puts it above the perk ceiling — untameable (%d)" % boss.tame_level)
+	_ok(boss.bounty == 900, "`bounty 900` rides on the body (%d)" % boss.bounty)
+	_ok(boss.variety == "kraken_leviathan", "...and the bestiary tag came off the path")
+	_ok(w.call("_whale_ai_for", boss) is KrakenAI,
+		"its kind chose the KRAKEN brain (ram + mouth grab), not a whale's")
+	_ok(bool(w.call("_dive_is_the_boss", boss)),
+		"the ONE predicate reads it as the run's destination")
+	_ok(String(w.call("_edge_marker_kind", boss)) == "boss",
+		"...so it wears the crown marker")
+	var stand_in := false
+	for s2 in (w.get("fleet").call("ships") as Array):
+		if is_instance_valid(s2) and (s2 as Ship).creature_kind == "whale_city":
+			stand_in = true
+	_ok(not stand_in, "and no city-whale stand-in was spawned into the run")
+
+	var bounds: Rect2 = boss.solid_bounds
+	print("    ~ the Leviathan: %d blocks, solid_bounds %.0f x %.0f px"
+		% [boss.blocks.size(), bounds.size.x, bounds.size.y])
+	_ok(absf(boss.global_position.x - cx) < bounds.size.x,
+		"it comes up at YOUR x (%.0f px off the line)" % absf(boss.global_position.x - cx))
+	var lava_y: float = LavaCore.surface_y_for(w.get("_world_rect") as Rect2,
+		float((w.get("_lava_core") as Node).get("top_frac")))
+	var keel := boss.global_position.y + bounds.end.y
+	_ok(keel < lava_y,
+		"the den keeps it out of the core, with %.0f px of clear air under its keel"
+			% (lava_y - keel))
+	# THE BODY STANDS CLEAR. Since v0.147.0 the boss HUNTS — it leads your line
+	# and heaves with a vertical share — and a kraken's mouth chews an on-foot
+	# body at 120 hp/s (KrakenAI.prey_player). This check is PLUMBING (identity,
+	# the roof, the cull, the win), not the fight: the body watches from a rung
+	# up and far to one side, or the run is lost to a grab before step 5 asks
+	# whether killing the boss wins it. The fight itself is measured by
+	# `_check_the_heave_catches_a_diving_hull` and by `tools/dive_probe.gd`.
+	var stand_off := absf(float(w.call("dive_altitude_y", DiveRun.depth_altitude(2)))
+		- float(w.call("dive_altitude_y", DiveRun.depth_altitude(1))))
+	pl.global_position = Vector2(cx + 20000.0, floor_y - stand_off)
+	pl.velocity = Vector2.ZERO
+
+	# --- 2. THE COLLIDER AGAINST THE AUTHORED CROWN -------------------------
+	# The crown is 72 authored MEAT cells in the trailing twelve columns (4,608
+	# blocks at 8×), and D's whole risk/reward rests on them being reachable —
+	# both as the thing that grabs you and as the thing you shoot. A living
+	# creature collides off DOWNSAMPLED super-cells (`creature_coarse_cells`), so
+	# this asks the collider itself rather than the grid.
+	var rects: Array = boss.call("_coarse_creature_rects")
+	var xmin := 1 << 30
+	for cell in boss.blocks:
+		xmin = mini(xmin, (cell as Vector2i).x)
+	var crown_x := xmin + 12 * 8      # the trailing twelve AUTHORED columns, at 8×
+	var arms: Array[Vector2i] = []
+	for cell in boss.blocks:
+		var c := cell as Vector2i
+		if c.x < crown_x and int(boss.blocks[c]["type"]) == BlockDB.Type.MEAT:
+			arms.append(c)
+	var uncovered: Array[Vector2i] = []
+	for c in arms:
+		var hit := false
+		for r in rects:
+			if (r as Rect2i).has_point(c):
+				hit = true
+				break
+		if not hit:
+			uncovered.append(c)
+	_ok(arms.size() == 72 * 64,
+		"the crown is the authored 72 cells, upscaled (%d blocks)" % arms.size())
+	_ok(uncovered.is_empty(),
+		"every arm block is inside the living collider (%d boxes, %d arm blocks%s)"
+			% [rects.size(), arms.size(), "" if uncovered.is_empty()
+				else " — MISSED %d, first at %s" % [uncovered.size(), uncovered[0]]])
+	# ...and the OTHER half of judge 1's risk, as a measurement rather than an
+	# assertion: how much EMPTY air inside the crown's own footprint the boxes
+	# swallow. 0 % is a crown you can fly between; 100 % is a slab.
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for c in arms:
+		lo = Vector2i(mini(lo.x, c.x), mini(lo.y, c.y))
+		hi = Vector2i(maxi(hi.x, c.x), maxi(hi.y, c.y))
+	var air := 0
+	var boxed := 0
+	for y in range(lo.y, hi.y + 1):
+		for x in range(lo.x, hi.x + 1):
+			var c2 := Vector2i(x, y)
+			if boss.blocks.has(c2):
+				continue
+			air += 1
+			for r in rects:
+				if (r as Rect2i).has_point(c2):
+					boxed += 1
+					break
+	print("    ~ the crown's footprint: %d air blocks, %d boxed by the coarse collider (%.1f%%)"
+		% [air, boxed, 100.0 * float(boxed) / maxf(1.0, float(air))])
+
+	# --- 3. THE ROOF -------------------------------------------------------
+	var roof: Rect2 = w.get("_dive_den_roof")
+	_ok(roof.size.x > 0.0, "waking it cut a roof over the den")
+	if roof.size.x <= 0.0:
+		return
+	print("    ~ the den's roof: %.0f x %.0f px at (%.0f, %.0f)"
+		% [roof.size.x, roof.size.y, roof.position.x, roof.position.y])
+	_ok(roof.size.x >= bounds.size.x * 2.0,
+		"it is at least two body widths (%.0f px vs %.0f)"
+			% [roof.size.x, bounds.size.x * 2.0])
+	var cpx: float = terrain.call("cell_px")
+	_ok(roof.size.y >= 4.0 * cpx,
+		"...and at least four terrain cells thick, so nothing tunnels (%.0f px, cell %.0f)"
+			% [roof.size.y, cpx])
+	var body_top := boss.global_position.y + bounds.position.y
+	_ok(roof.end.y <= body_top,
+		"its underside is ABOVE the body (%.0f px of headroom)" % (body_top - roof.end.y))
+	# REAL STONE, all the way across — five samples through the middle of the slab.
+	var stone := 0
+	for i in 5:
+		var at := Vector2(roof.position.x + roof.size.x * (0.1 + 0.2 * float(i)),
+			roof.get_center().y)
+		if bool(terrain.call("is_solid", terrain.call("world_to_cell", at))):
+			stone += 1
+	_ok(stone == 5, "the slab is real terrain across its width (%d/5 samples)" % stone)
+	# ...and the LAVA IS OPEN EITHER SIDE (owner call 2: no walls, or phase 3 is
+	# a siege). One body width out from each end, at the body's own altitude.
+	var open_sides := 0
+	for dir in [-1.0, 1.0]:
+		var at2 := Vector2(roof.get_center().x
+			+ dir * (roof.size.x * 0.5 + bounds.size.x), boss.global_position.y)
+		if not bool(terrain.call("is_solid", terrain.call("world_to_cell", at2))):
+			open_sides += 1
+	_ok(open_sides == 2, "and the sky is open on both flanks (%d/2)" % open_sides)
+
+	# A HULL DROPPED ON THE DEN LANDS ON THE ROOF, not on the boss — which is the
+	# whole point of it (a falling husk was killing the fight by accident).
+	await _drain_streaming(terrain, roof.size.x, roof.get_center(), roof.size.x)
+	var drop_cells := {}
+	for x in 8:
+		for y in 8:
+			drop_cells[Vector2i(x, y)] = BlockDB.Type.HULL
+	var drop_at := Vector2(roof.get_center().x, roof.position.y - 2000.0)
+	var husk: Ship = w.get("fleet").call("spawn_ship_from_cells",
+		drop_cells, drop_at, 0, 0.0, float(w.get("world_scale")), 0)
+	_ok(husk != null, "a hull is dropped over the den")
+	if husk != null:
+		var settled := 0
+		for i in 600:
+			await w.get_tree().physics_frame
+			if not is_instance_valid(husk):
+				break
+			if absf(husk.linear_velocity.y) < 20.0:
+				settled += 1
+				if settled > 30:
+					break
+			else:
+				settled = 0
+		if is_instance_valid(husk):
+			var rested := husk.global_position.y + husk.solid_bounds.end.y
+			_ok(rested <= roof.end.y + 4.0 * cpx,
+				"...and it comes to rest ON the roof (keel %.0f, slab %.0f..%.0f)"
+					% [rested, roof.position.y, roof.end.y])
+			_ok(rested < body_top,
+				"...never on the boss (%.0f px above its back)" % (body_top - rested))
+			husk.queue_free()
+		else:
+			_ok(false, "...and it fell straight through the roof into the core")
+		await w.get_tree().physics_frame
+
+	# --- 4. THE CULL KEEPS IT ----------------------------------------------
+	# A rung and a half is the wake's leash; the boss is the run's DESTINATION and
+	# is never litter, however far you climb. Proved against a picket at the same
+	# distance, which IS litter — otherwise the exemption could be doing nothing.
+	var rung := absf(float(w.call("dive_altitude_y", DiveRun.depth_altitude(2)))
+		- float(w.call("dive_altitude_y", DiveRun.depth_altitude(1))))
+	var high: Vector2 = pl.global_position + Vector2(0.0, -2.0 * rung)
+	boss.global_position = high
+	var decoy = w.call("_dive_spawn_picket", "hulk", high + Vector2(4000.0, 0.0))
+	var decoy_id: int = decoy.get_instance_id() if decoy != null else 0
+	w.call("_dive_cull_the_wake", 2.0)
+	var surged: Array = w.get("_dive_surged") as Array
+	_ok(surged.has(boss.get_instance_id()),
+		"the cull keeps the boss two rungs away (%.0f px, leash %.0f)"
+			% [2.0 * rung, 1.5 * rung])
+	_ok(decoy_id == 0 or not surged.has(decoy_id),
+		"...and freed an ordinary VESSEL picket at the same distance (the exemption is real)")
+	# AND NO LIVING HUNTER IS EVER CULLED (DESIGN_KRAKEN §1.4 / DESCENT call 4).
+	# The pair is the point: a live kraken two rungs off is still coming for you;
+	# its CARCASS at the same distance is litter like any other.
+	var live_kraken = w.call("_dive_spawn_picket", "kraken",
+		high + Vector2(-7000.0, 0.0))
+	var dead_kraken = w.call("_dive_spawn_picket", "kraken",
+		high + Vector2(-14000.0, 0.0))
+	var dead_id: int = dead_kraken.get_instance_id() if dead_kraken != null else 0
+	if dead_kraken != null:
+		dead_kraken.shared_health = 0.0
+		dead_kraken.rebuild()
+	w.call("_dive_cull_the_wake", 2.0)
+	surged = w.get("_dive_surged") as Array
+	if live_kraken != null and is_instance_valid(live_kraken):
+		_ok(surged.has(live_kraken.get_instance_id()),
+			"a LIVING kraken two rungs off is never culled (%s)" % live_kraken.variety)
+	else:
+		_ok(false, "a LIVING kraken two rungs off is never culled")
+	# `queue_free` is deferred, so the honest question is whether the cull
+	# STRUCK it off the run's books — not whether the node is gone this frame.
+	_ok(dead_id == 0 or not surged.has(dead_id),
+		"...and its carcass at the same distance IS litter")
+	if live_kraken != null and is_instance_valid(live_kraken):
+		live_kraken.queue_free()
+	boss.global_position = Vector2(cx, floor_y)
+	await w.get_tree().physics_frame
+
+	# --- 5. THE WIN --------------------------------------------------------
+	# Through the REAL damage path: `damage_cell` is what a shell calls, it is
+	# what drains a living creature's shared pool, and it is what emits
+	# `creature_perished` — the signal the triumph now hangs off.
+	var wallet = pl.get("wallet")
+	var wallet_before: int = int(wallet.get("balance")) if wallet != null else 0
+	var pot_before: int = int(run.get("pot"))
+	_ok(String(run.get("outcome")) == "",
+		"the run is still live before the kill (outcome '%s')" % String(run.get("outcome")))
+	# ON THE THROAT. Since v0.147.0 a shot on SHELL drains the pool at a quarter
+	# (`creature_shell_resist`) — the design's whole point — so a kill has to land
+	# on MEAT, exactly as a player's must. The first meat cell in the grid will do:
+	# the pool is one number, and which meat cell takes the hit does not matter.
+	var meat_cell: Vector2i = boss.blocks.keys()[0]
+	for c in boss.blocks:
+		if int(boss.blocks[c]["type"]) == BlockDB.Type.MEAT:
+			meat_cell = c
+			break
+	# THE HOARD (DESIGN_KRAKEN §4, v0.148.0). A dead kraken's SEALED CAVITY —
+	# the loot pocket every plan is drawn with, latched at spawn — spills a
+	# SECOND scrap cloud worth `kraken_hoard_mult` × the kill's own, hanging at
+	# the cavity rather than at the body's origin. Measured off the field's own
+	# motes, because that is where the reward actually is.
+	var field = w.get("_dive_scrap")
+	var scrap_before := _scrap_value(field)
+	var cavity: Dictionary = boss.cavity_cells()
+	var hoard_at := Vector2.ZERO
+	for cell in cavity:
+		hoard_at += boss.local_pos_of(cell as Vector2i)
+	hoard_at = boss.to_global(boss._mirror_point(hoard_at / maxf(float(cavity.size()), 1.0)))
+	_ok(not cavity.is_empty(),
+		"the boss carries a sealed cavity to spill (%d cells)" % cavity.size())
+	boss.damage_cell(meat_cell, boss.shared_health_max + 1.0)
+	await w.get_tree().physics_frame
+	var base: int = DiveRun.scrap_for("kraken_leviathan", int(run.get("depth")), 900)
+	var want: int = base + int(round(float(base) * Tunables.get_num("kraken_hoard_mult")))
+	_ok(_scrap_value(field) - scrap_before == want,
+		"death drops the kill's scrap AND a %.1fx hoard (%d + %d = %d, got %d)"
+			% [Tunables.get_num("kraken_hoard_mult"), base, want - base, want,
+				_scrap_value(field) - scrap_before])
+	var near := INF
+	for m in (field.call("active") as Array):
+		near = minf(near, (m["pos"] as Vector2).distance_to(hoard_at))
+	_ok(near < ScrapField.SPREAD_PX * float(w.get("world_scale")) * 2.0,
+		"...and the second cloud hangs at the CAVITY, not at the body's origin (%.0f px off)"
+			% near)
+	_ok(String(run.get("outcome")) == "triumph",
+		"killing it ends the run in TRIUMPH (outcome '%s')" % String(run.get("outcome")))
+	_ok(int(run.get("banked")) > 0,
+		"...and the pot is BANKED at the floor's premium plus the bonus (%d, pot was %d)"
+			% [int(run.get("banked")), pot_before])
+	_ok(int(run.get("banked")) >= DiveRun.TRIUMPH_BONUS,
+		"...which is never less than TRIUMPH_BONUS itself (%d)" % DiveRun.TRIUMPH_BONUS)
+	if wallet != null:
+		_ok(int(wallet.get("balance")) > wallet_before,
+			"...and it reached the permanent wallet (%d -> %d)"
+				% [wallet_before, int(wallet.get("balance"))])
+
+
+## THE GROUND IS ALREADY THERE WHEN YOU ARRIVE (owner 2026-09-02: *"the borders
+## that make the world look like it loops are nearly there - it just glitches out
+## for a moment when traversing the threshold"*).
+##
+## The wrap was never the problem: `_check_dive_seam_is_seamless` above proves
+## every visible thing moves by one circumference in one frame and that the
+## ground repeats exactly. What glitched was the TERRAIN STREAMER — chunks are
+## nodes and colliders, promoted ONE per frame nearest-first, so after the shift
+## nothing on the far side was live and the ground filled in over tens of frames.
+##
+## The fix is to start earlier, not to promote faster: within a carry-width of
+## the seam, a focus's MIRROR one circumference away is a primary focus too. This
+## is the check that it pays — the far side is live BEFORE the crossing, and
+## still live the frame after it.
+func _check_dive_seam_prewarms_the_mirror(w: Node, pl, ring_w: float, cx: float,
+		terrain) -> void:
+	var carry: float = float(w.call("_dive_wrap_carry_px"))
+	var y: float = pl.global_position.y
+	# THE BAND ITSELF: half a carry-width short of the seam is already inside it.
+	var mid: Array = w.call("_ring_mirror_foci",
+		[Vector2(cx + ring_w * 0.5 - carry * 0.5, y)])
+	_ok(mid.size() == 1
+			and is_equal_approx((mid[0] as Vector2).x,
+				cx + ring_w * 0.5 - carry * 0.5 - ring_w),
+		"a body half a carry-width from the seam asks for the far side too (%.0f px away)"
+			% ring_w)
+	# ...and the measurement itself is taken on the approach, a few hundred px
+	# short of the wrap line, so the ground it pre-warms is the ground it lands on.
+	var stand := Vector2(cx + ring_w * 0.5 - 600.0, y)
+	var mirrors: Array = w.call("_ring_mirror_foci", [stand])
+	_ok(mirrors.size() == 1
+			and is_equal_approx((mirrors[0] as Vector2).x, stand.x - ring_w),
+		"...and so does one on the very lip of the seam")
+	_ok((w.call("_ring_mirror_foci", [Vector2(cx, y)]) as Array).is_empty(),
+		"...and a body at the ring's centre asks for nothing extra")
+
+	# The mirror neighbourhood has to exist as DATA before it can be promoted —
+	# the same lazy generation the streamer's own pass does, run to completion here
+	# so the measurement is about PROMOTION, not about generation.
+	var mirror_x := stand.x - ring_w
+	IslandGen.ensure_generated(terrain, int(w.get("world_seed")),
+		[stand, Vector2(mirror_x, y)], carry, 4096)
+	# ...and the ground itself is PLANTED rather than hunted for. The dive rolls a
+	# fresh seed every run, so whether an island happens to fall at the seam at the
+	# altitude the body is standing at is a coin toss — and this check is about
+	# PROMOTION, not about where islands land (the ground's periodicity is proved
+	# by `_check_dive_seam_is_seamless` above). A strip of stone either side of the
+	# wrap line, one circumference apart, so the world stays periodic while it is
+	# measured. `fill_rect` is a generation write: it is not recorded as a dig.
+	var cpx: float = float(terrain.call("chunk_px"))
+	var lap := roundi(ring_w / cpx)
+	_ok(absf(float(lap) * cpx - ring_w) < 1.0,
+		"the circumference is a whole number of chunks (%d × %.0f px)" % [lap, cpx])
+	var ground: Vector2i = terrain.call("chunk_of_cell",
+		terrain.call("world_to_cell", Vector2(mirror_x, y)))
+	for k in 3:
+		var c := ground + Vector2i(k - 1, 0)
+		for side in [0, lap]:
+			var cell0 := Vector2i(c.x + side, c.y) * Terrain.CHUNK + Vector2i(4, 4)
+			terrain.call("fill_rect", Rect2i(cell0, Vector2i(8, 8)),
+				TerrainDB.Type.STONE)
+	terrain.call("flush_rebuilds")
+	var fly_y := (float(ground.y) + 0.5) * cpx
+	stand.y = fly_y
+	var mirror := Vector2(mirror_x, fly_y)
+
+	# Now run the world's REAL focus tick until the queue drains, and count what
+	# the MIRROR pre-warmed: chunks holding data within the primary radius of it.
+	var before_live: int = (terrain.get("_live") as Dictionary).size()
+	var cam = w.get("camera")
+	for i in 1200:
+		# Re-seated each pass: the body is a live CharacterBody2D and this is a
+		# claim about where the streamer looks, not about where gravity takes it.
+		pl.global_position = stand
+		pl.velocity = Vector2.ZERO
+		if cam != null and is_instance_valid(cam):
+			cam.global_position = stand
+		w.call("_stream_terrain")
+		if bool(terrain.get("_last_scan_drained")):
+			break
+		if i % 120 == 119:
+			await process_frame
+	var warmed := _live_chunks_near(terrain, mirror)
+	_ok(int(warmed["data"]) > 0,
+		"there is ground within a promote radius of the mirror point (%d chunks)"
+			% int(warmed["data"]))
+	_ok(int(warmed["live"]) == int(warmed["data"]),
+		"THE FAR SIDE IS LIVE BEFORE THE WRAP: %d of %d mirror chunks promoted"
+			% [int(warmed["live"]), int(warmed["data"])])
+	print("    ~ the mirror pre-warms %d chunks (world live %d -> %d)"
+		% [int(warmed["live"]), before_live,
+			(terrain.get("_live") as Dictionary).size()])
+	# The scan-skip cache must survive the extra focus: with the queue drained and
+	# nothing moving, a frame near the seam is still a no-op. Otherwise the mirror
+	# would have bought a smooth crossing with a permanent per-frame scan.
+	var scans_before: int = int(terrain.get("scan_count"))
+	for i in 5:
+		pl.global_position = stand
+		w.call("_stream_terrain")
+	_ok(int(terrain.get("scan_count")) - scans_before <= 1,
+		"...and a still world near the seam still skips its scans (%d in 5 frames)"
+			% (int(terrain.get("scan_count")) - scans_before))
+
+	# ...and CROSS. The frame after the wrap the same ground is under you and
+	# still live — which is exactly the frame that used to show bare sky.
+	pl.global_position = Vector2(cx + ring_w * 0.5 + 600.0, fly_y)
+	if cam != null and is_instance_valid(cam):
+		cam.global_position = pl.global_position
+	w.call("_dive_hold_the_ring", 0.016)
+	_ok(pl.global_position.x < cx, "the body crossed the seam")
+	w.call("_stream_terrain")
+	# Two chunks in from the promote radius: the OUTERMOST ring always streams in
+	# as you keep flying — that is the streamer working, at one chunk a frame, on
+	# ground that is off screen. The claim the owner's report is about is the
+	# ground you are actually over, and that has to be there already.
+	var after := _live_chunks_near(terrain, pl.global_position, -2)
+	_ok(int(after["data"]) > 0 and int(after["live"]) == int(after["data"]),
+		"...and the ground around it is STILL LIVE the very next frame (%d of %d)"
+			% [int(after["live"]), int(after["data"])])
+
+
+## Chunks within the primary promote radius of `at` that hold data, and how many
+## of those are live. The two numbers the pre-warm claim is made of.
+func _live_chunks_near(terrain, at: Vector2, grow: int = 0) -> Dictionary:
+	var r: int = maxi(int(terrain.call("_primary_promote_r")) + grow, 1)
+	var cell: Vector2i = terrain.call("world_to_cell", at)
+	var home: Vector2i = terrain.call("chunk_of_cell", cell)
+	var chunks := terrain.get("_chunks") as Dictionary
+	var live_set := terrain.get("_live") as Dictionary
+	var data := 0
+	var live := 0
+	for dy in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			var c := home + Vector2i(dx, dy)
+			if not chunks.has(c):
+				continue
+			data += 1
+			if live_set.has(c):
+				live += 1
+	return {"data": data, "live": live}
+
+
+## THE DRAFT SPANS THE CROSSING (owner 2026-09-02: *"the vertical wind bands
+## could be a bit wider ... The hope was that the expanse of this wind draft
+## could semi camouflage the teleporting bit"*).
+##
+## The pure half lives in `run_tests._test_dive_draft_band`; this is the claim in
+## REAL PIXELS, which is why it is here: a hull a whole ring tile past the
+## downdraft's centre — standing in the next tile along — feels the draft at the
+## shipped band of 2.0 and feels nothing at 1.0.
+func _check_dive_draft_spans_the_seam(w: Node, pl, tile_w: float, cx: float) -> void:
+	var run = w.get("dive")
+	if run == null:
+		return
+	var was_deepest: int = int(run.get("deepest"))
+	run.set("deepest", 2)   # the ring is only the sky once you have been down
+	var seam := cx + tile_w * float(DiveRun.RING.size()) * 0.5
+	var y: float = pl.global_position.y
+	var at_centre: Vector2 = w.call("dive_weather_at", Vector2(seam, y))
+	_ok(at_centre.y > 0.0,
+		"the downdraft at the seam pushes DOWN (%.0f px/s)" % at_centre.y)
+
+	var one_tile_out := Vector2(seam - tile_w, y)
+	Tunables.set_value("dive_draft_band_tiles", 2.0)
+	var wide: Vector2 = w.call("dive_weather_at", one_tile_out)
+	Tunables.set_value("dive_draft_band_tiles", 1.0)
+	var narrow: Vector2 = w.call("dive_weather_at", one_tile_out)
+	Tunables.set_value("dive_draft_band_tiles", 2.0)
+	_ok(wide.y > 0.0,
+		"a hull a WHOLE TILE past its centre (%.0f px, the next tile along) still feels it at band 2.0 (%.0f px/s)"
+			% [tile_w, wide.y])
+	_ok(is_zero_approx(narrow.y),
+		"...and feels nothing at band 1.0 — which is exactly the old hard tile edge")
+	# The felt width, in the pixels the owner actually flies through.
+	var reach := (1.0 + DiveRun.DRAFT_BLEND_TILES) * 2.0 * tile_w
+	print("    ~ ring tile %.0f px; draft support band 2.0 = %.0f px (+/-%.0f), band 1.0 = %.0f px"
+		% [tile_w, reach, reach * 0.5,
+			(0.5 + DiveRun.DRAFT_BLEND_TILES) * 2.0 * tile_w])
+	# ...and the SEAM itself is inside the band from both sides, which is the
+	# camouflage the owner asked for: you cross while the wind is already on you.
+	var just_before: Vector2 = w.call("dive_weather_at",
+		Vector2(seam - tile_w * 0.6, y))
+	var just_after: Vector2 = w.call("dive_weather_at",
+		Vector2(seam - tile_w * 0.6 - tile_w * float(DiveRun.RING.size()), y))
+	_ok(just_before.y > 0.0 and just_before.is_equal_approx(just_after),
+		"the wind either side of the wrap line is the same wind (%.0f px/s)"
+			% just_before.y)
+	run.set("deepest", was_deepest)
 
 ## THE SEAM YOU CANNOT SEE (owner 2026-09-01: *"Looping around through the world
 ## seems to make such a mess - it literally teleports the player. could it be a
@@ -709,7 +1879,23 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	# Depth 2's altitude, a long way from the body — this is the review's own
 	# one-minute check ("spawn a hulk at depth 2 with no player nearby").
 	var rung_y: float = float(w.call("dive_altitude_y", DiveRun.depth_altitude(2)))
-	picket.global_position = Vector2(cx + 9000.0, rung_y)
+	var spot := Vector2(cx + 9000.0, rung_y)
+	# CLEAR AIR, GUARANTEED (2026-09-02). This spot is a fixed offset from the
+	# centre line, and whether an island is generated there depends on where the
+	# run put its landings — so the check flaked the moment anything changed the
+	# deck's geometry (a saved candidate, Q-T), measuring a hull resting on rock
+	# instead of a hull holding a rung. Generate the neighbourhood, THEN carve it:
+	# a region generated afterwards is repainted under the body (DECISIONS
+	# 2026-08-30, the landing-shelf bug).
+	var terr = w.get("terrain")
+	if terr != null:
+		IslandGen.ensure_generated(terr, int(w.get("world_seed")), [spot], 14000.0, 64)
+		var cp: float = maxf(terr.cell_px(), 1.0)
+		var half := 12000.0
+		terr.fill_rect(Rect2i(terr.world_to_cell(spot - Vector2(half, half)),
+			Vector2i(int(half * 2.0 / cp), int(half * 2.0 / cp))), TerrainDB.Type.AIR)
+		terr.flush_rebuilds()
+	picket.global_position = spot
 	picket.linear_velocity = Vector2.ZERO
 	await w.get_tree().physics_frame
 	# JAM THE STICK, then kill the driver: exactly the sequence a shell through
@@ -732,7 +1918,7 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	# it again here reproduces the old behaviour without touching the code — and
 	# the comparison is honest whatever this seed's picket is trimmed like, which
 	# an absolute "it must not sink" number would not be.
-	picket.global_position = Vector2(picket.global_position.x, rung_y)
+	picket.global_position = Vector2(spot.x, rung_y)
 	picket.linear_velocity = Vector2.ZERO
 	picket.net_set_controls(0.4, -1.0)
 	await w.get_tree().physics_frame
@@ -1404,19 +2590,75 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 	_ok(top_gap < 2000.0,
 		"...with its deck visible below your feet, not off-screen (%.0f px down)"
 			% top_gap)
+
+	# A SAVED SHIP IS A CANDIDATE (Q-T). `_seed_saved_ships` wrote Test_Skiff.ship
+	# into the redirected `user://ships` before this world booted; the deck must
+	# have moored it under a hatch, with its helm takeable, and must have ignored
+	# the garbage file sitting beside it.
+	var saved: Ship = null
+	for hull in fleet.ships():
+		if is_instance_valid(hull) and (hull as Ship).bounty == 4242:
+			saved = hull as Ship
+	_ok(saved != null, "the player’s saved ship is moored on the launch deck")
+	if saved != null:
+		_ok(saved.faction == 0 and not saved.is_nest and saved.has_helm(),
+			"...as a faction-0 hull with a helm")
+		# AT ITS TRUE SIZE. The fixture is 8 authored cells across, so at 8x it is
+		# 8 x Ship.CELL x 8 = 1024 px. Upscaling a file that is ALREADY at the
+		# world's granularity (an F2 `export_ship`, which carries a `scale`
+		# header) would put an 8192 px hull here instead - the eightfold family,
+		# in the one directory a player can drop any file into.
+		_ok(absf(saved.solid_bounds.size.x - 8.0 * Ship.CELL * 8.0) < Ship.CELL * 8.0,
+			"...at its authored granularity, not upscaled twice (%.0f px beam)"
+				% saved.solid_bounds.size.x)
+		# UNDER A HATCH, not merely nearby: the hull’s own centre lines up with a
+		# berth centre. That is the whole geometry the deck exists for, and it is
+		# the number four rewrites of it got wrong.
+		var mid := saved.global_position.x + saved.solid_bounds.position.x \
+			+ saved.solid_bounds.size.x * 0.5
+		var best := INF
+		for b in (world.call("dive_berth_positions") as Array):
+			best = minf(best, absf(float((b as Dictionary)["pos"].x) - mid))
+		_ok(best < Ship.CELL * 8.0 * 2.0,
+			"...centred under a hatch (%.0f px off the berth centre)" % best)
+		_ok(saved.global_position.y > pl.global_position.y,
+			"...and below the walkway, where you drop through to it")
+		# BOARDABLE — the point of the whole feature is diving with the ship you
+		# designed, and a candidate you cannot take the helm of is scenery.
+		var was: Vector2 = pl.global_position
+		pl.global_position = saved.to_global(saved.local_pos_of(saved.helm_cells[0]))
+		await world.get_tree().physics_frame
+		_ok(pl.board(saved, saved.helm_cells[0]), "...and its helm is boardable")
+		pl.disembark()
+		pl.global_position = was
+		await world.get_tree().physics_frame
+	# The garbage file cost a candidate and nothing else: with both berths taken
+	# by the starter and the saved skiff, the Loft was never needed.
+	var helmed := 0
+	for hull in fleet.ships():
+		var h := hull as Ship
+		if is_instance_valid(h) and h.faction == 0 and not h.is_nest \
+				and h.creature_kind == "" and not h.is_carcass() and h.has_helm():
+			helmed += 1
+	_ok(helmed == 2,
+		"an unparseable file in user://ships is skipped in silence (%d candidates, not 3)"
+			% helmed)
 	# THE STARTER CAN ACTUALLY FLY THE MODE (owner 2026-08-31: "can you use
 	# the default starter ship in dive mode in a test? It's impossible to move
 	# sideways"). Board the NON-Loft candidate — the starter — and hold full
 	# right for three real seconds: it must cover ground and must not brown-out
 	# doing it. The native-8× file measured 94 px/s peak here; the 1×-authored,
 	# upscaled, upgraded ship measures ~500.
-	var loft = world.get("_dive_loft")
+	# THE BIGGEST CANDIDATE IS THE STARTER. It used to be "the first one that is
+	# not the Loft", which stopped being an identification the moment a PLAYER’S
+	# saved ship could be moored beside it (Q-T) — and the failure would have been
+	# the flight numbers below quietly measuring somebody’s eight-cell skiff.
 	var starter = null
 	for s2 in fleet.ships():
-		if not is_instance_valid(s2) or s2.faction != 0 or s2.creature_kind != "" 				or s2.is_carcass() or s2.is_nest or s2 == loft or not s2.has_helm():
+		if not is_instance_valid(s2) or s2.faction != 0 or s2.creature_kind != "" 				or s2.is_carcass() or s2.is_nest or not s2.has_helm():
 			continue
-		starter = s2
-		break
+		if starter == null or s2.blocks.size() > starter.blocks.size():
+			starter = s2
 	_ok(starter != null, "the starter is moored on the deck")
 	if starter != null and pl != null and is_instance_valid(pl):
 		pl.global_position = starter.to_global(starter.local_pos_of(starter.helm_cells[0]))
@@ -1570,6 +2812,50 @@ func _neutral_sink(world: Node, hull, floor_v: float) -> float:
 	for i in 120:
 		await world.get_tree().physics_frame
 	return hull.linear_velocity.y
+
+
+## THE PLAYER’S SAVED SHIPS, as the Dive will find them (Q-T). Two files:
+##
+##   Test_Skiff.ship — a small, legal vessel with a helm. `bounty 4242` is its
+##     FINGERPRINT: a saved hull has no name on the body, and finding it by block
+##     count would be a test that passes for the wrong reason the first time
+##     somebody edits the starter. The bounty header rides to `Ship.bounty`, so
+##     one number both identifies the hull and proves a header survived mooring.
+##
+##   broken.ship — garbage. `user://ships` is a directory a player can put
+##     anything in, and the boot of a run is the worst place to raise it: it must
+##     cost a candidate, never the run.
+##
+## Written fresh every time, into the redirected directory, so a stale file from
+## an earlier run can never change what this suite measures.
+func _seed_saved_ships() -> void:
+	var dir := ShipLayout.user_dir
+	if not DirAccess.dir_exists_absolute(dir):
+		DirAccess.make_dir_recursive_absolute(dir)
+	var d := DirAccess.open(dir)
+	if d != null:
+		d.list_dir_begin()
+		var entry := d.get_next()
+		while entry != "":
+			if not d.current_is_dir():
+				DirAccess.remove_absolute(
+					ProjectSettings.globalize_path(dir.path_join(entry)))
+			entry = d.get_next()
+		d.list_dir_end()
+	_write_user_ship("Test_Skiff.ship",
+		"# a suite fixture, not shipped content\n"
+		+ "name Test Skiff\nkind vessel\nbounty 4242\norigin 4 1\n\n"
+		+ "GGGGGGGG\n##H##E##\n")
+	_write_user_ship("broken.ship", "{\"not\": \"a ship\"}\nnothing here\n")
+
+
+func _write_user_ship(basename: String, body: String) -> void:
+	var f := FileAccess.open(ShipLayout.user_dir.path_join(basename), FileAccess.WRITE)
+	if f == null:
+		print("    FAIL could not seed %s" % basename)
+		return
+	f.store_string(body)
+	f.close()
 
 
 func _ok(condition: bool, detail: String) -> void:

@@ -24,6 +24,11 @@
 #
 # One connected piece. Keep it that way.
 
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Sleek Whale
+kind whale
+
 origin 14 1
 
 W.............WWWWWWWWWWWW..

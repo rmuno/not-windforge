@@ -2,6 +2,11 @@
 # Fat logarithmic whorl at the back-left tapering to a K ram spike on the right.
 # Inner C-wall of casing curls around sealed chambers (loot nestled in meat);
 # the soft mouth/aperture opens LEFT as the exposed weak spot.
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Nautilus Kraken
+kind kraken
+
 origin 10 4
 .....KKKKKKK..............
 ...KKKMMMMMKKK............

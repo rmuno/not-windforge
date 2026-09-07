@@ -66,6 +66,12 @@
 # 'origin COL ROW' names which character is deck cell (0,0) — put it in the
 # middle of the MIDDLE walkway, because that is where the run stands you.
 
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Launch Deck
+kind vessel
+group structures
+
 origin 33 0
 ############--------------##############------------------------############
 ############..............##############........................############

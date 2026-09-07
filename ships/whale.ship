@@ -18,6 +18,11 @@
 # The whale floats because it is mostly blubber — mining the blubber
 # off a carcass literally sinks it. Keep it one connected piece.
 
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Sky Whale
+kind whale
+
 origin 12 1
 
 .W.....WWWWWWWWWWWWWWWW...

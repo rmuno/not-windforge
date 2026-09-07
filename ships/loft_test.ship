@@ -3,6 +3,11 @@
 # 8-cell-tall player fits through the doors and can board the helm.
 # NOTE: no gasbags/blubber, so it has ZERO lift — it will fall. Grapple to it
 # (RMB) or add lift blocks in the Loft. Author freely; this is a scratch ship.
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Loft Test Ship
+kind vessel
+
 origin 11 13
 PPPPPPPPPPPPPPPPPPPPPP
 T####################T

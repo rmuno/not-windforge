@@ -22,6 +22,11 @@ func _initialize() -> void:
 	# a full run used to wipe the real bestiary + card gallery. Redirect first,
 	# before anything can touch disk.
 	Profile.path = "user://profile_test.json"
+	# ...and the same for the player's SAVED SHIPS shelf (Q-T): the drafting
+	# table writes there and the Dive's launch deck moors what it finds there, so
+	# a suite pointed at the real directory would both litter it and let the
+	# owner's own saved hulls change what the tests measure.
+	ShipLayout.user_dir = "user://ships_test_unit"
 	print("\n=== not-windforge test suite ===\n")
 
 	await _test_mass_and_centre_of_mass()
@@ -51,6 +56,7 @@ func _initialize() -> void:
 	await _test_props_alone_hold_altitude()
 	await _test_balloons_lift_and_detach()
 	await _test_balloons_are_one_destructible_placeable()
+	await _test_a_balloon_unit_is_one_authored_cell()
 	await _test_whale_is_a_whale()
 	await _test_whale_is_one_unit_until_dead()
 	await _test_shots_snap_to_the_nearest_block_on_a_creature()
@@ -62,7 +68,10 @@ func _initialize() -> void:
 	_test_backdrop_is_calm()
 	_test_dive_run()
 	_test_ship_serialize()
+	_test_ship_meta()
 	_test_ship_edit()
+	_test_ship_table_files()
+	_test_ship_groups()
 	await _test_ship_editor_screen()
 	_test_dive_ring()
 	_test_dive_weather()
@@ -130,6 +139,11 @@ func _initialize() -> void:
 	await _test_carcass_loot_state_survives_the_wire_and_the_save()
 	await _test_kraken_mouth_bites_the_player_on_foot()
 	await _test_kraken_spawn_keeps_out_of_deep_rock()
+	await _test_kraken_heave_finds_you()
+	await _test_kraken_coils_before_it_heaves()
+	await _test_creature_shell_is_armour_against_shots()
+	await _test_kraken_mouths_are_clusters()
+	await _test_kraken_root_dies_and_stops_grabbing()
 	await _test_single_player_is_not_online()
 	await _test_remote_ships_are_eased_not_snapped()
 	await _test_serialization_roundtrip()
@@ -210,6 +224,7 @@ func _initialize() -> void:
 	await _test_tunables_get_set_reset_and_clamp()
 	await _test_a_system_reads_the_tunable()
 	await _test_whale_ai_reads_the_ram_tunable()
+	await _test_f2_labels_are_short_and_tipped()
 	await _test_debug_window_toggles_and_switches_tabs()
 	await _test_stats_default_raise_and_cap()
 	await _test_stat_perks_change_effects()
@@ -1249,6 +1264,119 @@ func _test_balloons_are_one_destructible_placeable() -> void:
 	await process_frame
 
 
+## A BALLOON UNIT IS ONE AUTHORED CELL (v0.151.0). `damage_cell` hits every cell
+## of the struck cluster, and clustering gasbags by CONTIGUITY made that unit the
+## ship's entire lift at 8×: `tools/dive_probe.gd` measured the starter's canopy
+## as ONE 1,536-cell "G" cluster, so two 20-hp shells popped the whole thing
+## (35 hp a cell) and one terrain graze deleted all 1,536 blocks. The owner's
+## "the blimp sections should be one unit" was authored when a bag was a few
+## cells at 1×; `upscale_cells` multiplies granularity, so the fix clusters
+## gasbags by the `scale_unit × scale_unit` tile an authored cell became.
+##
+## Machines are NOT tiled: a 4×4 engine is a rated component and its footprint
+## IS the unit. And at scale 1 there is no tile at all, so 1× is unchanged —
+## which is why the first check here is the old behaviour, still true.
+func _test_a_balloon_unit_is_one_authored_cell() -> void:
+	_t("a balloon unit is one AUTHORED cell — the canopy is not one 1,536-cell hit")
+
+	# (a) 1× IS UNCHANGED: a 2×2 gasbag is still ONE balloon, as it always was.
+	var flat := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.GASBAG, Vector2i(1, 0): BlockDB.Type.GASBAG,
+		Vector2i(0, 1): BlockDB.Type.GASBAG, Vector2i(1, 1): BlockDB.Type.GASBAG,
+	}, true)
+	_check(flat._component_members(Vector2i(0, 0)).size() == 4,
+		"at scale 1 a 2×2 gasbag is ONE cluster (%d cells) — 1× untouched"
+			% flat._component_members(Vector2i(0, 0)).size())
+	flat.queue_free()
+
+	# (b) THE SAME AUTHORING AT SCALE 2: one authored 2×2 of gasbag upscaled ×2
+	# is a 4×4 of live cells — and it must be FOUR balloons of 2×2, not one of 16.
+	var authored := {
+		Vector2i(0, 0): BlockDB.Type.GASBAG, Vector2i(1, 0): BlockDB.Type.GASBAG,
+		Vector2i(0, 1): BlockDB.Type.GASBAG, Vector2i(1, 1): BlockDB.Type.GASBAG,
+	}
+	var up := _scaled_ship(ShipLayout.upscale_cells(authored, 2), 2.0)
+	_check(up.blocks.size() == 16, "the 2× grid really is 16 cells (%d)" % up.blocks.size())
+	var seen := {}
+	var covered := 0
+	for c in up.blocks:
+		var idx: int = up._component_of.get(c, -1)
+		if idx >= 0:
+			covered += 1
+			seen[idx] = true
+	_check(covered == 16, "_component_of still covers EVERY gasbag cell (%d/16)" % covered)
+	_check(seen.size() == 4, "...as FOUR balloons, one per authored cell (%d)" % seen.size())
+	var sizes_ok := true
+	for c2 in up.blocks:
+		if up._component_members(c2).size() != 4:
+			sizes_ok = false
+	_check(sizes_ok, "each balloon is the 2×2 tile its authored cell became")
+	# The tiles are the ALIGNED ones, not any old 2×2: (0,0) and (1,0) share a
+	# unit, (1,0) and (2,0) do not, because the tile boundary runs between them.
+	_check(up._component_of[Vector2i(0, 0)] == up._component_of[Vector2i(1, 0)],
+		"cells inside one tile share a unit")
+	_check(up._component_of[Vector2i(1, 0)] != up._component_of[Vector2i(2, 0)],
+		"...and the unit STOPS at the tile boundary, however contiguous the bag")
+	# One hit reaches one tile: 4 cells damaged, the other 12 pristine.
+	var full := BlockDB.max_hp(BlockDB.Type.GASBAG)
+	up.damage_cell(Vector2i(0, 0), 5.0)
+	var hurt := 0
+	for c3 in up.blocks:
+		if up.blocks[c3]["hp"] < full - 0.01:
+			hurt += 1
+	_check(hurt == 4, "one shell damages exactly its own balloon (%d cells)" % hurt)
+	up.queue_free()
+
+	# (c) MACHINES KEEP CONTIGUITY: the same upscale on an engine is ONE machine.
+	var eng := _scaled_ship(ShipLayout.upscale_cells({
+		Vector2i(0, 0): BlockDB.Type.ENGINE, Vector2i(1, 0): BlockDB.Type.ENGINE,
+	}, 2), 2.0)
+	_check(eng._component_members(Vector2i(0, 0)).size() == 8,
+		"a machine is still its whole contiguous footprint (%d cells)"
+			% eng._component_members(Vector2i(0, 0)).size())
+	eng.queue_free()
+	await process_frame
+
+	# (d) THE SHIPPED STARTER AT THE SCALE THE OWNER PLAYS. 24 authored gasbag
+	# cells (a 12×2 canopy) → 24 balloons of 64 cells, where the whole canopy
+	# used to be a single 1,536-cell unit.
+	var authored_cells: Dictionary = ShipLayout.load_cells("res://ships/starter.ship")
+	var authored_bags := 0
+	for c4 in authored_cells:
+		if int(authored_cells[c4]) == BlockDB.Type.GASBAG:
+			authored_bags += 1
+	var starter := _scaled_ship(ShipLayout.upscale_cells(authored_cells, 8), 8.0)
+	var bags := 0
+	var biggest := 0
+	for cl in starter._glyph_clusters:
+		if String(cl["key"]) != "G":
+			continue
+		bags += 1
+		biggest = maxi(biggest, (cl["cells"] as Array).size())
+	_check(authored_bags == 24,
+		"the shipped starter authors %d gasbag cells" % authored_bags)
+	_check(bags == authored_bags,
+		"...and at 8× it carries exactly that many balloons (%d, was 1)" % bags)
+	_check(biggest == 64,
+		"the biggest balloon is one 8×8 tile (%d cells, was 1536)" % biggest)
+	starter.queue_free()
+	await process_frame
+
+
+## A ship built at a world SCALE: the grid must already be upscaled, and
+## `scale_unit` set before the first rebuild derives the clusters from it.
+func _scaled_ship(cells: Dictionary, unit: float) -> Ship:
+	var s := Ship.new()
+	for cell in cells:
+		var type: int = cells[cell]
+		s.blocks[cell] = {"type": type, "hp": BlockDB.max_hp(type)}
+	s.gravity_scale = 0.0
+	root.add_child(s)
+	s.scale_unit = unit
+	s.rebuild()
+	return s
+
+
 func _test_whale_is_a_whale() -> void:
 	# The whole pod (design jam 2026-08-20): the reference plus the four
 	# owner-adopted variants, each gated on the same surveyed body plan.
@@ -1942,7 +2070,7 @@ func _test_creature_log() -> void:
 		var id := CreatureLog.variety_from_path(String((plan as Dictionary)["path"]))
 		_check(CreatureLog.is_known_id(id), "whale plan '%s' has a bestiary row" % id)
 	for kid in ["kraken_c", "kraken_b", "kraken_urchin", "kraken_angler",
-			"kraken_nautilus", "basilisk", "critter", "whale_city"]:
+			"kraken_nautilus", "kraken_leviathan", "basilisk", "critter", "whale_city"]:
 		_check(CreatureLog.is_known_id(kid), "spawn variety '%s' has a bestiary row" % kid)
 
 	# --- The discovered set: mark is new-once, idempotent, and guarded ------
@@ -2147,6 +2275,34 @@ func _test_hull_integrity() -> void:
 	_check(not s.blocks.has(Vector2i(2, 0)), "the overkilled block is destroyed per-cell")
 	_check(is_equal_approx(s.hull_integrity, pool_before - remaining),
 		"...but the pool drains only by the hp that existed (%.0f, not 9999)" % remaining)
+
+	# --- A COMPONENT DRAINS THE POOL ONCE (2026-09-06, found by dive_probe) -----
+	# A machine or a balloon is ONE unit: every cell of the cluster takes the hit
+	# (owner rule, preserved), but the pool bills the part ONCE. Before this, a
+	# 2x2 gasbag drained 4x the shell and the starter's 1,536-cell canopy drained
+	# 30,720 against a 3,000 pool from ONE 20-hp shell — the run's life in one hit.
+	var bag := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.HULL,
+		Vector2i(1, 0): BlockDB.Type.GASBAG, Vector2i(2, 0): BlockDB.Type.GASBAG,
+		Vector2i(1, 1): BlockDB.Type.GASBAG, Vector2i(2, 1): BlockDB.Type.GASBAG,
+	}, true)
+	bag.hull_integrity_max = 500.0
+	bag.hull_integrity = 500.0
+	var cluster_size: int = bag._component_members(Vector2i(1, 0)).size()
+	_check(cluster_size == 4, "the four gasbag cells cluster as one balloon (%d)" % cluster_size)
+	bag.damage_cell(Vector2i(1, 0), 20.0)
+	_check(is_equal_approx(bag.hull_integrity, 480.0),
+		"one 20-hp shell into a 4-cell balloon drains the pool by 20, not 80 (%.0f)"
+			% bag.hull_integrity)
+	for c in [Vector2i(1, 0), Vector2i(2, 0), Vector2i(1, 1), Vector2i(2, 1)]:
+		_check(is_equal_approx(bag.blocks[c]["hp"], BlockDB.max_hp(BlockDB.Type.GASBAG) - 20.0),
+			"...while every cell of the balloon still took the hit as one unit %s" % str(c))
+	var bag_pool := bag.hull_integrity
+	var bag_left: float = bag.blocks[Vector2i(2, 1)]["hp"]
+	bag.damage_cell(Vector2i(2, 1), 9999.0)
+	_check(is_equal_approx(bag.hull_integrity, bag_pool - bag_left),
+		"overkill on a balloon drains one cell's remaining hp, never the cluster's (%.0f)"
+			% (bag_pool - bag.hull_integrity))
 
 	# --- MENDED BLOCKS REFUND THE POOL (owner call 5, v0.140.0) ---------------
 	# The pool was a one-way ratchet: the station, the X wand, Field Medic and the
@@ -2850,6 +3006,13 @@ func _test_dive_card_suite() -> void:
 	_check(DiveCards.HULL_PER_BODY_HP > 1.0,
 		"a body point is worth more than one pool point (%.0f)"
 			% DiveCards.HULL_PER_BODY_HP)
+	# ...and it is TEN, exactly. The bounds below say what the number must be
+	# BETWEEN; every `desc` in the deck, CODEMAP's DIVE CARDS row and
+	# DESIGN_DIVE_REVIEW all state the figure itself, so the value is pinned too —
+	# retuning it is meant to be a decision, not a drift.
+	_check(is_equal_approx(DiveCards.HULL_PER_BODY_HP, 10.0),
+		"...and the documented ten, not merely 'somewhere under parity' (%.1f)"
+			% DiveCards.HULL_PER_BODY_HP)
 	var parity: float = Tunables.get_num("dive_ship_integrity") / 100.0
 	_check(DiveCards.HULL_PER_BODY_HP < parity,
 		"...but deliberately UNDER parity (%.0fx of a possible %.0fx), so the flat"
@@ -3287,6 +3450,106 @@ func _test_dive_weather() -> void:
 	_check(DiveRun.CEILING_LEASH_SPEED * DiveRun.CEILING_LEASH_MAX_RUNGS
 			< climb * 4.0,
 		"the capped leash is a few times the climb, not the ten-fold rail it replaced")
+
+	_test_dive_draft_band()
+
+
+## THE DRAFT IS A FIELD (owner 2026-09-02: *"the vertical wind bands could be a
+## bit wider - I think they're getting shortened by the teleport mechanism. The
+## hope was that the expanse of this wind draft could semi camouflage the
+## teleporting bit"*).
+##
+## Nothing was shortening them — `zone_kind(zone_index(x))` was a hard per-tile
+## switch, so a draft was one tile wide with a cliff edge, and the downdraft (the
+## SEAM tile) stopped half a tile short of the wrap line on both sides. The band
+## is now a distance to the nearest draft's CENTRE, the short way round, which is
+## what lets it span the crossing.
+func _test_dive_draft_band() -> void:
+	_t("THE DRAFT BAND: a field with a soft edge, and it goes round the ring")
+	var blend := DiveRun.DRAFT_BLEND_TILES
+
+	# --- BAND 1.0 IS TODAY'S FELT WIDTH ------------------------------------
+	var at_up := DiveRun.draft_strength(0.0, 1.0)
+	_check(String(at_up["kind"]) == "up"
+			and is_equal_approx(float(at_up["strength"]), 1.0),
+		"at the updraft's own centre the band is at full strength")
+	_check(is_zero_approx(float(DiveRun.draft_strength(0.5 + blend, 1.0)["strength"]))
+			and is_zero_approx(
+				float(DiveRun.draft_strength(-0.5 - blend, 1.0)["strength"])),
+		"...and gone by ±%.2f tiles either side — one tile of support, as before"
+			% (0.5 + blend))
+	_check(String(DiveRun.draft_strength(0.5 + blend, 1.0)["kind"]) == "",
+		"a strength of zero names no kind at all (the calm convention)")
+
+	# --- THE BAND LEVER ACTUALLY WIDENS IT ----------------------------------
+	# Band 2.0: full strength out to 0.75 tiles, gone by 1.25 — so a hull a whole
+	# tile out, standing in the ADJACENT ROCK TILE, still feels the draft.
+	_check(is_equal_approx(
+			float(DiveRun.draft_strength(1.0 - blend, 2.0)["strength"]), 1.0),
+		"at band 2.0 the draft is still at full strength ±0.75 tiles out")
+	_check(is_zero_approx(float(DiveRun.draft_strength(1.0 + blend, 2.0)["strength"])),
+		"...and gone by ±1.25 — 2.5 tiles of support against 1.0's one")
+	var one_out := DiveRun.draft_strength(1.0, 2.0)
+	_check(String(one_out["kind"]) == "up" and float(one_out["strength"]) > 0.0,
+		"a full tile out — the next tile along — still feels it at band 2.0 (%.2f)"
+			% float(one_out["strength"]))
+	_check(is_zero_approx(float(DiveRun.draft_strength(1.0, 1.0)["strength"])),
+		"...and feels nothing at band 1.0, which is the whole difference")
+
+	# --- MONOTONE: no ripples in the blend ----------------------------------
+	var last := 2.0
+	var monotone := true
+	for i in 41:
+		var d := float(i) / 40.0 * 1.5      # 0 → 1.5 tiles from the updraft's centre
+		var s := float(DiveRun.draft_strength(d, 2.0)["strength"])
+		if s > last + 0.0001:
+			monotone = false
+		last = s
+	_check(monotone, "the blend falls off monotonically — no ripple in the edge")
+	_check(is_equal_approx(float(DiveRun.draft_strength(0.4, 2.0)["strength"]),
+			float(DiveRun.draft_strength(-0.4, 2.0)["strength"])),
+		"...and is symmetric about the tile's centre")
+
+	# --- THE SHORT WAY ROUND (the seam) -------------------------------------
+	# The downdraft IS the seam tile, centred at ±6 tiles. A point just PAST +6 is
+	# a whisker from its centre, not a whole ring away — this is the claim that
+	# makes the draft span the crossing instead of stopping at it.
+	var n := float(DiveRun.RING.size())
+	var seam := n * 0.5
+	var just_past := DiveRun.draft_strength(seam + 0.1, 2.0)
+	var just_short := DiveRun.draft_strength(seam - 0.1, 2.0)
+	_check(String(just_past["kind"]) == "down"
+			and is_equal_approx(float(just_past["strength"]), 1.0),
+		"a whisker PAST the seam is deep inside the downdraft, not outside the ring")
+	_check(is_equal_approx(float(just_past["strength"]),
+			float(just_short["strength"])),
+		"...exactly as strongly as a whisker short of it — the wrap changes nothing")
+	# ...and the wrapped image of a point reads identically, which is the property
+	# the seamless crossing rests on.
+	var here := DiveRun.draft_strength(seam - 0.4, 2.0)
+	var lap := DiveRun.draft_strength(seam - 0.4 - n, 2.0)
+	_check(String(here["kind"]) == String(lap["kind"])
+			and is_equal_approx(float(here["strength"]), float(lap["strength"])),
+		"a point and its image one circumference away are the same weather")
+
+	# --- THE HUD STILL NAMES THE SKY ----------------------------------------
+	_check(DiveRun.draft_label(0.0, 2.0) == "UPDRAFT"
+			and DiveRun.draft_label(seam, 2.0) == "DOWNDRAFT",
+		"the HUD names a draft you are standing in")
+	_check(DiveRun.draft_label(3.0, 2.0) == "THE ROCKS",
+		"...and the rocks where no draft reaches")
+	_check(DiveRun.draft_label(1.0 - blend, 2.0) == "UPDRAFT",
+		"...and the band's own width, not the tile line, decides which (%.2f tiles out)"
+			% (1.0 - blend))
+
+	# --- AND THE WIND ITSELF SCALES WITH IT ---------------------------------
+	# The world multiplies `zone_mult` by the strength, so half a band is half a
+	# lean. Stated here because that composition is the only wiring the fix has.
+	var full := DiveRun.weather_wind("down", 0.0, 1.0, 1.0).y
+	var half_str := DiveRun.weather_wind("down", 0.0, 0.5, 1.0).y
+	_check(is_equal_approx(half_str, full * 0.5),
+		"half the band's strength is half the lean (%.1f of %.1f px/s@1x)"
+			% [half_str, full])
 
 
 ## THE SEAM YOU CANNOT SEE (owner 2026-09-01: *"Looping around through the world
@@ -4085,6 +4348,419 @@ func _test_ship_serialize() -> void:
 	_check(ShipLayout.serialize({}) == "", "an empty grid exports nothing")
 
 
+## THE HEADER VOCABULARY (Q-T): `key value` lines that carry what the spawn code
+## used to hard-code. Three claims, and the third is the dangerous one:
+##
+##   1. every key round-trips, typed;
+##   2. a key this build has never heard of round-trips UNTOUCHED;
+##   3. A HEADER LINE IS NEVER EATEN AS A GRID ROW. That is the hulk's old scar
+##      (`# ` vs `#`-as-hull, which spawned the enemy with no floor, no engine and
+##      no helm) in a new place, so it is pinned twice: once on a crafted file,
+##      and once as CELL-COUNT PARITY against a reproduction of the pre-header
+##      parser over every stock blueprint in the repo.
+func _test_ship_meta() -> void:
+	_t("ShipLayout: the .ship header vocabulary")
+
+	var text := "# a comment\nname Bandit Cutter\nkind whale\nhealth 1234\ntame 2\n" \
+		+ "tint 0.900 0.200 0.100\nrole gunboat\nbounty 35\nnotes two decks\n" \
+		+ "future_key whatever it says\norigin 1 1\n###\n#H#\n###\n"
+	var meta := ShipLayout.parse_meta(text)
+	_check(String(meta.get("name", "")) == "Bandit Cutter", "a free-text name survives its spaces")
+	_check(String(meta.get("kind", "")) == "whale", "kind reads back")
+	_check(is_equal_approx(float(meta.get("health", 0.0)), 1234.0), "health is a float")
+	_check(int(meta.get("tame", -1)) == 2, "tame is an int")
+	_check(int(meta.get("bounty", -1)) == 35, "bounty is an int")
+	_check(typeof(meta.get("tint")) == TYPE_COLOR
+		and is_equal_approx((meta["tint"] as Color).r, 0.9), "tint is a Color")
+	_check(String(meta.get("notes", "")) == "two decks", "notes survive")
+	_check(String(meta.get("future_key", "")) == "whatever it says",
+		"an UNKNOWN key is kept as raw text")
+	_check(not meta.has("origin") and not meta.has("scale"),
+		"origin/scale stay the format's own — never meta")
+
+	# The grid is untouched by any of it.
+	var cells := ShipLayout.parse(text)
+	_check(cells.size() == 9, "the grid is the grid: 9 cells, no header eaten as a row (%d)"
+		% cells.size())
+	_check(int(cells.get(Vector2i(0, 0), -1)) == BlockDB.Type.HELM,
+		"...and `origin` still places it (the helm is at the origin)")
+
+	# Round-trip through serialize, unknown key included.
+	var back := ShipLayout.parse_meta(ShipLayout.serialize(cells, 1, meta))
+	_check(back.size() == meta.size(), "every header survives a serialize (%d of %d)"
+		% [back.size(), meta.size()])
+	_check(String(back.get("name", "")) == "Bandit Cutter"
+		and int(back.get("bounty", -1)) == 35
+		and String(back.get("future_key", "")) == "whatever it says",
+		"...values and all, unknown keys included")
+	_check(ShipLayout.parse(ShipLayout.serialize(cells, 1, meta)).size() == cells.size(),
+		"...and the grid still parses to the same cells with headers on it")
+	_check(ShipLayout.serialize(cells, 1, {}).find("name") < 0,
+		"no meta, no header lines — a headerless file stays byte-shaped as it was")
+
+	# THE CLASSIFIER: what is a header and what is a row.
+	_check(ShipLayout.meta_split("name My Ship").size() == 2, "`key value` is a header")
+	_check(ShipLayout.meta_split("###H###").is_empty(), "a row of blocks is not")
+	_check(ShipLayout.meta_split("vvvvvv").is_empty(),
+		"...nor a row of the one LOWERCASE glyph ('v' propellers)")
+	_check(ShipLayout.meta_split("WWMMWW").is_empty(), "...nor a creature's row")
+	_check(ShipLayout.meta_split("Name Capitalised").is_empty(),
+		"a capitalised first token is not a key")
+
+	# PARITY OVER THE WHOLE REPO. `_legacy_cell_count` is the parser as it stood
+	# before headers existed; every stock file that carries no headers must parse
+	# to exactly what it parsed to then.
+	var checked := 0
+	for path in ShipEdit.ship_files("res://ships"):
+		var p := String(path)
+		var f := FileAccess.open(p, FileAccess.READ)
+		if f == null:
+			continue
+		var body := f.get_as_text()
+		f.close()
+		if not ShipLayout.parse_meta(body).is_empty():
+			continue   # a headered file — the legacy parser would eat its headers
+		checked += 1
+		_check(ShipLayout.parse(body).size() == _legacy_cell_count(body),
+			"%s parses to the same %d cells it always did"
+				% [p.get_file(), _legacy_cell_count(body)])
+	# Only the drafts are headerless now (2026-09-05 gave every stock blueprint a
+	# `kind`), and the legacy parser cannot check a headered file — `name Patrol
+	# Cutter` contains a 'P'. STOCK_CELLS below is what replaced this reach:
+	# hard-numbered counts, measured on the revision BEFORE the headers landed.
+	_check(checked >= 3, "...across every headerless stock blueprint (%d files)" % checked)
+	_check_stock_cell_counts()
+
+	# ships/hulk.ship IS the worked example (kind vessel / role gunboat /
+	# bounty 35). 1712 is its cell count from before the headers were added —
+	# measured on the previous revision of the file, not derived from the current
+	# one, so this catches a header being eaten as a row rather than agreeing
+	# with it.
+	var hulk := ShipLayout.load_cells("res://ships/hulk.ship")
+	_check(hulk.size() == 1712,
+		"the hulk still parses to its 1712 pre-header cells (%d)" % hulk.size())
+	var hmeta := ShipLayout.load_meta("res://ships/hulk.ship")
+	_check(String(hmeta.get("kind", "")) == "vessel"
+		and String(hmeta.get("role", "")) == "gunboat"
+		and int(hmeta.get("bounty", -1)) == 35,
+		"...and carries kind/role/bounty as the worked example")
+	# The bounty it declares is exactly what the coin table already paid, so the
+	# example moved a number into the file it describes and changed nothing.
+	_check(DiveRun.coins_for("hulk", 1, int(hmeta["bounty"])) == DiveRun.coins_for("hulk", 1),
+		"...worth exactly what DiveRun.KIND_COIN already said")
+
+
+## EVERY STOCK BLUEPRINT'S CELL COUNT, HARD-NUMBERED. Measured on the revision
+## before the 2026-09-05 header pass (`kind`/`name`/`group` on every stock file),
+## so it is an OUTSIDE witness rather than a restatement of what the parser does
+## today: if one of those header lines is ever eaten as a grid row — the `#`-as-
+## hull scar in a new place, which is the failure this format keeps producing —
+## exactly one number here moves and the suite names the file.
+##
+## A new stock `.ship` belongs in this table. Deliberately not derived from a
+## directory walk: a count that regenerates itself pins nothing.
+const STOCK_CELLS := {
+	"res://ships/basilisk.ship": 56,
+	"res://ships/critter.ship": 14,
+	"res://ships/dive_deck.ship": 152,
+	"res://ships/drafts/starter_owner_draft_1.ship": 75,
+	"res://ships/drafts/starter_owner_draft_2.ship": 98,
+	"res://ships/drafts/starter_owner_draft_4.ship": 98,
+	"res://ships/hulk.ship": 1712,
+	"res://ships/kraken_angler.ship": 108,
+	"res://ships/kraken_b.ship": 159,
+	"res://ships/kraken_c.ship": 166,
+	"res://ships/kraken_leviathan.ship": 439,
+	"res://ships/kraken_nautilus.ship": 143,
+	"res://ships/kraken_urchin.ship": 113,
+	"res://ships/loft_test.ship": 251,
+	"res://ships/nest_den.ship": 33,
+	"res://ships/nest_eyrie.ship": 30,
+	"res://ships/nest_hive.ship": 22,
+	"res://ships/nest_roost.ship": 44,
+	"res://ships/starter.ship": 73,
+	"res://ships/whale.ship": 80,
+	"res://ships/whale_bowhead.ship": 99,
+	"res://ships/whale_bull.ship": 101,
+	"res://ships/whale_city.ship": 466,
+	"res://ships/whale_humpback.ship": 78,
+	"res://ships/whale_leviathan.ship": 127,
+	"res://ships/whale_manta.ship": 149,
+	"res://ships/whale_narwhal.ship": 102,
+	"res://ships/whale_sleek.ship": 64,
+}
+
+
+func _check_stock_cell_counts() -> void:
+	var wrong: Array = []
+	for path in STOCK_CELLS:
+		var got := ShipLayout.load_cells(String(path)).size()
+		if got != int(STOCK_CELLS[path]):
+			wrong.append("%s %d != %d" % [String(path).get_file(), got, int(STOCK_CELLS[path])])
+	_check(wrong.is_empty(), "every stock blueprint parses to its pinned cell count (%s)"
+		% ("all %d" % STOCK_CELLS.size() if wrong.is_empty() else ", ".join(wrong)))
+	# ...and the table covers the tree, so a new file cannot slip past unpinned.
+	var listed := ShipEdit.ship_files("res://ships")
+	_check(listed.size() == STOCK_CELLS.size(),
+		"...and the table names every file under res://ships (%d of %d)"
+			% [STOCK_CELLS.size(), listed.size()])
+
+
+## The `.ship` parser AS IT STOOD before the header vocabulary: skip `# `/`#`
+## comments, `scale`, `origin` and blanks; everything else is a grid row. Used to
+## prove the meta pass changed nothing, which is a claim that has to be made
+## against the OLD rules rather than the new ones.
+func _legacy_cell_count(text: String) -> int:
+	var n := 0
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges(false, true)
+		if line == "#" or line.begins_with("# "):
+			continue
+		if line.begins_with("scale") or line.begins_with("origin"):
+			continue
+		if line.strip_edges() == "":
+			continue
+		for i in line.length():
+			if ShipLayout.CHARS.has(line[i]):
+				n += 1
+	return n
+
+
+## THE TABLE OPENS AND SAVES ANY FILE (Q-T): the file list, the per-kind palette
+## and FYI panel, and the save-as round trip through the redirected `user://`.
+func _test_ship_table_files() -> void:
+	_t("the drafting table's file list, palettes and save-as")
+
+	# --- The list ------------------------------------------------------------
+	var rows := ShipEdit.file_rows()
+	var by_path := {}
+	for row in rows:
+		by_path[String((row as Dictionary)["path"])] = row
+	_check(by_path.has("res://ships/starter.ship"), "the list holds the starter")
+	_check(by_path.has("res://ships/whale.ship") and by_path.has("res://ships/kraken_b.ship")
+		and by_path.has("res://ships/basilisk.ship") and by_path.has("res://ships/critter.ship"),
+		"...and every creature file")
+	_check(by_path.has("res://ships/nest_roost.ship") and by_path.has("res://ships/dive_deck.ship"),
+		"...the nests and the launch deck")
+	_check(by_path.has("res://ships/drafts/starter_owner_draft_1.ship"),
+		"...and RECURSES into ships/drafts")
+	var hulk_row: Dictionary = by_path["res://ships/hulk.ship"]
+	_check(String(hulk_row["name"]) == "Patrol Cutter" and String(hulk_row["kind"]) == "vessel",
+		"a row is labelled by its `name` header and its kind")
+	var whale_row: Dictionary = by_path["res://ships/whale.ship"]
+	_check(String(whale_row["name"]) == "Sky Whale" and String(whale_row["kind"]) == "whale",
+		"the stock creature files carry their own name and kind (2026-09-05)")
+	var draft_row: Dictionary = by_path["res://ships/drafts/starter_owner_draft_1.ship"]
+	_check(String(draft_row["name"]) == "starter_owner_draft_1"
+		and String(draft_row["kind"]) == "vessel",
+		"a headerless file still falls back to its basename, and reads as a vessel")
+
+	# --- Opening one, and the palette that follows ---------------------------
+	var e := ShipEdit.new()
+	_check(e.load_path("res://ships/whale.ship"), "whale.ship opens on the table")
+	_check(e.cells.size() == ShipLayout.load_cells("res://ships/whale.ship").size(),
+		"...cell for cell")
+	# The stock whale NAMES its kind now (2026-09-05), so opening it is enough to
+	# get the creature palette — no test-side nudge.
+	_check(e.kind() == "whale", "...and the sheet knows it is a whale from the file")
+	var pal := ShipEdit.palette_for(e.kind())
+	_check(pal.has(BlockDB.Type.BLUBBER) and pal.has(BlockDB.Type.MEAT)
+		and pal.has(BlockDB.Type.SHELL), "a creature palette paints flesh")
+	_check(not pal.has(BlockDB.Type.ENGINE) and not pal.has(BlockDB.Type.HELM)
+		and not pal.has(BlockDB.Type.GASBAG),
+		"...and cannot paint an engine, a helm or a gasbag into a whale")
+	_check(ShipEdit.palette_for("vessel").has(BlockDB.Type.ENGINE),
+		"a vessel keeps the whole vessel palette")
+	_check(ShipEdit.palette_for("nest").has(BlockDB.Type.STRUT),
+		"a nest gets the STRUT back — nest_eyrie/hive are authored with it")
+	_check(ShipEdit.palette_for("anything else").has(BlockDB.Type.ENGINE),
+		"an unknown kind falls through to the vessel palette")
+
+	# --- The creature FYI panel ---------------------------------------------
+	var ctext := e.stats_text()
+	_check(ctext.contains("floats"), "the whale's panel says it floats")
+	_check(ctext.contains("one connected piece"), "...and that it is one body")
+	_check(not ctext.contains("no helm"),
+		"...and never asks a whale for a helm (the vessel panel's line)")
+	var cs := e.creature_stats()
+	_check(int(cs["pieces"]) == 1 and bool(cs["floats"]),
+		"the plain values agree (%d piece, trim %.2f)" % [int(cs["pieces"]), float(cs["trim"])])
+	# Two cells with a gap between them is two bodies, and the game cannot spawn
+	# that — FYI, out loud, never a refusal.
+	var split := ShipEdit.new()
+	split.meta["kind"] = "kraken"
+	split.cells = {Vector2i(0, 0): BlockDB.Type.MEAT, Vector2i(5, 0): BlockDB.Type.MEAT}
+	_check(split.piece_count() == 2, "a gap makes two pieces")
+	_check(split.stats_text().contains("SEPARATE PIECES"), "...and the panel says so")
+
+	# --- Save as, into the redirected user:// shelf -------------------------
+	var out := ShipEdit.new()
+	out.cells = {Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HELM}
+	out.meta = {"name": "Test Skiff", "kind": "vessel", "bounty": 12,
+		"notes": "written by the suite"}
+	var path := ShipEdit.user_path_for("Test Skiff")
+	_check(path == ShipLayout.user_dir.path_join("Test_Skiff.ship"),
+		"a typed name becomes a safe file name (%s)" % path)
+	_check(ShipEdit.safe_basename("../../etc/passwd") == "etcpasswd",
+		"...with nothing left in it that could walk out of the directory")
+	_check(out.save_to(path), "save-as writes it")
+	_check(ShipEdit.last_path == path, "...and it is the open file now")
+	var listed := ShipEdit.file_rows()
+	var found := false
+	for row in listed:
+		if String((row as Dictionary)["path"]) == path:
+			found = true
+			_check(String((row as Dictionary)["source"]) == "user",
+				"...listed on the player's own shelf")
+	_check(found, "the list shows it after a save")
+
+	# The headers came back with it — the round trip the owner edits through.
+	var reopened := ShipEdit.new()
+	_check(reopened.load_path(path), "it opens again")
+	_check(String(reopened.meta.get("name", "")) == "Test Skiff"
+		and int(reopened.meta.get("bounty", -1)) == 12
+		and String(reopened.meta.get("notes", "")) == "written by the suite",
+		"...with every header intact")
+	_check(reopened.cells.size() == 2, "...and both cells")
+
+	# The scratch file TRY IT writes is NOT a listed blueprint (nor, in the Dive,
+	# a candidate): a leading underscore is the convention, one rule, one reader.
+	_check(out.save_to(ShipEdit.try_file(), false), "TRY IT's scratch file writes")
+	_check(ShipEdit.last_path == path, "...without becoming the open file")
+	var still := ShipEdit.file_rows()
+	var scratch := false
+	for row in still:
+		if String((row as Dictionary)["path"]) == ShipEdit.try_file():
+			scratch = true
+	_check(not scratch, "...and never shows up in the list")
+
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(ShipEdit.try_file()))
+
+
+## THE FILE GROUPS (owner 2026-09-05: "different folder groups (or accordions,
+## as an idea) such that it isn't just a blob of names ... ships, creatures,
+## bosses"). Four rules decide where a blueprint is filed, and the ONLY thing
+## worth pinning about them is which one wins — so the precedence ladder is
+## walked rung by rung, and then the whole answer is checked against the real
+## res://ships tree, which is the list the owner actually reads.
+func _test_ship_groups() -> void:
+	_t("the drafting table's accordions: which group a blueprint falls into")
+
+	# --- The ladder: folder > header > source > kind -------------------------
+	_check(ShipEdit.group_of("res://ships/whale.ship", {"kind": "whale"}, "res")
+		== "creatures", "a `kind whale` falls in with the creatures")
+	_check(ShipEdit.group_of("res://ships/starter.ship", {}, "res") == "ships",
+		"...a file with no headers at all is a ship")
+	_check(ShipEdit.group_of("res://ships/x.ship", {"kind": "vessel"}, "res") == "ships"
+		and ShipEdit.group_of("res://ships/x.ship", {"kind": "whale_city"}, "res") == "bosses"
+		and ShipEdit.group_of("res://ships/x.ship", {"kind": "nest"}, "res") == "nests"
+		and ShipEdit.group_of("res://ships/x.ship", {"kind": "kraken"}, "res") == "creatures",
+		"...and every kind has its shelf")
+	_check(ShipEdit.group_of("res://ships/x.ship", {"kind": "sky_serpent"}, "res") == "ships",
+		"an unrecognised kind goes where an unrecognised kind spawns: with the vessels")
+	# SOURCE beats KIND: a whale saved on the player's own shelf is still theirs.
+	var udir := ShipLayout.user_dir
+	_check(ShipEdit.group_of(udir.path_join("mine.ship"), {"kind": "whale"}, "user")
+		== "my ships", "the player's own shelf beats the kind default")
+	# HEADER beats SOURCE: ...unless they filed it somewhere themselves.
+	_check(ShipEdit.group_of(udir.path_join("mine.ship"),
+		{"kind": "whale", "group": "bosses"}, "user") == "bosses",
+		"...and a `group` header beats the shelf")
+	_check(ShipEdit.group_of("res://ships/x.ship", {"kind": "whale", "group": "bosses"}, "res")
+		== "bosses", "...and the kind (this is how whale_leviathan is a boss)")
+	# FOLDER beats everything: it is the decision you can see in a file browser.
+	_check(ShipEdit.group_of("res://ships/bosses/x.ship",
+		{"kind": "whale", "group": "creatures"}, "res") == "bosses",
+		"a subfolder under ships/ beats even the header")
+	_check(ShipEdit.group_of("res://ships/drafts/a.ship", {}, "res") == "drafts",
+		"...and ships/drafts is that same rule, not a special case")
+	_check(ShipEdit.group_of("res://ships/BOSSES/x.ship", {}, "res") == "bosses",
+		"...case-folded, because the group name is compared and displayed upper")
+	# One word, lower case — the group is a folder name, not a sentence.
+	_check(ShipEdit.group_of("res://ships/x.ship", {"group": "Boss Ships"}, "res") == "boss",
+		"a group header is one lower-case word")
+	_check(ShipEdit.group_of("res://ships/x.ship", {"group": "   "}, "res") == "ships",
+		"...and a blank one is no instruction at all")
+
+	# --- A `group` header round-trips through serialize ----------------------
+	# TWO cells, not one: a lone hull serializes to a bare "#" row, which the
+	# parser reads as a comment (the format's oldest rule). Nothing to do with
+	# headers — but a one-cell fixture would blame them for it.
+	var cells := {Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HELM}
+	var text := ShipLayout.serialize(cells, 1, {"kind": "whale", "group": "bosses"})
+	_check(String(ShipLayout.parse_meta(text).get("group", "")) == "bosses",
+		"a `group` header survives a serialize/parse round trip")
+	_check(ShipLayout.parse(text).size() == 2,
+		"...without the grid noticing (%d cells)" % ShipLayout.parse(text).size())
+	_check(ShipLayout.META_KEYS.has("group"),
+		"...because it is part of the header vocabulary, not a stray key")
+
+	# --- The whole tree, filed ----------------------------------------------
+	# `grouped_rows` reads user:// too, and the suite's own scratch shelf may hold
+	# a leftover; the res:// groups are what the stock tree pins.
+	var groups := ShipEdit.grouped_rows()
+	var members := {}
+	var order: Array = []
+	var total := 0
+	for g in groups:
+		var d := g as Dictionary
+		order.append(String(d["group"]))
+		total += int(d["count"])
+		var names: Array = []
+		for row in (d["rows"] as Array):
+			names.append(String((row as Dictionary)["path"]).get_file().get_basename())
+		names.sort()
+		members[String(d["group"])] = names
+		_check(int(d["count"]) == (d["rows"] as Array).size()
+			and String(d["label"]) == "%s (%d)" % [String(d["group"]).to_upper(), int(d["count"])],
+			"%s is labelled with its own count" % String(d["label"]))
+	_check(total == ShipEdit.file_rows().size(),
+		"every file is filed exactly once (%d of %d)" % [total, ShipEdit.file_rows().size()])
+
+	_check(members.get("ships", []) == ["hulk", "loft_test", "starter"],
+		"SHIPS holds the three vessels: %s" % str(members.get("ships", [])))
+	_check(members.get("bosses", []) == ["kraken_leviathan", "whale_city", "whale_leviathan"],
+		"BOSSES holds the Leviathan, the arcology and the whale: %s"
+			% str(members.get("bosses", [])))
+	_check(members.get("nests", []) == ["nest_den", "nest_eyrie", "nest_hive", "nest_roost"],
+		"NESTS holds all four: %s" % str(members.get("nests", [])))
+	_check(members.get("drafts", []).size() == 3,
+		"DRAFTS holds the owner's three drafts")
+	_check(members.get("structures", []) == ["dive_deck"],
+		"a `group structures` header pulls the launch deck out of SHIPS")
+	var creatures: Array = members.get("creatures", [])
+	_check(creatures.size() == 14, "CREATURES holds the fourteen bodies (%d)" % creatures.size())
+	_check(creatures.has("whale") and creatures.has("kraken_b")
+		and creatures.has("basilisk") and creatures.has("critter"),
+		"...the whales, the krakens, the basilisk and the critter")
+	_check(not creatures.has("whale_city") and not creatures.has("whale_leviathan"),
+		"...minus the two that named themselves bosses")
+
+	# DISPLAY ORDER: the named groups in their fixed order, strangers after them.
+	var expected := ["ships", "drafts", "creatures", "bosses", "nests", "structures"]
+	var seen: Array = []
+	for g in order:
+		if String(g) != "my ships":   # present only when the scratch shelf is not
+			seen.append(String(g))
+	_check(seen == expected, "the groups come out in display order: %s" % str(seen))
+	_check(ShipEdit.GROUP_ORDER[0] == "ships" and ShipEdit.GROUP_ORDER[1] == "my ships",
+		"...with the player's own shelf second, right under the stock hulls")
+
+	# --- Which accordions start folded --------------------------------------
+	ShipEdit.group_collapsed.clear()
+	_check(ShipEdit.group_is_collapsed("nests")
+		and ShipEdit.group_is_collapsed("structures"),
+		"nests and structures start folded — nobody opens them to design a ship")
+	_check(not ShipEdit.group_is_collapsed("ships")
+		and not ShipEdit.group_is_collapsed("creatures"),
+		"...everything else starts open")
+	ShipEdit.group_collapsed["nests"] = false
+	_check(not ShipEdit.group_is_collapsed("nests"),
+		"a fold the player changed outranks the default (and is static, so TRY IT keeps it)")
+	ShipEdit.group_collapsed.clear()
+
+
 ## THE DRAFTING TABLE'S MODEL (Q-Q): painting, mirroring, undo, the 1×-only
 ## round-trip, and the FYI stats — which must mirror the game's own arithmetic
 ## (mass, trim, the prop-mounting axis rule) because an FYI panel that lies is
@@ -4215,6 +4891,32 @@ func _test_ship_editor_screen() -> void:
 	_check((edit.get("cells") as Dictionary).size() == n0 + 1, "a paint lands on the sheet")
 	var text := String(edit.call("to_text"))
 	_check(ShipLayout.parse(text).size() == n0 + 1, "and the export carries it")
+
+	# THE ACCORDIONS (2026-09-05). The file panel is a Tree with a hidden root:
+	# one top-level item per non-empty group, the files as its children. Walked
+	# here rather than trusted, because "the list still shows every file" is the
+	# thing a grouping change can silently break.
+	var tree := screen.get("_file_tree") as Tree
+	_check(tree != null and tree.hide_root, "the file panel is a Tree with a hidden root")
+	if tree != null:
+		var expected: Array = ShipEdit.grouped_rows()
+		var heads := 0
+		var files := 0
+		var head: TreeItem = tree.get_root().get_first_child()
+		while head != null:
+			heads += 1
+			_check(not head.is_selectable(0),
+				"the %s heading is not selectable — clicking it only folds it" % head.get_text(0))
+			var child: TreeItem = head.get_first_child()
+			while child != null:
+				files += 1
+				child = child.get_next()
+			head = head.get_next()
+		_check(heads == expected.size(),
+			"one heading per non-empty group (%d of %d)" % [heads, expected.size()])
+		_check(files == ShipEdit.file_rows().size(),
+			"...and every blueprint is under one of them (%d of %d)"
+				% [files, ShipEdit.file_rows().size()])
 	screen.queue_free()
 	await process_frame
 
@@ -4309,6 +5011,20 @@ func _test_dive_run() -> void:
 		"the pot banked at the floor's premium (%d -> %d)" % [carried, run.banked])
 	_check(run.advance(1.0, 0.2).is_empty(), "a finished run is inert")
 	_check(not run.go_home(), "...and cannot be extracted twice")
+	# PASSAGE HOME WITH NOTHING ON YOU. The row is free (the premium IS the pot's
+	# own arithmetic, `bank_value`), so a run that went deep and spent everything
+	# at the counter must still be able to buy the way out — being stranded by
+	# having shopped is the one thing the extraction row must never do.
+	var stranded := DiveRun.new()
+	stranded.deepest = 5
+	stranded.pot = 0
+	_check(stranded.go_home(), "a run with an EMPTY pot can still take passage home")
+	_check(stranded.outcome == "escaped" and stranded.banked == 0,
+		"...and banks nothing, without failing (banked %d)" % stranded.banked)
+	_check(DiveRun.bank_value(0, DiveRun.DEPTHS) == 0,
+		"...because an empty pot is worth nothing at any premium")
+	_check(int(DiveRun.STOCK[DiveRun.STOCK.size() - 1]["cost"]) == 0,
+		"...and the counter's passage row is free, so the pot cannot gate it")
 
 	# --- The closing sky's arithmetic ---------------------------------------
 	_check(DiveRun.ceiling_at(DiveRun.depth_altitude(1)) <= DiveRun.TOP_FRAC,
@@ -6086,7 +6802,7 @@ func _test_kraken_ai_grabs_hovers_and_rams() -> void:
 	for cell in far.blocks:
 		far_hp0 += far.blocks[cell]["hp"]
 	for i in 10:
-		ai._mouth_grab(1.0 / 60.0, far)
+		ai._mouth_grab(1.0 / 60.0, far, ai.site_worlds(), {})
 		await physics_frame
 	var far_hp1 := 0.0
 	for cell in far.blocks:
@@ -6418,6 +7134,461 @@ func _test_kraken_spawn_keeps_out_of_deep_rock() -> void:
 		"without the probe the kraken spawns inside the island, exactly as it used to")
 
 	t.queue_free()
+	await _step(2)
+
+
+## THE HEAVE FINDS YOU (v0.147.0, DESIGN_KRAKEN §1.3 / jam #3 designer C's M1).
+## The owner's complaint — krakens are easy to avoid — was ONE VECTOR: the
+## inherited latch is purely horizontal while the Dive's whole verb is DOWN, so
+## a four-second attack is thrown at a line you left in the first half-second.
+## These are the arithmetic claims the fix is made of, asserted with no body, no
+## world and no physics; the behaviour they buy is the test after this one.
+func _test_kraken_heave_finds_you() -> void:
+	_t("a kraken leads its prey, floors the heave's horizontal share, and never aims into the lava")
+	# Parity: the levers ship the constants they replaced (CODEMAP — "the
+	# default must mirror the constant it replaced").
+	_check_approx(Tunables.get_num("kraken_lead_seconds"), KrakenAI.LEAD_SECONDS,
+		0.001, "kraken_lead_seconds default = KrakenAI.LEAD_SECONDS")
+	_check_approx(Tunables.get_num("kraken_push_vertical"), KrakenAI.PUSH_VERTICAL,
+		0.001, "kraken_push_vertical default = KrakenAI.PUSH_VERTICAL")
+	_check_approx(Tunables.get_num("kraken_coil_seconds"), KrakenAI.COIL_SECONDS,
+		0.001, "kraken_coil_seconds default = KrakenAI.COIL_SECONDS")
+
+	# --- The lever's regression contract: 1.0 IS today, sign for sign. -------
+	# Compared against the base class's own latch rather than a copy of its
+	# formula, so this cannot drift if the whale's broadside is ever re-tuned.
+	var whale_brain := WhaleAI.new()
+	var raws: Array[Vector2] = [
+		Vector2(900.0, 0.0), Vector2(-900.0, 0.0), Vector2(900.0, 3072.0),
+		Vector2(-400.0, -5000.0), Vector2(0.0, 4000.0), Vector2(0.0, -4000.0),
+	]
+	var same := 0
+	for raw in raws:
+		if KrakenAI.floor_horizontal(raw, 1.0).is_equal_approx(
+				whale_brain._latch_push_dir(raw, null)):
+			same += 1
+	_check(same == raws.size(),
+		"at kraken_push_vertical 1.0 the heave is the inherited broadside, byte for byte (%d of %d aims)"
+			% [same, raws.size()])
+
+	# --- 0.5: a prey DIRECTLY BELOW gets a shove that is genuinely vertical.
+	var down := KrakenAI.floor_horizontal(Vector2(0.0, 4000.0), 0.5)
+	_check(absf(down.y) >= absf(down.x) * 1.0,
+		"at 0.5, a prey straight below is heaved DOWNWARD (%s: |y| %.3f >= |x| %.3f)"
+			% [down, absf(down.y), absf(down.x)])
+	_check_approx(down.length(), 1.0, 0.001, "...and the direction stays a unit vector")
+	_check_approx(absf(down.x), 0.5, 0.001,
+		"...with exactly the floored horizontal share left in it (%.3f)" % absf(down.x))
+	# The floor only ever ADDS horizontal: an aim that is already flat enough
+	# passes through untouched, so a level prey is still rammed level.
+	var flat := KrakenAI.floor_horizontal(Vector2(1000.0, 100.0), 0.5)
+	_check(flat.is_equal_approx(Vector2(1000.0, 100.0).normalized()),
+		"an aim already past the floor is left exactly as it is (%s)" % flat)
+	# Sign is taken from the prey, both axes: it heaves up at a climbing prey.
+	var up := KrakenAI.floor_horizontal(Vector2(-10.0, -4000.0), 0.5)
+	_check(up.x < 0.0 and up.y < 0.0, "it hunts UP as well as down (%s)" % up)
+
+	# --- THE LEAD POINT: aim where the prey WILL be. ------------------------
+	var here := Vector2(0.0, -20000.0)
+	var diving := Vector2(0.0, 1920.0)   # the rate stick's dive at 8x
+	var lead := KrakenAI.lead_point(here, diving, 1.6)
+	_check_approx(lead.y - here.y, 1920.0 * 1.6, 0.5,
+		"a hull diving at the stick's speed is aimed at 3,072 px below itself (%.0f)"
+			% (lead.y - here.y))
+	_check(KrakenAI.lead_point(here, Vector2.ZERO, 1.6).is_equal_approx(here),
+		"a prey standing still leads to itself — today's aim, unchanged")
+	_check(KrakenAI.lead_point(here, diving, 0.0).is_equal_approx(here),
+		"and 0 s of lead turns the whole thing off")
+	# The prey's velocity is read off whatever KIND of body it is.
+	var moving := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	moving.position = Vector2(-40000.0, 0.0)
+	moving.linear_velocity = Vector2(0.0, 500.0)
+	await _step(1)
+	_check(KrakenAI.prey_velocity(moving).y > 100.0,
+		"a Ship prey answers with its linear_velocity (%s)" % KrakenAI.prey_velocity(moving))
+	var bare := Node2D.new()
+	root.add_child(bare)
+	_check(KrakenAI.prey_velocity(bare) == Vector2.ZERO,
+		"a body with no velocity at all reads as standing still")
+	_check(KrakenAI.prey_velocity(null) == Vector2.ZERO, "...and so does no body")
+	bare.queue_free()
+	moving.queue_free()
+
+	# --- THE FLOOR THE AIM CANNOT CROSS (designer C's R2). -----------------
+	# Lead a hull that is diving hard enough and the aim point lands in the lava
+	# core, which would send the kraken after it: SHELL survives rock, nothing
+	# survives the core. The clamp holds the point above the same altitude a
+	# dormant migration refuses to cross.
+	var kept := Airspace.bounds
+	Airspace.bounds = Rect2(Vector2(-100000.0, -200000.0), Vector2(200000.0, 200000.0))
+	var floor_y: float = Airspace.bounds.end.y \
+		- Dormancy.MIGRATE_FLOOR_FRAC * Airspace.bounds.size.y
+	var deep := KrakenAI.lead_point(Vector2(0.0, floor_y - 500.0),
+		Vector2(0.0, 40000.0), 1.6)
+	_check(deep.y <= floor_y + 0.001,
+		"a lead point that would land in the lava is held above the floor (%.0f <= %.0f)"
+			% [deep.y, floor_y])
+	_check(is_equal_approx(deep.x, 0.0),
+		"...on the vertical axis only — the chase keeps its x")
+	var high := KrakenAI.lead_point(Vector2(0.0, -150000.0), Vector2(0.0, 1920.0), 1.6)
+	_check(high.y > -150000.0 and high.y < floor_y,
+		"a lead point in open air is not clamped at all (%.0f)" % high.y)
+	# BREAK THE FIX: with no sky declared there is no floor, and the same aim
+	# passes straight through — which is what keeps the 1x arena honest.
+	Airspace.bounds = Rect2()
+	_check(KrakenAI.lead_point(Vector2(0.0, floor_y - 500.0),
+			Vector2(0.0, 40000.0), 1.6).y > floor_y,
+		"with no sky there is no floor to clamp to (the Sprint-1 arena)")
+	Airspace.bounds = kept
+	await _step(2)
+
+
+## THE COIL (DESIGN_KRAKEN §1.3 / designer C's M2): the telegraph the anti-clunk
+## charter demands, and the fix for the pose bug C found — WhaleAI drives the
+## tilt off `linear_velocity.y` alone, so the most violent thing a kraken does
+## was the moment its body read most NEUTRAL. Kraken-only: the whale's suite
+## pins the velocity pose, and its flat broadside is an owner ruling.
+func _test_kraken_coils_before_it_heaves() -> void:
+	_t("a kraken rears away before it heaves, and holds the attack's pose through the glide")
+	var kraken := _make_ship({
+		Vector2i(-1, 0): BlockDB.Type.SHELL,
+		Vector2i(0, 0): BlockDB.Type.MEAT,
+		Vector2i(1, 0): BlockDB.Type.SHELL,
+	})
+	kraken.faction = 2
+	kraken.creature_kind = "kraken"
+	kraken.position = Vector2(0.0, -30000.0)
+	kraken.shared_health = 4000.0
+	kraken.shared_health_max = 4000.0
+	# DOWN and to the RIGHT, frozen: the aim has a real vertical share, so the
+	# pose claims below are about an angle and not about zero. A prey off the
+	# align band converts on the align TIMEOUT (whale_ai.gd's own stuck-drive
+	# fix); force its clock rather than burning two seconds of frames.
+	var prey := _make_ship({Vector2i(0, 0): BlockDB.Type.HULL})
+	prey.freeze = true
+	prey.position = kraken.position + Vector2(4000.0, 6000.0)
+	await _step(2)
+
+	var ai := KrakenAI.new()
+	ai.whale = kraken
+	ai.home = kraken.global_position
+
+	ai._align_t = WhaleAI.ALIGN_MAX_SECONDS
+	ai.tick(1.0 / 60.0, prey)
+	_check(ai.phase() == WhaleAI.Phase.COIL,
+		"the attack opens in COIL, not in the heave")
+	_check(ai._push_dir.x > 0.0 and ai._push_dir.y > 0.3,
+		"with the direction — down AND across — already latched (%s)" % ai._push_dir)
+	_check(kraken.ram_immunity_dir == Vector2.ZERO,
+		"rearing back is not an attack — no ram immunity during the windup")
+	# THE TELL: the pose points AWAY from where it is about to go — the exact
+	# negative of the angle it is about to hold for the whole shove.
+	var d0: Vector2 = ai._push_dir
+	var attack_pose := clampf(atan2(d0.y, absf(d0.x)), -Ship.POSE_MAX, Ship.POSE_MAX) \
+		* float(kraken.visual_facing)
+	var away := kraken._pose_tilt
+	_check(absf(attack_pose) > 0.1 and is_equal_approx(away, -attack_pose),
+		"and it rears AWAY: the coil's pose is the exact negative of the attack's (%.3f vs %.3f rad)"
+			% [away, attack_pose])
+	kraken.linear_velocity = Vector2.ZERO
+	for i in int(KrakenAI.COIL_SECONDS * 60.0) + 1:
+		ai.tick(1.0 / 60.0, prey)
+		await physics_frame
+	# ...and it physically reels back. Measured ALONG the committed direction:
+	# the kraken's own wildness jitter (a deliberate lever) rides on top of the
+	# recoil and can win either axis on its own, so the claim is the dot, which
+	# is what "it moves against where it is about to go" actually means.
+	var reel: float = kraken.linear_velocity.dot(d0)
+	_check(reel < -10.0,
+		"and it physically reels back along the attack line first (%.0f px/s into it, v=%s)"
+			% [reel, kraken.linear_velocity])
+	_check(ai.phase() == WhaleAI.Phase.PUSH,
+		"the coil closes into the heave (%.1f s later)" % KrakenAI.COIL_SECONDS)
+	_check(kraken.ram_immunity_dir.x > 0.0, "...and NOW the ram immunity is on")
+
+	# Through PUSH and into the GLIDE, with the pose latched to the attack.
+	for i in int(WhaleAI.PUSH_SECONDS * 60.0) + 1:
+		ai.tick(1.0 / 60.0, prey)
+		await physics_frame
+	_check(ai.phase() == WhaleAI.Phase.GLIDE, "the heave closes into the glide")
+	var d: Vector2 = ai._push_dir
+	var want := clampf(atan2(d.y, absf(d.x)), -Ship.POSE_MAX, Ship.POSE_MAX) \
+		* float(kraken.visual_facing)
+	_check_approx(kraken._pose_tilt, want, 0.001,
+		"and the pose through the glide IS the push direction's angle (%.3f rad)"
+			% kraken._pose_tilt)
+	_check(absf(kraken._pose_tilt) <= Ship.POSE_MAX + 0.001
+			and absf(kraken._pose_tilt) > 0.1,
+		"...at the source's +/-31 degree cap, not flattened by the ram it is riding")
+	_check(d.is_equal_approx(d0),
+		"and the direction never turned once committed — the glide window (%s)" % d)
+
+	# --- THE HEAVE THROWN STRAIGHT DOWN. ------------------------------------
+	ai._end_attack()
+	prey.position = kraken.global_position + Vector2(0.0, 6000.0)
+	await _step(2)
+	ai._align_t = WhaleAI.ALIGN_MAX_SECONDS
+	ai.tick(1.0 / 60.0, prey)
+	_check(absf(ai._push_dir.y) >= absf(ai._push_dir.x),
+		"a prey straight below is heaved DOWN at, not past (%s)" % ai._push_dir)
+
+	# BREAK THE FIX, both levers at once: at push_vertical 1.0 the same aim is
+	# the old sideways-only ram, and at coil 0 there is no windup at all.
+	Tunables.set_value("kraken_push_vertical", 1.0)
+	Tunables.set_value("kraken_coil_seconds", 0.0)
+	ai._end_attack()
+	ai._align_t = WhaleAI.ALIGN_MAX_SECONDS
+	ai.tick(1.0 / 60.0, prey)
+	_check(is_zero_approx(ai._push_dir.y) and absf(ai._push_dir.x) > 0.99,
+		"push_vertical 1.0 restores the horizontal-only ram (%s)" % ai._push_dir)
+	_check(ai.phase() == WhaleAI.Phase.PUSH,
+		"and coil 0 s strikes with no windup, exactly as it used to")
+	Tunables.reset_all()
+
+	kraken.queue_free()
+	prey.queue_free()
+	await _step(2)
+
+
+## THE THROAT IS REAL (v0.147.0, DESIGN_KRAKEN §1.1 / jam #3 finding 1). Until
+## now `damage_cell`'s living branch threw the struck cell away, so shell and
+## meat were identical to gunfire though every kraken is AUTHORED as a shell
+## casing around a meat interior. Three boundaries, and all three are the point:
+## creatures only, SHOTS only, and a lever rather than `collision_resist`
+## (block_db.gd warns in words that combat must never read that column).
+func _test_creature_shell_is_armour_against_shots() -> void:
+	_t("a shot into a creature's SHELL drains a quarter; meat drains 1:1, vessels and crushes are untouched")
+	_check_approx(Tunables.get_num("creature_shell_resist"), 4.0, 0.001,
+		"the shipped shell tax is 4x (the jam's ruling: 20 would make shell immune)")
+
+	var beast := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.SHELL,
+		Vector2i(1, 0): BlockDB.Type.MEAT,
+		Vector2i(2, 0): BlockDB.Type.SHELL,
+	})
+	beast.creature_kind = "kraken"
+	beast.faction = 2
+	beast.position = Vector2(0.0, -52000.0)
+	beast.shared_health_max = 4000.0
+	beast.shared_health = 4000.0
+	await _step(1)
+
+	var pool := beast.shared_health
+	beast.net_damage_cell(Vector2i(0, 0), 400.0)
+	var shell_drain := pool - beast.shared_health
+	_check_approx(shell_drain, 100.0, 0.001,
+		"400 into the shell casing drains a quarter of it (%.0f)" % shell_drain)
+	pool = beast.shared_health
+	beast.net_damage_cell(Vector2i(1, 0), 400.0)
+	var meat_drain := pool - beast.shared_health
+	_check_approx(meat_drain, 400.0, 0.001,
+		"the same 400 into the exposed MEAT drains all of it (%.0f)" % meat_drain)
+	_check(meat_drain > shell_drain * 3.9,
+		"aiming is worth 4x — which is the whole of the fight (%.0f vs %.0f)"
+			% [meat_drain, shell_drain])
+
+	# THE CRUSH IS NOT A SHOT. The collision walk has already divided its bruise
+	# by the very same cell's collision_resist (SHELL 20), so taxing it again
+	# here would armour a ram twice and quietly halve every creature crash.
+	pool = beast.shared_health
+	beast.damage_cell(Vector2i(0, 0), 400.0, false, [], true)
+	var crush_shell := pool - beast.shared_health
+	pool = beast.shared_health
+	beast.damage_cell(Vector2i(1, 0), 400.0, false, [], true)
+	var crush_meat := pool - beast.shared_health
+	_check_approx(crush_shell, 400.0, 0.001,
+		"a CRUSH on shell bills in full — it was armoured upstream (%.0f)" % crush_shell)
+	_check_approx(crush_meat, 400.0, 0.001,
+		"and a crush on meat is unchanged too (%.0f)" % crush_meat)
+
+	# THE LEVER, and the break-the-fix: at 1 the armour is gone and a shell
+	# shot drains exactly as it did before this existed.
+	Tunables.set_value("creature_shell_resist", 1.0)
+	pool = beast.shared_health
+	beast.net_damage_cell(Vector2i(0, 0), 400.0)
+	_check_approx(pool - beast.shared_health, 400.0, 0.001,
+		"at resist 1 a shell shot drains 1:1 again — the old behaviour, on a lever")
+	Tunables.reset_all()
+
+	# A VESSEL IS NOT A CREATURE. Gasbags carry collision_resist 10 and would go
+	# bullet-resistant if combat ever read that column; nothing here touches
+	# them, because a vessel has no shared pool and never enters the branch.
+	var boat := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.GASBAG,
+		Vector2i(1, 0): BlockDB.Type.HULL,
+	})
+	boat.position = Vector2(0.0, -58000.0)
+	await _step(1)
+	var bag_hp: float = boat.blocks[Vector2i(0, 0)]["hp"]
+	boat.net_damage_cell(Vector2i(0, 0), 10.0)
+	_check_approx(bag_hp - float(boat.blocks[Vector2i(0, 0)]["hp"]), 10.0, 0.001,
+		"a shot into a vessel's gasbag costs it exactly what it always did")
+	# ...and a SHELL-plated vessel (there is nothing stopping the owner building
+	# one) is not armoured either: the tax belongs to living bodies.
+	var plated := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.SHELL,
+		Vector2i(1, 0): BlockDB.Type.HULL,
+	})
+	plated.position = Vector2(0.0, -64000.0)
+	await _step(1)
+	var plate_hp: float = plated.blocks[Vector2i(0, 0)]["hp"]
+	plated.net_damage_cell(Vector2i(0, 0), 40.0)
+	_check_approx(plate_hp - float(plated.blocks[Vector2i(0, 0)]["hp"]), 40.0, 0.001,
+		"...and shell PLATING on a vessel is plain plating (creatures only)")
+
+	beast.queue_free()
+	boat.queue_free()
+	plated.queue_free()
+	await _step(2)
+
+
+## MOUTHS ARE CLUSTERS (v0.148.0, DESIGN_KRAKEN §1.2 slice 4; jam #3 B-T3 = C-M6).
+## The anatomy read straight off the shipped `.ship` files, with no bodies, no
+## physics and no world: `KrakenAI.meat_clusters` / `throat_index` are static and
+## total precisely so this can be a spreadsheet check rather than a simulation.
+##
+## Two things are pinned here that a later tuning pass could quietly undo:
+##
+##   * THE COUNTS. The Leviathan's authored crown is SIX arms and its gullet ONE
+##     throat. It is 8-connected clustering that says so — 4-connected shatters
+##     the throat's diagonal staircase into five fragments (measured), four of
+##     which would then be arms grabbing from INSIDE the boss's own maw, which
+##     is the shelter both judges ruled to keep.
+##   * THE SELECTION RULE. "Largest wins" is exactly what judge 2 refused: the
+##     throat is 11 cells against arms of 12, so the check below asserts both
+##     that the throat is chosen AND that it is the smaller of the two — the
+##     naive rule fails this test by construction.
+func _test_kraken_mouths_are_clusters() -> void:
+	_t("the throat is a cluster and every other cluster is a root — six arms on the Leviathan")
+	_check_approx(Tunables.get_num("kraken_root_hp_per_cell"), KrakenAI.ROOT_HP_PER_CELL,
+		0.001, "kraken_root_hp_per_cell default = KrakenAI.ROOT_HP_PER_CELL")
+	_check_approx(Tunables.get_num("kraken_hoard_mult"), 2.0, 0.001,
+		"kraken_hoard_mult ships at the design's 2x")
+
+	# EVERY shipped kraken plan, by name: the count the file's own drawing says.
+	# The common krakens draw their tentacles continuous with the head, so they
+	# are ONE opening and behave exactly as they did before this slice; only the
+	# boss's authored crown is separate flesh.
+	var expect := {
+		"res://ships/kraken_b.ship": 0,
+		"res://ships/kraken_c.ship": 0,
+		"res://ships/kraken_urchin.ship": 0,
+		"res://ships/kraken_angler.ship": 0,
+		"res://ships/kraken_nautilus.ship": 0,
+		"res://ships/kraken_leviathan.ship": 6,
+	}
+	for path in expect:
+		var body := _make_ship(ShipLayout.load_cells(path))
+		body.position = Vector2(-96000.0, -12000.0)
+		var clusters := KrakenAI.meat_clusters(body.blocks, body.exterior_air())
+		var ti := KrakenAI.throat_index(clusters, body.blocks)
+		var roots: int = clusters.size() - 1
+		_check(ti >= 0 and roots == int(expect[path]),
+			"%s: 1 throat + %d roots (got %d + %d)"
+				% [path.get_file(), int(expect[path]), 1 if ti >= 0 else 0, roots])
+		if path.ends_with("kraken_leviathan.ship"):
+			var throat: Array = clusters[ti]
+			var biggest: int = 0
+			for c in clusters:
+				biggest = maxi(biggest, (c as Array).size())
+			_check(throat.size() == 11 and biggest == 12,
+				"...the boss's throat is the AUTHORED 11 cells beside 12-cell arms (%d vs %d)"
+					% [throat.size(), biggest])
+			_check(throat.size() < biggest,
+				"...so 'largest cluster wins' would have picked an ARM — the rule is 'nearest the body'")
+			var centre := KrakenAI.cluster_centroid(throat)
+			_check(absf(centre.y) < 0.001 and centre.x > -9.0 and centre.x < -5.0,
+				"...and the throat it picked is the one on the axis, in the maw (%.2f, %.2f)"
+					% [centre.x, centre.y])
+			for i in clusters.size():
+				if i == ti:
+					continue
+				_check((clusters[i] as Array).size() == 12,
+					"...arm %d is one authored 12-cell strand (%d)"
+						% [i, (clusters[i] as Array).size()])
+		body.queue_free()
+	await _step(2)
+
+
+## A ROOT DIES WHEN ITS MEAT IS GONE — the whole reason a root needs a pool of
+## its own. A living creature is ONE unit (`Ship.damage_cell`'s living branch
+## drains the shared pool and returns BEFORE removing anything), so nothing in
+## the game could ever take an arm off. `KrakenAI.absorb_hit` gives each root a
+## second, small bill fed by the hits that land on ITS cells; at zero the cells
+## come off and that site stops grabbing.
+##
+## And the invariant the header calls decision 3: the BITE does not move. The
+## derived mouth is pinned on the first ask, so six arms can fall off and the
+## throat still bites where D measured it.
+func _test_kraken_root_dies_and_stops_grabbing() -> void:
+	_t("an arm has its own pool; shoot it off and it stops grabbing, and the bite never moves")
+	var boss := _make_ship(ShipLayout.load_cells("res://ships/kraken_leviathan.ship"))
+	boss.position = Vector2(-120000.0, -12000.0)
+	boss.creature_kind = "kraken_leviathan"
+	boss.faction = 2
+	boss.shared_health_max = 3600.0
+	boss.shared_health = 3600.0
+	boss.rebuild()
+	await _step(1)
+	var ai := KrakenAI.new()
+	ai.whale = boss
+	ai.home = boss.global_position
+
+	_check(ai.root_count() == 6, "the boss carries six roots (%d)" % ai.root_count())
+	_check(ai.site_locals().size() == 7,
+		"...so it has SEVEN grab sites: the throat plus one per arm (%d)"
+			% ai.site_locals().size())
+	# THE POOL: 80 hp per AUTHORED cell, so a 12-cell arm is 960 — about 24 s
+	# of the bare starter's 40 hp/s on meat.
+	_check_approx(ai.root_hp_max(0), KrakenAI.ROOT_HP_PER_CELL * 12.0, 0.01,
+		"a 12-cell arm's own pool is 200 x 12 (%.0f)" % ai.root_hp_max(0))
+
+	var mouth_before: Vector2 = ai.site_locals()[0]
+	var arm: Array[Vector2i] = ai.root_cells(0)
+	var arm_site: Vector2 = ai.site_locals()[1]
+	var blocks_before: int = boss.blocks.size()
+	var pool_before: float = boss.shared_health
+
+	# Shoot the arm through the REAL path: `net_damage_cell` is what a shell
+	# calls, `damage_cell` drains the shared pool and emits `damaged`, and the
+	# world's one brain-wiring site routes that to `absorb_hit`. Here the routing
+	# is done by hand — this suite builds brains directly, with no world.
+	var shots := 0
+	while ai.root_hp(0) > 0.0 and shots < 400:
+		shots += 1
+		var hp_was: float = boss.shared_health
+		boss.net_damage_cell(arm[shots % arm.size()], 20.0)
+		ai.absorb_hit(arm[shots % arm.size()], hp_was - boss.shared_health)
+	_check(ai.root_hp(0) <= 0.0 and shots < 400,
+		"the arm's pool empties under fire (%d shots of 20)" % shots)
+	_check_approx(pool_before - boss.shared_health, KrakenAI.ROOT_HP_PER_CELL * 12.0,
+		1.0, "...and every one of those hits drained the SHARED pool too, 1:1 on meat")
+	_check(boss.blocks.size() == blocks_before,
+		"...but not one block has moved yet — a living creature is still one unit")
+
+	# The reap happens at the top of a tick, never re-entrantly inside the damage
+	# walk that emptied the pool.
+	ai.tick(1.0 / 60.0, null)
+	_check(ai.root_count() == 5,
+		"one tick later the arm is gone and five roots remain (%d)" % ai.root_count())
+	_check(boss.blocks.size() == blocks_before - arm.size(),
+		"...its %d cells are off the body (%d -> %d)"
+			% [arm.size(), blocks_before, boss.blocks.size()])
+	var still := false
+	for c in arm:
+		still = still or boss.blocks.has(c)
+	_check(not still, "...every one of them, by name")
+	_check(boss._connected_islands().size() == 1,
+		"...and losing an arm did not sever the body into pieces (%d island)"
+			% boss._connected_islands().size())
+	var sites_now := ai.site_locals()
+	_check_approx((sites_now[0] - mouth_before).length(), 0.0, 0.001,
+		"THE BITE DID NOT MOVE — the derived mouth is pinned, not recomputed")
+	_check(sites_now.size() == 6 and not sites_now.has(arm_site),
+		"...and the dead arm is off the grab-site list (%d sites left)" % sites_now.size())
+
+	boss.queue_free()
+	ai.whale = null
 	await _step(2)
 
 
@@ -13351,6 +14522,80 @@ func _test_whale_ai_reads_the_ram_tunable() -> void:
 	await process_frame
 
 
+## THE F2 DECLUTTER (owner 2026-09-05: "TOO MUCH INFORMATION EVERYWHERE… use a
+## tooltip for the TMI bits, but keep it ALL brief"). The contract is a SHORT
+## label plus a tooltip that still carries the unit and what 0/off means — so the
+## test is length on one side and non-emptiness on the other. Without it the next
+## lever's author writes another sentence-long label and the tab drifts back.
+func _test_f2_labels_are_short_and_tipped() -> void:
+	_t("F2 registry: every lever has a short label and a real tooltip")
+
+	# One tab per group, Dive its own (19 dive levers were unfindable inside a
+	# 59-row World tab), in the order the window paints them.
+	_check(Tunables.groups() == ["Player", "Dive", "Combat", "World", "Whale"],
+		"five lever groups in tab order, Dive among them (%s)" % str(Tunables.groups()))
+
+	var longest_label := ""
+	var longest_tip := ""
+	var too_long: Array = []
+	var no_tip: Array = []
+	var stray_dive: Array = []
+	var by_group := {}
+	var dupes: Array = []
+	for row in Tunables.defs():
+		var id: String = row["id"]
+		var label: String = str(row.get("label", ""))
+		var tip: String = str(row.get("tip", ""))
+		var group: String = row["group"]
+		if label.is_empty() or label.length() > 28:
+			too_long.append("%s (%d)" % [id, label.length()])
+		if tip.strip_edges().length() < 20:
+			no_tip.append(id)
+		if label.length() > longest_label.length():
+			longest_label = label
+		if tip.length() > longest_tip.length():
+			longest_tip = tip
+		if id.begins_with("dive_") != (group == "Dive"):
+			stray_dive.append("%s in %s" % [id, group])
+		if not by_group.has(group):
+			by_group[group] = []
+		if (by_group[group] as Array).has(label):
+			dupes.append("%s: %s" % [group, label])
+		(by_group[group] as Array).append(label)
+
+	_check(too_long.is_empty(),
+		"every label is 1..28 chars — longest '%s' (%d)%s"
+			% [longest_label, longest_label.length(),
+				"" if too_long.is_empty() else " OVER: " + str(too_long)])
+	_check(no_tip.is_empty(),
+		"every lever carries a tooltip of real substance%s"
+			% ("" if no_tip.is_empty() else " — thin: " + str(no_tip)))
+	_check(dupes.is_empty(),
+		"no two levers in one group share a label%s"
+			% ("" if dupes.is_empty() else " — " + str(dupes)))
+	_check(stray_dive.is_empty(),
+		"the Dive group is exactly the dive_* levers%s"
+			% ("" if stray_dive.is_empty() else " — " + str(stray_dive)))
+	_check((by_group.get("Dive", []) as Array).size() >= 15,
+		"the Dive tab holds the run's levers (%d of them)"
+			% (by_group.get("Dive", []) as Array).size())
+	# The tooltip is where the TMI went, so it must not become the new wall: two
+	# sentences is the brief.
+	_check(longest_tip.length() <= 200,
+		"the longest tooltip is still two sentences (%d chars)" % longest_tip.length())
+
+
+## Every real action Button under `n`. A CheckBox IS a Button in Godot, and the
+## lever checkboxes are not action buttons, so they are filtered out.
+func _f2_action_buttons(n: Node) -> Array:
+	var out: Array = []
+	if n is Button and not (n is CheckBox):
+		out.append(n)
+	for c in n.get_children():
+		out.append_array(_f2_action_buttons(c))
+	return out
+
+
 func _test_debug_window_toggles_and_switches_tabs() -> void:
 	_t("debug window: toggle visibility + tab switching (state, not pixels)")
 	var win := DebugWindow.new()
@@ -13391,6 +14636,39 @@ func _test_debug_window_toggles_and_switches_tabs() -> void:
 	_check(win._controls.has("coyote_time") and win._controls.has("jump_cut"),
 		"the movement-feel levers are reachable inside it")
 
+	# THE TAB ORDER the owner playtests in (2026-09-05): the two tabs a session
+	# starts in, then the Dive, then the rest of the levers, then Perf.
+	_check(titles == ["Player", "Spawn", "Dive", "Combat", "World", "Whale", "Perf"],
+		"the tabs are in the owner's order (%s)" % str(titles))
+
+	# THE DECLUTTER, on the window's side: a button says a verb and explains
+	# itself in its tooltip; a lever row paints its tip on BOTH halves, so the
+	# hover lands wherever the pointer already is.
+	var buttons := _f2_action_buttons(win._tabs)
+	var longest_btn := ""
+	var over_btn: Array = []
+	var untipped: Array = []
+	for b in buttons:
+		var btn := b as Button
+		if btn.text.length() > longest_btn.length():
+			longest_btn = btn.text
+		if btn.text.length() > 28:
+			over_btn.append(btn.text)
+		if btn.tooltip_text.strip_edges().is_empty():
+			untipped.append(btn.text)
+	_check(buttons.size() >= 25,
+		"the window still offers every verb it had (%d buttons)" % buttons.size())
+	_check(over_btn.is_empty(),
+		"every button label is <= 28 chars — longest '%s' (%d)%s"
+			% [longest_btn, longest_btn.length(),
+				"" if over_btn.is_empty() else " OVER: " + str(over_btn)])
+	_check(untipped.is_empty(),
+		"every button explains itself in a tooltip%s"
+			% ("" if untipped.is_empty() else " — bare: " + str(untipped)))
+	var floor_ctl := win._controls.get("dive_air_floor") as Control
+	_check(floor_ctl != null and not floor_ctl.tooltip_text.strip_edges().is_empty(),
+		"a lever's control carries its tip (dive_air_floor)")
+
 	win.set_tab(2)
 	_check(win.active_tab() == 2, "set_tab switches the active tab")
 	win.set_tab(0)
@@ -13407,6 +14685,16 @@ func _test_debug_window_toggles_and_switches_tabs() -> void:
 	_check(cold.contains("chunk rebuilds") and cold.contains("ship rebuilds")
 			and cold.contains("repaints"),
 		"...and lists the three churn rates a stutter is actually made of")
+
+	# ...but the TAB shows one line of it (owner 2026-09-05). The wall is the
+	# tooltip now — still sampled, still one hover away, no longer in the way.
+	var line: String = win._perf_line()
+	_check(not line.contains("\n") and line.length() <= 60,
+		"the Perf tab shows ONE short line (%s)" % line)
+	_check(line.contains("fps") and line.contains("ships") and line.contains("v"),
+		"...naming fps, physics ms, ships and the build")
+	_check(win._perf_label.tooltip_text.contains("FPS:"),
+		"...with the whole cost picture behind its tooltip")
 
 	# The sampling gate: walking every ship and chunk is not a per-frame job
 	# (the project has paid for an observer effect once already).

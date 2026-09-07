@@ -35,6 +35,11 @@
 #
 # 'origin COL ROW' names which character is ship cell (0,0).
 
+# HEADERS (2026-09-05) — what this file already was, said out loud, so the
+# drafting table can file it. Header lines only: the grid below is untouched.
+name Starter
+kind vessel
+
 origin 6 5
 
 GGGGGGGGGGGG
