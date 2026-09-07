@@ -444,7 +444,9 @@ func _check_dive_scene_boots() -> void:
 			continue
 		listed += 1
 		if hull2.extra_wind.is_equal_approx(
-				w.call("dive_weather_at", hull2.global_position)):
+				w.call("dive_weather_for", hull2.global_position,
+					w.call("dive_beta_of", hull2),
+					DiveRun.key_depth(hull2.garrison_key))):
 			winded += 1
 		if moved_one == null and hull2.creature_kind == "":
 			moved_one = hull2
@@ -457,7 +459,9 @@ func _check_dive_scene_boots() -> void:
 		moved_one.global_position = pl.global_position
 		w.call("_dive_weather", 0.0)
 		_ok(moved_one.extra_wind.is_equal_approx(
-				w.call("dive_weather_at", pl.global_position)),
+				w.call("dive_weather_for", pl.global_position,
+					w.call("dive_beta_of", moved_one),
+					DiveRun.key_depth(moved_one.garrison_key))),
 			"an enemy hull at YOUR position feels your weather exactly (%s)"
 				% moved_one.extra_wind)
 
@@ -466,6 +470,7 @@ func _check_dive_scene_boots() -> void:
 	# advance the run out from under the garrison checks above (they measure a
 	# live world with nothing awaited between the set-up and the assertion).
 	await _check_dive_picket_holds_its_rung(w, pl, cx)
+	await _check_dive_seal(w, pl, run, cx)
 
 	w.queue_free()
 	await process_frame
@@ -745,6 +750,194 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	Tunables.reset_all()
 
 
+## THE DESCENT SEAL, in a real sky (DESIGN_DESCENT.md, owner rulings §0).
+##
+## Only an 8× run can see any of this: the band is 4,483 px of a 64,038 px rung,
+## and the whole ruling turns on how a rate-controlled hull behaves inside an
+## airstream measured against `dive_dive_rate`. Four claims, and the seal is only
+## the gate the owner asked for if all four hold:
+##
+##   1. a NEUTRAL stick inside a live band is CARRIED OUT of the top — drifting
+##      into a seal warns you, it does not kill you (DESCENT §4.4);
+##   2. a FULL DOWN stick crosses, in the time `SEAL_AIR_SPEED` was tuned for
+##      (≈ 30 % of `dive_ship_integrity` at 300 hp/s — DESCENT §3.3);
+##   3. a garrison hull feels nothing inside ITS OWN depth's band and the full
+##      stream inside anyone else's (§0 call 7, "symmetric with one exception");
+##   4. the band DIES when the world reports its last key killed — and a CULL is
+##      not a kill (§2.4).
+##
+## Run at the same air floor as `_check_dive_picket_holds_its_rung` and for the
+## same measured reason: at the shipped floor a balloon ship cannot hold a rung
+## at all, and a crossing time measured on a hull that is falling anyway would be
+## measuring gravity.
+func _check_dive_seal(w: Node, pl, run, cx: float) -> void:
+	if pl == null or not is_instance_valid(pl) or run == null:
+		_ok(false, "a body and a run to seal")
+		return
+	Tunables.set_value("dive_air_floor", 0.85)
+	# A ROCK TILE: the ring's calm column, so the only wind in the measurement is
+	# the seal's own (the updraft and downdraft tiles are ±600 px/s at 8× and would
+	# be measuring the ring instead — that they STACK is the design's own ruling,
+	# DESCENT §2.5, and it is why crossings are differently priced around the ring).
+	var rock := 0
+	for t in DiveRun.RING.size():
+		if DiveRun.zone_kind(t) == "rock":
+			rock = t
+			break
+	var tile_w: float = w.call("_dive_tile_w")
+	var band_x := cx + DiveRun.zone_offset(rock) * tile_w
+	var band := DiveRun.seal_band(2)
+	var top_y: float = float(w.call("dive_altitude_y", float(band[0])))
+	var bot_y: float = float(w.call("dive_altitude_y", float(band[1])))
+	var band_px := bot_y - top_y
+	_ok(band_px > 0.0, "depth 2's band is %.0f px of air at 8×" % band_px)
+
+	# THE HULL: the run's own COMMITTED starter, flown from the helm through the
+	# real input map. Nothing here is a stand-in — a candidate hull sitting on the
+	# deck has no driver and no power, so its props deliver nothing and every number
+	# measured on one would be measuring gravity. Board it, let `_tick_dive` commit
+	# the run (which thaws it, arms its integrity pool and stamps the rate-controlled
+	# stick on it), and fly.
+	var cand: Ship = null
+	for s2 in (w.get("fleet").call("ships") as Array):
+		var c2 := s2 as Ship
+		if c2 == null or not is_instance_valid(c2):
+			continue
+		if c2.faction == 0 and c2.creature_kind == "" and c2.has_helm() \
+				and not c2.is_nest and not c2.is_carcass():
+			cand = c2
+			break
+	_ok(cand != null, "a stock starter on the deck to fly at the seal")
+	if cand == null:
+		Tunables.reset_all()
+		return
+	pl.global_position = cand.to_global(cand.local_pos_of(cand.helm_cells[0]))
+	await w.get_tree().physics_frame
+	_ok(pl.board(cand, cand.helm_cells[0]), "...and the player takes its helm")
+	for i in 6:
+		await w.get_tree().physics_frame
+	var hull := w.get("local_ship") as Ship
+	_ok(hull != null and is_instance_valid(hull) and bool(run.get("committed")),
+		"the run is COMMITTED to it — pool armed, rate stick stamped")
+	if hull == null or not is_instance_valid(hull):
+		Tunables.reset_all()
+		return
+	run.garrison_killed.clear()
+
+	var beta: float = float(w.call("dive_beta_of", hull))
+	_ok(absf(beta - DiveRun.BETA_REF) < DiveRun.BETA_REF * 0.15,
+		"the committed starter's β is %.2f — BETA_REF is %.2f (mass %.0f, beam %.0f px)"
+			% [beta, DiveRun.BETA_REF, hull.mass, hull.solid_bounds.size.x])
+
+	# --- 1. A DRIFTER IS EJECTED -------------------------------------------
+	# Parked dead centre with the stick neutral. The rate controller station-keeps
+	# relative to the AIR (`Ship._physics_process`, `v_up` measured against
+	# `wind.y`), so "hold still" inside a rising band means "ride it up".
+	_park_at(hull, pl, Vector2(band_x, (top_y + bot_y) * 0.5))
+	await w.get_tree().physics_frame
+	var y0 := hull.global_position.y
+	var lift_s := -1.0
+	for i in 900:
+		await w.get_tree().physics_frame
+		if hull.global_position.y < top_y:
+			lift_s = float(i + 1) / 60.0
+			break
+	_ok(lift_s > 0.0,
+		"a neutral stick is carried UP out of a live band in %.1f s (drift %.0f px, wind %.0f) — you must MEAN a crossing"
+			% [lift_s, hull.global_position.y - y0, hull.extra_wind.y])
+
+	# --- 2. ...AND A COMMITTED DIVE CROSSES --------------------------------
+	# From the top lip, stick hard down, until the bottom lip. The crossing TIME is
+	# what `SEAL_AIR_SPEED` is tuned against: at `seal_sites(beam) × SEAL_GRIND`
+	# hp/s the bill has to land near 30 % of `dive_ship_integrity` (DESCENT §3.3).
+	# Driven through the real input map — `Input.action_press` works headless
+	# (godot-quirks), and a piloted hull reads the map, not `net_set_controls`.
+	_park_at(hull, pl, Vector2(band_x, top_y + 4.0))
+	await w.get_tree().physics_frame
+	Input.action_press("ship_down")
+	var cross_s := -1.0
+	for i in 900:
+		await w.get_tree().physics_frame
+		if hull.global_position.y > bot_y:
+			cross_s = float(i + 1) / 60.0
+			break
+	Input.action_release("ship_down")
+	var sites := DiveRun.seal_sites(hull.solid_bounds.size.x)
+	var toll := cross_s * float(sites) * DiveRun.SEAL_GRIND
+	var pool := Tunables.get_num("dive_ship_integrity")
+	_ok(cross_s > 0.0, "a full DOWN stick crosses the band in %.2f s" % cross_s)
+	_ok(cross_s > 0.0 and toll / pool > 0.18 and toll / pool < 0.45,
+		"...for %.0f hp at %d sites = %.0f%% of the hull's pool (target ≈ 30 %%)"
+			% [toll, sites, toll / pool * 100.0])
+
+	# --- 3. SYMMETRIC, WITH ONE EXCEPTION (§0 call 7) ---------------------
+	var mid := Vector2(band_x, (top_y + bot_y) * 0.5)
+	var stream: float = float(w.call("dive_seal_speed_at", mid, beta, 0))
+	_ok(stream > 0.0, "the live band at depth 2 blows %.0f px/s upward" % stream)
+	_ok(is_zero_approx(float(w.call("dive_seal_speed_at", mid, beta, 2))),
+		"...but depth 2's OWN garrison feels nothing in it — the band is its house")
+	_ok(is_equal_approx(float(w.call("dive_seal_speed_at", mid, beta, 3)), stream),
+		"...while a picket from depth 3 caught in it pays the full stream")
+	# MASS BEATS IT, in the world rather than on paper.
+	var dart: float = float(w.call("dive_seal_speed_at", mid, beta * 6.0, 0))
+	_ok(dart < stream * 0.3,
+		"a dart 6× as dense per beam feels %.0f px/s, not %.0f — ruling 3, measured"
+			% [dart, stream])
+
+	# --- 4. THE LOCK ------------------------------------------------------
+	var tw := Tunables.get_num("dive_zone_tile_widths")
+	for k in DiveRun.depth_keys(run.seed_v, 2, tw):
+		run.mark_garrison_killed(String(k))
+	_ok(run.seal_open(run.seed_v, 2, tw)
+			and is_zero_approx(float(w.call("dive_seal_speed_at", mid, beta, 0))),
+		"kill depth 2's last standing picket and the band stops blowing — for good")
+	run.garrison_killed.clear()
+
+	# THE KEY RIDES THE BODY, and a death writes it down.
+	var key := String(DiveRun.depth_keys(run.seed_v, 4, tw)[0])
+	var marked := w.call("_dive_spawn_picket", "hulk",
+		pl.global_position + Vector2(12000.0, 0.0), key) as Ship
+	await w.get_tree().physics_frame
+	_ok(marked != null and marked.garrison_key == key,
+		"a materialized picket carries its roster key (%s)" % key)
+	if marked != null:
+		w.call("_dive_explode_ship", marked)
+		_ok(run.garrison_is_killed(key), "...and its death marks that key KILLED")
+
+	# ...BUT A CULL IS NOT A KILL (§2.4). The survivor goes back to PENDING, which
+	# is the whole reason a half-fought seal can never deadlock.
+	var key2 := String(DiveRun.depth_keys(run.seed_v, 4, tw)[0])
+	run.garrison_killed.erase(key2)
+	run.mark_garrison_spawned(key2)
+	var doomed := w.call("_dive_spawn_picket", "hulk",
+		pl.global_position + Vector2(12000.0, 0.0), key2) as Ship
+	await w.get_tree().physics_frame
+	# ...and then flown away from. Moved rather than born out there: a spawn
+	# point past the world's own edge is not a spawn at all.
+	if doomed != null and is_instance_valid(doomed):
+		doomed.global_position = pl.global_position + Vector2(0.0, 400000.0)
+	w.call("_dive_cull_the_wake", 2.0)
+	_ok(not run.garrison_is_spawned(key2),
+		"the wake cull hands a culled entry back to PENDING")
+	_ok(not run.garrison_is_killed(key2), "...and never counts it as dead")
+	if doomed != null and is_instance_valid(doomed):
+		doomed.queue_free()
+	Tunables.reset_all()
+
+
+## Put the committed hull (and the body riding it) at `at`, stopped. The player
+## is AT THE HELM for every seal measurement, which is what keeps the wake cull
+## (measured from the nearest player) from freeing the hull mid-run and what
+## stops a body left in mid-air falling into the lava and ending the run.
+func _park_at(hull: Ship, pl, at: Vector2) -> void:
+	hull.global_position = at
+	hull.linear_velocity = Vector2.ZERO
+	hull.angular_velocity = 0.0
+	if pl != null and is_instance_valid(pl):
+		pl.global_position = at
+		pl.velocity = Vector2.ZERO
+
+
 func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
 	if pl == null or not is_instance_valid(pl) or run == null:
 		_ok(false, "a body and a run to garrison around")
@@ -976,9 +1169,14 @@ func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
 	else:
 		_ok(true, "the cap was full, so this surge added nothing (correct)")
 
-	# --- 4b. A CLEARED SKY STAYS CLEARED -----------------------------------
-	# The wake cull frees a picket you left behind. That entry must NOT come back
-	# the next time you fly through: it is spent, for the rest of the run.
+	# --- 4b. A *KILLED* SKY STAYS CLEARED ----------------------------------
+	# THIS CLAIM WAS INVERTED BY THE DESCENT SEAL (DESCENT §2.4 / §10.4, owner
+	# call 4). It used to read "a cleared sky stays cleared": the wake cull
+	# CONSUMED an entry, so a picket you flew away from never came back. With a
+	# seal locked to the standing garrison that rule locks the door forever — the
+	# survivors of a half-fought rung would be marked spawned, gone, and not dead,
+	# and the band could never open. So the cull now UNMARKS: `garrison_spawned`
+	# means "has a body right now", and only a KILL is permanent.
 	var was_marked: Dictionary = (run.get("garrison_spawned") as Dictionary).duplicate()
 	for sid5 in (w.get("_dive_surged") as Array):
 		var pk4 := instance_from_id(sid5) as Ship
@@ -988,23 +1186,30 @@ func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
 	_ok((w.get("_dive_surged") as Array).is_empty(),
 		"the wake cull clears what the run left behind (%d left)"
 			% (w.get("_dive_surged") as Array).size())
-	var unmarked := 0
+	var still_marked := 0
+	var wrongly_killed := 0
 	for key2 in was_marked:
-		if not bool(run.call("garrison_is_spawned", String(key2))):
-			unmarked += 1
-	_ok(unmarked == 0,
-		"...without un-marking a single entry it freed (%d forgotten)" % unmarked)
+		if bool(run.call("garrison_is_spawned", String(key2))):
+			still_marked += 1
+		if bool(run.call("garrison_is_killed", String(key2))):
+			wrongly_killed += 1
+	_ok(was_marked.size() > 0 and still_marked == 0,
+		"...handing every entry it freed back to PENDING (%d of %d still held)"
+			% [still_marked, was_marked.size()])
+	_ok(wrongly_killed == 0,
+		"...and counting none of them dead — a cull is not a kill (%d)" % wrongly_killed)
 	w.call("_dive_materialize_garrison", 10.0)
-	var ghosts := 0
+	var returned := 0
 	for sid6 in (w.get("_dive_surged") as Array):
 		var pk5 := instance_from_id(sid6) as Ship
 		if pk5 == null or not is_instance_valid(pk5):
 			continue
 		for key3 in was_marked:
 			if pk5.global_position.distance_to(places[key3] as Vector2) < 1.0:
-				ghosts += 1
-	_ok(ghosts == 0,
-		"...so nothing you already cleared is ever reborn there (%d ghosts)" % ghosts)
+				returned += 1
+	_ok(returned > 0,
+		"...so a garrison you left alive is standing there again when you come back (%d)"
+			% returned)
 
 
 ## MACHINES PLACE AS BUNDLES at 8× (owner 2026-08-25: "an engine will never

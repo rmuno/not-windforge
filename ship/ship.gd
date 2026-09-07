@@ -548,6 +548,20 @@ var dive_rate_max := 0.0
 ## the only weather is `Airspace`'s.
 var extra_wind := Vector2.ZERO
 
+## WHICH STANDING-GARRISON ROW THIS HULL IS, if any (`DiveRun.garrison_key`,
+## "tile:depth:index"), or "" for anything the roster does not name — your own
+## hull, wildlife, an F2 surge picket. The DESCENT SEAL reads it twice: a death
+## marks the key permanently (`DiveRun.mark_garrison_killed`, which is what opens
+## a band), and a body inside its OWN depth's band pays no toll and feels no
+## airstream, because the band is where it lives (DESCENT §0 call 7).
+##
+## A PLAIN FIELD, ASSIGNED AFTER THE SPAWN, deliberately: the Dive's garrison is
+## world-local (`world._dive_materialize_garrison` runs on the authority and the
+## mode is single-player), so the usual "everything a peer needs rides the spawn
+## payload" rule (godot-quirks) has nothing to carry here. If the garrison ever
+## replicates, this has to move into `Fleet.spawn_ship_from_cells`'s extra.
+var garrison_key := ""
+
 ## Peer id allowed to fly this ship. 0 means nobody — wreckage, derelicts.
 var pilot_peer := 1
 

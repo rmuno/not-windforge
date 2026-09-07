@@ -1165,6 +1165,16 @@ static func garrison_key(tile: int, d: int, k: int) -> String:
 	return "%d:%d:%d" % [posmod(tile, RING.size()), d, k]
 
 
+## Which depth a `garrison_key` names ("tile:depth:index"), or 0 for a body the
+## roster never named. The seal asks this of every hull it is about to push, so
+## a picket is never blown out of the band it lives in (DESCENT §0 call 7).
+static func key_depth(key: String) -> int:
+	var parts := key.split(":")
+	if parts.size() < 2:
+		return 0
+	return int(parts[1])
+
+
 ## WHO STANDS IN TILE `tile` AT DEPTH `d`, as [{key, tile, depth, index, kind,
 ## x, alt}]. `x` is in TILE widths from that tile's own centre and `alt` is an
 ## Airspace fraction, so nothing here knows about `world_scale` — the same

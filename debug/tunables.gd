@@ -335,6 +335,18 @@ const _REGISTRY := [
 	# --- The wind ring (owner experiment 2026-08-31) -------------------------
 	# The run's sky loops: updraft at the centre, rocks on the flanks, downdraft
 	# on the far side. OFF restores the corridor exactly as it was.
+	# THE DESCENT SEAL (DESIGN_DESCENT.md). A lethal band of rising air under each
+	# depth 2..7, live until that depth's whole standing garrison is dead. Three
+	# levers, because the owner playtests through F2 and a feature it cannot reach
+	# is invisible: the switch, the airstream's strength, and what a crossing costs.
+	{"id": "dive_seal_enabled", "label": "Dive: the DESCENT SEAL (lethal wind bands gating each depth)",
+		"group": "World", "kind": KIND_BOOL, "default": true},   # world.dive_seal_speed_at
+	{"id": "dive_seal_mult", "label": "Dive: seal airstream strength (0 = no push, 1 = shipped)",
+		"group": "World", "kind": KIND_FLOAT, "default": 1.0, "min": 0.0,
+		"max": 4.0, "step": 0.1},                                # world.dive_seal_speed_at
+	{"id": "dive_seal_grind", "label": "Dive: seal grind, structural hp per site per second",
+		"group": "World", "kind": KIND_FLOAT, "default": 50.0, "min": 0.0,
+		"max": 400.0, "step": 5.0},                              # world._dive_seal_toll
 	{"id": "dive_zones_enabled", "label": "Dive: the WIND RING (loop, zone winds; off = corridor)",
 		"group": "World", "kind": KIND_BOOL, "default": true},   # world._tick_dive / _dive_hold_the_ring
 	{"id": "dive_zone_wind_mult", "label": "Dive: zone wind strength (1 = shipped)",
