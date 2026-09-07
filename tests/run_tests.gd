@@ -164,6 +164,7 @@ func _initialize() -> void:
 	await _test_shots_respect_factions()
 	await _test_a_shell_books_its_own_outcome()
 	await _test_the_combat_scorecard_arithmetic()
+	await _test_the_probe_pilots_steering_arithmetic()
 	await _test_crash_bite_scales_with_the_world()
 	await _test_walls_hold_the_ship_together()
 	await _test_turret_arcs_derive_from_mounting()
@@ -10765,6 +10766,133 @@ func _test_the_combat_scorecard_arithmetic() -> void:
 	_check_approx(CombatScore.per_each(100.0, 4), 25.0, 0.0001, "damage per picket met")
 	_check_approx(CombatScore.per_each(100.0, 0), 0.0, 0.0001,
 		"a run that met nobody took no damage per picket")
+
+
+## THE PROBE PILOT'S STEERING ARITHMETIC (v0.161.0). Same argument as the
+## scorecard above, one step earlier in the chain: `tools/dive_probe.gd` is the
+## only thing that flies the shipped ladder past depth 2, so if its stopping
+## distance is optimistic or its ray fan points the wrong way, every number the
+## deep is tuned against reads "the game is unsurvivable" when the truth is "the
+## autopilot flew into a slab". Five runs in six ended `terrain 100 %` on exactly
+## that, with the crash never appearing in the clearance log at all.
+##
+## `tools/pilot_nav.gd` holds the arithmetic (pure, dependency-free, so a
+## `--script` probe can preload it and the suite can call it with plain numbers).
+## The failures guarded here are the plausible ones: a stopping distance that
+## forgets the reaction delay, an inverse that does not invert, a fan whose
+## origins sit at the body's centre rather than on its skin, and a heading score
+## that lets a blocked direction win because it points the right way.
+func _test_the_probe_pilots_steering_arithmetic() -> void:
+	_t("the probe pilot's steering arithmetic (stopping distance, the ray fan)")
+
+	# --- STOPPING DISTANCE = reaction travel + the braking curve.
+	_check_approx(PilotNav.stopping_distance(100.0, 50.0, 0.0), 100.0, 0.0001,
+		"100 px/s against 50 px/s² needs 100 px with no reaction delay")
+	_check_approx(PilotNav.stopping_distance(100.0, 50.0, 0.5), 150.0, 0.0001,
+		"half a second of reaction adds half a second of travel")
+	_check_approx(PilotNav.stopping_distance(0.0, 50.0, 0.5), 0.0, 0.0001,
+		"a hull that is not moving needs no room to stop")
+	_check(PilotNav.stopping_distance(100.0, 0.0, 0.5) == INF,
+		"no braking authority means NO amount of room is enough — not zero")
+	_check(PilotNav.stopping_distance(200.0, 50.0, 0.25)
+			> 2.0 * PilotNav.stopping_distance(100.0, 50.0, 0.25),
+		"twice the speed needs MORE than twice the room (the curve is quadratic)")
+
+	# --- SAFE SPEED IS ITS EXACT INVERSE. This is the pilot's whole speed rule:
+	# a clear column asks for full stick and a closing one asks for less,
+	# continuously, with no thresholds. If the round trip ever stops closing, the
+	# pilot commands a rate it cannot stop out of and calls the crash the game's.
+	for probe_v in [50.0, 300.0, 960.0, 1920.0]:
+		var room: float = PilotNav.stopping_distance(probe_v, 700.0, 0.3)
+		_check_approx(PilotNav.safe_speed(room, 700.0, 0.3), probe_v, 0.01,
+			"the room %.0f px/s needs is exactly the speed that room allows" % probe_v)
+	_check_approx(PilotNav.safe_speed(0.0, 700.0, 0.3), 0.0, 0.0001,
+		"zero clearance is a full stop — a keel already inside rock reads zero")
+	_check_approx(PilotNav.safe_speed(-500.0, 700.0, 0.3), 0.0, 0.0001,
+		"negative room cannot buy speed back")
+	_check(PilotNav.safe_speed(5000.0, 700.0, 0.3)
+			> PilotNav.safe_speed(500.0, 700.0, 0.3),
+		"more room allows more speed")
+	_check(PilotNav.safe_speed(1000.0, 300.0, 0.3)
+			< PilotNav.safe_speed(1000.0, 900.0, 0.3),
+		"a hull with weaker brakes flies the same gap SLOWER — the measured "
+		+ "deceleration is what makes the rule this hull's and not a constant")
+
+	# --- THE FAN'S DIRECTIONS: symmetric about the heading, and the heading
+	# itself is always in there (an odd count).
+	var dirs: Array = PilotNav.fan_dirs(Vector2.DOWN, 3, 0.4)
+	_check(dirs.size() == 3, "three directions asked for, three returned")
+	_check((dirs[1] as Vector2).is_equal_approx(Vector2.DOWN),
+		"the middle ray is the heading itself")
+	_check_approx(absf((dirs[0] as Vector2).angle_to(Vector2.DOWN)), 0.4, 0.0001,
+		"the outer rays sit one spread off the heading")
+	_check_approx((dirs[0] as Vector2).angle_to(dirs[2] as Vector2), 0.8, 0.0001,
+		"...one to each side, not both to the same side")
+	_check_approx((dirs[0] as Vector2).length(), 1.0, 0.0001,
+		"fan directions are unit vectors")
+	_check((PilotNav.fan_dirs(Vector2.ZERO, 1, 0.4)[0] as Vector2)
+			.is_equal_approx(Vector2.DOWN),
+		"a hull with no heading asks the default question: may I keep descending")
+
+	# --- THE FAN'S ORIGINS sit on the hull's SKIN, spread across the face that
+	# points along the heading. Measuring clearance from the CENTRE of a
+	# 1,536 x 1,152 px body is three-quarters of a hull optimistic in every
+	# direction at once, which is the size of the pad the pilot keeps.
+	var box := Rect2(-768.0, -576.0, 1536.0, 1152.0)
+	var down: Array = PilotNav.fan_origins(box, Vector2.DOWN, 5, 1.0)
+	_check(down.size() == 5, "five origins asked for, five returned")
+	for o in down:
+		_check_approx((o as Vector2).y, 576.0, 0.0001,
+			"every downward origin sits on the keel, not at the centre of mass")
+	_check_approx(minf((down[0] as Vector2).x, (down[4] as Vector2).x), -768.0, 0.0001,
+		"the fan spans the full beam")
+	_check_approx(maxf((down[0] as Vector2).x, (down[4] as Vector2).x), 768.0, 0.0001,
+		"...to the far side of it")
+	_check_approx((down[2] as Vector2).x, 0.0, 0.0001, "with one down the centre line")
+	var inset: Array = PilotNav.fan_origins(box, Vector2.DOWN, 5, 0.9)
+	_check_approx(absf((inset[0] as Vector2).x), 691.2, 0.01,
+		"the inset pulls the outermost rays in from the corners")
+	var sideways: Array = PilotNav.fan_origins(box, Vector2.RIGHT, 3, 1.0)
+	for o in sideways:
+		_check_approx((o as Vector2).x, 768.0, 0.0001,
+			"a sideways fan starts on the flank, not on the keel")
+	_check_approx(absf((sideways[0] as Vector2).y), 576.0, 0.0001,
+		"and spans the hull's HEIGHT — the spread follows the heading, not an axis")
+	var diag: Array = PilotNav.fan_origins(box, Vector2(1.0, 1.0), 1, 1.0)
+	_check_approx((diag[0] as Vector2).length(), 0.5 * (1536.0 + 1152.0) / sqrt(2.0),
+		0.01, "a diagonal heading uses the box's support distance that way")
+
+	# --- THE HEADING SCORE. Room MULTIPLIES, which is the rule that stops the
+	# pilot flying into a wall because the wall lies toward the next rung.
+	var horizon := 3000.0
+	_check_approx(PilotNav.heading_score(0.0, horizon, Vector2.DOWN, 1.0, 0.75, 0.35),
+		0.0, 0.0001, "a blocked heading scores zero however well it is aimed")
+	_check(PilotNav.heading_score(horizon, horizon, Vector2.UP, 1.0, 0.75, 0.35)
+			< PilotNav.heading_score(horizon * 0.5, horizon, Vector2.DOWN, -1.0,
+				0.75, 0.35),
+		"a half-clear descent beats a wide-open climb that points at the lane")
+	_check(PilotNav.heading_score(horizon, horizon, Vector2.DOWN, 1.0, 0.75, 0.35)
+			> PilotNav.heading_score(horizon, horizon, Vector2.DOWN, -1.0, 0.75, 0.35),
+		"between two equally clear descents, the lane breaks the tie")
+	_check(PilotNav.heading_score(horizon, 0.0, Vector2.DOWN, 1.0, 0.75, 0.35) == 0.0,
+		"a fan that looked nowhere scores nothing — never a division by zero")
+
+	# --- LANE GAIN is signed progress, in fractions of one horizon.
+	_check_approx(PilotNav.lane_gain(3000.0, 1.0, 3000.0), 1.0, 0.0001,
+		"flying one horizon straight at a lane one horizon away closes all of it")
+	_check_approx(PilotNav.lane_gain(3000.0, -1.0, 3000.0), -1.0, 0.0001,
+		"flying away from it is the same distance of loss")
+	_check_approx(PilotNav.lane_gain(0.0, 1.0, 3000.0), -1.0, 0.0001,
+		"leaving a lane you are already on is pure loss")
+	_check_approx(PilotNav.lane_gain(3000.0, 1.0, 0.0), 0.0, 0.0001,
+		"no horizon, no gain — not a division by zero")
+
+	# --- THE STEER SIGN's dead band, the reason a hull on its lane does not
+	# chatter left/right every frame.
+	_check(PilotNav.steer_sign(0.5, 0.2) == 1, "a lane to the right steers right")
+	_check(PilotNav.steer_sign(-0.5, 0.2) == -1, "and one to the left, left")
+	_check(PilotNav.steer_sign(0.1, 0.2) == 0, "inside the dead band, hands off")
+	_check(PilotNav.steer_sign(0.2, 0.2) == 0, "the dead band is inclusive at its edge")
 
 
 ## THE SHELL LEDGER (Q-O). A hit rate cannot be measured from outside a shell: a
