@@ -1003,7 +1003,15 @@ func _check_the_dunk(w: Node, pl, terrain) -> void:
 	var body_was: Vector2 = pl.global_position
 	var body_safe := Vector2(at.x - 30000.0, lava - 60000.0)
 	_hold_body(pl, body_safe)
-	var beast: Ship = w.call("_dive_spawn_picket", "kraken", at)
+	# ONE BODY PLAN, PINNED. `_dive_spawn_picket("kraken")` rolls one of five
+	# varieties per boot, and a different silhouette puts the origin the wash is
+	# sampled at a different distance under the jet — the check read 7.2 s on one
+	# plan and NEVER on another in the same merged suite. The dunk is a claim
+	# about the jet versus muscle, not about which kraken you met, so it is
+	# measured on the ammonite; the variety spread is the dunk probe's job.
+	var beast: Ship = w.call("_spawn_one_kraken", "res://ships/kraken_c.ship", at)
+	if beast != null and is_instance_valid(beast):
+		(w.get("_dive_surged") as Array).append(beast.get_instance_id())
 	_ok(beast != null and is_instance_valid(beast), "a hunter is at the floor over open lava")
 	if beast == null or not is_instance_valid(beast):
 		return _reset_dunk_levers()
