@@ -2989,31 +2989,51 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 	# GASBAGS with it, so a hull measured in a wall AFTER the toll is a hull that
 	# can no longer hold altitude — it read 2,175 px/s where the field says 1,435
 	# and the failure looked like a wind bug. Grind still off from the carry.
-	var col_half: float = float(w.call("_dive_tile_w")) \
-		* float((w.get("_dive_ladder_conf") as Dictionary).get("cw", 2.0))
-	var wall_x := lane_x
+	var col_half: float = float(w.call("_dive_tile_w")) 		* float((w.get("_dive_ladder_conf") as Dictionary).get("cw", 2.0))
+	# A SPOT IN A WALL THE HULL CAN ACTUALLY FLY IN, chosen the same way the lane
+	# was: an island standing in a wall reads as 0 px/s of motion, which is
+	# indistinguishable from a wall that does not blow. Both walls, three
+	# altitudes each; the first that moves wins.
+	var wall_at := Vector2(lane_x, calm_at)
+	var wall_free := false
+	var wall_field := Vector2.ZERO
 	for probe_x in [cx - col_half + band_px * 0.5, cx + col_half - band_px * 0.5]:
-		var ph: Dictionary = w.call("dive_ladder_at", Vector2(float(probe_x), calm_at))
-		if String(ph.get("zone", "")) == "band":
-			wall_x = float(probe_x)
+		for probe_dy in [0.0, band_px * 4.0, -band_px * 4.0]:
+			var at := Vector2(float(probe_x), calm_at + float(probe_dy))
+			if String((w.call("dive_ladder_at", at) as Dictionary)
+					.get("zone", "")) != "band":
+				continue
+			await _drain_streaming(terrain, 9000.0, at, 9000.0)
+			_park_at(hull, pl, at)
+			await w.get_tree().physics_frame
+			for i in 45:
+				await w.get_tree().physics_frame
+			if not is_instance_valid(hull):
+				break
+			if absf(hull.linear_velocity.y) > sink_px * 0.4:
+				wall_at = at
+				wall_free = true
+				break
+		if wall_free or not is_instance_valid(hull):
 			break
-	var wall_hit: Dictionary = w.call("dive_ladder_at", Vector2(wall_x, calm_at))
-	_ok(String(wall_hit.get("zone", "")) == "band",
-		"the sinking column's wall is %.0f px off its centre line (%s)"
-			% [wall_x - cx, wall_hit.get("part", "")])
-	_park_at(hull, pl, Vector2(wall_x, calm_at))
-	await w.get_tree().physics_frame
-	for i in 90:
-		await w.get_tree().physics_frame
-	var vy_wall: float = hull.linear_velocity.y if is_instance_valid(hull) else 0.0
-	# Compared against the FIELD at that point rather than a constant: `wall_x`
-	# is whichever wall the probe found (the up-wall if an island stood in the
-	# down-wall), and both answers are legitimate. What is asserted is that the
-	# hull goes where the composed vector says it goes.
-	var wall_field: Vector2 = w.call("dive_ladder_wind_at", Vector2(wall_x, calm_at), beta)
-	_ok(absf(vy_wall - wall_field.y) < maxf(absf(wall_field.y) * 0.35, 250.0),
-		"a stalled hull in the %s wall goes where the wall says: %.0f px/s against the field's %.0f"
-			% [wall_hit.get("part", "?"), vy_wall, wall_field.y])
+	var wall_hit: Dictionary = w.call("dive_ladder_at", wall_at)
+	_ok(wall_free and String(wall_hit.get("zone", "")) == "band",
+		"the sinking column's wall is %.0f px off its centre line (%s), and flyable"
+			% [wall_at.x - cx, wall_hit.get("part", "")])
+	if wall_free:
+		for i in 60:
+			await w.get_tree().physics_frame
+			if not is_instance_valid(hull):
+				break
+		var vy_wall: float = hull.linear_velocity.y if is_instance_valid(hull) else 0.0
+		# Compared against the FIELD at that point rather than a constant:
+		# `wall_at` is whichever wall was flyable (the up-wall if an island stood
+		# in the down-wall), and both answers are legitimate. What is asserted is
+		# that the hull goes where the composed vector says it goes.
+		wall_field = w.call("dive_ladder_wind_at", wall_at, beta)
+		_ok(absf(vy_wall - wall_field.y) < maxf(absf(wall_field.y) * 0.35, 250.0),
+			"a stalled hull in the %s wall goes where the wall says: %.0f px/s against the field's %.0f"
+				% [wall_hit.get("part", "?"), vy_wall, wall_field.y])
 
 
 	# --- 3. ...AND OUT THROUGH THE BOTTOM BAND, BILLED FOR IT -------------
@@ -3065,7 +3085,7 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 	# costs `sites × dive_seal_grind`. Measured over two seconds rather than
 	# asserted from the constants, because the site count comes off a live beam.
 	# THE ASSISTANT IS AWAY: `repair_cell` refunds ~150 hp/s into the pool.
-	_park_at(hull, pl, Vector2(wall_x, calm_at))
+	_park_at(hull, pl, wall_at)
 	hull.hull_integrity = hull.hull_integrity_max
 	await w.get_tree().physics_frame
 	var hov0 := hull.hull_integrity
@@ -3090,8 +3110,12 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 		if not is_instance_valid(hull):
 			break
 	var calm_paid: float = calm0 - hull.hull_integrity if is_instance_valid(hull) else 0.0
-	_ok(calm_paid < want_s * 0.1,
-		"...while two seconds in the CALM cost %.0f hp — the carry is free" % calm_paid)
+	# Against the WALL's own measured rate rather than an absolute: a hull that
+	# brushes rock, or a stray picket's shell, is worth a few tens of hp, and the
+	# claim is "the calm does not grind", not "nothing ever touches it".
+	_ok(calm_paid * 0.5 < maxf(per_s, 1.0) * 0.2,
+		"...while two seconds in the CALM cost %.0f hp — %.0f%% of the wall's rate, the carry is free"
+			% [calm_paid, calm_paid * 0.5 / maxf(per_s, 1.0) * 100.0])
 	Tunables.set_value("dive_assistant", bool(levers["dive_assistant"]))
 
 	# --- 5. RULING 6: THE PERIMETER IS A CHUTE, NOT A TRAP ----------------
@@ -3146,7 +3170,7 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 	# --- 6. RULING 9: EVERYTHING PAYS THE WALLS, AND A CLEAR BUYS TEMPO ---
 	# The seal's own-depth exemption is gone with the fixed bands it was written
 	# for. A rectangle that sinks through the whole sky is nobody's house.
-	var wall_pos := Vector2(wall_x, calm_at)
+	var wall_pos := wall_at
 	var mine_w: Vector2 = w.call("dive_weather_for", wall_pos, beta, 0)
 	var theirs: Vector2 = w.call("dive_weather_for", wall_pos, beta, 2)
 	_ok(mine_w.is_equal_approx(theirs) and not mine_w.is_zero_approx(),
