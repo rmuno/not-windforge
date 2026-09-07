@@ -1236,13 +1236,29 @@ func _ring_ground(w: Node, terrain) -> Dictionary:
 	# seed moved the islands" cannot come down to a couple of chunks. Three gave
 	# 2 of 58 changed on one boot, which is true but is one unlucky seed away
 	# from a check that reports nothing.
-	for spot in [
-			Vector2(x0 + 60000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(2))),
-			Vector2(x0 - 60000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(3))),
-			Vector2(x0 + 30000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(4))),
-			Vector2(x0 - 30000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(5))),
-			Vector2(x0 + 90000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(6))),
-		]:
+	var spots := [
+		Vector2(x0 + 60000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(2))),
+		Vector2(x0 - 60000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(3))),
+		Vector2(x0 + 30000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(4))),
+		Vector2(x0 - 30000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(5))),
+		Vector2(x0 + 90000.0, w.call("dive_altitude_y", DiveRun.depth_altitude(6))),
+	]
+	# GENERATE, THEN STREAM, and in that order — draining alone was the third
+	# thing this helper got wrong. `update_streaming` only makes RESIDENT what has
+	# already been PAINTED: it loads regions, it does not create them. Five deep
+	# drains therefore added nothing an unvisited sky had not already got, and the
+	# reading stayed the deck's (measured: still 56 shared ground chunks, 0
+	# changed, exactly the deck-only number). `IslandGen.ensure_generated` is what
+	# paints, and it is budgeted per call, so it is called until it stops making
+	# anything — the same idiom the picket check uses to guarantee itself clear
+	# air (DECISIONS 2026-08-30: generate first, and only then touch the ground).
+	var seed_now := int(w.get("world_seed"))
+	for pass_i in 40:
+		if IslandGen.ensure_generated(terrain, seed_now, spots, RING_PROBE_PX, 24) == 0:
+			break
+		if pass_i % 8 == 7:
+			await process_frame
+	for spot in spots:
 		await _drain_streaming(terrain, RING_PROBE_PX, spot, RING_PROBE_PX)
 	return _ring_fingerprint(terrain)
 
