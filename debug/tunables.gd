@@ -312,7 +312,14 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 900.0, "min": 100.0, "max": 4000.0, "step": 50.0,
 		"tip": "How fast a basilisk's fireball travels, in px/s at scale 1."},   # BasiliskAI
 
-	# --- World (terrain, dormancy, sites, hazards, mining, repair) ------------
+	# --- World (flight, terrain, dormancy, sites, hazards, mining, repair) ----
+	# GLOBAL, not a Dive lever (owner 2026-09-07): every ship in every mode flies
+	# on this, both axes. 1.0 is the force props had before that morning; 1.5 is
+	# the Dive `thrust` card the owner flew at 1.35, rounded up and made the
+	# baseline. The card's own dial still stacks on top of it.
+	{"id": "prop_strength", "label": "Prop strength", "group": "World",
+		"kind": KIND_FLOAT, "default": 1.5, "min": 0.0, "max": 4.0, "step": 0.05,
+		"tip": "Multiplier on every propeller's rated force, lift and push alike. 1.0 is the old force; power draw does not follow, so a strong prop is not a hungry one."},   # BlockDB.PROP_STRENGTH
 	{"id": "terrain_subdiv", "label": "Terrain resolution", "group": "World",
 		"kind": KIND_INT, "default": 4, "min": 1, "max": 8, "step": 1,
 		"note": "on world reset",

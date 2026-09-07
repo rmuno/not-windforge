@@ -3959,11 +3959,19 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		# 800 -> 4000 (owner 2026-09-01, "extremely slow in every way"): the root
 		# was the air the props breathe, strangled in the thin start air (0.15).
 		# The floor is `dive_air_floor` now (0.85, and LIFT feels it too), and the
-		# same hull covers ~11,700 px here — `tools/lateral_probe.gd` measures
-		# 5,030 px/s peak, a ring tile in 3 s. This bound GUARDS the floor: drop
-		# it back toward 0.15 and this reddens instead of the owner finding out
-		# in play.
-		_ok(dx > 4000.0,
+		# same hull covered ~11,700 px here.
+		# 4000 -> 9000 (2026-09-07): propellers are rated 1.5x
+		# (BlockDB.PROP_STRENGTH), so the old bound encoded the old force. THIS
+		# CHECK, measured both ways on the one build: 19,874 px with the dial at 1.0,
+		# 29,811 px at the shipped 1.5. (`tools/lateral_probe.gd` on seed 565218463
+		# says the same thing in speed — peak 7,884 -> 11,797 px/s, so a 9,216 px
+		# ring tile is crossed in 0.78 s instead of 1.17 s.)
+		# The bound keeps the OLD MARGIN and deliberately sits UNDER the 1.0 figure:
+		# its job is still to guard THE AIR FLOOR — drop the floor back toward 0.15
+		# and this reddens instead of the owner finding out in play — not to be a
+		# second, weaker copy of the dial's own gate. What pins the 1.5 itself is
+		# `run_tests._test_prop_strength_is_the_base_dial`.
+		_ok(dx > 9000.0,
 			"four seconds of full right moves the starter briskly (%.0f px)" % dx)
 		_ok(starter.power_supply() >= starter.active_draw() * 0.95,
 			"...without browning out (supply %.0f vs draw %.0f)"
