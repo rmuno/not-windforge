@@ -93,7 +93,7 @@ var damage_taken := 0.0
 var enemy_shots := 0
 var shots_fired := 0        ## OUR volleys — the line that says the pilot shot at all
 
-# --- THE SHELL LEDGER (Q-O, v0.156.0) --------------------------------------
+# --- THE SHELL LEDGER (Q-O, v0.157.0) --------------------------------------
 # "Enemy shells fired vs hits on us" used to divide two numbers that are not
 # about the same thing: `enemy_shots` counted shells born, while `hits_taken`
 # counted every `damaged` event on our hull — a terrain crush, a whale ram and a
