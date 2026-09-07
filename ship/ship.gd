@@ -208,6 +208,40 @@ const FACING_FLIP_SPEED := 6.0
 var _facing_prev_pos := Vector2.ZERO
 var _facing_has_prev := false
 
+## --- ...AND A DWELL, BECAUSE SPEED HYSTERESIS ALONE IS NOT ENOUGH ----------
+## (2026-09-07, `tools/floor_tick_probe.gd` at the Dive floor.)
+##
+## The speed band above assumes a creature's horizontal motion is a CRUISE with
+## noise on it. At the floor it is not: the Leviathan flipped **~18 times a
+## second**, every kraken down there several times a second. A body in a crowd
+## is shoved — by the ladder's wind, by the boss's inhale, by whatever it is
+## grinding against — and those shoves cross ±48 px/s (6 × 8) in both directions
+## within a frame or two of each other, which is a state machine with no memory
+## reading noise as intent.
+##
+## It is self-sustaining, too, which is why it never settled: a flip reflects the
+## whole collider about the body's centreline, which on a 1,300 px body TELEPORTS
+## its shapes hundreds of pixels. The solver resolves the overlap that creates by
+## shoving the body — sideways — which is the very signal the flip is derived
+## from. Strobe in, strobe out.
+##
+## So a turn now has to be MEANT: the body must want the other facing for this
+## long, continuously, before it commits. A real turn (a whale reaching the end
+## of its figure-eight, a kraken coming about to charge) holds its new direction
+## for seconds and is unaffected; a shove does not and is ignored. Nothing else
+## in the game reads `visual_facing`, so the cost of being late is a third of a
+## second of the drawn head — against a body that was previously unreadable.
+##
+## The dwell is an F2 lever (`creature_facing_dwell`); 0 is exactly the old
+## behaviour, which is what makes this A/B-able in a live run.
+const FACING_FLIP_DWELL := 0.35
+
+## The facing being waited on and how long it has been wanted, in seconds. Reset
+## the moment the body stops wanting it — a dwell that accumulated across
+## interruptions would let a strobe through by summing its halves.
+var _facing_want := 0
+var _facing_want_t := 0.0
+
 
 ## Derive the drawn facing from where the body actually went last frame.
 ## Runs for LIVING CREATURES ONLY, and that is two rules in one:
@@ -231,20 +265,48 @@ func _update_visual_facing(delta: float) -> void:
 		want = 1
 	elif vx < -threshold:
 		want = -1
-	if want != visual_facing:
+	if want == visual_facing:
+		# Wanting what it already has clears the wait — see FACING_FLIP_DWELL.
+		_facing_want = 0
+		_facing_want_t = 0.0
+	else:
+		if want != _facing_want:
+			_facing_want = want
+			_facing_want_t = 0.0
+		_facing_want_t += delta
+		if _facing_want_t < maxf(Tunables.get_num("creature_facing_dwell"), 0.0):
+			return
+		_facing_want = 0
+		_facing_want_t = 0.0
 		visual_facing = want
-		# The collider mirrors WITH the skin (owner 2026-08-21): rebuild the
-		# derived collision shapes reflected about the footprint centre so the
-		# physical body matches the drawing. Flips are rare (the hysteresis
-		# above holds a station-keeping body steady), so a rebuild-on-flip is
-		# cheap. This runs in _physics_process, BEFORE the solver step, so the
-		# step sees the mirrored collider; mass/CoM/severing derive from the
-		# authored grid and are untouched.
-		_rebuild_collider()
+		# The collider mirrors WITH the skin (owner 2026-08-21): the physical
+		# body must occupy the same reflected shape the drawing does. This runs
+		# in _physics_process, BEFORE the solver step, so the step sees the
+		# mirrored collider; mass/CoM/severing derive from the authored grid and
+		# are untouched.
+		#
+		# A REFLECTION, NOT A REBUILD (2026-09-07 floor measurement). This used
+		# to call `_rebuild_collider()`, on the note that "flips are rare". They
+		# are not: at the Dive floor the Leviathan flipped ~18 times a SECOND
+		# (`floor_tick_probe`), and each flip walked its 28,096-cell dictionary
+		# three times over — the coarse merge, the platforms, the shields — and
+		# churned every CollisionShape2D node. Measured 77 ms per flip, 23 ms per
+		# TICK averaged, which was the single biggest line in an 82 ms tick.
+		#
+		# Nothing about the merge depends on the facing: every shape's position
+		# goes through `_mirror_point`, which is a reflection about
+		# `_mirror_axis_x()`, and that axis comes from `solid_bounds` — which a
+		# flip does not touch. `_mirror_point` is its own inverse, so flipping IN
+		# EITHER DIRECTION is the same operation on the same shapes: reflect
+		# them. Byte-identical geometry, no allocation, no dictionary walk.
+		var _t0 := Time.get_ticks_usec()
+		_reflect_collider_x()
 		# _draw output persists until the next redraw (godot-quirks), and a
 		# creature that is only being mirrored has no other reason to repaint.
 		# The mirror is a whole-body transform — every sector rides it.
 		_invalidate_skin()
+		if TickPerf.on:
+			TickPerf.bill("facing flip " + perf_label(), _t0)
 
 
 ## True when the DRAWN body — and now the collider — is reflected about the
@@ -1635,6 +1697,38 @@ func _is_mount(cell: Vector2i) -> bool:
 ## RectangleShape2Ds as possible. A 200-block hull becomes a handful of shapes
 ## instead of 200, which is the difference between a ship that runs and one
 ## that stutters.
+## Mirror the collider IN PLACE — the facing flip's whole job (see
+## `_update_visual_facing`, which is the only caller).
+##
+## Every shape this body owns was placed through `_mirror_point`, and that is a
+## reflection about `_mirror_axis_x()`: the hull rects (`_add_hull_shape`), the
+## shield cells and the platform strips alike. So reflecting each one about the
+## same axis moves the whole collider between the authored side and the drawn
+## side, in either direction, with no merge, no allocation and no node churn.
+##
+## Scope is deliberately "every CollisionShape2D this body owns, one level down":
+## the hull's are direct children, the shield's and the platforms' hang off their
+## own AnimatableBody2D (per-shape layers do not exist — godot-quirks). If a new
+## kind of collider child is ever added it MUST be placed through `_mirror_point`
+## too, or it will mirror here without having been mirrored there.
+##
+## A body with no solid footprint has no axis, and `_mirror_point` is the
+## identity for it in both states — so it must not be reflected either.
+func _reflect_collider_x() -> void:
+	if solid_bounds.size.x <= 0.0:
+		return
+	var twice_axis := 2.0 * _mirror_axis_x()
+	for child in get_children():
+		if child is CollisionShape2D:
+			var cs := child as CollisionShape2D
+			cs.position.x = twice_axis - cs.position.x
+		elif child is AnimatableBody2D:
+			for sub in (child as Node).get_children():
+				if sub is CollisionShape2D:
+					var s2 := sub as CollisionShape2D
+					s2.position.x = twice_axis - s2.position.x
+
+
 func _rebuild_collider() -> void:
 	var stale: Array[Node] = []
 	for child in get_children():
@@ -2145,7 +2239,31 @@ func _power_ratio() -> float:
 	return clampf(_power_supply * _fp_norm(BlockDB.Type.ENGINE) / draw, 0.0, 1.0)
 
 
+## PER-BODY PERF LABEL (see debug/tick_perf.gd) — what this hull is called in a
+## tick attribution: the creature plan and its size, because "a 28,096-cell
+## leviathan" and "a 4,000-cell hull" are different findings and a generic
+## "ships" row hides which one is the bill. Cached: it is only ever asked while
+## the stopwatch is on, and a body's kind never changes.
+var _perf_label := ""
+func perf_label() -> String:
+	if _perf_label.is_empty():
+		var kind := creature_kind if creature_kind != "" else (
+			"nest" if is_nest else "hull")
+		_perf_label = "%s(%d)" % [kind, blocks.size()]
+	return _perf_label
+
+
 func _physics_process(delta: float) -> void:
+	# The stopwatch is off in play — one bool read (see debug/tick_perf.gd).
+	if not TickPerf.on:
+		_tick_physics(delta)
+		return
+	var t0 := Time.get_ticks_usec()
+	_tick_physics(delta)
+	TickPerf.bill("phys " + perf_label(), t0)
+
+
+func _tick_physics(delta: float) -> void:
 	# Before the authority branch, deliberately: the drawn facing is derived
 	# from the body's own visible motion (see visual_facing), which is the
 	# solver's on the server and _follow_net_pose's easing on a client. Same
@@ -2452,6 +2570,15 @@ func is_in_near_wash(global_pos: Vector2, frac: float) -> bool:
 ## fragment can duck any per-contact threshold (observed: a 72,000-momentum
 ## ram whose largest single contact reported 18,988).
 func _integrate_forces(state: PhysicsDirectBodyState2D) -> void:
+	if not TickPerf.on:
+		_tick_integrate(state)
+		return
+	var t0 := Time.get_ticks_usec()
+	_tick_integrate(state)
+	TickPerf.bill("integ " + perf_label(), t0)
+
+
+func _tick_integrate(state: PhysicsDirectBodyState2D) -> void:
 	if not is_authority():
 		# A client's hull is a frozen kinematic followed by _follow_net_pose.
 		# Neither the pose easing nor impact detection may run here: both would
@@ -2619,6 +2746,16 @@ func _integrate_forces(state: PhysicsDirectBodyState2D) -> void:
 ## frame loop: crunch, slow, crunch, slow, until the momentum is spent or
 ## nothing is left in the way. A hit that only dents absorbs fully: no refund.
 func _process(delta: float) -> void:
+	# The stopwatch is off in play — one bool read (see debug/tick_perf.gd).
+	if not TickPerf.on:
+		_idle_process(delta)
+		return
+	var t0 := Time.get_ticks_usec()
+	_idle_process(delta)
+	TickPerf.bill("idle: " + perf_label(), t0)
+
+
+func _idle_process(delta: float) -> void:
 	# HIT FLASH decay — a pure visual, so it runs BEFORE the authority gate (a
 	# hit that lands on the server should still pulse a body a client is watching
 	# once the flash is wired over the wire). Cheap: a self_modulate write per tile

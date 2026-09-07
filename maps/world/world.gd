@@ -8401,6 +8401,19 @@ func take_system_ms() -> Dictionary:
 
 
 func _physics_process(delta: float) -> void:
+	# The stopwatch is off in play — one bool read (see debug/tick_perf.gd). The
+	# WHOLE callback is billed, systems included, so a tick attribution can show
+	# the tail this function carries outside `_step_systems` (the diagnostic, the
+	# helm stamp, the camera) instead of losing it into "the solver".
+	if not TickPerf.on:
+		_tick_physics(delta)
+		return
+	var t0 := Time.get_ticks_usec()
+	_tick_physics(delta)
+	TickPerf.bill("world", t0)
+
+
+func _tick_physics(delta: float) -> void:
 	var recording: bool = _whale_diag != null and _whale_diag.enabled
 	_sys_timing = sys_timing_forced or recording
 	_step_systems(delta)
@@ -8604,6 +8617,16 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(_delta: float) -> void:
+	# The stopwatch is off in play — one bool read (see debug/tick_perf.gd).
+	if not TickPerf.on:
+		_idle_process(_delta)
+		return
+	var t0 := Time.get_ticks_usec()
+	_idle_process(_delta)
+	TickPerf.bill("idle: world", t0)
+
+
+func _idle_process(_delta: float) -> void:
 	# Wall-clock time played, for the save metadata. Carried across a load so the
 	# counter continues from where the save left off (see load_game).
 	_playtime += _delta

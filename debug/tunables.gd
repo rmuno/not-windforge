@@ -463,6 +463,9 @@ const _REGISTRY := [
 		"kind": KIND_INT, "default": 12, "min": 2, "max": 400, "step": 1,
 		"note": "next rebuild",
 		"tip": "Cells per collider box: small traces the silhouette at a physics cost, huge collapses the creature to one old-style AABB."},   # Ship._coarse_creature_rects
+	{"id": "creature_facing_dwell", "label": "Facing turn dwell", "group": "Whale",
+		"kind": KIND_FLOAT, "default": 0.35, "min": 0.0, "max": 3.0, "step": 0.05,
+		"tip": "Seconds a creature must want the OTHER facing before its drawn body turns around. 0 is the old instant flip, which strobed ~18 times a second in a crowd at the Dive floor."},   # Ship.FACING_FLIP_DWELL
 	{"id": "whale_push_accel", "label": "Ram strength", "group": "Whale",
 		"kind": KIND_FLOAT, "default": 1100.0, "min": 0.0, "max": 4000.0, "step": 25.0,
 		"tip": "Acceleration a whale rams with once it decides to push."},   # WhaleAI.PUSH_ACCEL

@@ -164,6 +164,16 @@ func _hit_a_balloon(from: Vector2, to: Vector2) -> bool:
 
 
 func _physics_process(delta: float) -> void:
+	# The stopwatch is off in play — one bool read (see debug/tick_perf.gd).
+	if not TickPerf.on:
+		_tick_physics(delta)
+		return
+	var t0 := Time.get_ticks_usec()
+	_tick_physics(delta)
+	TickPerf.bill("shots", t0)
+
+
+func _tick_physics(delta: float) -> void:
 	velocity.y += gravity * delta  # the arc is real
 	# Prop wash bends the flight (owner survey: the original's props
 	# visibly deflect slow shells; machine-gun rounds barely notice —

@@ -690,7 +690,13 @@ func flush_rebuilds() -> void:
 
 
 func _physics_process(_delta: float) -> void:
+	# The stopwatch is off in play — one bool read (see debug/tick_perf.gd).
+	if not TickPerf.on:
+		flush_rebuilds()
+		return
+	var t0 := Time.get_ticks_usec()
 	flush_rebuilds()
+	TickPerf.bill("terrain flush", t0)
 
 
 func _promote(coord: Vector2i) -> void:

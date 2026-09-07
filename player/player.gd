@@ -533,6 +533,16 @@ static func turret_interval(base: float, power_ratio: float, rate_mult := 1.0) -
 
 
 func _physics_process(delta: float) -> void:
+	# The stopwatch is off in play — one bool read (see debug/tick_perf.gd).
+	if not TickPerf.on:
+		_tick_physics(delta)
+		return
+	var t0 := Time.get_ticks_usec()
+	_tick_physics(delta)
+	TickPerf.bill("player", t0)
+
+
+func _tick_physics(delta: float) -> void:
 	# Collision state is DERIVED every frame, never toggled and trusted. The
 	# stateful version leaked: a ship freed while you piloted it skipped the
 	# disembark path and left the collider off forever (owner: "the player's
@@ -1045,6 +1055,16 @@ func _apply_rope_constraint() -> void:
 
 
 func _process(_delta: float) -> void:
+	# The stopwatch is off in play — one bool read (see debug/tick_perf.gd).
+	if not TickPerf.on:
+		_idle_process(_delta)
+		return
+	var t0 := Time.get_ticks_usec()
+	_idle_process(_delta)
+	TickPerf.bill("idle: player", t0)
+
+
+func _idle_process(_delta: float) -> void:
 	# Redraw unconditionally. Gating on hook_active() left the rope's final
 	# frame painted forever after unlatching — _draw only runs when asked, and
 	# a released grapple never asked again. One tiny rect per frame is cheap;
