@@ -3858,16 +3858,22 @@ func _teardown() -> void:
 ## PASS every time (BACKLOG, v0.140.0) — and why it was never reproduced with a
 ## backtrace: nothing was looking for a missing check.
 ##
-## A count is therefore the detector, and it costs one integer: the suite has run
-## 268 checks on every seed measured (14 consecutive runs at v0.156.0), and the
+## A count is therefore the detector, and it costs one integer. The count is
+## STABLE across seeds — 268 on all 14 consecutive runs measured at v0.156.0,
+## failures included, and 301 with the Descent seal's checks (v0.158.0) — and the
 ## only legitimate way to run fewer is the host-bind SKIP, which is worth two. So
-## the floor is 266 — an abandoned check loses several at once and reddens here,
-## with a message that says what happened.
+## the floor sits two under the current count: an abandoned check loses several at
+## once and reddens here, with a message that says what happened.
 ##
-## RAISE THIS when the suite gains checks and you want the tighter guard; LOWER it
-## only with a reason, the same discipline `config/version` gets. It is a contract,
-## not a coincidence.
-const MIN_CHECKS := 266
+## BROKEN ONCE, ON PURPOSE (2026-09-07): a freed node touched inside
+## `_check_dive_picket_holds_its_rung` logged the flake's exact line, cost four
+## checks (301 -> 297) and turned the suite RED here — where without this constant
+## it would have printed PASS over a stderr line nobody was counting.
+##
+## RAISE THIS when the suite gains checks (that is the whole maintenance cost, and
+## it is what keeps the guard tight); LOWER it only with a reason, the same
+## discipline `config/version` gets. It is a contract, not a coincidence.
+const MIN_CHECKS := 299
 
 
 func _finish() -> void:
