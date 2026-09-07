@@ -12,6 +12,10 @@ var failures := 0
 
 
 func _initialize() -> void:
+	# WHAT THE ENGINE BROUGHT, before the suite adds anything of its own — the
+	# autoloads. `_teardown` frees the difference (see `_finish`).
+	for child in root.get_children():
+		_boot_nodes[child.get_instance_id()] = true
 	# THE OWNER'S REAL PROFILE IS NOT A FIXTURE: every suite writes through
 	# the profile (creature sightings, the F2 forget buttons, card takes), and
 	# a full run used to wipe the real bestiary + card gallery. Redirect first,
@@ -2387,6 +2391,11 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	var y0: float = picket.global_position.y
 	for i in 180:
 		await w.get_tree().physics_frame
+		_hold_the_wake(w)
+	if not is_instance_valid(picket):
+		_ok(false, "the picket outlives its own measurement (the wake cull took it)")
+		Tunables.reset_all()
+		return
 	var centred_fall: float = picket.global_position.y - y0
 	_ok(is_zero_approx(picket.thrust_input.y),
 		"a dead driver leaves the stick CENTRED, not frozen (%.2f)"
@@ -2404,6 +2413,11 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 		"...and the world does not fight a stick set on purpose (one centring, not a loop)")
 	for i in 180:
 		await w.get_tree().physics_frame
+		_hold_the_wake(w)
+	if not is_instance_valid(picket):
+		_ok(false, "...and outlives the counterfactual too (the wake cull took it)")
+		Tunables.reset_all()
+		return
 	var jammed_fall: float = picket.global_position.y - rung_y
 	_ok(centred_fall < jammed_fall * 0.7,
 		"a centred picket keeps its rung far better than a jammed one (%.0f px vs %.0f in 3 s)"
@@ -2412,6 +2426,36 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 		"...in the run's floored air (%.2f at depth 2, real air 0.23)"
 			% picket.air_density_at(picket.global_position.y))
 	Tunables.reset_all()
+
+
+## THE WAKE CULL IS NOT WHAT THE CHECK ABOVE MEASURES — and it can quietly end it.
+##
+## `world._dive_cull_the_wake` frees any `_dive_surged` hull more than
+## DIVE_CULL_RUNGS (1.5) rungs from the body, once per second of run time. This
+## check parks its picket 9,000 px across, at depth 2's altitude, from wherever
+## the previous check left the player, and then runs three real seconds of world
+## TWICE. When that geometry falls outside the leash the cull takes the picket
+## mid-measurement — and the next line down read `picket.global_position` on a
+## freed node with no guard in front of it.
+##
+## This is the likeliest home of the `previously freed` log the suite produced at
+## teardown roughly one run in five (BACKLOG, confirmed v0.140.0): the message is
+## the right one (an unguarded READ of `global_position`), the timing is the right
+## one (this was the LAST check before `_finish` when it was first reported, so the
+## line landed at the end of the log), and the symptom matches exactly — see
+## MIN_CHECKS for why a hit here would never have reddened anything. It is NOT
+## proved: 14 consecutive runs at v0.156.0 and 5 at v0.140.0 did not reproduce it,
+## so this is a hazard closed, not a bug caught in the act. The count floor below
+## is what will name the site if there is another one.
+##
+## Held off rather than worked around, because the cull ALREADY has its own check
+## (`_check_dive_garrison_materializes` §4b, "a cleared sky stays cleared"). The
+## world otherwise ticks exactly as it does in play — this suppresses only the one
+## system whose job is to delete the subject of the measurement. The validity
+## guards beside each call are the belt to this braces: if the picket is ever taken
+## anyway, the check SAYS so instead of vanishing.
+func _hold_the_wake(w: Node) -> void:
+	w.set("_dive_cull_clock", 0.0)
 
 
 func _check_dive_garrison_materializes(w: Node, pl, run, cx: float) -> void:
@@ -3136,7 +3180,12 @@ func _write_user_ship(basename: String, body: String) -> void:
 	f.close()
 
 
+## Checks actually reached, pass or fail — the count the floor below guards.
+var checks := 0
+
+
 func _ok(condition: bool, detail: String) -> void:
+	checks += 1
 	if condition:
 		print("    ok   %s" % detail)
 	else:
@@ -3144,10 +3193,91 @@ func _ok(condition: bool, detail: String) -> void:
 		print("    FAIL %s" % detail)
 
 
+## THE TREE AS THE SUITE FOUND IT: root's children before the first world is
+## instantiated — i.e. the autoloads, which are the engine's, not the suite's.
+## `_teardown` frees everything that is NOT in here.
+var _boot_nodes := {}
+
+
+## A DETERMINISTIC TEARDOWN (2026-09-07).
+##
+## The suite called `quit()` the instant the last check printed, and handed the
+## engine whatever was still in the tree. "At teardown" is where the `previously
+## freed` line was reported (BACKLOG, v0.140.0), so what the engine finds there
+## should not be left to chance.
+##
+## So the suite takes its own world apart, in a fixed order, before it quits:
+##
+##   1. STOP THE CLOCK FIRST. `PROCESS_MODE_DISABLED` on every node the suite
+##      added means no `_process`/`_physics_process` can run again — so no world
+##      can take one more system pass over a fleet that is being dismantled, and
+##      no AI can read a body that the step before it freed. This is the line that
+##      would remove such a race; the freeing below is then just tidiness.
+##   2. DROP EVERYTHING, autoloads excepted (`Net`, `Tunables`, `Profile` and the
+##      rest are the engine's children, and freeing them mid-shutdown would
+##      invent the very problem this removes).
+##
+## HONESTLY MEASURED: on the full happy path this reports 0 — every check already
+## frees what it built, so the tree really is empty by the time `_finish` runs.
+## Where it earns its keep is the DOZEN EARLY EXITS (`return _finish()` from a
+## failed load, a missing fleet, a missing player…): those quit with a live world
+## still ticking, which is the one shape of teardown the suite could not describe.
+## And it makes the count printable, so "the tree was empty" stops being an
+## assumption and becomes a line in the log.
+##
+## No `await`: `_finish` is reached through `return _finish()`, so it must stay a
+## plain function. Nothing needs a frame here — with processing off there is
+## nothing left to be raced against, and `quit()` flushes the queue itself.
+func _teardown() -> void:
+	var taken := 0
+	for child in root.get_children():
+		if _boot_nodes.has(child.get_instance_id()):
+			continue
+		child.process_mode = Node.PROCESS_MODE_DISABLED
+		if not child.is_queued_for_deletion():
+			child.queue_free()
+		taken += 1
+	print("    ~ teardown: %d node(s) the suite added stopped and dropped before quit"
+		% taken)
+
+
+## THE FLOOR UNDER THE CHECK COUNT — the fix for "the suite still passes".
+##
+## A GDScript runtime error does not stop the program: it ABANDONS THE RUNNING
+## FUNCTION and hands control back to the caller (measured 2026-09-07 with a
+## throwaway probe — `n.free()` then `n.global_position` logged the flake's exact
+## line, the four `_ok`s after it never ran, and the harness printed PASS). So a
+## check that touches a body the world freed under it does not redden anything;
+## it just stops early, and the ONLY visible trace is a stderr line and a suite
+## that quietly ran fewer checks than it used to. That is precisely how the
+## `previously freed` flake could live for four versions while the suite reported
+## PASS every time (BACKLOG, v0.140.0) — and why it was never reproduced with a
+## backtrace: nothing was looking for a missing check.
+##
+## A count is therefore the detector, and it costs one integer: the suite has run
+## 268 checks on every seed measured (14 consecutive runs at v0.156.0), and the
+## only legitimate way to run fewer is the host-bind SKIP, which is worth two. So
+## the floor is 266 — an abandoned check loses several at once and reddens here,
+## with a message that says what happened.
+##
+## RAISE THIS when the suite gains checks and you want the tighter guard; LOWER it
+## only with a reason, the same discipline `config/version` gets. It is a contract,
+## not a coincidence.
+const MIN_CHECKS := 266
+
+
 func _finish() -> void:
+	_teardown()
+	if checks < MIN_CHECKS:
+		failures += 1
+		print("\n    FAIL only %d checks ran, floor is %d — a check was ABANDONED"
+			% [checks, MIN_CHECKS])
+		print("         (a GDScript runtime error quits the function it is in and"
+			+ " nothing else; look above for SCRIPT ERROR)")
 	if failures == 0:
-		print("\nSCALE STARTUP: PASS\n")
+		print("\nSCALE STARTUP: PASS — %d checks\n" % checks)
 		quit(0)
 	else:
-		print("\nSCALE STARTUP: FAIL — %d problem(s)\n" % failures)
+		print("\nSCALE STARTUP: FAIL — %d problem(s) in %d checks\n"
+			% [failures, checks])
 		quit(1)
