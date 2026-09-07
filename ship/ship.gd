@@ -2313,12 +2313,18 @@ func wash_accel_at(global_pos: Vector2) -> Vector2:
 ## `from` — its BACK when the emitter is above it, its flank when alongside.
 ##
 ## The wash sweep used to ask `wash_accel_at(body.global_position)`, and a
-## body's origin is half a body BELOW its own back (DECISIONS 2026-09-06, the
-## dunk's measured 7.2 s): a whole half-body of the 1,024-px jet was spent
-## reaching air the animal was not standing in, and the design's ~2.7 g shove
-## arrived as 0.17 g net. The jet is a directional field, so the honest sample
-## is the surface it actually blows on — the same thing every "is it in the
-## draught" question means in the first place.
+## body's origin is half a body BELOW its own back (DESIGN_KRAKEN slice 5's open
+## item (b)): a whole half-body of the 1,024-px jet was spent reaching air the
+## animal was not standing in, and the design's ~2.7 g shove arrived as 0.17 g
+## net. The jet is a directional field, so the honest sample is the surface it
+## actually blows on — the same thing every "is it in the draught" question
+## means in the first place.
+##
+## MEASURED on one pinned sky (`dunk_probe -- --seed 892583619`): 0.17 g -> 1.22 g
+## net while the jet is on the animal, and 13.40 s -> 11.95 s to the core. FEWER
+## frames of contact (141 -> 20) buying a faster sink is the whole shape of it —
+## the old sample counted a long tail of feeble draught at the jet's far end,
+## where the new one lands near the strong end and actually moves the body.
 ##
 ## `from` IS THE PROP, not the emitting ship — pass `nearest_wash_prop`. A jet
 ## starts at a propeller and only counts points inside that prop's own width
