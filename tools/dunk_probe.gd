@@ -3,6 +3,12 @@ extends SceneTree
 ## THE DUNK, MEASURED (DESIGN_KRAKEN §5.1 / §7 slice 5).
 ##
 ##   godot --headless --path . --script tools/dunk_probe.gd
+##   godot --headless --path . --script tools/dunk_probe.gd -- --seed 892583619
+##
+## The second form pins the run's seed, which is the only way two of these
+## numbers are comparable: since v0.154.0 the seed decides the GROUND, so a
+## fresh run drops the prey down a different column with a different amount of
+## air under it. Every run prints its own seed — feed it back to re-fly it.
 ##
 ## The design's headline piece of sharp knowledge is a claim about shipped code,
 ## not a feature: *"a kraken is held up by MUSCLE, not lift; your lift props blow
@@ -57,8 +63,18 @@ func _initialize() -> void:
 	pl = world.get("player")
 	print("\n=== THE DUNK — headless measurement (8x, the shipped scene) ===")
 
+	# FLY THE SAME SKY TWICE. Since v0.154.0 a run rolls a fresh seed and that
+	# seed decides the GROUND, not just the ladder — so this probe picks a
+	# different open column over the lava on every boot, and its "seconds to the
+	# core" is a different fall each time. A before/after on one code change is
+	# only a measurement if both halves flew the same sky.
+	var pinned := _seed_from_args()
+	if pinned != 0:
+		world.call("pin_dive_seed", pinned)
 	world.call("begin_dive")
 	await _frames(10)
+	print("SEED: %d%s" % [int((world.get("dive") as Object).get("seed_v")),
+		"  (pinned)" if pinned != 0 else "  (fresh — pass it back as --seed to re-fly it)"])
 	var hull = _nearest_hull()
 	if hull == null:
 		print("!! no candidate hull on the deck — nothing to hover with")
@@ -410,6 +426,18 @@ func _measure_the_roof() -> void:
 
 
 ## --- plumbing ---------------------------------------------------------------
+
+## The seed asked for on the command line, or 0 for a fresh one. User args
+## survive `--script` and land in `OS.get_cmdline_user_args()` after a bare `--`,
+## the same idiom `tools/dive_probe.gd --seed N` and `tests/pilot_test.gd
+## --scale 8` already use.
+func _seed_from_args() -> int:
+	var args := OS.get_cmdline_user_args()
+	var i := args.find("--seed")
+	if i >= 0 and i + 1 < args.size():
+		return int(args[i + 1])
+	return 0
+
 
 func _frames(n: int) -> void:
 	for i in n:
