@@ -2307,11 +2307,61 @@ func _test_hull_integrity() -> void:
 		"overkill on a balloon drains one cell's remaining hp, never the cluster's (%.0f)"
 			% (bag_pool - bag.hull_integrity))
 
+	# --- A SHELL IS WORTH SOMETHING (v0.160.0) --------------------------------
+	# `pool_mult` scales the POOL BILL of one hit and nothing else. The struck
+	# cell still loses exactly `amount`, so the visible bite is what it always
+	# was — the same split v0.155.0's crush cap made.
+	var worth := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HULL,
+	}, true)
+	worth.hull_integrity_max = 1000.0
+	worth.hull_integrity = 1000.0
+	var worth_hp: float = worth.blocks[Vector2i(0, 0)]["hp"]
+	worth.damage_cell(Vector2i(0, 0), 20.0, true, [], false, 3.0)
+	_check(is_equal_approx(worth.hull_integrity, 940.0),
+		"a 20-damage shell at worth 3 bills the pool 60 (%.0f)"
+			% (1000.0 - worth.hull_integrity))
+	_check(is_equal_approx(worth.blocks[Vector2i(0, 0)]["hp"], worth_hp - 20.0),
+		"...and the BLOCK still lost exactly 20 — the bite is unchanged")
+	# The cell cap comes FIRST: a shell can never bill more than the hp that
+	# existed, times its worth. Overkill is still not a weapon's number.
+	var worth_left: float = worth.blocks[Vector2i(1, 0)]["hp"]
+	var worth_pool := worth.hull_integrity
+	worth.damage_cell(Vector2i(1, 0), 9999.0, true, [], false, 3.0)
+	_check(is_equal_approx(worth.hull_integrity, worth_pool - worth_left * 3.0),
+		"overkill at worth 3 bills 3x the hp that existed, not 3x9999 (%.0f)"
+			% (worth_pool - worth.hull_integrity))
+	# Default 1.0 — every caller but a shell — is the old bill exactly.
+	worth.hull_integrity = 1000.0
+	worth.blocks[Vector2i(0, 0)]["hp"] = BlockDB.max_hp(BlockDB.Type.HULL)
+	worth.damage_cell(Vector2i(0, 0), 20.0)
+	_check(is_equal_approx(worth.hull_integrity, 980.0),
+		"pool_mult defaults to 1.0, so nothing but a shell moved (%.0f)"
+			% worth.hull_integrity)
+	worth.queue_free()
+	# THE SHIPPED DIALS. A balance change is a change to these lines.
+	_check(is_equal_approx(float(Tunables.def("dive_shell_worth")["default"]), 1.5),
+		"a shell costs 1.5x its damage out of the pool it hits (was 1.0)")
+	_check(is_equal_approx(float(Tunables.def("dive_picket_integrity")["default"]), 150.0),
+		"a picket dies at 150 integrity (was 600)")
+	# 150 / (a 20-damage shell x worth 1.5) = 5 landed shells, and the starter's
+	# helm lands one per volley — its two turrets face opposite ways, so one bears.
+	var volleys := float(Tunables.def("dive_picket_integrity")["default"]) \
+		/ (float(Tunables.def("turret_damage")["default"])
+			* float(Tunables.def("dive_shell_worth")["default"]))
+	_check(volleys >= 3.0 and volleys <= 6.0,
+		"...which is %.1f landed volleys from the starter's helm" % volleys)
+
 	# --- MENDED BLOCKS REFUND THE POOL (owner call 5, v0.140.0) ---------------
 	# The pool was a one-way ratchet: the station, the X wand, Field Medic and the
 	# outpost patch all mended BLOCKS on a ship that went on dying anyway
 	# (DESCENT §3.4). The refund is `damage_cell`'s exact mirror — hp really
 	# restored, never the amount asked for.
+	#
+	# ...AT SHARE 1.0, which stopped being the shipped default in v0.160.0 (see
+	# the block below). The MIRROR is the contract these lines hold, so they wind
+	# the share back to where v0.140.0 left it and pin it there.
+	Tunables.set_value("dive_mend_refund", 1.0)
 	var mend_pool := s.hull_integrity
 	var mended := s.repair_cell(Vector2i(1, 0), 5.0)
 	_check(mended and is_equal_approx(s.hull_integrity, mend_pool + 5.0),
@@ -2348,6 +2398,44 @@ func _test_hull_integrity() -> void:
 	_check(is_zero_approx(plain.hull_integrity) and is_zero_approx(plain.hull_integrity_max),
 		"an unarmed hull refunds nothing, because it has no pool to refund into")
 	plain.queue_free()
+
+	# --- ...BUT ONLY A SHARE OF IT (v0.160.0) --------------------------------
+	# The refund and the drain were never the same size. A hit bills the pool ONCE
+	# for the struck COMPONENT (v0.149.0); the repair that undoes it pays per
+	# CELL, and at 8x that component is 64 cells — so mending one hole refunded up
+	# to 64x what it cost, and a whole depth of enemy gunnery netted 20 of 3,000.
+	# `dive_mend_refund` is the share; BLOCKS still mend at full speed either way.
+	Tunables.reset("dive_mend_refund")   # the block above wound it back to 1.0
+	var share := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.HULL, Vector2i(1, 0): BlockDB.Type.HULL,
+	}, true)
+	share.capture_blueprint()
+	share.hull_integrity_max = 1000.0
+	share.hull_integrity = 1000.0
+	share.damage_cell(Vector2i(0, 0), 50.0)
+	var share_pool := share.hull_integrity
+	var share_hp: float = share.blocks[Vector2i(0, 0)]["hp"]
+	var mended_share := share.repair_cell(Vector2i(0, 0), 40.0)
+	var refund: float = float(Tunables.get_num("dive_mend_refund"))
+	_check(is_equal_approx(refund, 0.1),
+		"a mend refunds a tenth of what it restores (was all of it)")
+	_check(mended_share
+			and is_equal_approx(share.blocks[Vector2i(0, 0)]["hp"], share_hp + 40.0),
+		"the BLOCK still takes the whole 40 hp — the station's speed is untouched")
+	_check(is_equal_approx(share.hull_integrity, share_pool + 40.0 * refund),
+		"...while the pool gets back only %.0f of it (%.1f)"
+			% [40.0 * refund, share.hull_integrity - share_pool])
+	# A RESURRECTED cell is the same deal — that is the path the station actually
+	# spends most of its time on when a shell has emptied a whole balloon.
+	share.damage_cell(Vector2i(1, 0), 9999.0)
+	share_pool = share.hull_integrity
+	_check(not share.blocks.has(Vector2i(1, 0)), "the cell is gone, ready to be rebuilt")
+	share.repair_cell(Vector2i(1, 0), 25.0)
+	_check(share.blocks.has(Vector2i(1, 0))
+			and is_equal_approx(share.hull_integrity, share_pool + 25.0 * refund),
+		"a resurrected cell refunds the same share, not the whole hp (%.1f)"
+			% (share.hull_integrity - share_pool))
+	share.queue_free()
 
 	# --- THE FLAT CARDS WIDEN THE POOL (v0.140.0), idempotently ---------------
 	# The world stamps this EVERY TICK, exactly like Player.grant_bonus_health, so
