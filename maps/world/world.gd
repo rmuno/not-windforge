@@ -162,6 +162,13 @@ var _dive_cull_clock := 0.0
 var _dive_garrison_clock := 0.0
 var _dive_materialized := 0
 var _dive_held_in_view := 0
+## What re-seeding the ring cost the last time a run opened, in MILLISECONDS
+## (0 when the run inherited the sky it was booted into — the first run of a
+## dive-native boot, and every F2 dive inside an expedition). Reported by
+## `dive_status`, printed by `tools/dive_seed_probe.gd`: the whole reason to
+## keep it is that this number is a HITCH the player feels at "dive", and a
+## hitch nobody measures grows.
+var _dive_regen_ms := 0.0
 ## The Blueprint-Loft hull parked on the launch deck as the second candidate.
 ## A run prop: made once, reused across runs, cleared with the run unless you
 ## chose it.
@@ -538,11 +545,17 @@ func _ready() -> void:
 	creature_profile = Profile.load()
 	# A FRESH SKY EVERY RUN. The expedition's seed is a fixed, shareable number
 	# (`world_seed`'s default) and stays one; a run is a run, so the dive's own
-	# scene rolls a new world before a single chunk is generated. The RUN's own
-	# seed (`DiveRun.seed_v` — where the landings and outposts come from) is
-	# separate and still rolled per run in `DiveRun._init`.
+	# scene rolls a new world before a single chunk is generated.
+	#
+	# ...AND THE RUN ABOUT TO OPEN ADOPTS IT (v0.154.0). `begin_dive` regenerates
+	# the ring whenever the run's seed and the world's disagree; handing the
+	# rolled number to the run that is seconds away means the FIRST run of a boot
+	# never rebuilds what `_build_generated_terrain` is about to build below, and
+	# every run after it (a retry, F2's button) does. One seed, one sky, and no
+	# work paid for twice.
 	if dive_native:
 		world_seed = randi()
+		DiveRun.next_seed = world_seed
 	# Frame the whole generated world (IslandGen.WORLD_CELLS) in world px at this
 	# scale, then bound it with walls + a ceiling. cell_px = CELL × world_scale.
 	# ...unless this is the DIVE'S OWN SCENE, whose world is the ring and nothing
@@ -1251,6 +1264,15 @@ func backdrop_status() -> Variant:
 # never touch a line of it.
 
 
+## PIN THE SEED THE NEXT RUN OPENS WITH (0 clears the pin, so the next run rolls
+## fresh). The one entry point for reproducing a run: `tools/dive_probe.gd
+## --seed N` calls it, and so would anything else that wants to fly a sky twice.
+## It reaches the model rather than the world because the run it pins does not
+## exist yet — see `DiveRun.next_seed`.
+func pin_dive_seed(seed_value: int) -> void:
+	DiveRun.next_seed = seed_value
+
+
 ## Start a run. Places the local ship (and the body aboard it) at depth 1's
 ## altitude over the middle of the world and hands the model a clean slate.
 ## Single-player / authority, like every other world verb.
@@ -1267,6 +1289,13 @@ func begin_dive() -> void:
 	# is no run here, so this never fires.
 	if dive != null:
 		end_dive()
+	# PIN THE SEED, IF ANYBODY ASKED FOR ONE (F2 → Dive → "Pin the last run's
+	# seed"). Read here rather than in the model because a Tunable is a dev lever
+	# and `DiveRun` is a pure model that knows nothing about them; the model just
+	# holds the pin. Nothing to pin before the first run of a session, so the
+	# lever is harmless when it is on from the start.
+	if Tunables.get_bool("dive_pin_seed") and DiveRun.last_seed != 0:
+		DiveRun.next_seed = DiveRun.last_seed
 	dive = DiveRun.new()
 	_dive_shipless = 0.0
 	_dive_went_shipless = false
@@ -1287,6 +1316,10 @@ func begin_dive() -> void:
 	_dive_seal_said.clear()
 	if _dive_scrap != null:
 		_dive_scrap.clear()
+	# A FRESH SEED EACH RUN, AND THE GROUND WITH IT (owner, 2026-08-30). Before
+	# the deck is raised and the first two rungs are cut, because those are
+	# terrain and this throws terrain away.
+	_dive_regen_ms = _dive_reseed_ring()
 	# The card draft's RNG — seeded off the run's own seed so a given run offers a
 	# fixed sequence of hands (like the ladder), and distinct from the ladder seed.
 	_dive_rng = RandomNumberGenerator.new()
@@ -1299,6 +1332,59 @@ func begin_dive() -> void:
 	_build_launch_deck()
 	_notify("THE LAUNCH DECK. Take a ship, or step off the edge with nothing. "
 		+ "Down is richer and worse; climb back to this air to bank what you carry.")
+
+
+## RE-SEED THE RING FOR THIS RUN, and say what it cost in milliseconds.
+##
+## The owner's ruling was "a fresh seed each run" and this is the half of it that
+## was never built: `DiveRun.seed_v` already varied the run's SHAPE (the ladder's
+## slalom, which landings are outposts, the flanks' floating rock, the garrison),
+## but the GROUND under all of it came from `world_seed`, which was rolled once
+## per boot. Two runs in one sitting flew the same islands.
+##
+## What makes this affordable now is v0.125.0: the Dive has its own scene, and
+## its world is only as wide as the ring (435,456 px, not 786,432) and generated
+## LAZILY. So re-seeding is not a world rebuild — it is a wipe, a prime, and one
+## bounded burst of generation around the deck, after which the ordinary
+## streaming loop fills the sky in exactly as it does at boot. Measured on the
+## owner's machine at 8×: see `tools/dive_seed_probe.gd`.
+##
+## TWO WORLDS ARE DELIBERATELY LEFT ALONE:
+##
+##   AN F2 DIVE INSIDE AN EXPEDITION. That world is the player's — dug, built in,
+##   saved — and it is the ×4 lazy world the 2026-08-30 decision was written
+##   about. A dev button that silently deleted somebody's expedition would be a
+##   worse bug than the one this fixes. The run's SHAPE is still fresh there.
+##
+##   THE FIRST RUN OF A DIVE-NATIVE BOOT. `_ready` rolled the sky and handed the
+##   number to the run (`DiveRun.next_seed`), so the seeds already agree and
+##   there is nothing to redo. Every run after it disagrees, and pays.
+##
+## Nothing but terrain is touched: the ring's WIDTH, the walls, the bands and the
+## lava floor are all `_ready`'s and do not move with the seed — which is what
+## keeps this a re-seed rather than a rebuild.
+func _dive_reseed_ring() -> float:
+	if dive == null or terrain == null or not dive_native:
+		return 0.0
+	if dive.seed_v == world_seed:
+		return 0.0
+	var t0 := Time.get_ticks_usec()
+	world_seed = dive.seed_v
+	# The whole resident grid, the recorded edits and every live chunk: the
+	# previous run's landings, its outposts' shelves, its floating rock and
+	# anything anybody dug are all cells in here, and none of them belong to this
+	# run. The same call the save loader uses before regenerating from a seed.
+	terrain.clear_all()
+	IslandGen.prime(terrain)
+	EasterEggs.plant_cairn(terrain)
+	EasterEggs.plant_high_cairn(terrain)
+	# One burst around where the run is about to stand, so the first frame of the
+	# new sky is not empty air (the same bounded burst `_build_generated_terrain`
+	# fires at boot, aimed at the deck instead of at SHIP_START). Everything past
+	# it arrives the way it always does — `_stream_terrain`, ahead of the camera.
+	IslandGen.ensure_generated(terrain, world_seed, [dive_landing_pos(1)],
+		terrain.chunk_px() * terrain.subdiv * 3.0, 64)
+	return float(Time.get_ticks_usec() - t0) / 1000.0
 
 
 ## Abandon the run without a verdict (a reset, a load, a mode exit). The ledger
@@ -4423,6 +4509,14 @@ func dive_status() -> Variant:
 		out["zone"] = DiveRun.draft_label(draft_x, band)
 	# ...and how wide the bands are, so the map room could paint them one day.
 	out["draft_band_tiles"] = band
+	# THE SEED, so the run can say which sky it is. The ledger prints it (the one
+	# panel a player reads at leisure) and the map room draws it after the fact;
+	# there is deliberately no live HUD line for it — a number you can do nothing
+	# with mid-dive is chrome, and the gauge is already the busiest corner.
+	out["seed"] = dive.seed_v
+	# What re-seeding the ring cost when this run opened, in ms. 0 means the run
+	# inherited the sky it was booted into.
+	out["regen_ms"] = _dive_regen_ms
 	out["hull_frac"] = -1.0
 	if is_instance_valid(local_ship) and local_ship.hull_integrity_max > 0.0:
 		out["hull_frac"] = clampf(

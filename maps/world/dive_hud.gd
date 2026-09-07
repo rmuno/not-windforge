@@ -268,6 +268,10 @@ func _draw_ledger(d: Dictionary) -> void:
 		"attacks      %d" % int(d.get("surges", 0)),
 		"time         %s" % _mmss(float(d.get("elapsed", 0.0))),
 		"banked       %d coins" % int(d.get("banked", 0)),
+		# THE SEED THIS RUN WAS. The ledger is the one place a run is read at
+		# leisure, so it is where the number belongs: F2 → Dive → "Pin the last
+		# run's seed" flies the same sky again, and the MAP ROOM charts it.
+		"seed         %d" % int(d.get("seed", 0)),
 		"",
 		"(any key)",
 	]

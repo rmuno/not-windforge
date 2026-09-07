@@ -87,6 +87,15 @@ const _REGISTRY := [
 		"kind": KIND_FLOAT, "default": 0.1, "min": 0.0, "max": 1.0, "step": 0.05,
 		"note": "next commit",
 		"tip": "Friction under a run's hull. Low slides off slabs; 1.0 restores the stock keel that pinned a hull holding DOWN on a landing."},   # world._tick_dive commit branch
+	# A FRESH SEED EACH RUN (owner 2026-08-30) — and the lever that suspends it,
+	# which is what makes a run repeatable at all. There is deliberately no
+	# NUMBER here: a seed is a full 32-bit int and the F2 window draws every
+	# non-bool lever as a slider, so an ARBITRARY seed goes in through
+	# `world.pin_dive_seed` (tools/dive_probe.gd --seed N). What a playtest wants
+	# is "that one again", and that is the last run's seed.
+	{"id": "dive_pin_seed", "label": "Pin the last run's seed", "group": "Dive",
+		"kind": KIND_BOOL, "default": false,
+		"tip": "On, the next run re-opens the last run's sky — the same ring, ladder, outposts and garrison — so a change can be A/B'd against one dive. Off rolls a fresh seed every run."},   # world.begin_dive
 	# The wind ring (owner experiment 2026-08-31): the run's sky loops.
 	{"id": "dive_zones_enabled", "label": "The wind ring", "group": "Dive",
 		"kind": KIND_BOOL, "default": true,

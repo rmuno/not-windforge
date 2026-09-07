@@ -7,6 +7,12 @@ extends SceneTree
 ## hull survived.
 ##
 ##   godot --headless --path . --script tools/dive_probe.gd
+##   godot --headless --path . --script tools/dive_probe.gd -- --seed 892583619
+##
+## The second form pins the run's seed (`world.pin_dive_seed`), which is the only
+## way two of these numbers are comparable: a run rolls a fresh seed, and since
+## v0.154.0 that seed decides the ground as well as the ladder. Every run prints
+## its own SEED — feed it back in to fly the same dive again.
 ##
 ## This is a PROBE, not a test: it measures, it does not assert. The numbers it
 ## prints are the ones nothing but arithmetic has judged — how long a depth
@@ -255,14 +261,23 @@ func _initialize() -> void:
 	print("\n=== THE DIVE — headless playtest (8x, the shipped scene) ===")
 	print("boot: %d ships, player at %s" % [fleet.ships().size(), str(pl.global_position)])
 
+	# FLY THE SAME SKY TWICE. A run rolls a fresh seed (v0.154.0 makes that the
+	# GROUND too, not just the ladder), which is right for the game and useless
+	# for a probe: a number measured under one seed cannot be compared with a
+	# number measured under another. `--seed N` pins the run this probe opens, so
+	# a change can be measured against the dive it changed.
+	var pinned := _seed_from_args()
+	if pinned != 0:
+		world.call("pin_dive_seed", pinned)
 	world.call("begin_dive")
 	await _frames(10)
 	_report("on the launch deck")
 	# The run's SEED is the thing that makes two runs different (the ladder's
-	# slalom, the outposts, the garrison, the floating rock), and the dive rolls
-	# a fresh one every boot — so a probe run is only quotable with it printed.
-	print("SEED: %d   ladder: %s" % [int((world.get("dive") as Object).get("seed_v")),
-		_ladder_line()])
+	# slalom, the outposts, the garrison, the floating rock and — in the Dive's
+	# own scene — the islands), so a probe run is only quotable with it printed.
+	# Feed it back in as `--seed` to fly it again.
+	print("SEED: %d%s   ladder: %s" % [int((world.get("dive") as Object).get("seed_v")),
+		"  (pinned)" if pinned != 0 else "", _ladder_line()])
 
 	# --- Take a hull, the way a player does: walk to a helm and use it -------
 	var hull = _nearest_hull()
@@ -967,6 +982,19 @@ func _ladder_line() -> String:
 		var at: Vector2 = world.call("dive_landing_pos", d)
 		out += "d%d:%.0f " % [d, at.x]
 	return out
+
+
+## The seed asked for on the command line, or 0 for a fresh one. User args
+## survive `--script` and land in `OS.get_cmdline_user_args()` after a bare `--`,
+## the same idiom `tests/pilot_test.gd --scale 8` uses:
+##
+##   godot --headless --path . --script tools/dive_probe.gd -- --seed 892583619
+func _seed_from_args() -> int:
+	var args := OS.get_cmdline_user_args()
+	var i := args.find("--seed")
+	if i >= 0 and i + 1 < args.size():
+		return int(args[i + 1])
+	return 0
 
 
 func _frames(n: int) -> void:
