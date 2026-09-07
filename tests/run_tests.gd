@@ -205,6 +205,7 @@ func _initialize() -> void:
 	await _test_greedy_rects_order_and_partition()
 	await _test_attitude_reads_the_same_in_world_and_map()
 	await _test_physics_census_reports_the_step()
+	await _test_the_floor_tick_stays_affordable()
 	await _test_frame_census_prices_the_drawn_skin()
 	await _test_dormancy_leaves_and_rejoins_the_simulation()
 	await _test_awake_budget_caps_the_simulated_set()
@@ -6359,7 +6360,18 @@ func _test_creature_skin_faces_its_motion() -> void:
 		"authored: the mirrored side is empty")
 
 	# --- Swim left: the SKIN turns AND the collider mirrors with it ----------
+	# A TURN HAS TO BE MEANT (v0.163.0, Ship.FACING_FLIP_DWELL / the F2 lever
+	# "Facing turn dwell"). The flip used to be instant, and at the Dive floor
+	# that strobed ~18 times a second in a crowd — reflecting a 1,300 px body
+	# teleports its shapes, the solver shoves the body resolving that, and the
+	# shove is the very signal the flip reads. So the body must WANT the other
+	# facing for `creature_facing_dwell` seconds before it turns, and both halves
+	# of that are pinned here: short of the dwell it holds, past it it turns.
+	var dwell := maxf(Tunables.get_num("creature_facing_dwell"), 0.0)
 	beast.linear_velocity = Vector2(-400.0, 0.0)
+	await _step(int(dwell * 60.0) - 4)
+	_check(beast.visual_facing == 1,
+		"swimming left for less than the %.2f s dwell, it has not turned yet" % dwell)
 	await _step(12)
 	_check(beast.visual_facing == -1, "swimming left, the drawn body flips to face left")
 
@@ -6406,7 +6418,7 @@ func _test_creature_skin_faces_its_motion() -> void:
 
 	# --- Swim right again, then hold through a drift -------------------------
 	beast.linear_velocity = Vector2(400.0, 0.0)
-	await _step(12)
+	await _step(int(dwell * 60.0) + 12)
 	_check(beast.visual_facing == 1, "swimming right again, it faces right again")
 	_check(_collider_signature(beast) == shapes_before,
 		"and the collider UNMIRRORS back to the authored signature")
@@ -6420,11 +6432,11 @@ func _test_creature_skin_faces_its_motion() -> void:
 
 	# --- A carcass freezes its facing forever --------------------------------
 	beast.linear_velocity = Vector2(-400.0, 0.0)
-	await _step(12)
+	await _step(int(dwell * 60.0) + 12)
 	_check(beast.visual_facing == -1, "alive, a hard swim left turns it")
 	beast.shared_health = 0.0  # the pool empties: it is a corpse now
 	beast.linear_velocity = Vector2(600.0, 0.0)
-	await _step(20)
+	await _step(int(dwell * 60.0) + 20)
 	_check(beast.visual_facing == -1,
 		"dead, it drifts the other way without turning — a corpse does not face its drift")
 	beast.queue_free()
@@ -13930,6 +13942,226 @@ func _paint_regions(ship: Ship) -> int:
 	return n
 
 
+## THE FLOOR TICK STAYS AFFORDABLE (v0.164.0, tools/floor_tick_probe.gd).
+##
+## The owner's 2026-09-07 capture at the Dive floor read `phys=163-172 ms` a
+## frame at `ticks=8` -- the physics step overrunning so far that Godot spent
+## every drawn frame on catch-up steps. The probe attributed it, and what it
+## found was not one slow thing but THREE LOOPS THAT WALKED THE WHOLE WORLD to
+## answer a local question, each of them O(population x population):
+##
+##   * the kraken's bite walked the prey's entire block grid to find a cell
+##     within four authored cells of its mouth (4.4 ms a call on a 3,600-cell
+##     hull, and it grew with the SHIP);
+##   * every shell asked the SceneTree for the ships group twice a tick and
+##     walked all of it (56 shells x 25 ships x 2);
+##   * the Dive's shelter test walked ~70 terrain cells one `is_solid` at a time,
+##     once per body the weather stamps.
+##
+## The first three checks pin the SHAPE of each fix rather than a stopwatch
+## reading, because a wall-clock bound on somebody else's machine is a flaky
+## test: the bite must find the same cell an exhaustive scan finds and must not
+## cost more on a bigger prey; a shell must not cost more in a crowded sky; the
+## row scan must agree with the loop it replaced. The last check IS a stopwatch,
+## deliberately loose, and it names the body that regressed.
+func _test_the_floor_tick_stays_affordable() -> void:
+	_t("the floor tick: a bite, a shell and a shelter scan stay local (8x)")
+
+	# --- 1. THE BITE FINDS THE SAME CELL AN EXHAUSTIVE SCAN WOULD ------------
+	# An 8x hull, and points in and around it. The reference is the OLD algorithm
+	# written out in full: the nearest solid cell over the whole grid, within reach.
+	var prey := _make_ship(ShipLayout.upscale_cells(_starter_ship(), 8))
+	prey.scale_unit = 8.0
+	prey.position = Vector2(-90000.0, 0.0)
+	var reach := Tunables.get_num("kraken_grab_reach") * 8.0
+	var agree := 0
+	var probes := 0
+	for probe in [Vector2(0, 0), Vector2(3, -2), Vector2(11, 5), Vector2(-9, 7),
+			Vector2(24, 24), Vector2(-40, -40)]:
+		probes += 1
+		var at: Vector2 = (probe as Vector2) * Ship.CELL
+		var want := Vector2i(0x7FFFFFFF, 0)
+		var want_d2 := reach * reach
+		for cell in prey.blocks:
+			if not BlockDB.get_def(prey.blocks[cell]["type"])["solid"]:
+				continue
+			var d2 := (Vector2(cell) * Ship.CELL - at).length_squared()
+			if d2 < want_d2:
+				want_d2 = d2
+				want = cell
+		if KrakenAI._nearest_solid_cell_near(prey, at, reach) == want:
+			agree += 1
+	_check(agree == probes,
+		"the ring search picks the cell the whole-grid scan picks (%d/%d probes)"
+			% [agree, probes])
+
+	# ...and its cost does not grow with the PREY. Two solid slabs, 25x apart in
+	# cell count, bitten at the same spot: the old scan was O(cells) and this is
+	# O(the bite), so the big body must not cost meaningfully more.
+	var small_cells := {}
+	for x in 20:
+		for y in 20:
+			small_cells[Vector2i(x, y)] = BlockDB.Type.HULL
+	var big_cells := {}
+	for x in 100:
+		for y in 100:
+			big_cells[Vector2i(x, y)] = BlockDB.Type.HULL
+	var small := _make_ship(small_cells)
+	small.position = Vector2(-90000.0, -20000.0)
+	var big := _make_ship(big_cells)
+	big.position = Vector2(-90000.0, -60000.0)
+	var bite_at := Vector2(5.0, 5.0) * Ship.CELL
+	var t_small := Time.get_ticks_usec()
+	for i in 400:
+		KrakenAI._nearest_solid_cell_near(small, bite_at, reach)
+	var us_small := maxi(Time.get_ticks_usec() - t_small, 1)
+	var t_big := Time.get_ticks_usec()
+	for i in 400:
+		KrakenAI._nearest_solid_cell_near(big, bite_at, reach)
+	var us_big := Time.get_ticks_usec() - t_big
+	_check(float(us_big) < float(us_small) * 3.0,
+		"a 10,000-cell prey costs no more to bite than a 400-cell one (%d vs %d us per 400)"
+			% [us_big, us_small])
+	small.queue_free()
+	big.queue_free()
+	prey.queue_free()
+
+	# --- 2. A SHELL'S COST DOES NOT GROW WITH THE SKY ------------------------
+	# The same forty shells, ticked in an empty sky and then in a crowded one.
+	# None of these hulls carries a propeller or a balloon, so the honest answer is
+	# identical work -- which is exactly what a per-shell walk of the ships group
+	# would fail to deliver.
+	var lonely: float = await _shot_ms_with_ships(2, 40)
+	var crowded: float = await _shot_ms_with_ships(25, 40)
+	_check(crowded < lonely * 2.0,
+		"a shell costs the same in a crowded sky as an empty one (%.4f vs %.4f ms/tick for 40)"
+			% [crowded, lonely])
+
+	# --- 3. THE ROW SCAN AGREES WITH THE LOOP IT REPLACED --------------------
+	var terr := _make_terrain(8.0)
+	for x in [-40, -33, -7, 3, 18, 61, 74]:
+		terr.set_cell(Vector2i(int(x), 5), TerrainDB.Type.STONE)
+	terr.set_cell(Vector2i(12, 6), TerrainDB.Type.STONE)   # a decoy on the next row
+	_quiet_failures = 0
+	var rows := 0
+	for from_x in [-50, -20, 0, 1, 11, 31, 32, 33, 70]:
+		for dir in [-1, 1]:
+			for steps in [1, 5, 31, 32, 33, 70]:
+				rows += 1
+				var want := false
+				for i in range(1, int(steps) + 1):
+					if terr.is_solid(Vector2i(int(from_x) + int(dir) * i, 5)):
+						want = true
+						break
+				_check_quiet(terr.any_solid_in_row(Vector2i(int(from_x), 5),
+						int(dir), int(steps)) == want,
+					"row scan disagrees at x=%d dir=%d steps=%d" % [from_x, dir, steps])
+	_check(_quiet_failures == 0,
+		"any_solid_in_row matches the is_solid loop on every case (%d)" % rows)
+	terr.queue_free()
+
+	# --- 4. THE BOUND, AND WHO BROKE IT --------------------------------------
+	# A floor-sized 8x population's own per-tick script bill: one hull and four
+	# ten-thousand-cell creature bodies, the shot swarm the capture had, sixty
+	# ticks. This IS a wall-clock number, so the bound is deliberately several
+	# times what the machine that wrote it measured -- it is here to catch an
+	# O(n^2) coming back, not to police a tenth of a millisecond. On failure it
+	# prints the ledger, so the row that grew names itself.
+	var beasts: Array[Ship] = []
+	var kraken_cells := ShipLayout.upscale_cells(
+		ShipLayout.load_cells("res://ships/kraken_c.ship"), 8)
+	for i in 4:
+		var beast := _make_ship(kraken_cells.duplicate(true))
+		beast.scale_unit = 8.0
+		beast.creature_kind = "kraken"
+		beast.shared_health = 12000.0
+		beast.shared_health_max = 12000.0
+		beast.position = Vector2(20000.0 + 30000.0 * float(i), -40000.0)
+		beasts.append(beast)
+	var hull := _make_ship(ShipLayout.upscale_cells(_starter_ship(), 8))
+	hull.scale_unit = 8.0
+	hull.position = Vector2(-20000.0, -40000.0)
+	var swarm: Array[Shot] = []
+	for i in 56:
+		var s := Shot.new()
+		s.gravity = 0.0
+		s.life = 100.0
+		s.faction = 1
+		s.velocity = Vector2(300.0, 0.0)
+		s.position = Vector2(-200000.0 + 900.0 * float(i), -120000.0)
+		root.add_child(s)
+		swarm.append(s)
+	await _step(4)
+	TickPerf.reset()
+	TickPerf.on = true
+	await _step(60)
+	TickPerf.on = false
+	var ledger := TickPerf.rows(60)
+	var billed := 0.0
+	for r in ledger:
+		var label := String(r[0])
+		if label.begins_with("in: ") or label.begins_with("idle: "):
+			continue
+		billed += float(r[1])
+	var bound := 6.0
+	var within := billed < bound
+	if not within:
+		print("    the ledger, biggest first:")
+		for r in ledger:
+			if float(r[1]) < 0.005:
+				continue
+			print("      %-32s %8.3f ms/tick  (worst %.3f)"
+				% [String(r[0]), float(r[1]), float(r[3])])
+	_check(within, "a floor-sized 8x population bills %.3f ms/tick of script (bound %.1f)"
+		% [billed, bound])
+	for s in swarm:
+		s.queue_free()
+	for b in beasts:
+		b.queue_free()
+	hull.queue_free()
+	await _step(2)
+
+
+## Milliseconds per tick that `shots` bills with `ships` hulls and `shells`
+## shells in the sky. Everything is parked far apart and inert, so the only thing
+## that changes between two calls is how many ships a shell might walk.
+func _shot_ms_with_ships(ships: int, shells: int) -> float:
+	var hulls: Array[Ship] = []
+	var cells := {}
+	for x in 8:
+		for y in 4:
+			cells[Vector2i(x, y)] = BlockDB.Type.HULL
+	for i in ships:
+		var h := _make_ship(cells.duplicate())
+		h.position = Vector2(-300000.0 + 4000.0 * float(i), 200000.0)
+		hulls.append(h)
+	var swarm: Array[Shot] = []
+	for i in shells:
+		var s := Shot.new()
+		s.gravity = 0.0
+		s.life = 100.0
+		s.faction = 1
+		s.velocity = Vector2(200.0, 0.0)
+		s.position = Vector2(400000.0 + 700.0 * float(i), -300000.0)
+		root.add_child(s)
+		swarm.append(s)
+	await _step(3)
+	TickPerf.reset()
+	TickPerf.on = true
+	await _step(40)
+	TickPerf.on = false
+	var ms := 0.0
+	for r in TickPerf.rows(40):
+		if String(r[0]) == "shots":
+			ms = float(r[1])
+	for s in swarm:
+		s.queue_free()
+	for h in hulls:
+		h.queue_free()
+	await _step(2)
+	return ms
+
+
 ## THE PHYSICS CENSUS (v0.57.0). The owner's 3-FPS capture proved the frame
 ## was the PHYSICS step -- script was ~2 ms, render 95 draw calls -- and then
 ## had nothing further to say, because neither the F2 readout nor the F3 log
@@ -15460,9 +15692,12 @@ func _test_f2_labels_are_short_and_tipped() -> void:
 	_t("F2 registry: every lever has a short label and a real tooltip")
 
 	# One tab per group, Dive its own (19 dive levers were unfindable inside a
-	# 59-row World tab), in the order the window paints them.
-	_check(Tunables.groups() == ["Player", "Dive", "Combat", "World", "Whale"],
-		"five lever groups in tab order, Dive among them (%s)" % str(Tunables.groups()))
+	# 59-row World tab), in the order the window paints them. "Perf" is the
+	# exception that proves the rule: like "Player" it gets no tab of its own —
+	# its levers are rendered into the hand-built Perf READOUT, beside the cost
+	# picture they are about (DebugWindow.PERF_TAB).
+	_check(Tunables.groups() == ["Player", "Dive", "Combat", "World", "Whale", "Perf"],
+		"six lever groups in tab order, Dive among them (%s)" % str(Tunables.groups()))
 
 	var longest_label := ""
 	var longest_tip := ""
@@ -15537,10 +15772,13 @@ func _test_debug_window_toggles_and_switches_tabs() -> void:
 	win.toggle()
 	_check(not win.visible, "toggle hides it again")
 
-	# Spawn + Player + Perf (3 hardcoded) + one tab per Tunables group, EXCEPT
-	# the "Player" group, whose levers fold into the Player cheats tab.
+	# Spawn + Player + Perf (3 hardcoded) + one tab per Tunables group, EXCEPT the
+	# "Player" and "Perf" groups, whose levers fold into the hand-built tabs of
+	# those names (a second same-named tab collapses to "@ScrollContainer@NN").
 	var lever_groups := Tunables.groups().size()
 	if Tunables.groups().has(DebugWindow.PLAYER_TAB):
+		lever_groups -= 1
+	if Tunables.groups().has(DebugWindow.PERF_TAB):
 		lever_groups -= 1
 	var expected := 3 + lever_groups
 	_check(win._tabs.get_tab_count() == expected,

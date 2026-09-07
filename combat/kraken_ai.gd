@@ -478,7 +478,7 @@ func _is_alive() -> bool:
 ## Latch the mouth onto the prey and chew: find the prey's solid cell nearest the
 ## mouth and, if it is within bite range, drain it by GRAB_DPS·delta.
 ##
-## A BITE IS A LOCAL QUESTION, AND IT IS ASKED LOCALLY (v0.163.0). This used to
+## A BITE IS A LOCAL QUESTION, AND IT IS ASKED LOCALLY (v0.164.0). This used to
 ## walk the prey's whole block dictionary — every cell transformed to world space
 ## and distance-tested — to find a cell that is, by definition, within four
 ## authored cells of the mouth. Measured at the Dive floor (tools/floor_tick_probe):

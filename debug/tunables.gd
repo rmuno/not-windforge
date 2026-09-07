@@ -479,7 +479,7 @@ const _REGISTRY := [
 	# STAYS 8, which is Godot's own and what every measurement here assumes.
 	{"id": "physics_catchup_steps", "label": "Physics catch-up steps", "group": "Perf",
 		"kind": KIND_INT, "default": 8, "min": 1, "max": 8, "step": 1,
-		"tip": "Physics steps Godot may run per drawn frame to catch up after a slow one. 8 is the engine default: correct time, 1 fps when it cannot keep up. 2-3 degrades into slow motion you can still see and steer by."},   # Engine.max_physics_steps_per_frame
+		"tip": "Catch-up physics steps per drawn frame after a slow one. 8 is Godot's own: correct time, 1 fps when it cannot keep up. 2-3 stops catching up — slow motion you can still steer by."},   # Engine.max_physics_steps_per_frame
 	{"id": "creature_facing_dwell", "label": "Facing turn dwell", "group": "Whale",
 		"kind": KIND_FLOAT, "default": 0.35, "min": 0.0, "max": 3.0, "step": 0.05,
 		"tip": "Seconds a creature must want the OTHER facing before its drawn body turns around. 0 is the old instant flip, which strobed ~18 times a second in a crowd at the Dive floor."},   # Ship.FACING_FLIP_DWELL
