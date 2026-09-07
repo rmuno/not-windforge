@@ -879,6 +879,17 @@ func _check_dive_scene_boots() -> void:
 	_ok(w.get("world_scale") == 8, "...at the shipped 8×")
 	_ok(w.get("dive") != null,
 		"it boots STRAIGHT into a run, with no GameMode.pending handshake")
+	# THE LADDER IS SWITCHED OFF FOR THE REST OF THIS SCENE, deliberately, and
+	# `_check_dive_ladder` turns it back on for its own measurements (Q-V).
+	# Since v0.159.0 the seal is two columns of wind loops whose CALM carries
+	# everything in it downward at 1,000 px/s — the whole sky, for the whole run.
+	# That is the design (DESIGN_DESCENT §11 ruling 5), and it is also a conveyor
+	# under every other check in this file: the seam checks measure a still body,
+	# the draft checks measure the ring's own wind, the dunk parks a hull for
+	# twenty seconds, and the Leviathan needs a live run at the end of it. Left
+	# on, the run is simply carried into the lava somewhere in the middle of them
+	# — measured, first pass: outcome 'lost' by the breath check.
+	Tunables.set_value("dive_ladder_enabled", false)
 	var fleet = w.get("fleet")
 	if fleet == null:
 		_ok(false, "the dive scene built a Fleet")
@@ -1091,17 +1102,17 @@ func _check_dive_scene_boots() -> void:
 	# THE DUNK, above the Leviathan on purpose: a picket spawn refuses a finished
 	# run, and the check below is the whole of §5.1's sharp knowledge.
 	await _check_the_dunk(w, pl, terrain)
-	# THE SEAL, between them, and the order is load-bearing in both directions.
+	# THE LADDER, between them, and the order is load-bearing in both directions.
 	# ABOVE the Leviathan because waking the boss ends the run in triumph and a
-	# finished run has no live bands. BELOW the dunk because the dunk holds the
-	# body in unbreathable air for twenty seconds and it comes out at 12 of 100
-	# hp — the seal check ends by mending the person (its own toll would otherwise
-	# be a debt), so running it here hands the Leviathan a WHOLE body instead of a
-	# nearly dead one.
+	# finished run has no ladder in its sky. BELOW the dunk because the dunk holds
+	# the body in unbreathable air for twenty seconds and it comes out at 12 of
+	# 100 hp — the ladder check ends by mending the person (its own toll would
+	# otherwise be a debt), so running it here hands the Leviathan a WHOLE body
+	# instead of a nearly dead one.
 	print("    ~ post-dunk: outcome '%s', hp %.0f/%.0f, piloting %s, frac %.3f"
 		% [String(run.get("outcome")), pl.health, pl.max_health,
 			str(pl.is_piloting()), float(w.call("_player_altitude_frac"))])
-	await _check_dive_seal(w, pl, run, terrain, cx)
+	await _check_dive_ladder(w, pl, run, terrain, cx)
 	await _check_the_leviathan(w, pl, run, cx, terrain)
 	# ...and after all of it: opening runs is destructive, so the seed check goes
 	# last of all.
@@ -2220,6 +2231,12 @@ func _check_dive_draft_spans_the_seam(w: Node, pl, tile_w: float, cx: float) -> 
 		return
 	var was_deepest: int = int(run.get("deepest"))
 	run.set("deepest", 2)   # the ring is only the sky once you have been down
+	# THE RING'S WIND IS SWITCHED ON FOR THIS CHECK. `dive_zone_wind_mult`
+	# defaults to 0 since the ladder replaced the v0.141 ring's up/down drafts
+	# (Q-V) — the lever survives, and so does everything it drives, so this is
+	# still a live claim about the seam. It is just no longer the default sky.
+	var was_wind := Tunables.get_num("dive_zone_wind_mult")
+	Tunables.set_value("dive_zone_wind_mult", 1.0)
 	var seam := cx + tile_w * float(DiveRun.RING.size()) * 0.5
 	var y: float = pl.global_position.y
 	var at_centre: Vector2 = w.call("dive_weather_at", Vector2(seam, y))
@@ -2251,6 +2268,7 @@ func _check_dive_draft_spans_the_seam(w: Node, pl, tile_w: float, cx: float) -> 
 	_ok(just_before.y > 0.0 and just_before.is_equal_approx(just_after),
 		"the wind either side of the wrap line is the same wind (%.0f px/s)"
 			% just_before.y)
+	Tunables.set_value("dive_zone_wind_mult", was_wind)
 	run.set("deepest", was_deepest)
 
 ## THE SEAM YOU CANNOT SEE (owner 2026-09-01: *"Looping around through the world
@@ -2543,82 +2561,141 @@ func _check_dive_picket_holds_its_rung(w: Node, pl, cx: float) -> void:
 	Tunables.reset_all()
 
 
-## THE DESCENT SEAL, in a real sky (DESIGN_DESCENT.md, owner rulings §0).
+## THE LADDER, in a real sky (Q-V, DESIGN_DESCENT §11 — SUPERSEDES the seal's
+## six fixed bands, and this check with them).
 ##
-## Only an 8× run can see any of this: the band is 4,483 px of a 64,038 px rung,
-## and the whole ruling turns on how a rate-controlled hull behaves inside an
-## airstream measured against `dive_dive_rate`. Four claims, and the seal is only
-## the gate the owner asked for if all four hold:
+## Only an 8× run can see any of this: a rectangle is 112,066 px tall, its walls
+## are 4,483 px thick, and every claim below is about how a RATE-CONTROLLED hull
+## behaves inside an airstream measured against `dive_dive_rate`. The pure
+## geometry is proved with no world at all (`run_tests._test_dive_ladder`); what
+## needs a sky is the FORCE.
 ##
-##   1. a NEUTRAL stick inside a live band is CARRIED OUT of the top — drifting
-##      into a seal warns you, it does not kill you (DESCENT §4.4);
-##   2. a FULL DOWN stick crosses, in the time `SEAL_AIR_SPEED` was tuned for
-##      (≈ 30 % of `dive_ship_integrity` at 300 hp/s — DESCENT §3.3);
-##   3. a garrison hull feels nothing inside ITS OWN depth's band and the full
-##      stream inside anyone else's (§0 call 7, "symmetric with one exception");
-##   4. the band DIES when the world reports its last key killed — and a CULL is
-##      not a kill (§2.4).
+##   1. ruling 7 — a run starts dead centre of a calm;
+##   2. ruling 5 — the calm CARRIES: a neutral stick sinks at the stack's own
+##      speed, and a full down stick OUTRUNS it, out through the bottom band;
+##   3. ruling 6 — the perimeter is a chute: the top band pushes a stalled hull
+##      sideways into the down-wall and the down-wall takes it DOWN, one rung at
+##      a time, never back into the band it came from;
+##   4. the grind bills the WALLS and not the calm, at the rate it always did;
+##   5. ruling 9 — no own-depth exemption any more, and `seal_open` gates
+##      nothing: a clear buys the stack +25 % instead;
+##   6. ruling 8 — rock LEFT and RIGHT at one altitude is shelter; rock above
+##      and below is not.
 ##
 ## Run at the same air floor as `_check_dive_picket_holds_its_rung` and for the
 ## same measured reason: at the shipped floor a balloon ship cannot hold a rung
-## at all, and a crossing time measured on a hull that is falling anyway would be
+## at all, and a carry measured on a hull that is falling anyway would be
 ## measuring gravity.
-func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
+func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 	if pl == null or not is_instance_valid(pl) or run == null or terrain == null:
-		_ok(false, "a body, a run and terrain to seal")
+		_ok(false, "a body, a run and terrain to hang a ladder in")
 		return
-	# WHERE THE PERSON WAS STANDING WHEN THIS CHECK STARTED. Everything after this
-	# one (the dunk, the Leviathan) holds the body somewhere of its own choosing
-	# and assumes it is ON FOOT — so this check gives the helm back and puts them
-	# down where it found them. Leaving the person PILOTING was the subtlest
-	# failure of the round: the dunk's own `_hold_body` cannot move a pilot, so
-	# the body rode the parked hull for twenty seconds, took 88 of its 100 hp, and
-	# the run was lost inside a Leviathan check that says nothing about seals.
+	# WHERE THE PERSON WAS STANDING WHEN THIS CHECK STARTED (see the seal check
+	# this replaced): everything after it holds the body somewhere of its own
+	# choosing and assumes it is ON FOOT, so the helm and the position go back.
 	var body_was: Vector2 = pl.global_position
-	# PUT BACK WHAT WAS HERE, NOT WHAT THE DEFAULTS SAY. This check used to end on
-	# `Tunables.reset_all()`, and that is a hammer in the middle of a suite whose
-	# checks hand each other a world: the DUNK, immediately above, sets
-	# `dive_zone_wind_mult` to 0 and never restores it, so everything after it —
-	# the Leviathan's breath check included — is written against a sky with the
-	# ring's wind off. `reset_all` turned it back on, the breath check's picket was
-	# then stamped with breath PLUS a ring draft, and its "the wind points at the
-	# maw" direction test failed on a round that has nothing to do with seals.
-	# (Seen twice; it passed on the run in between, which is what a suite-order
-	# coupling looks like from the outside.) So: save exactly what this check
-	# touches, restore exactly that.
+	# PUT BACK WHAT WAS HERE, NOT WHAT THE DEFAULTS SAY — the checks in this file
+	# hand each other a live world and several leave a lever set on purpose.
 	var levers := {}
 	for lever in ["dive_air_floor", "dive_ceiling_mult", "dive_seal_grind",
-			"fall_damage"]:
+			"fall_damage", "dive_seal_mult", "dive_ladder_sink",
+			"dive_ladder_column_tiles", "dive_ladder_calm_tiles"]:
 		levers[lever] = Tunables.get_num(lever)
-	for lever in ["dive_zones_enabled", "dive_assistant"]:
+	for lever in ["dive_zones_enabled", "dive_assistant", "dive_ladder_enabled",
+			"dive_seal_enabled"]:
 		levers[lever] = Tunables.get_bool(lever)
+	levers["dive_ladder_rungs"] = Tunables.get_int("dive_ladder_rungs")
 	Tunables.set_value("dive_air_floor", 0.85)
-	# THE SEAL ALONE. The ring's drafts and the closing sky are ±600 px/s of the
-	# same axis at 8×, and that they STACK with a band is the design's own ruling
-	# (DESCENT §2.5 — it is why the far side of the ring is the puncher's tile).
-	# But a crossing TIME measured with them on is measuring three winds, so the
-	# other two are switched off for the duration and restored at the end.
+	# THE LADDER ALONE. The ring's drafts and the closing sky are ±600 px/s of
+	# the same axis at 8×; a CARRY measured with them on is measuring three winds.
 	Tunables.set_value("dive_zones_enabled", false)
 	Tunables.set_value("dive_ceiling_mult", 0.0)
-	var band := DiveRun.seal_band(2)
-	var top_y: float = float(w.call("dive_altitude_y", float(band[0])))
-	var bot_y: float = float(w.call("dive_altitude_y", float(band[1])))
-	var band_px := bot_y - top_y
-	_ok(band_px > 0.0, "depth 2's band is %.0f px of air at 8×" % band_px)
-	# AN EMPTY COLUMN TO FLY IT IN. The dive world has islands at every altitude —
-	# that is the whole point of the shadow rule — and a hull parked inside one is
-	# measuring stone, not wind. (This cost the first run of this check: the hull
-	# "rose 1,088 px in 15 s" because it was sitting on a rock.)
-	var band_at: Vector2 = await _open_air(w, terrain, pl,
-		Vector2(cx, (top_y + bot_y) * 0.5))
-	var band_x := band_at.x
+	# ...and the ladder itself back ON. The dive scene switched it off at boot so
+	# that every OTHER check in this file could measure its own wind (see
+	# `_check_dive_scene_boots`); this is the check it belongs to.
+	Tunables.set_value("dive_seal_enabled", true)
+	Tunables.set_value("dive_ladder_enabled", true)
+	w.call("_dive_advance_ladder", 0.0)
+
+	var scale_v := float(w.get("world_scale"))
+	var sink_px: float = float(w.call("dive_ladder_sink_px"))
+	var wall_px: float = float(w.call("dive_ladder_wall_px", DiveRun.BETA_REF))
+	_ok(sink_px > 0.0 and wall_px > 0.0,
+		"the ladder is blowing: the stack sinks %.0f px/s, a wall circulates %.0f px/s at 8×"
+			% [sink_px, wall_px])
+
+	# --- 1. RULING 7: THE RUN STARTS IN CALM ------------------------------
+	# Asked of the WORLD, not of the model, because the world owns the two
+	# conversions (x into ring tiles from the ring's centre, y into an altitude
+	# fraction) and an eightfold error would live in exactly those. The run has
+	# been flying for minutes by the time this check runs, so the conveyor is
+	# wound back to zero for the question and put straight back.
+	var travel_was: float = float(run.get("ladder_travel"))
+	run.set("ladder_travel", 0.0)
+	w.call("_dive_advance_ladder", 0.0)
+	var deck_y: float = float(w.call("dive_altitude_y", DiveRun.TOP_FRAC))
+	var deck_hit: Dictionary = w.call("dive_ladder_at", Vector2(cx, deck_y))
+	_ok(String(deck_hit.get("zone", "")) == "calm"
+			and int(deck_hit.get("column", -1)) == 0,
+		"at travel 0 the launch deck (%.0f, %.0f) is in the sinking column's CALM (%s)"
+			% [cx, deck_y, deck_hit.get("zone", "")])
+	run.set("ladder_travel", travel_was)
+	w.call("_dive_advance_ladder", 0.0)
+
+	# WHERE THE PIECES ARE RIGHT NOW, in world px, found by walking straight down
+	# the sinking column's centre line. Everything below is measured against
+	# these three altitudes, so the check can never be told one geometry and
+	# measure another.
+	var span_px: float = float(w.call("dive_altitude_y", DiveRun.FLOOR_FRAC)) \
+		- float(w.call("dive_altitude_y", DiveRun.TOP_FRAC))
+	var step_px := span_px / 4000.0
+	var bot_band_y := 0.0
+	var found_band := false
+	var y_scan: float = deck_y + span_px * 0.15
+	var seen_calm := false
+	# A WORLD Y IS NEGATIVE HIGH IN THE SKY (the deck sits at −212,337 px), so
+	# "did the scan find one" is a flag and never a sign test. It cost the first
+	# run of this check: every altitude it wanted was below zero.
+	for i in 4000:
+		var hit: Dictionary = w.call("dive_ladder_at", Vector2(cx, y_scan))
+		var part := String(hit.get("part", ""))
+		if part == "calm":
+			seen_calm = true
+		elif seen_calm and part == "bottom":
+			bot_band_y = y_scan
+			found_band = true
+			break
+		y_scan += step_px
+	_ok(found_band,
+		"the sinking column reads as calm then a bottom band down its centre line")
+	if not found_band:
+		_hand_back_the_sky(w, pl, levers, body_was)
+		return
+	# The calm point is the last calm sample ABOVE that band — one band's
+	# thickness clear of it, so a two-second carry cannot fall out of it.
+	var band_px: float = DiveRun.ladder_band_frac() * span_px \
+		/ maxf(DiveRun.TOP_FRAC - DiveRun.FLOOR_FRAC, 0.0001)
+	var calm_at := bot_band_y - band_px * 1.2
+	print("    ~ the ladder at 8x: band %.0f px, rectangle %.0f px, sink %.0f px/s, wall %.0f px/s"
+		% [band_px, span_px / float(Tunables.get_int("dive_ladder_rungs")),
+			sink_px, wall_px])
+
+	# AN EMPTY COLUMN TO FLY IT IN. The dive world has islands at every altitude
+	# and a hull parked inside one is measuring stone, not wind — and since
+	# ruling 8 a hull inside one is also SHELTERED, which would read as "the
+	# ladder is off".
+	var air_at: Vector2 = await _open_air(w, terrain, pl, Vector2(cx, calm_at))
+	var lane_x := air_at.x
+	# ...but `_open_air` walks EAST in 9,000 px steps and the sinking column is
+	# only 134,800 px wide, so the lane it found has to be re-checked: a point
+	# that walked out of the column is a point with no ladder in it.
+	var lane_hit: Dictionary = w.call("dive_ladder_at", Vector2(lane_x, calm_at))
+	_ok(String(lane_hit.get("part", "")) == "calm",
+		"...found %0.f px of empty air still inside the calm (%s)"
+			% [lane_x - cx, lane_hit.get("part", "")])
 
 	# THE HULL: the run's own COMMITTED starter, flown from the helm through the
-	# real input map. Nothing here is a stand-in — a candidate hull sitting on the
-	# deck has no driver and no power, so its props deliver nothing and every number
-	# measured on one would be measuring gravity. Board it, let `_tick_dive` commit
-	# the run (which thaws it, arms its integrity pool and stamps the rate-controlled
-	# stick on it), and fly.
+	# real input map. A candidate on the deck has no driver and no power.
 	var cand: Ship = null
 	for s2 in (w.get("fleet").call("ships") as Array):
 		var c2 := s2 as Ship
@@ -2628,9 +2705,9 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 				and not c2.is_nest and not c2.is_carcass():
 			cand = c2
 			break
-	_ok(cand != null, "a stock starter on the deck to fly at the seal")
+	_ok(cand != null, "a stock starter on the deck to fly at the ladder")
 	if cand == null:
-		_restore_levers(levers)
+		_hand_back_the_sky(w, pl, levers, body_was)
 		return
 	pl.global_position = cand.to_global(cand.local_pos_of(cand.helm_cells[0]))
 	await w.get_tree().physics_frame
@@ -2641,98 +2718,106 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 	_ok(hull != null and is_instance_valid(hull) and bool(run.get("committed")),
 		"the run is COMMITTED to it — pool armed, rate stick stamped")
 	if hull == null or not is_instance_valid(hull):
-		_restore_levers(levers)
+		_hand_back_the_sky(w, pl, levers, body_was)
 		return
 	run.garrison_killed.clear()
-
 	var beta: float = float(w.call("dive_beta_of", hull))
 	_ok(absf(beta - DiveRun.BETA_REF) < DiveRun.BETA_REF * 0.15,
 		"the committed starter's β is %.2f — BETA_REF is %.2f (mass %.0f, beam %.0f px)"
 			% [beta, DiveRun.BETA_REF, hull.mass, hull.solid_bounds.size.x])
 
-	# --- 1. A DRIFTER IS EJECTED -------------------------------------------
-	# Parked dead centre with the stick neutral. The rate controller station-keeps
-	# relative to the AIR (`Ship._physics_process`, `v_up` measured against
-	# `wind.y`), so "hold still" inside a rising band means "ride it up".
-	#
-	# GRIND OFF for this one measurement, and for a stated reason: a drifter is
-	# ejected in a handful of seconds and the toll would take a third of the pool
-	# doing it, which is the DESIGN — but it would also leave nothing to measure
-	# the crossing's real bill with two sections down. The toll gets its own
-	# section, at the shipped rate, on a full pool.
+	# --- 2. RULING 5: THE CALM CARRIES YOU DOWN ---------------------------
+	# The rate controller station-keeps relative to the AIR (`Ship`: `v_up` is
+	# measured against `wind.y`), so a neutral stick inside a moving rectangle
+	# rides it — and the calm's whole content is the rectangle's own velocity.
+	# GRIND OFF for the two carry measurements: the calm does not bill anyway
+	# (that is section 4's claim), and a hull that is billed while being measured
+	# is a hull whose beam can change under the number.
 	Tunables.set_value("dive_seal_grind", 0.0)
-	_park_at(hull, pl, Vector2(band_x, (top_y + bot_y) * 0.5))
+	_park_at(hull, pl, Vector2(lane_x, calm_at))
 	await w.get_tree().physics_frame
-	var y0 := hull.global_position.y
-	var lift_s := -1.0
-	for i in 900:
+	for i in 120:
 		await w.get_tree().physics_frame
-		if hull.global_position.y < top_y:
-			lift_s = float(i + 1) / 60.0
-			break
-	_ok(lift_s > 0.0,
-		"a neutral stick is carried UP out of a live band in %.1f s (drift %.0f px, wind %.0f) — you must MEAN a crossing"
-			% [lift_s, hull.global_position.y - y0, hull.extra_wind.y])
+	var carried := hull.linear_velocity.y
+	_ok(carried > sink_px * 0.75 and carried < sink_px * 1.25,
+		"a NEUTRAL stick in the calm is carried DOWN at %.0f px/s — the stack's own %.0f (ruling 5)"
+			% [carried, sink_px])
+	# ...and a full DOWN stick outruns it. The stick names a speed RELATIVE TO
+	# THE AIR, so the two add: the carry is a floor under the dive, not a cap on
+	# it, which is the "you can opt into going further down" half of ruling 5.
+	_park_at(hull, pl, Vector2(lane_x, calm_at))
+	await w.get_tree().physics_frame
+	Input.action_press("ship_down")
+	for i in 120:
+		await w.get_tree().physics_frame
+	var driven := hull.linear_velocity.y
+	Input.action_release("ship_down")
+	_ok(driven > carried * 1.5,
+		"...and a full DOWN stick OUTRUNS the carry: %.0f px/s against %.0f (%.2f×)"
+			% [driven, carried, driven / maxf(carried, 1.0)])
 
-	# --- 2. ...AND A COMMITTED DIVE CROSSES, AND IS BILLED FOR IT ----------
-	# From the top lip, stick hard down, until the bottom lip, at the SHIPPED
-	# grind — so the number this prints is the bill the owner actually pays, not
-	# arithmetic about one. `SEAL_AIR_SPEED` is tuned against exactly this: the
-	# crossing must land near 30 % of `dive_ship_integrity` (DESCENT §3.3).
-	# Driven through the real input map — `Input.action_press` works headless
-	# (godot-quirks), and a piloted hull reads the map, not `net_set_controls`.
+	# --- 3. ...AND OUT THROUGH THE BOTTOM BAND, BILLED FOR IT -------------
+	# Parked just above the bottom band with the stick hard down, at the SHIPPED
+	# grind, so the number this prints is the bill the owner actually pays.
 	#
-	# THE POOL IS DELIBERATELY DEEPENED FOR THE MEASUREMENT and the bill is
-	# reported against the SHIPPED figure: at 300 hp/s a crossing that goes wrong
-	# empties a 3,000 pool in ten seconds, the hull explodes, and the run is lost
-	# out from under every check that follows this one (the dunk, the Leviathan).
-	# A measurement must not be able to end the thing it is measuring.
+	# THE POOL IS DELIBERATELY DEEPENED and the bill reported against the SHIPPED
+	# figure: a crossing that goes wrong must not be able to end the run out from
+	# under the checks that follow this one.
 	Tunables.set_value("dive_seal_grind", levers["dive_seal_grind"])
+	Tunables.set_value("dive_assistant", false)
+	hull.menders_running = false
 	var pool := Tunables.get_num("dive_ship_integrity")
-	_park_at(hull, pl, Vector2(band_x, top_y + 4.0))
+	_park_at(hull, pl, Vector2(lane_x, bot_band_y - band_px * 0.2))
 	hull.hull_integrity_max = pool * 20.0
 	hull.hull_integrity = hull.hull_integrity_max
 	await w.get_tree().physics_frame
 	var before := hull.hull_integrity
 	Input.action_press("ship_down")
 	var cross_s := -1.0
-	for i in 900:
+	var billed_in_band := false
+	for i in 1200:
 		await w.get_tree().physics_frame
 		if not is_instance_valid(hull):
 			break
-		if hull.global_position.y > bot_y:
+		var z := String((w.call("dive_ladder_at", hull.global_position)
+			as Dictionary).get("part", ""))
+		if z == "bottom":
+			billed_in_band = true
+		elif billed_in_band and z == "calm":
 			cross_s = float(i + 1) / 60.0
 			break
 	Input.action_release("ship_down")
 	_ok(is_instance_valid(hull), "the crossing did not destroy the hull outright")
 	if not is_instance_valid(hull):
-		_restore_levers(levers)
+		_hand_back_the_sky(w, pl, levers, body_was)
 		return
 	var sites := DiveRun.seal_sites(hull.solid_bounds.size.x, DiveRun.BEAM_REF)
 	var paid := before - hull.hull_integrity
-	print("    ~ the seal: band %.0f px, crossing %.2f s at %.0f px/s, %d sites, %.0f hp (%.0f%% of %.0f)"
-		% [band_px, cross_s, band_px / maxf(cross_s, 0.001), sites, paid,
-			paid / pool * 100.0, pool])
-	_ok(cross_s > 0.0, "a full DOWN stick crosses the band in %.2f s" % cross_s)
-	_ok(paid > 0.0, "...and the grind BILLED it (%.0f hp of structure)" % paid)
-	_ok(paid / pool > 0.15 and paid / pool < 0.55,
-		"...for %.0f%% of the hull's pool at %d sites (target ≈ 30 %%)"
-			% [paid / pool * 100.0, sites])
+	print("    ~ the crossing: %.2f s through a %.0f px band, %d sites, %.0f hp (%.0f%% of %.0f)"
+		% [cross_s, band_px, sites, paid, paid / pool * 100.0, pool])
+	_ok(cross_s > 0.0,
+		"a full DOWN stick outruns the carry THROUGH the bottom band and into the calm one rung lower (%.2f s)"
+			% cross_s)
+	_ok(paid > 0.0, "...and the wall BILLED it (%.0f hp of structure)" % paid)
 
-	# --- 2b. THE GRIND'S OWN RATE ------------------------------------------
-	# The grind is `rate × time` and nothing else, so a second parked in a band
-	# costs `sites × dive_seal_grind` whichever way the hull is pointing. Measured
-	# over two seconds rather than asserted from the constants, because the site
-	# count is derived from a live beam and the tick is a 4 Hz accumulator.
-	#
-	# THE ASSISTANT IS SENT AWAY FOR THIS ONE MEASUREMENT. A run posts a crewman
-	# at the repair station and `repair_cell` refunds mended structure into the
-	# integrity pool (v0.140.0), which is ~150 hp/s of the 300 the seal takes —
-	# that is why the crossing above bills 22 % of the pool net where the gross
-	# grind is 44 %. Both numbers are real; this one is the seal's.
-	Tunables.set_value("dive_assistant", false)
-	hull.menders_running = false
-	_park_at(hull, pl, Vector2(band_x, (top_y + bot_y) * 0.5))
+	# --- 4. THE WALLS BILL, THE CALM DOES NOT -----------------------------
+	# The grind is `rate × time` and nothing else, so a second parked in a wall
+	# costs `sites × dive_seal_grind`. Measured over two seconds rather than
+	# asserted from the constants, because the site count comes off a live beam.
+	# THE ASSISTANT IS AWAY: `repair_cell` refunds ~150 hp/s into the pool.
+	var col_half: float = float(w.call("_dive_tile_w")) \
+		* float((w.get("_dive_ladder_conf") as Dictionary).get("cw", 2.0))
+	var wall_x := lane_x
+	for probe_x in [cx - col_half + band_px * 0.5, cx + col_half - band_px * 0.5]:
+		var ph: Dictionary = w.call("dive_ladder_at", Vector2(float(probe_x), calm_at))
+		if String(ph.get("zone", "")) == "band":
+			wall_x = float(probe_x)
+			break
+	var in_wall: Dictionary = w.call("dive_ladder_at", Vector2(wall_x, calm_at))
+	_ok(String(in_wall.get("zone", "")) == "band",
+		"the sinking column's wall is %.0f px off its centre line (%s)"
+			% [wall_x - cx, in_wall.get("part", "")])
+	_park_at(hull, pl, Vector2(wall_x, calm_at))
 	hull.hull_integrity = hull.hull_integrity_max
 	await w.get_tree().physics_frame
 	var hov0 := hull.hull_integrity
@@ -2743,121 +2828,113 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 	var per_s := (hov0 - hull.hull_integrity) / 2.0 if is_instance_valid(hull) else 0.0
 	var want_s := float(sites) * Tunables.get_num("dive_seal_grind")
 	_ok(per_s > want_s * 0.7 and per_s < want_s * 1.3,
-		"parked in a live band, unmended, the hull sheds %.0f hp/s — %d sites × %.0f (%.0f expected, %.1f s to kill a %.0f pool)"
+		"parked in a WALL, unmended, the hull sheds %.0f hp/s — %d sites × %.0f (%.0f expected, %.1f s to kill a %.0f pool)"
 			% [per_s, sites, Tunables.get_num("dive_seal_grind"), want_s,
 				pool / maxf(per_s, 1.0), pool])
-	Tunables.set_value("dive_assistant", true)
-	if is_instance_valid(hull):
-		hull.hull_integrity = hull.hull_integrity_max
-
-	# --- 2c. A BODY CANNOT CROSS (§3.5) ------------------------------------
-	# Dropped into the band from above at a real falling speed. The band must
-	# THROW IT BACK OUT OF THE TOP — a shipless run does not get past a live seal
-	# — and charge it on the way. The person is stepped off the helm for this and
-	# put straight back after.
-	if pl.is_piloting():
-		pl.disembark()
+	# ...and the calm is the FREE half of the ladder. Riding a rectangle down
+	# costs nothing; being caught by its wall is the whole price.
+	_park_at(hull, pl, Vector2(lane_x, calm_at))
+	hull.hull_integrity = hull.hull_integrity_max
 	await w.get_tree().physics_frame
-	# NEAR THE TOP LIP, and deliberately: a body pays 18 hp/s of ONE life, so a
-	# climb from the band's centre spends most of a run's health proving a point
-	# the first few hundred pixels already prove. (Propping the pool up instead
-	# does not work — `Player` clamps health to its max, so the loop ran the
-	# person to death and lost the run under every check that followed.)
-	#
-	# THE PERSON IS MENDED TO FULL FIRST, AND PUT BACK AFTER. A run has ONE life:
-	# a body that walked into this check already hurt by the picket checks above
-	# can be killed by four seconds of toll, and a run lost HERE fails the dunk
-	# and the Leviathan several minutes later with nothing pointing back. (It did,
-	# on one seed in five.) The pool is restored below, so the check still costs
-	# the run exactly nothing.
-	Tunables.set_value("fall_damage", 0.0)
-	var hp0: float = pl.health
-	pl.health = pl.max_health
-	var entry := top_y + band_px * 0.15
-	pl.global_position = Vector2(band_x, entry)
-	pl.velocity = Vector2.ZERO
-	var thrown := false
+	var calm0 := hull.hull_integrity
 	for i in 120:
 		await w.get_tree().physics_frame
-		pl.velocity.x = 0.0
-		if pl.global_position.y < top_y:
-			thrown = true
+		if not is_instance_valid(hull):
 			break
-	var body_paid: float = pl.max_health - pl.health
-	pl.health = pl.max_health
-	_ok(thrown,
-		"a body standing in a live band is thrown OUT of the top (%.0f px up, %.1f hp paid)"
-			% [entry - pl.global_position.y, body_paid])
-	_ok(body_paid > 1.0,
-		"...and it paid %.1f hp for the attempt (toll %.0f/s)"
-			% [body_paid, DiveRun.SEAL_BODY_TOLL])
-	# ...and one DROPPED into it at speed never reaches the far side. The band's
-	# net acceleration on a body is upward everywhere inside it, so the deepest a
-	# fall can reach is `v² / 2a` — a fraction of a 4,483 px band.
-	#
-	# LANDINGS ARE OFF for this drop: a body thrown in at 8,000 px/s that finds a
-	# rock under the band dies of the LANDING, not of the seal, and that ends the
-	# run under every check downstream. This measures how deep the wind lets a
-	# fall get; `fall_damage` is somebody else's lever and it goes straight back.
-	Tunables.set_value("fall_damage", 0.0)
-	pl.global_position = Vector2(band_x, top_y + 4.0)
-	pl.velocity = Vector2(0.0, 8000.0)
-	var deepest_y: float = pl.global_position.y
+	var calm_paid: float = calm0 - hull.hull_integrity if is_instance_valid(hull) else 0.0
+	_ok(calm_paid < want_s * 0.1,
+		"...while two seconds in the CALM cost %.0f hp — the carry is free" % calm_paid)
+	Tunables.set_value("dive_assistant", bool(levers["dive_assistant"]))
+
+	# --- 5. RULING 6: THE PERIMETER IS A CHUTE, NOT A TRAP ----------------
+	# The owner: *"it should hinder, not fully impede"*. Three things make the
+	# perimeter a chute rather than an orbit, and all three are properties of the
+	# FIELD AT A POINT — which is why they are read off `dive_ladder_wind_at`
+	# rather than flown. The pure suite proves no tracer ever circles
+	# (`run_tests._test_dive_ladder`, 4,000-step integration at the shipped size);
+	# what only 8× can say is what the composed vector in WORLD PIXELS does, and
+	# a flight would need four minutes of world to walk one 134,800 px band.
+	var top_at := 0.0
+	var found_top := false
+	y_scan = calm_at
+	for i in 4000:
+		if String((w.call("dive_ladder_at", Vector2(cx, y_scan))
+				as Dictionary).get("part", "")) == "top":
+			top_at = y_scan
+			found_top = true
+			break
+		y_scan += step_px
+	_ok(found_top, "a top band to be caught by, %.0f px below the calm"
+		% (top_at - calm_at))
+	if found_top:
+		var caught: Vector2 = w.call("dive_ladder_wind_at", Vector2(cx, top_at), beta)
+		_ok(caught.x < 0.0 and caught.y > 0.0,
+			"the top band takes a stalled hull LEFT and DOWN (%.0f, %.0f) — into the down-wall"
+				% [caught.x, caught.y])
+	var down_wall: Vector2 = w.call("dive_ladder_wind_at",
+		Vector2(cx - col_half + band_px * 0.5, calm_at), beta)
+	var up_wall: Vector2 = w.call("dive_ladder_wind_at",
+		Vector2(cx + col_half - band_px * 0.5, calm_at), beta)
+	# THE DOWN-WALL SINKS FASTER THAN ITS OWN RECTANGLE, and that is the whole
+	# exit: a hull the wall has hold of loses altitude AGAINST the stack, so it
+	# falls out of the bottom of the rectangle that caught it instead of riding
+	# it forever. A wall that merely matched the carry would be the trap.
+	_ok(down_wall.y > sink_px * 1.05,
+		"the DOWN-wall sinks at %.0f px/s against the stack's %.0f — %.0f s of wall, then the rung below"
+			% [down_wall.y, sink_px,
+				span_px / float(Tunables.get_int("dive_ladder_rungs"))
+					/ maxf(down_wall.y - sink_px, 1.0)])
+	# ...and the UP-wall is the ruling's other half: at the shipped 55 px/s of
+	# circulation against a 125 px/s stack it does not lift you, it SLOWS the
+	# fall. The number is printed rather than asserted about, because "how much
+	# of the carry does a wall cancel" is the tuning question the owner owes an
+	# answer to (§11 keeps `SEAL_AIR_SPEED` from the seal, unchanged).
+	_ok(up_wall.y < down_wall.y,
+		"...while the UP-wall only slows one (%.0f px/s against the down-wall's %.0f, carry %.0f)"
+			% [up_wall.y, down_wall.y, sink_px])
+	# ONE FLOWN CONFIRMATION, in the wall the grind check already certified as
+	# open air: a stalled hull put in the down-wall really does sink faster than
+	# the stack, so the field above is not arithmetic about a hull that would
+	# behave some other way.
+	_park_at(hull, pl, Vector2(wall_x, calm_at))
+	await w.get_tree().physics_frame
 	for i in 90:
 		await w.get_tree().physics_frame
-		pl.velocity.x = 0.0
-		deepest_y = maxf(deepest_y, pl.global_position.y)
-		if pl.global_position.y < top_y:
-			break
-	_ok(deepest_y < bot_y,
-		"a body dropped into it only reaches %.0f px of %.0f — a shipless run cannot pass a live seal"
-			% [deepest_y - top_y, band_px])
-	# ...and the person is put back WHOLE, not back to the number they walked in
-	# with. This check spends twenty-odd seconds of world, and GRIT regen would
-	# have mended them over that time anyway — clamping the pool back down to the
-	# entry number is not neutral, it is a debt handed to the next check, and it
-	# is what made the dunk's twenty seconds of deep air fatal on some seeds.
-	Tunables.set_value("fall_damage", levers["fall_damage"])
-	pl.health = pl.max_health
-	if hp0 < pl.max_health:
-		print("    ~ the body walked in at %.0f hp and leaves mended (regen would have)"
-			% hp0)
-	_ok(String(run.get("outcome")) == "",
-		"the body's toll never spent the run's one life (outcome '%s', %.0f hp)"
-			% [String(run.get("outcome")), pl.health])
-	pl.global_position = hull.to_global(hull.local_pos_of(hull.helm_cells[0]))
-	pl.velocity = Vector2.ZERO
-	await w.get_tree().physics_frame
-	pl.board(hull, hull.helm_cells[0])
-	for i in 3:
-		await w.get_tree().physics_frame
-	if is_instance_valid(hull):
-		hull.hull_integrity = hull.hull_integrity_max
+	var vy_wall: float = hull.linear_velocity.y if is_instance_valid(hull) else 0.0
+	var wall_hit: Dictionary = w.call("dive_ladder_at", Vector2(wall_x, calm_at))
+	_ok(vy_wall > sink_px * 1.05 or String(wall_hit.get("part", "")) == "right",
+		"...and a stalled hull in the %s wall is carried at %.0f px/s, not held (stack %.0f)"
+			% [wall_hit.get("part", "?"), vy_wall, sink_px])
 
-	# --- 3. SYMMETRIC, WITH ONE EXCEPTION (§0 call 7) ---------------------
-	var mid := Vector2(band_x, (top_y + bot_y) * 0.5)
-	var stream: float = float(w.call("dive_seal_speed_at", mid, beta, 0))
-	_ok(stream > 0.0, "the live band at depth 2 blows %.0f px/s upward" % stream)
-	_ok(is_zero_approx(float(w.call("dive_seal_speed_at", mid, beta, 2))),
-		"...but depth 2's OWN garrison feels nothing in it — the band is its house")
-	_ok(is_equal_approx(float(w.call("dive_seal_speed_at", mid, beta, 3)), stream),
-		"...while a picket from depth 3 caught in it pays the full stream")
-	# MASS BEATS IT, in the world rather than on paper.
-	var dart: float = float(w.call("dive_seal_speed_at", mid, beta * 6.0, 0))
-	_ok(dart < stream * 0.3,
-		"a dart 6× as dense per beam feels %.0f px/s, not %.0f — ruling 3, measured"
-			% [dart, stream])
-
-	# --- 4. THE LOCK ------------------------------------------------------
+	# --- 6. RULING 9: EVERYTHING PAYS THE WALLS, AND A CLEAR BUYS TEMPO ---
+	# The seal's own-depth exemption is gone with the fixed bands it was written
+	# for. A rectangle that sinks through the whole sky is nobody's house.
+	var wall_pos := Vector2(wall_x, calm_at)
+	var mine_w: Vector2 = w.call("dive_weather_for", wall_pos, beta, 0)
+	var theirs: Vector2 = w.call("dive_weather_for", wall_pos, beta, 2)
+	_ok(mine_w.is_equal_approx(theirs) and not mine_w.is_zero_approx(),
+		"a depth-2 picket in a wall feels EXACTLY what you feel (%s) — no house any more"
+			% mine_w)
+	# MASS BEATS IT, in the world rather than on paper: only the circulation is
+	# scaled by β, the carry is the rectangle moving and weighs nothing.
+	var dart: float = float(w.call("dive_ladder_wall_px", beta * 6.0))
+	_ok(dart < wall_px * 0.3,
+		"a dart 6× as dense per beam feels %.0f px/s of wall, not %.0f — ruling 3, measured"
+			% [dart, wall_px])
+	# ...and clearing a depth no longer opens anything. It speeds the stack up.
 	var tw := Tunables.get_num("dive_zone_tile_widths")
+	var sink_before: float = float(w.call("dive_ladder_sink_px"))
 	for k in DiveRun.depth_keys(run.seed_v, 2, tw):
 		run.mark_garrison_killed(String(k))
+	var sink_after: float = float(w.call("dive_ladder_sink_px"))
 	_ok(run.seal_open(run.seed_v, 2, tw)
-			and is_zero_approx(float(w.call("dive_seal_speed_at", mid, beta, 0))),
-		"kill depth 2's last standing picket and the band stops blowing — for good")
+			and not (w.call("dive_ladder_wind_at", wall_pos, beta) as Vector2).is_zero_approx(),
+		"clearing depth 2 does NOT open a door — the wall is still blowing")
+	_ok(is_equal_approx(sink_after, sink_before * (1.0 + DiveRun.LADDER_CLEAR_TEMPO)),
+		"...it buys TEMPO: the stack goes %.0f px/s → %.0f (+%.0f%%, ruling 9)"
+			% [sink_before, sink_after, DiveRun.LADDER_CLEAR_TEMPO * 100.0])
 	run.garrison_killed.clear()
-
-	# THE KEY RIDES THE BODY, and a death writes it down.
+	# THE KEY STILL RIDES THE BODY, and a death still writes it down.
 	var key := String(DiveRun.depth_keys(run.seed_v, 4, tw)[0])
 	var marked := w.call("_dive_spawn_picket", "hulk",
 		pl.global_position + Vector2(12000.0, 0.0), key) as Ship
@@ -2867,17 +2944,14 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 	if marked != null:
 		w.call("_dive_explode_ship", marked)
 		_ok(run.garrison_is_killed(key), "...and its death marks that key KILLED")
-
-	# ...BUT A CULL IS NOT A KILL (§2.4). The survivor goes back to PENDING, which
-	# is the whole reason a half-fought seal can never deadlock.
+	# ...BUT A CULL IS NOT A KILL (§2.4) — the tempo can never be bought by
+	# flying away from a fight.
 	var key2 := String(DiveRun.depth_keys(run.seed_v, 4, tw)[0])
 	run.garrison_killed.erase(key2)
 	run.mark_garrison_spawned(key2)
 	var doomed := w.call("_dive_spawn_picket", "hulk",
 		pl.global_position + Vector2(12000.0, 0.0), key2) as Ship
 	await w.get_tree().physics_frame
-	# ...and then flown away from. Moved rather than born out there: a spawn
-	# point past the world's own edge is not a spawn at all.
 	if doomed != null and is_instance_valid(doomed):
 		doomed.global_position = pl.global_position + Vector2(0.0, 400000.0)
 	w.call("_dive_cull_the_wake", 2.0)
@@ -2887,98 +2961,130 @@ func _check_dive_seal(w: Node, pl, run, terrain, cx: float) -> void:
 	if doomed != null and is_instance_valid(doomed):
 		doomed.queue_free()
 
-	# --- 5. WHAT THE PAINTER IS HANDED (slice 7's data half) ---------------
-	# `SealBands` holds no logic, so the only testable seam is the provider: plain
-	# Rects, bools and counts, and only the bands the camera could see.
-	_park_at(hull, pl, Vector2(band_x, (top_y + bot_y) * 0.5))
-	await w.get_tree().physics_frame
-	var rows: Array = w.call("seal_bands")
-	var here: Dictionary = {}
+	# --- 7. RULING 8: SHELTER IS HORIZONTAL ENCLOSURE ---------------------
+	# The owner, verbatim: "the landmass has to horizontally enclose these things
+	# (not vertically), necessarily". Built rather than found: an island of the
+	# right shape at the right altitude is not something a seeded world owes a
+	# test, and the claim is about the SCAN, not about the generator.
+	var pocket := Vector2(lane_x, calm_at)
+	var reach_px: float = float(w.call("dive_shelter_reach_px"))
+	var cell_w: float = terrain.call("cell_px")
+	var here_cell: Vector2i = terrain.call("world_to_cell", pocket)
+	var arm := maxi(2, int(reach_px / cell_w) / 3)
+	_ok(String((w.call("dive_ladder_at", pocket) as Dictionary).get("zone", "")) != "none"
+			and not bool(w.call("dive_wind_sheltered", pocket)),
+		"the open lane is IN the ladder and NOT sheltered before anything is built")
+	# ROOF AND FLOOR FIRST, and nothing else: vertical enclosure must count for
+	# nothing, because the loops sweep vertically and a roof stops none of it.
+	for dx in range(-arm, arm + 1):
+		terrain.call("set_cell", Vector2i(here_cell.x + dx, here_cell.y - arm),
+			TerrainDB.Type.STONE)
+		terrain.call("set_cell", Vector2i(here_cell.x + dx, here_cell.y + arm),
+			TerrainDB.Type.STONE)
+	_ok(not bool(w.call("dive_wind_sheltered", pocket)),
+		"a roof and a floor shelter NOTHING — the loops sweep vertically (ruling 8)")
+	# ...now the two WALLS, and only then is it a pocket.
+	for dy in range(-arm, arm + 1):
+		terrain.call("set_cell", Vector2i(here_cell.x - arm, here_cell.y + dy),
+			TerrainDB.Type.STONE)
+	_ok(not bool(w.call("dive_wind_sheltered", pocket)),
+		"...nor does rock on ONE side — enclosure means left AND right")
+	for dy in range(-arm, arm + 1):
+		terrain.call("set_cell", Vector2i(here_cell.x + arm, here_cell.y + dy),
+			TerrainDB.Type.STONE)
+	_ok(bool(w.call("dive_wind_sheltered", pocket)),
+		"rock LEFT and RIGHT at one altitude IS shelter (%d cells out, reach %.0f px)"
+			% [arm, reach_px])
+	_ok((w.call("dive_ladder_wind_at", pocket, beta) as Vector2).is_zero_approx(),
+		"...and a sheltered pocket has no ladder wind in it at all")
+	_ok((w.call("dive_weather_for", pocket, beta, 0) as Vector2)
+			.is_equal_approx(w.call("dive_weather_at", pocket, 0)),
+		"...so the only weather left in it is the ambient")
+	# PUT THE SKY BACK. A block of stone left in the lane is an island the dunk
+	# and the Leviathan never asked for.
+	for dx in range(-arm, arm + 1):
+		for dy in range(-arm, arm + 1):
+			if absf(float(dx)) == float(arm) or absf(float(dy)) == float(arm):
+				terrain.call("set_cell", Vector2i(here_cell.x + dx,
+					here_cell.y + dy), TerrainDB.Type.AIR)
+	_ok(not bool(w.call("dive_wind_sheltered", pocket)),
+		"...and the pocket is dug back out behind the check")
+
+	# --- 8. WHAT THE PAINTER IS HANDED ------------------------------------
+	# `SealBands` holds no logic, so the only testable seam is the provider:
+	# plain Rects, unit directions and bools, culled to what the camera can see.
+	_park_at(hull, pl, Vector2(lane_x, calm_at))
+	for i in 3:
+		await w.get_tree().physics_frame
+	var rows: Array = w.call("ladder_bands")
+	var walls := 0
+	var calms := 0
+	var bad_dir := 0
 	for r_v in rows:
 		var r := r_v as Dictionary
-		if int(r.get("depth", 0)) == 2:
-			here = r
-	_ok(not here.is_empty(),
-		"the painter is handed the band it is looking at (%d visible)" % rows.size())
-	if not here.is_empty():
-		var rr := here.get("rect", Rect2()) as Rect2
-		_ok(absf(rr.size.y - band_px) < 2.0,
-			"...as a world-space rect of the right height (%.0f px vs %.0f)"
-				% [rr.size.y, band_px])
-		_ok(rr.position.y <= top_y + 1.0 and rr.end.y >= bot_y - 1.0,
-			"...spanning the band's own lips")
-		_ok(bool(here.get("live", false)) and int(here.get("of", 0)) > 0,
-			"...marked LIVE with a count on it (%d of %d left)"
-				% [int(here.get("left", 0)), int(here.get("of", 0))])
-	# ...and a cleared band still reaches the painter, marked dead, so the layer
-	# can draw the reward instead of simply losing the band.
-	for k5 in DiveRun.depth_keys(run.seed_v, 2, tw):
-		run.mark_garrison_killed(String(k5))
-	var dead_rows: Array = w.call("seal_bands")
-	var dead_here := false
-	for r_v2 in dead_rows:
-		var r2 := r_v2 as Dictionary
-		if int(r2.get("depth", 0)) == 2 and not bool(r2.get("live", true)):
-			dead_here = true
-	_ok(dead_here, "a cleared band is still handed over, marked dead")
-	# ...and the status row the HUD counts down carries the same answer.
+		if bool(r.get("band", false)):
+			walls += 1
+		else:
+			calms += 1
+		if not is_equal_approx((r.get("dir", Vector2.ZERO) as Vector2).length(), 1.0):
+			bad_dir += 1
+	_ok(rows.size() > 0 and calms > 0,
+		"the painter is handed the pieces it is looking at (%d: %d walls, %d calms)"
+			% [rows.size(), walls, calms])
+	_ok(bad_dir == 0,
+		"...each with a UNIT direction to run its streaks along (%d malformed)" % bad_dir)
+	# ...and the status row the HUD reads carries the tempo, not a door.
 	run.set("depth", 2)
 	var st := w.call("dive_status") as Dictionary
 	var seal_row := st.get("seal", {}) as Dictionary
-	_ok(not seal_row.is_empty() and not bool(seal_row.get("live", true))
-			and int(seal_row.get("left", -1)) == 0,
-		"dive_status agrees with it (%s)" % seal_row)
-	# ...AND LEAVE THE SKY OPEN BEHIND IT. Every band of this run is marked dead
-	# on the way out, deliberately, because the checks that follow fly this same
-	# hull for another twenty seconds with nobody at the stick: a hull left
-	# hovering near a live band SINKS into it (measured: 0.708 → 0.657 of the
-	# world's height in one dunk), is ground apart at 300 hp/s, and takes the
-	# person at its helm down with the husk — 88 hp, then a lost run, in a check
-	# five minutes away that says nothing about seals. The seal has been measured
-	# by here; what the rest of the suite needs from it is that it is not in the
-	# way. (Parking higher was tried first and only moved the seed at which it
-	# happens.)
-	var tw_all := Tunables.get_num("dive_zone_tile_widths")
-	for d_all in range(2, DiveRun.DEPTHS):
-		for k_all in DiveRun.depth_keys(run.seed_v, d_all, tw_all):
-			run.mark_garrison_killed(String(k_all))
-	# HAND THE RUN BACK OTHERWISE AS IT WAS FOUND. The dunk runs twenty seconds of
-	# world after this and the Leviathan check needs a live run at the end of it.
-	# Leaving the committed hull PARKED IN A LIVE BAND fails both: at 300 hp/s it
-	# grinds through a 3,000 pool in ten seconds, explodes, and drops the person
-	# aboard — a lost run, on some seeds, several checks later, with nothing
-	# pointing back here. So the hull goes back to open air, with a full pool and
-	# the levers reset.
-	#
-	# ABOVE the band rather than at the rung's own altitude, which was the first
-	# fix and was worse: the rung IS the landing shelf, so parking there dropped
-	# the hull onto stone and twenty seconds of grinding contact took 88 hp off
-	# the person at its helm — half the seeds then lost the run inside the dunk.
-	# This altitude is inside the empty column `_open_air` already certified.
+	_ok(not seal_row.is_empty() and float(seal_row.get("tempo", 0.0)) >= 1.0,
+		"dive_status carries the tempo the HUD counts down to (%s)" % seal_row)
+
+	# --- HAND THE RUN BACK AS IT WAS FOUND --------------------------------
+	# THE LADDER GOES OFF BEHIND THIS CHECK, and that is a deliberate handoff,
+	# not laziness. The checks below fly this same hull for another twenty
+	# seconds with nobody at the stick, and the ladder is a 1,000 px/s conveyor
+	# over the whole sky: a hull left in it drifts a rung and a half into
+	# whatever is down there while the Leviathan check is measuring a maw. The
+	# seal this replaced ended the same way for the same reason (it killed every
+	# garrison to open every band); the ladder has no door to open, so the switch
+	# is the switch. Everything the ladder claims has been measured by here.
 	if is_instance_valid(hull):
 		hull.hull_integrity_max = pool
 		hull.hull_integrity = pool
-		_park_at(hull, pl, Vector2(band_x, (top_y + bot_y) * 0.5 - band_px * 1.4))
+		_park_at(hull, pl, Vector2(lane_x, calm_at))
 		await w.get_tree().physics_frame
-	var still_live := 0
-	for d_live in range(2, DiveRun.DEPTHS):
-		if bool(w.call("dive_seal_live", d_live)):
-			still_live += 1
-	_ok(still_live == 0,
-		"...and the run is handed on with every band dead (%d still blowing)"
-			% still_live)
-	# The helm goes back and the person goes back to their own feet.
+	_hand_back_the_sky(w, pl, levers, body_was)
+	_ok(not bool(w.call("dive_ladder_on")),
+		"...and the sky is handed on still, so the checks below measure their own weather")
+	await w.get_tree().physics_frame
+	print("    ~ after the ladder: outcome '%s', body %.0f hp, altitude %.3f, piloting %s"
+		% [String(run.get("outcome")), pl.health,
+			float(w.call("_player_altitude_frac")), str(pl.is_piloting())])
+	_ok(String(run.get("outcome")) == "" and not pl.is_piloting(),
+		"the ladder check hands the run back alive, with the person on their own feet")
+
+
+## Hand the sky back to the checks below `_check_dive_ladder`: the borrowed
+## levers, the ladder OFF, and the person back on their own feet where they were
+## found, whole.
+##
+## ONE PLACE because every early return owes all four. The ladder is a 1,000 px/s
+## conveyor over the whole sky and the checks downstream fly a parked hull for
+## twenty seconds at a time — an early return that left it blowing carried the
+## run into the lava and failed the Leviathan five minutes later with nothing
+## pointing back here (measured, first pass).
+func _hand_back_the_sky(w: Node, pl, levers: Dictionary, body_was: Vector2) -> void:
+	_restore_levers(levers)
+	Tunables.set_value("dive_ladder_enabled", false)
+	w.call("_dive_advance_ladder", 0.0)
+	if pl == null or not is_instance_valid(pl):
+		return
 	if pl.is_piloting():
 		pl.disembark()
 	pl.global_position = body_was
 	pl.velocity = Vector2.ZERO
-	await w.get_tree().physics_frame
-	print("    ~ after the seal: outcome '%s', body %.0f hp, altitude %.3f, piloting %s"
-		% [String(run.get("outcome")), pl.health,
-			float(w.call("_player_altitude_frac")), str(pl.is_piloting())])
-	_ok(String(run.get("outcome")) == "" and not pl.is_piloting(),
-		"the seal check hands the run back alive, with the person on their own feet")
-	_restore_levers(levers)
+	pl.health = pl.max_health
 
 
 ## Put back exactly the levers a check borrowed, at the values it found them at.
@@ -3431,6 +3537,15 @@ func _check_dive_deck_at_8x(world: Node) -> void:
 		_ok(false, "the 8x world can start a dive")
 		return
 	world.call("begin_dive")
+	# THE LADDER IS OFF FOR THIS WHOLE CHECK (Q-V), and at the TOP of it rather
+	# than beside the measurement that needs it: since v0.159.0 the seal is two
+	# columns of wind loops whose calm carries everything in the sky down at
+	# 1,000 px/s, so a ladder left blowing through the palette and build sections
+	# above drags the starter thousands of px before the rate stick is ever
+	# measured — and how far depends on how long those sections took, which is
+	# how a deterministic check starts failing one run in two. Measured in
+	# `_check_dive_ladder`, on the dive-native scene, where it belongs.
+	Tunables.set_value("dive_ladder_enabled", false)
 	await world.get_tree().physics_frame
 	var pl = world.get("player")
 	var fleet = world.get("fleet")

@@ -402,8 +402,8 @@ var _edge_markers: EdgeMarkers
 ## The deep-band ember haze (maps/world/deep_fog.gd): a screen-space wash that
 ## thickens as you descend. Under the HUD, over the world; driven by fog_density().
 var _deep_fog: DeepFog
-## The Dive's lethal wind bands (maps/world/seal_bands.gd): world-space, behind
-## terrain, fed by `seal_bands()`. Silent outside a run.
+## THE LADDER, painted (maps/world/seal_bands.gd): world-space, behind terrain,
+## fed by `ladder_bands()`. Silent outside a run.
 var _seal_bands: SealBands
 
 ## Which balloon SIZE Q tethers while the build palette selects "balloon"
