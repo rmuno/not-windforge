@@ -122,10 +122,17 @@ const LIFT_PER_MASS := 980.0
 ## WHY A SEPARATE CONSTANT AND NOT 45000 IN THE TABLE: `draw` is a sibling column
 ## and must NOT follow. A propeller pulls 1.5× the force for the same 900 power —
 ## the owner asked for stronger props, not hungrier ones, and the starter has no
-## supply headroom to pay for a 1.5× bill (see DECISIONS). Baking the force into
-## the table would also collapse the two into one number the next reader cannot
-## tell apart. `Ship.thrust_mult` stays the CARD's channel at 1.0, so a taken
-## card still reads as a card and stacks on top of this (1.5 × 1.35).
+## supply headroom to pay for a 1.5× bill. MEASURED (`tools/lateral_probe.gd`,
+## the shipped starter under full lateral throttle): supply 2,304,000 against a
+## draw of 2,003,200, so 300,800 spare — 15 % over the bill. Its h-props are
+## ~1,228,800 of that draw, and billing them 1.5× would ask 2,618,400 of a
+## 2,304,000 supply: a permanent brownout to ~88 % power, i.e. the ship flies
+## WORSE the moment you make its props stronger. The GEAR line of both probe
+## runs is identical (`power 2304000 vs draw 2003200` at 1.0 and at 1.5), which
+## is this paragraph as a measurement. Baking the force into the table would
+## also collapse the two into one number the next reader cannot tell apart.
+## `Ship.thrust_mult` stays the CARD's channel at 1.0, so a taken card still
+## reads as a card and stacks on top of this (1.5 × 1.35).
 ##
 ## Live lever: F2 → World → "Prop strength" (`Tunables.get_num("prop_strength")`
 ## is the read; 1.0 is the pre-2026-09-07 force). Applied at USE TIME in

@@ -10626,13 +10626,29 @@ func _test_prop_strength_is_the_base_dial() -> void:
 		var s := _make_ship(cells)
 		s.position = Vector2(0, -1000)
 		s.gravity_scale = 0.0   # the question is prop force, not the fall
+		# ...AND IN ONE AIR. `density` multiplies the prop force and thins with
+		# ALTITUDE (`air_density_at`: 1.0 at sea level, 0.05 at the ceiling), so
+		# an upward run climbs into weaker air while a sideways one never leaves
+		# its own — and the stronger props would spend part of their extra force
+		# buying thinner air. Flooring the density is the Dive's own stamp used
+		# as a test instrument: the question here is the FORCE, and altitude is a
+		# different question. (At the distances this check flies the effect is
+		# under a percent; it is pinned anyway so the two axes are the same
+		# measurement and not two.)
+		s.air_density_floor = 1.0
 		s.thrust_mult = card
 		if axis == "x":
 			s.thrust_input.x = 1.0
 		else:
 			s.thrust_input.y = 1.0
+		var from := s.position
 		await _step(60)
-		var moved: float = s.position.x if axis == "x" else 1000.0 - s.position.y
+		# DISPLACEMENT FROM ITS OWN START, both axes. Written as `1000.0 -
+		# position.y` this carried a constant +2,000 px (the ship starts at
+		# y = -1000), which diluted a true 1.50 into a reported 1.08 and a true
+		# 2.03 into 1.16 — a gate that would have passed a prop dial of 1.0.
+		var moved: float = (s.position.x - from.x) if axis == "x" \
+			else (from.y - s.position.y)
 		s.queue_free()
 		await process_frame
 		return moved
