@@ -48,6 +48,9 @@ var seed_v := 0
 
 var _canvas: Control
 var _seed_label: Label
+## The line under the seed: whether this chart is the run you just flew or a
+## specimen. Held because that answer changes when you reroll.
+var _seed_note: Label
 ## How many times the chart has actually painted. A test asserting "the redraw
 ## did not crash" is vacuous if the redraw never happened, and whether a headless
 ## Godot calls `_draw` is exactly the sort of thing that quietly changes.
@@ -56,8 +59,14 @@ var draws := 0
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# THE SKY YOU JUST FLEW, if you flew one this session (v0.154.0). A run's
+	# seed now decides the ground as well as the ladder, so the chart of
+	# `DiveRun.last_seed` IS the map of the run whose ledger you just read —
+	# which is the map anyone opening this screen after a dive came for. With no
+	# run behind you it is a specimen, exactly as before, and `reroll` still
+	# walks away from either.
 	if seed_v == 0:
-		seed_v = randi()
+		seed_v = DiveRun.last_seed if DiveRun.last_seed != 0 else randi()
 
 	var bg := ColorRect.new()
 	bg.color = _BG
@@ -119,7 +128,7 @@ func _build_side() -> Control:
 	_seed_label.add_theme_color_override("font_color", _INK)
 	col.add_child(_seed_label)
 	_action(col, "reroll the seed", reroll)
-	_note(col, "  a real run rolls its own seed,\n  so this is a specimen sky")
+	_seed_note = _note(col, "")
 	col.add_child(HSeparator.new())
 	_action(col, "back to the title", _back)
 	return col
@@ -133,12 +142,13 @@ func _title_row(col: Control, text: String, tint: Color, size: int) -> void:
 	col.add_child(l)
 
 
-func _note(col: Control, text: String) -> void:
+func _note(col: Control, text: String) -> Label:
 	var l := Label.new()
 	l.text = text
 	l.add_theme_font_size_override("font_size", 11)
 	l.add_theme_color_override("font_color", _DIM)
 	col.add_child(l)
+	return l
 
 
 func _action(col: Control, label: String, cb: Callable) -> void:
@@ -159,6 +169,10 @@ func reroll() -> void:
 func _refresh() -> void:
 	if _seed_label != null:
 		_seed_label.text = "  seed  %d" % seed_v
+	if _seed_note != null:
+		_seed_note.text = ("  the sky of your last run —\n  reroll to study another"
+			if seed_v == DiveRun.last_seed and DiveRun.last_seed != 0
+			else "  a run rolls its own seed,\n  so this is a specimen sky")
 	if _canvas != null:
 		_canvas.queue_redraw()
 

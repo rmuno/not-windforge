@@ -67,6 +67,7 @@ func _initialize() -> void:
 	_test_fall_damage()
 	_test_backdrop_is_calm()
 	_test_dive_run()
+	_test_dive_seed()
 	_test_ship_serialize()
 	_test_ship_meta()
 	_test_ship_edit()
@@ -4758,6 +4759,61 @@ func _test_ship_editor_screen() -> void:
 				% [files, ShipEdit.file_rows().size()])
 	screen.queue_free()
 	await process_frame
+
+
+## A FRESH SEED EACH RUN, AND A WAY TO PIN ONE (owner 2026-08-30, built
+## v0.152.0). The model's half: rolling, pinning, spending the pin, remembering
+## the last one. The world's half — that the RING is regenerated from it — is
+## `tests/scale_startup_test.gd`, because it needs the Dive's own 8× scene.
+func _test_dive_seed() -> void:
+	_t("THE DIVE: a fresh seed each run, and the pin that suspends it")
+	# Leave the statics as this suite found them: they are process-wide, and a
+	# pin left behind would silently fix the seed of every later check.
+	var pin_was := DiveRun.next_seed
+	var last_was := DiveRun.last_seed
+	DiveRun.next_seed = 0
+
+	# --- Fresh, by default --------------------------------------------------
+	var seeds := {}
+	for i in 8:
+		seeds[DiveRun.new().seed_v] = true
+	_check(seeds.size() == 8, "eight runs roll eight different seeds (%d)" % seeds.size())
+
+	# --- ...and the ladder and the garrison move with it --------------------
+	var a := DiveRun.new()
+	var b := DiveRun.new()
+	_check(a.seed_v != b.seed_v, "two runs in a row are not the same run")
+	var moved := false
+	for d in range(1, DiveRun.DEPTHS + 1):
+		if not is_equal_approx(DiveRun.landing_offset(a.seed_v, d),
+				DiveRun.landing_offset(b.seed_v, d)):
+			moved = true
+	_check(moved, "...their ladders lean differently")
+	_check(DiveRun.garrison_all(a.seed_v, 3.0).hash()
+			!= DiveRun.garrison_all(b.seed_v, 3.0).hash(),
+		"...and a different garrison is standing in the sky")
+
+	# --- A PIN IS FOR ONE RUN -----------------------------------------------
+	DiveRun.next_seed = a.seed_v
+	var pinned := DiveRun.new()
+	_check(pinned.seed_v == a.seed_v, "a pinned seed is the seed the run opens with")
+	_check(DiveRun.garrison_all(pinned.seed_v, 3.0).hash()
+			== DiveRun.garrison_all(a.seed_v, 3.0).hash(),
+		"...so the same sky comes back, garrison and all")
+	_check(DiveRun.next_seed == 0, "the pin is SPENT by the run that used it")
+	_check(DiveRun.new().seed_v != a.seed_v,
+		"...so the run after a pinned one is fresh again")
+
+	# --- The last seed is remembered, which is what F2's lever re-pins -------
+	var latest := DiveRun.new()
+	_check(DiveRun.last_seed == latest.seed_v,
+		"the most recent run's seed is remembered")
+	DiveRun.next_seed = DiveRun.last_seed
+	_check(DiveRun.new().seed_v == latest.seed_v,
+		"...and re-pinning it flies that run again")
+
+	DiveRun.next_seed = pin_was
+	DiveRun.last_seed = last_was
 
 
 func _test_dive_run() -> void:
