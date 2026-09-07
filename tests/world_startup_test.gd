@@ -4143,7 +4143,9 @@ func _check_dive_run_scope(world: Node, fleet) -> void:
 	# --- A SECOND RUN STARTS FROM NOTHING -----------------------------------
 	# `begin_dive` is reachable with a run already live (its own F2 button), and it
 	# used to reset the MODEL over the top of the previous run's WORLD.
+	var first_seed: int = int(run.get("seed_v"))   # the run torn down just above
 	world.call("begin_dive")
+	var second_seed: int = int((world.get("dive") as Object).get("seed_v"))
 	world.call("begin_dive")   # ...twice, which is the case that leaked
 	await world.get_tree().physics_frame
 	var again = world.get("dive")
@@ -4164,6 +4166,36 @@ func _check_dive_run_scope(world: Node, fleet) -> void:
 		if s.is_nest and s.creature_kind == "":
 			decks += 1
 	_ok(decks <= 1, "...and exactly one launch deck in the sky, not two (%d)" % decks)
+	# --- ...AND IT IS A DIFFERENT RUN, not the same one again ---------------
+	# The owner's ruling of 2026-08-30 ("a fresh seed each run") in the smallest
+	# form the legacy world can hold it: every `begin_dive` rolls its own seed,
+	# so the ladder leans somewhere else and a different garrison is standing in
+	# the sky. The GROUND half of the ruling needs the Dive's own scene and is
+	# asserted in `tests/scale_startup_test.gd`.
+	var third_seed: int = int(again.get("seed_v")) if again != null else 0
+	_ok(first_seed != second_seed and second_seed != third_seed
+			and first_seed != third_seed,
+		"three runs, three seeds (%d / %d / %d)" % [first_seed, second_seed, third_seed])
+	_ok(DiveRun.garrison_all(second_seed, 3.0).hash()
+			!= DiveRun.garrison_all(third_seed, 3.0).hash(),
+		"...so a second run meets a different garrison than the first")
+	var st_seed: Variant = world.call("dive_status")
+	_ok(st_seed != null and int((st_seed as Dictionary).get("seed", 0)) == third_seed,
+		"...and the run says which sky it is (the ledger prints it)")
+	# THE PIN, through the same door F2's lever uses: pin the seed, open a run,
+	# get that run back. Then the pin is spent, which is what keeps "fresh" the
+	# default rather than something you have to remember to switch back on.
+	world.call("pin_dive_seed", second_seed)
+	world.call("begin_dive")
+	await world.get_tree().physics_frame
+	var pinned = world.get("dive")
+	_ok(pinned != null and int(pinned.get("seed_v")) == second_seed,
+		"a pinned seed re-opens that exact run")
+	world.call("begin_dive")
+	await world.get_tree().physics_frame
+	var unpinned = world.get("dive")
+	_ok(unpinned != null and int(unpinned.get("seed_v")) != second_seed,
+		"...and the pin is spent, so the run after it is fresh again")
 	# --- A SAVED VESSEL WIDER THAN EVERY BERTH IS REFUSED, NOT MOORED -------
 	# `user://ships` is a directory the player fills, so the deck has to survive
 	# what turns up in it. A hull the hatches cannot pass would drive itself into
