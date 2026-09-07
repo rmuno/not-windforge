@@ -3182,8 +3182,17 @@ func _settle_crush_pool_bill() -> void:
 ## divided its bruise by the struck cell's `collision_resist` and must not be
 ## armoured twice. Everything else — every shot, the mouth grab, fire, a blast —
 ## is a hit ON A CELL and pays the creature's shell tax below.
+##
+## `pool_mult` — WHAT A SHELL IS WORTH (v0.158.0, F2 "Shell cost to integrity").
+## Multiplies THE INTEGRITY POOL BILL of this hit and nothing else: blocks come
+## off for exactly `amount` either way, the way v0.155.0's crush cap left the
+## visible bite alone. Only `Shot` passes anything but 1.0, so rock, rams, fire
+## and a kraken's teeth keep the bill they had — the crush walk has its own
+## capped account, and a living creature returns above this line, so no creature
+## number moves. An unarmed hull (every ship outside a Dive run) has no pool at
+## all, which makes the whole lever dive-scoped by construction.
 func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
-		dead_out: Array = [], crush := false) -> bool:
+		dead_out: Array = [], crush := false, pool_mult := 1.0) -> bool:
 	if not blocks.has(cell):
 		return false
 	# A LIVING creature absorbs everything into its shared pool — blocks
@@ -3251,6 +3260,14 @@ func damage_cell(cell: Vector2i, amount: float, rebuild_now := true,
 	# and a picket's 600 pool died to any shell that found its bag. The pool now
 	# bills the component as the one part it is: the struck cell's own loss.
 	var structural := minf(amount, maxf(blocks[cell]["hp"], 0.0)) if blocks.has(cell) else 0.0
+	# A SHELL IS WORTH SOMETHING (v0.158.0). The cap above is right — the pool
+	# measures the ship being destroyed, not a weapon's number — but at 8× it made
+	# a 20-hp shell a 150th of a 3,000 pool, so a whole depth of enemy gunnery cost
+	# 20 net and the mender out-healed it before the next volley. `pool_mult` is
+	# the shell's worth, applied AFTER the cap so it scales the bill and not the
+	# damage. Multiplied here, once, so the crush account below banks the scaled
+	# number too if a caller ever combines the two.
+	structural *= maxf(pool_mult, 0.0)
 	for c in members:
 		if not blocks.has(c):
 			continue  # cluster map can be stale mid-batch
@@ -3847,7 +3864,7 @@ func repair_cell(cell: Vector2i, amount: float) -> bool:
 		# ship that was still dying (DESCENT §3.4).
 		var restored := minf(amount, max_hp - float(blocks[cell]["hp"]))
 		blocks[cell]["hp"] = minf(blocks[cell]["hp"] + amount, max_hp)
-		mend_integrity(restored)
+		mend_integrity(restored * _mend_refund_share())
 		# The wand heals in per-tick sips; only a visible lightening step is
 		# worth a repaint — and only of this cell's own sector (phase B).
 		if shade_bucket(blocks[cell]["hp"], max_hp) != was:
@@ -3870,8 +3887,28 @@ func repair_cell(cell: Vector2i, amount: float) -> bool:
 		_mark_redraw()
 	# A resurrected cell is hp back on the ship exactly like a mended one, so it
 	# refunds the pool the same way (see the branch above).
-	mend_integrity(minf(amount, max_hp))
+	mend_integrity(minf(amount, max_hp) * _mend_refund_share())
 	return true
+
+
+## HOW MUCH OF A REPAIR COMES BACK AS INTEGRITY (v0.158.0, F2 "Mend refund to
+## integrity"). 1.0 is the v0.140.0 behaviour this replaces the default of.
+##
+## The refund and the drain were never the same size. A hit bills the pool ONCE
+## for the struck COMPONENT (v0.149.0) — 20 for a shell into the canopy — while
+## the repair that undoes it pays per CELL, and at 8× that component is 64 cells,
+## so mending the same hole refunded up to 64× what it cost. Measured (three
+## seeds, v0.157.0 scorecard): a whole depth of enemy gunnery cost 20 of 3,000
+## net, because the station refilled the pool between volleys.
+##
+## A share, not a rate cap: the station still mends BLOCKS at exactly its old
+## speed — the ship you can see comes back the way it always did — only the run's
+## life does not come back with it. No-op on an unarmed hull, so nothing outside
+## a Dive run notices.
+func _mend_refund_share() -> float:
+	if hull_integrity_max <= 0.0:
+		return 1.0
+	return clampf(Tunables.get_num("dive_mend_refund"), 0.0, 1.0)
 
 
 ## The repair wand (owner, from the original): effectively unlimited
@@ -4123,10 +4160,10 @@ func net_remove_block(cell: Vector2i) -> void:
 		_request_remove_block.rpc_id(1, cell)
 
 
-func net_damage_cell(cell: Vector2i, amount: float) -> void:
+func net_damage_cell(cell: Vector2i, amount: float, pool_mult := 1.0) -> void:
 	if is_authority():
 		var had := blocks.has(cell)
-		_apply_combat_damage(cell, amount)
+		_apply_combat_damage(cell, amount, pool_mult)
 		# Float a damage number at the struck cell's world point — the gunfire
 		# twin of the crush's collision_damage. Emitted here (not in damage_cell)
 		# so ONLY shots float, never the crash crush; guarded by `had` so a shot
@@ -4141,7 +4178,7 @@ func net_damage_cell(cell: Vector2i, amount: float) -> void:
 		if diag != null:
 			diag.on_whale_damage(self, "shot", amount, Vector2.ZERO, false, shared_health)
 	else:
-		_request_damage.rpc_id(1, cell, amount)
+		_request_damage.rpc_id(1, cell, amount, pool_mult)
 
 
 ## Damage balloon `i` through the authority (the balloon twin of net_damage_cell:
@@ -4177,9 +4214,9 @@ func _request_balloon_damage(i: int, amount: float) -> void:
 ##     glyphs / one-way strips, so it falls back to the COALESCED full rebuild
 ##     (_rebuild_dirty, drained once per frame in _process). Combat never severs
 ##     (walls hold), so neither path needs a connectivity pass.
-func _apply_combat_damage(cell: Vector2i, amount: float) -> void:
+func _apply_combat_damage(cell: Vector2i, amount: float, pool_mult := 1.0) -> void:
 	var dead: Array = []
-	if not damage_cell(cell, amount, false, dead):
+	if not damage_cell(cell, amount, false, dead, false, pool_mult):
 		return
 	if blocks.is_empty():
 		# The last block just died — only a full rebuild emits `destroyed` and
@@ -4213,12 +4250,14 @@ func _request_remove_block(cell: Vector2i) -> void:
 
 
 @rpc("any_peer", "reliable")
-func _request_damage(cell: Vector2i, amount: float) -> void:
+func _request_damage(cell: Vector2i, amount: float, pool_mult := 1.0) -> void:
 	if not multiplayer.is_server():
 		return
 	# Same incremental / coalesced path as net_damage_cell — a client's shots
-	# must not each fire a full rebuild on the server either.
-	_apply_combat_damage(cell, amount)
+	# must not each fire a full rebuild on the server either. The shell's worth
+	# rides the request (v0.158.0): the server owns the pool, and a client's
+	# shell has to bill it the same as the server's own.
+	_apply_combat_damage(cell, amount, pool_mult)
 
 
 ## Flight input. Sent unreliably and ordered — a dropped control frame is

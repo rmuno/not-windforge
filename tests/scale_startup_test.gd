@@ -252,6 +252,9 @@ func _initialize() -> void:
 	# ...and the contact that killed the pilot at depth 4 once the canopy was
 	# fixed: one crush bill against the whole integrity pool.
 	await _check_one_contact_bills_the_pool_once()
+	# ...and the thing the v0.157.0 scorecard said none of the above could do:
+	# kill a picket with the gun.
+	await _check_a_picket_dies_to_a_few_volleys()
 
 	_finish()
 
@@ -633,6 +636,98 @@ func _check_one_contact_bills_the_pool_once() -> void:
 		% int(BlockDB.max_hp(BlockDB.Type.ENGINE)))
 	print("      BLOCKS) — the canopy's problem an order smaller, and pool-safe")
 	bank.queue_free()
+	await process_frame
+
+
+## A SHELL HAS TO BE WORTH SOMETHING (v0.158.0, off the v0.157.0 scorecard).
+##
+## Three seeds at 8× fired ~1,400 shells and killed NOTHING: a picket's 600 pool
+## against a 20-damage shell was 30 landed hits, at about one shell a second,
+## spread over the 22 bodies a descent meets. Two dials answer it — a shell bills
+## the pool `dive_shell_worth` times its damage (blocks untouched), and a picket
+## dies at `dive_picket_integrity` — and this is the check that says how many
+## landed volleys that actually is, on the REAL native-8× hulk, through the real
+## `net_damage_cell` path a `Shot` takes.
+##
+## HERE and not in the 1× suite for the standing reason (CODEMAP §2): the whole
+## finding is the eightfold. At scale 1 a hulk is 56 cells wide and its
+## components are one cell each, so neither the component bill nor the 8× cell
+## count that made a shell worthless exists to measure.
+func _check_a_picket_dies_to_a_few_volleys() -> void:
+	print("\n=== a picket dies to a few landed volleys (8x) ===\n")
+	var pool: float = Tunables.get_num("dive_picket_integrity")
+	var shell: float = Tunables.get_num("turret_damage")
+	var worth: float = Tunables.get_num("dive_shell_worth")
+	# The shipped hulk is authored NATIVE 8× — `_spawn_hulk_at` does not upscale
+	# it, so neither does this.
+	var cells: Dictionary = ShipLayout.load_cells("res://ships/hulk.ship")
+	var picket := _arena_ship(cells)
+	picket.gravity_scale = 0.0
+	picket.global_position = Vector2.ZERO
+	picket.faction = 1
+	picket.hull_integrity_max = pool
+	picket.hull_integrity = pool
+	await process_frame
+
+	# Where an enemy gunner's shell actually lands: the outer plating on the beam.
+	# Walked forward hit by hit like real fire, never the same cell twice, so no
+	# shot is billing a cell a previous shot had already worn down.
+	var skin: Array[Vector2i] = []
+	for c in picket.blocks:
+		if int(picket.blocks[c]["type"]) == BlockDB.Type.HULL:
+			skin.append(c)
+	skin.sort()
+	_ok(skin.size() > 64, "the hulk has plating to shoot (%d hull cells)" % skin.size())
+	var landed := 0
+	while picket.hull_integrity > 0.0 and landed < skin.size() and landed < 400:
+		# The exact call `Shot` makes when a shell finds a hull.
+		picket.net_damage_cell(skin[landed], shell, worth)
+		landed += 1
+	_ok(picket.hull_integrity <= 0.0,
+		"%d landed shells empty a picket's %.0f pool" % [landed, pool])
+	# The starter's two turrets face opposite ways (its `T` glyphs sit on the
+	# port and starboard edges), so one bears on a target and a volley is ONE
+	# shell — landed shells and landed volleys are the same number here.
+	_ok(landed >= 3 and landed <= 8,
+		"...which is %d landed volleys from the starter's helm (was %.0f)"
+			% [landed, 600.0 / shell])
+	# AND THE BLOCKS ARE UNTOUCHED BY THE LEVER — the worth scales the run's life,
+	# not the visible bite. Same shell, same plating, with the lever at 1.
+	var plain := _arena_ship(cells)
+	plain.gravity_scale = 0.0
+	plain.global_position = Vector2.ZERO
+	plain.hull_integrity_max = pool
+	plain.hull_integrity = pool
+	await process_frame
+	var full := BlockDB.max_hp(BlockDB.Type.HULL)
+	plain.net_damage_cell(skin[0], shell, 1.0)
+	var hp_at_one: float = plain.blocks[skin[0]]["hp"] if plain.has_block(skin[0]) else 0.0
+	var billed_at_one := pool - plain.hull_integrity
+	plain.hull_integrity = pool
+	plain.net_damage_cell(skin[1], shell, worth)
+	var hp_at_worth: float = plain.blocks[skin[1]]["hp"] if plain.has_block(skin[1]) else 0.0
+	var billed_at_worth := pool - plain.hull_integrity
+	_ok(absf(hp_at_one - hp_at_worth) < 0.01
+			and absf(hp_at_one - (full - shell)) < 0.01,
+		"the same shell takes the same %.0f hp off a cell at either worth (%.0f / %.0f)"
+			% [shell, full - hp_at_one, full - hp_at_worth])
+	_ok(absf(billed_at_worth - billed_at_one * worth) < 0.01,
+		"...while the POOL bill is %.0f at worth 1 and %.0f at worth %.2f"
+			% [billed_at_one, billed_at_worth, worth])
+	# BREAK IT ON PURPOSE: at the old worth the same fire cannot finish the job in
+	# the volleys the check above allows — that is the regression this pins.
+	plain.hull_integrity = pool
+	var old_landed := 0
+	while plain.hull_integrity > 0.0 and old_landed < 8:
+		plain.net_damage_cell(skin[old_landed], shell, 1.0)
+		old_landed += 1
+	_ok(plain.hull_integrity > 0.0,
+		"...and at the OLD worth of 1 the picket is still flying after 8 volleys (%.0f left)"
+			% plain.hull_integrity)
+	print("    ~ pool %.0f, shell %.0f x worth %.2f = %.0f a landed volley"
+		% [pool, shell, worth, shell * worth])
+	picket.queue_free()
+	plain.queue_free()
 	await process_frame
 
 
