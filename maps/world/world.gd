@@ -1304,6 +1304,10 @@ func begin_dive() -> void:
 	_dive_held_in_view = 0
 	_dive_landings.clear()
 	_dive_den_roof = Rect2()
+	# The breath goes with the run: nobody is inhaling outside one.
+	_dive_breath_id = 0
+	_dive_breath_pull = 0.0
+	_dive_breath_said = 0
 	_dive_chunks_cut = {}
 	_dive_shelf = Vector2.ZERO
 	_dive_deck_cells = {}
@@ -1478,6 +1482,10 @@ func end_dive() -> void:
 	_dive_outposts.clear()
 	_dive_landings.clear()
 	_dive_den_roof = Rect2()
+	# The breath goes with the run: nobody is inhaling outside one.
+	_dive_breath_id = 0
+	_dive_breath_pull = 0.0
+	_dive_breath_said = 0
 	_dive_chunks_cut = {}
 	_dive_shelf = Vector2.ZERO
 	# The unchosen candidate goes with the run — unless you took it, in which
@@ -2633,7 +2641,12 @@ func _tick_dive(delta: float) -> void:
 ## The weather at one world point, in world px/s (+y is DOWN). One place where
 ## the pure model meets real coordinates, so the hull, the body and every picket
 ## cannot disagree about the sky they are in.
-func dive_weather_at(pos: Vector2) -> Vector2:
+##
+## `asking_id` is the instance id of the body being stamped, and exists for ONE
+## body: the Leviathan does not inhale itself (DESIGN_KRAKEN §6 / designer A —
+## "or it inhales itself"). 0 = nobody in particular, which is what a probe or a
+## HUD sample passes.
+func dive_weather_at(pos: Vector2, asking_id := 0) -> Vector2:
 	if dive == null:
 		return Vector2.ZERO
 	# The tile's lean, only where the ring is the sky (zones off = the corridor,
@@ -2669,8 +2682,70 @@ func dive_weather_at(pos: Vector2) -> Vector2:
 			- dive_altitude_y(DiveRun.depth_altitude(1)))
 		if rung_px > 0.0:
 			over = (dive_altitude_y(DiveRun.ceiling_at(dive.low_frac)) - pos.y) / rung_px
-	return DiveRun.weather_wind(kind, over, zone_mult,
-		Tunables.get_num("dive_ceiling_mult")) * float(world_scale)
+	# ...and THE BREATH, composed onto the two of them at scale 1 — see
+	# `DiveRun.breath_compose` for why it is composed rather than summed.
+	var wind := DiveRun.weather_wind(kind, over, zone_mult,
+		Tunables.get_num("dive_ceiling_mult"))
+	return DiveRun.breath_compose(wind, _dive_breath_at(pos, asking_id)) \
+		* float(world_scale)
+
+
+# --- THE BREATH, as a weather term (DESIGN_KRAKEN §6 slice 6) ---------------
+#
+# The Leviathan's inhale reaches everything the run is flying, because it is
+# WEATHER and `_dive_weather` below already stamps the weather on every body it
+# has (DESCENT call 7, "symmetric"): the hull, the person on foot and the
+# depth's own 2–5 pickets ride it alike. Nothing new is wired to make the
+# escort fall into the jaws — it was already breathing the same air.
+#
+# Cached per tick rather than re-derived per body: the maw is one
+# `KrakenAI.maw_world()` and the pull one clock read, and `_dive_weather` asks
+# for the weather once per body plus once for the person.
+
+## The breathing body's instance id (0 = nobody is), its maw in world px, and
+## how hard it is pulling this tick. Refreshed at the top of `_dive_weather`.
+var _dive_breath_id := 0
+var _dive_breath_maw := Vector2.ZERO
+var _dive_breath_pull := 0.0
+## The phase last announced, so each of the three is called out exactly once.
+var _dive_breath_said := 0
+
+## The inhale at one point, px/s at SCALE 1 (the caller multiplies, as it does
+## for the rest of the weather). Zero for the source itself.
+func _dive_breath_at(pos: Vector2, asking_id: int) -> Vector2:
+	if _dive_breath_pull <= 0.0 or _dive_breath_id == 0 \
+			or _dive_breath_id == asking_id:
+		return Vector2.ZERO
+	return DiveRun.breath_wind((pos - _dive_breath_maw) / float(world_scale),
+		_dive_breath_pull, Tunables.get_num("dive_breath_mult"))
+
+
+## Find this tick's breath, and announce the phase when it turns over. The body
+## itself needs no announcement to be readable — its wound shade steps at the
+## same instant (DiveRun.BREATH_PHASE_2) — but the run's own voice is what makes
+## a first encounter legible, and it is one line per phase per run.
+func _dive_refresh_the_breath() -> void:
+	_dive_breath_pull = 0.0
+	if _dive_breath_id == 0:
+		return
+	var boss := instance_from_id(_dive_breath_id) as Ship
+	if boss == null or not is_instance_valid(boss):
+		_dive_breath_id = 0
+		return
+	var ai := _whale_ai_for(boss) as KrakenAI
+	if ai == null:
+		return
+	var phase := ai.breath_phase()
+	if phase != _dive_breath_said:
+		_dive_breath_said = phase
+		if phase == 2:
+			_notify("It stops swimming, and starts to inhale.")
+		elif phase == 3:
+			_notify("It sinks back under its roof. Only the throat is left.")
+	if ai.breath_pull() <= 0.0:
+		return
+	_dive_breath_maw = ai.maw_world()
+	_dive_breath_pull = ai.breath_pull()
 
 
 ## The altitude fraction (0 = lava floor, 1 = ceiling) of a world point — the
@@ -2747,8 +2822,14 @@ func dive_beta_of(ship: Ship) -> float:
 ## plus its own share of any live seal. Split from `dive_weather_at` because the
 ## ambient is a property of the point and the seal is a property of the point AND
 ## the hull — two hulls in one band feel different winds, which is the build lever.
-func dive_weather_for(pos: Vector2, beta: float, own_depth := 0) -> Vector2:
-	var w := dive_weather_at(pos)
+##
+## `asking_id` rides through to `dive_weather_at` for the LEVIATHAN'S BREATH,
+## which is the same shape of thing one layer down: a term that is a property of
+## the point and of who is standing in it (the boss does not inhale itself). Two
+## per-body weather terms now, composed in the one place that stamps them.
+func dive_weather_for(pos: Vector2, beta: float, own_depth := 0,
+		asking_id := 0) -> Vector2:
+	var w := dive_weather_at(pos, asking_id)
 	w.y -= dive_seal_speed_at(pos, beta, own_depth)   # +y is DOWN; the seal rises
 	return w
 
@@ -2757,21 +2838,27 @@ func dive_weather_for(pos: Vector2, beta: float, own_depth := 0) -> Vector2:
 func _dive_weather(delta: float) -> void:
 	if dive == null:
 		return
+	_dive_refresh_the_breath()
 	if is_instance_valid(local_ship):
 		local_ship.extra_wind = dive_weather_for(local_ship.global_position,
-			dive_beta_of(local_ship), DiveRun.key_depth(local_ship.garrison_key))
+			dive_beta_of(local_ship), DiveRun.key_depth(local_ship.garrison_key),
+			local_ship.get_instance_id())
 
 	for sid in _dive_surged:
 		var hull := instance_from_id(sid) as Ship
 		if hull != null and is_instance_valid(hull):
 			hull.extra_wind = dive_weather_for(hull.global_position,
-				dive_beta_of(hull), DiveRun.key_depth(hull.garrison_key))
+				dive_beta_of(hull), DiveRun.key_depth(hull.garrison_key), sid)
 	# A BODY ON FOOT HAS NO DRAG, so it cannot be handed an airstream velocity —
 	# it keeps the `velocity.y +=` idiom it always had. Multiplying the stream by
 	# the hull's damp inverts `weather_wind`'s own divide, which is what makes the
 	# felt strength on foot identical to the force the hull is riding.
 	#
 	# A body has no mass and no beam, so it feels the seal at the REFERENCE β.
+	#
+	# Y ONLY, breath included — deliberately (designer A §2.1 leans on it): the
+	# inhale cannot drag a PERSON sideways, so the boss's own shell is the one
+	# deck in the fight the breath does not sweep you off.
 	if player != null and is_instance_valid(player) and not player.is_piloting():
 		var body_wind := dive_weather_for(player.global_position,
 			DiveRun.beta_ref_at(float(world_scale)))
@@ -3984,6 +4071,18 @@ func _dive_wake_leviathan() -> void:
 	if boss != null and is_instance_valid(boss):
 		_dive_surged.append(boss.get_instance_id())
 		_dive_cut_den_roof(boss)
+		# THE ONE BODY THAT BREATHES (slice 6). Armed here rather than off the
+		# `creature_kind` inside the brain, so a Leviathan spawned by F2 into an
+		# ordinary world is still just a very large kraken: the inhale is the
+		# RUN's weather, and only a run has weather to add it to. The den is
+		# where it retreats in phase 3 — under the slab that was just cut, which
+		# is why this follows the cut and not the spawn.
+		var ai := _whale_ai_for(boss) as KrakenAI
+		if ai != null:
+			ai.breathes = true
+			ai.den_anchor = boss.global_position
+		_dive_breath_id = boss.get_instance_id()
+		_dive_breath_said = 1
 		_notify("Something vast stirs at the floor.")
 
 
@@ -7462,14 +7561,20 @@ func _apply_prop_wash(delta: float) -> void:
 				continue
 			if body.global_position.distance_to(emitter.global_position) > reach 					+ body.solid_bounds.size.length():
 				continue
-			var a: Vector2 = emitter.wash_accel_at(body.global_position)
+			# THE SAMPLE POINT IS THE SURFACE THE JET HITS, not the victim's origin
+			# (DESIGN_KRAKEN slice 5 open item (b), 2026-09-06). Asked once and
+			# reused by the chop, so the shove and the blades can never disagree
+			# about where the body is standing in the draught.
+			var at: Vector2 = body.wash_sample_toward(
+				emitter.nearest_wash_prop(body.global_position))
+			var a: Vector2 = emitter.wash_accel_at(at)
 			if a == Vector2.ZERO:
 				continue
 			if push_mult > 0.0:
 				body.apply_central_force(a * push_mult * body.mass)
 			# The CHOP spares your own side (see _wash_chops); the PUSH above is
 			# universal.
-			if chop_dps > 0.0 and _wash_chops(emitter.faction, body.faction) 					and body.shared_health_max > 0.0 					and body.shared_health > 0.0 					and emitter.is_in_near_wash(body.global_position, WASH_CHOP_FRAC):
+			if chop_dps > 0.0 and _wash_chops(emitter.faction, body.faction) 					and body.shared_health_max > 0.0 					and body.shared_health > 0.0 					and emitter.is_in_near_wash(at, WASH_CHOP_FRAC):
 				# A living creature only: a hull is not chopped by a fan, and a
 				# carcass in the blades is already salvage.
 				body.net_damage_cell(body.cell_at_global(body.global_position),
