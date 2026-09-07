@@ -35,6 +35,14 @@ var terrain: Terrain = null
 
 var _travelled := 0.0
 
+## THE SLUG'S LEDGER — the same signal `Shot.spent` carries, for the same
+## reason: a basilisk's spit is enemy fire the shell ledger cannot see (it is a
+## hazard, not a `Shot`), and the garrison stands basilisks at two rungs of every
+## run. Reasons: "person" / "hull" (it burned somebody; `amount` is the damage),
+## "terrain" (it hit ground), "expired" (it fizzled in the air). Measurement
+## only — nothing in the game listens (`tools/dive_probe.gd`, COMBAT SCORECARD).
+signal spent(reason: String, victim: Node, amount: float)
+
 
 ## Joined so the hazard system (and tests) can COUNT the live population in O(1).
 ## Membership clears itself on free.
@@ -67,6 +75,7 @@ func _physics_process(delta: float) -> void:
 	position = to
 	life -= delta
 	if life <= 0.0:
+		spent.emit("expired", null, 0.0)
 		queue_free()
 		return
 	queue_redraw()
@@ -79,6 +88,7 @@ func _impact(hit: Dictionary) -> void:
 	var person := body as Player
 	if person != null:
 		person.take_damage(damage)
+		spent.emit("person", person, damage)
 		queue_free()
 		return
 	var ship := body as Ship
@@ -103,6 +113,7 @@ func _impact(hit: Dictionary) -> void:
 			w = w.get_parent()
 		if w != null:
 			w.call("hazard_ignite", ship, cell)
+		spent.emit("hull", ship, damage)
 	elif terrain != null:
 		# Ground: dig the struck COARSE-CELL crater through the mining seam
 		# (net_dig — authority owns terrain edits). At terrain subdiv S the
@@ -118,6 +129,11 @@ func _impact(hit: Dictionary) -> void:
 				var c := o + Vector2i(dx, dy)
 				if terrain.is_solid(c):
 					terrain.net_dig(c)
+		spent.emit("terrain", body as Node, 0.0)
+	else:
+		# Rock with no resident terrain to dig — the unit fixtures' case, and
+		# the ledger must still close the slug out rather than losing it.
+		spent.emit("terrain", body as Node, 0.0)
 	queue_free()
 
 

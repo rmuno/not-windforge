@@ -74,17 +74,98 @@ const SLIDE_HOLD := 1.5
 ## REPORTED as an overrun rather than truncated into one.
 const RUN_GUARD := 60.0 * 12.0
 
+## The scorecard's arithmetic, kept apart so the SUITE can check it (Q-O: the
+## four candidates are ranked off these percentages, so a wrong denominator is a
+## wrong design decision). Loaded BY PATH rather than by `class_name`: a
+## `--script` file that names a class as a type compiles that script — and
+## anything it touches — before the autoloads exist (CODEMAP §4). This one
+## touches nothing at all, so the preload is safe and the cache is irrelevant.
+const Score := preload("res://tools/combat_score.gd")
+
 var world: Node
 var fleet
 var pl
 
-# Combat scorecard tallies (Q-O). `_seen_shots` tracks Shot instance ids so a
-# shell is counted once at birth; faction 1 = hostile fire.
+# Combat scorecard tallies (Q-O). `hits_taken` counts DAMAGE EVENTS on our hull
+# from every source; the shell ledger below is what counts gunnery.
 var hits_taken := 0
 var damage_taken := 0.0
-var _seen_shots := {}
 var enemy_shots := 0
 var shots_fired := 0        ## OUR volleys — the line that says the pilot shot at all
+
+# --- THE SHELL LEDGER (Q-O, v0.156.0) --------------------------------------
+# "Enemy shells fired vs hits on us" used to divide two numbers that are not
+# about the same thing: `enemy_shots` counted shells born, while `hits_taken`
+# counted every `damaged` event on our hull — a terrain crush, a whale ram and a
+# kraken chew all inflated the "hit rate" of enemy GUNNERY, and one shell that
+# lands on a 64-cell component fires `damaged` once but was never comparable to
+# a shell in flight. So the printed hit % was not a hit %.
+#
+# Now every shell books its own outcome (`Shot.spent`, added for this): who
+# fired it (its faction) and what stopped it (an enemy hull, our hull, a person,
+# rock, or nothing at all). Fired and landed are then the same population
+# counted twice, which is what a rate needs.
+#
+# Keyed by the SHOOTER'S FACTION so every line is attributable: 0 = ours,
+# 1 = hostile crewed vessels, 2 = creatures, 3 = wrecks.
+var shells_fired := {}          ## faction -> shells born
+var shells_landed := {}         ## faction -> shells that dealt damage to somebody
+var shells_dealt := {}          ## faction -> damage those shells dealt
+var shells_why := {}            ## "faction|reason" -> count (terrain / blocked / expired)
+var shells_onto := {}           ## "faction|what it hit" -> count
+var shells_fired_d := {}        ## "depth|faction" -> shells born at that rung
+var shells_landed_d := {}       ## "depth|faction" -> shells that landed at that rung
+## A BASILISK'S SPIT IS NOT A SHELL. It is a `HazardFireball` — a different
+## system with its own integrator — and the garrison puts basilisks at depths 3
+## and 5 (`DiveRun.SURGE_LADDER`). Counted separately so "enemy fire" does not
+## quietly mean "enemy fire except the fire".
+var spits_fired := 0
+var spits_landed := 0           ## on ANY ship or person (a hazard has no faction)
+var spits_on_us := 0
+var spits_dealt_us := 0.0
+var _scoring := false           ## the books are open (the descent, not the deck)
+var _depth_now := 1
+
+# --- WHO WE FOUGHT, AND WHAT IT COST TO KILL THEM ---------------------------
+# TIME TO KILL, per picket kind, needs three things the probe never kept: which
+# body a shell of ours landed on, when the first one landed, and the moment that
+# body died. Death is exact rather than inferred: an exploded VESSEL is not
+# freed, it is stripped to a husk and re-flagged `Ship.FACTION_WRECK`
+# (`world._dive_leave_a_husk`), and a CREATURE dies when its shared pool empties
+# (`Ship.is_carcass`). A body that leaves the fleet with neither having happened
+# was CULLED alive, and must never be averaged in as a kill.
+var foes := {}                  ## instance id -> the book on one hostile body
+var kills_booked: Array[Dictionary] = []
+var foes_gone_alive := 0
+
+# --- ENGAGEMENTS ------------------------------------------------------------
+# "Damage taken per surge" cannot be measured any more: the timer surge is
+# retired (v0.141.0) and a run normally has zero of them. The honest unit is an
+# ENGAGEMENT — a contiguous stretch with at least one live hostile inside the
+# same 4k×8 range the THREAT line already uses, closed after ENGAGE_TAIL seconds
+# of nobody in range so one picket weaving in and out is one fight.
+const ENGAGE_RANGE := 4000.0 * 8.0
+const ENGAGE_TAIL := 4.0
+var engagements: Array[Dictionary] = []
+var _engage := {}
+var _engage_quiet := 0.0
+## The union of every engagement, in seconds — merged, so three pickets on you
+## at once for ten seconds is ten seconds of fighting and not thirty.
+var _engage_spans: Array = []
+
+# --- CONTACT ----------------------------------------------------------------
+## depth -> seconds from entering it until the first LIVE hostile of any kind
+## came inside ENGAGE_RANGE. The kraken table next to it answers the same
+## question for the deep alone; this one answers "does anything ever arrive".
+var first_contact := {}
+var closest_by_kind := {}       ## kind -> the nearest that kind ever came, px
+var closed_to_gun := {}         ## kind -> distinct bodies that reached firing range
+var met_of_kind := {}           ## kind -> distinct bodies met at all
+## Frames with a live kraken inside GRAB REACH of the hull — the denominator the
+## grab number was missing. A hunter that never arrived cannot be blamed for not
+## grabbing, and one that rode us for a minute and chewed for two seconds is a
+## different problem entirely.
+var kraken_reach_frames := 0
 
 # --- WHAT IS EATING THE HULL (v0.149.0) ------------------------------------
 # The scorecard attributed krakens and nothing else, so "the pilot flew into a
@@ -196,6 +277,16 @@ func _tally_krakens(t: float, depth: int, depth_started: float) -> void:
 	var live := {}
 	var on_us := false
 	var holding := false
+	# THE GRAB'S DENOMINATOR (Q-O). A grab count on its own cannot tell "the
+	# mouth is unreadable" from "the hunter never caught up". `KrakenAI._grab`
+	# starts from a COARSE test — the grab reach plus the prey's own extent —
+	# before it walks the grab sites, so the same coarse figure is the honest
+	# "could it have grabbed us this frame", read off the live bodies.
+	var in_reach := false
+	var mine: Rect2 = hull.solid_bounds if hull != null and is_instance_valid(hull) \
+		else Rect2()
+	var reach_base: float = Tunables.get_num("kraken_grab_reach") \
+		* (float(hull.scale_unit) if hull != null and is_instance_valid(hull) else 1.0)
 	for s in fleet.ships():
 		if not is_instance_valid(s) or not _is_kraken(s):
 			continue
@@ -204,6 +295,12 @@ func _tally_krakens(t: float, depth: int, depth_started: float) -> void:
 		_kraken_pools[id] = float(s.get("shared_health"))
 		if float(s.get("shared_health")) <= 0.0:
 			continue   # a carcass neither grabs nor counts as a hunter
+		if hull != null and is_instance_valid(hull):
+			var theirs: Rect2 = s.solid_bounds
+			var gap: float = hull.to_global(mine.get_center()).distance_to(
+				s.to_global(theirs.get_center()))
+			if gap <= reach_base + (mine.size.length() + theirs.size.length()) * 0.5:
+				in_reach = true
 		var ai = brains.get(id)
 		var grabbing: bool = ai != null and (bool(ai.get("grabbing"))
 			or bool(ai.get("grabbing_player")))
@@ -226,6 +323,8 @@ func _tally_krakens(t: float, depth: int, depth_started: float) -> void:
 		_kraken_pools.erase(id)
 		_kraken_grabbing.erase(id)
 	_kraken_on_us = on_us
+	if in_reach:
+		kraken_reach_frames += 1
 	if holding:
 		kraken_grab_frames += 1
 		kraken_hold += STEP
@@ -238,16 +337,341 @@ func _tally_krakens(t: float, depth: int, depth_started: float) -> void:
 			kraken_first_contact[depth] = t - depth_started
 
 
-## Count NEW hostile shells this frame. The shots group is small (live shells
-## only), so the per-frame scan is cheap.
-func _count_enemy_fire() -> void:
-	for node in world.get_tree().get_nodes_in_group("shots"):
-		var id := node.get_instance_id()
-		if _seen_shots.has(id):
+# --- THE COMBAT SCORECARD'S BOOKKEEPING ------------------------------------
+
+## Add one to `book[key]`.
+func _bump(book: Dictionary, key, by := 1) -> void:
+	book[key] = int(book.get(key, 0)) + by
+
+
+## Add `by` to `book[key]` as a float.
+func _add(book: Dictionary, key, by: float) -> void:
+	book[key] = float(book.get(key, 0.0)) + by
+
+
+## WHAT A BODY IS, in one word, for the scorecard's rows. A creature answers with
+## its own `creature_kind` (the deep's hunters are not "a ship"); a vessel is
+## named by its side, because that is the only thing that distinguishes a picket
+## from the hull we are flying; anything with a grit pool is a person.
+func _kind_of(node: Node) -> String:
+	if node == null or not is_instance_valid(node):
+		return "nothing"
+	var ck = node.get("creature_kind")
+	if ck != null and String(ck) != "":
+		return String(ck)
+	var fac = node.get("faction")
+	if node.get("blocks") != null and fac != null:
+		match int(fac):
+			0: return "our hull"
+			1: return "picket"
+			3: return "wreck"
+			_: return "vessel f%d" % int(fac)
+	if node.get("max_health") != null:
+		return "person"
+	return "terrain"
+
+
+## EVERY SHELL AND EVERY SPIT IS BOOKED AT BIRTH. `node_added` is the only hook
+## that cannot miss one: the group scan this replaces ran once a frame and would
+## never see a shell fired and stopped inside the same frame — which is exactly
+## what a point-blank picket does, and exactly the shell whose hit rate matters.
+func _on_node_added(node: Node) -> void:
+	if not _scoring:
+		return
+	if node.is_in_group("shots"):
+		var fac := int(node.get("faction"))
+		_bump(shells_fired, fac)
+		_bump(shells_fired_d, "%d|%d" % [_depth_now, fac])
+		if fac == 1:
+			enemy_shots += 1     # the old line, kept so old runs stay comparable
+		node.connect("spent", func(reason: String, victim: Node, amount: float) -> void:
+			_book_shell(fac, reason, victim, amount))
+	elif node.is_in_group("hazard_fireballs"):
+		spits_fired += 1
+		node.connect("spent", func(reason: String, victim: Node, amount: float) -> void:
+			_book_spit(reason, victim, amount))
+
+
+## One shell's outcome. `amount > 0` is the definition of a HIT: a shell stopped
+## by its own side's plating or by rock touched something and hurt nobody, and
+## folding those into "landed" is how a 9% hit rate reads as 40%.
+func _book_shell(fac: int, reason: String, victim: Node, amount: float) -> void:
+	if not _scoring:
+		return
+	_bump(shells_why, "%d|%s" % [fac, reason])
+	if amount <= 0.0:
+		return
+	_bump(shells_landed, fac)
+	_add(shells_dealt, fac, amount)
+	_bump(shells_landed_d, "%d|%d" % [_depth_now, fac])
+	_bump(shells_onto, "%d|%s" % [fac, _kind_of(victim)])
+	if fac == 0:
+		_book_our_hit(victim, amount)
+
+
+## A basilisk's fireball, same two questions. It carries no faction, so "landed"
+## means it burned SOMETHING; the line that matters to us is the third one.
+func _book_spit(reason: String, victim: Node, amount: float) -> void:
+	if not _scoring:
+		return
+	_bump(shells_why, "spit|%s" % reason)
+	if amount <= 0.0:
+		return
+	spits_landed += 1
+	if victim != null and is_instance_valid(victim) \
+			and (victim == world.get("local_ship") or victim == pl):
+		spits_on_us += 1
+		spits_dealt_us += amount
+
+
+## OUR shell landed on `victim`: open its book if it is new and start its clock.
+## The first hit is the start of time-to-kill — not the first sighting, which
+## would measure how long the pilot took to close, not how long the gun took.
+func _book_our_hit(victim: Node, amount: float) -> void:
+	if victim == null or not is_instance_valid(victim):
+		return
+	var id := victim.get_instance_id()
+	if not foes.has(id):
+		return          # our own hull, a person, or something not in the books
+	var rec: Dictionary = foes[id]
+	if float(rec["first_hit"]) < 0.0:
+		rec["first_hit"] = _t
+	rec["our_damage"] = float(rec["our_damage"]) + amount
+	rec["our_hits"] = int(rec["our_hits"]) + 1
+
+
+## IS THIS BODY COMING FOR US? A picket, a kraken or a basilisk is; a WHALE is
+## not, whatever its faction says. The distinction decides what counts as an
+## ENGAGEMENT and as FIRST CONTACT, and getting it wrong would be the loudest
+## kind of wrong: the sky is full of whales, so counting one drifting past as a
+## fight would print a run as permanently under attack — the exact opposite of
+## the report ("enemies are not aggressive") these numbers exist to settle.
+func _is_hunter(s) -> bool:
+	if int(s.get("faction")) == 1:
+		return true
+	var ck := String(s.get("creature_kind"))
+	return ck.begins_with("kraken") or ck.begins_with("basilisk")
+
+
+## ONE FRAME OF THE HOSTILE BOOKS: who is out there, how close they have come,
+## who just died and who slipped away alive. Also opens and closes ENGAGEMENTS.
+func _tally_foes(t: float, d: int, depth_started: float) -> void:
+	var here: Vector2 = pl.global_position if is_instance_valid(pl) else Vector2.ZERO
+	var gun: float = Tunables.get_num("enemy_aggro_range") * float(world.get("world_scale"))
+	var seen := {}
+	var in_range := false
+	for s in fleet.ships():
+		if not is_instance_valid(s) or int(s.get("faction")) == 0:
 			continue
-		_seen_shots[id] = true
-		if int(node.get("faction")) == 1:
-			enemy_shots += 1
+		var id: int = s.get_instance_id()
+		seen[id] = true
+		var dd: float = s.global_position.distance_to(here)
+		var dead: bool = bool(s.call("is_carcass")) or int(s.get("faction")) == 3
+		if not foes.has(id):
+			# A WRECK IS NOT A FOE. Husks keep flying (and keep stopping our
+			# shells) long after the fight; opening a book on one would print
+			# kills we never made.
+			if int(s.get("faction")) == 3:
+				continue
+			var kind := _kind_of(s)
+			foes[id] = {"kind": kind, "born": t, "depth": d, "first_hit": -1.0,
+				"our_damage": 0.0, "our_hits": 0, "closest": INF, "last": t,
+				"closed": false, "dead": false}
+			_bump(met_of_kind, kind)
+		var rec: Dictionary = foes[id]
+		rec["last"] = t
+		rec["closest"] = minf(float(rec["closest"]), dd)
+		var kind2 := String(rec["kind"])
+		closest_by_kind[kind2] = minf(float(closest_by_kind.get(kind2, INF)), dd)
+		if dd <= gun and not bool(rec["closed"]):
+			rec["closed"] = true
+			_bump(closed_to_gun, kind2)
+		if dead and not bool(rec["dead"]):
+			rec["dead"] = true
+			_book_death(rec, t, d)
+		if not dead and dd <= ENGAGE_RANGE and _is_hunter(s):
+			in_range = true
+			if not first_contact.has(d):
+				first_contact[d] = t - depth_started
+	# GONE FROM THE FLEET WITHOUT DYING = culled alive. The same reading the
+	# kraken scorecard already takes, widened to every hostile: a body deleted
+	# behind us is not a body we beat.
+	for id in foes.keys():
+		if seen.has(id):
+			continue
+		var rec: Dictionary = foes[id]
+		if not bool(rec["dead"]):
+			foes_gone_alive += 1
+			rec["dead"] = true
+			rec["culled"] = true
+		foes.erase(id)
+	_run_engagement(t, d, in_range)
+
+
+## A body just died. Booked with what OUR guns spent on it — and the kills we
+## did not pay for are kept too (`ours` false), because "they die to terrain and
+## each other" is itself one of the numbers Q-O is arguing about.
+func _book_death(rec: Dictionary, t: float, d: int) -> void:
+	var first := float(rec["first_hit"])
+	kills_booked.append({
+		"kind": String(rec["kind"]), "depth": d,
+		"ttk": Score.ttk(first, t),
+		"ours": first >= 0.0,
+		"damage": float(rec["our_damage"]), "hits": int(rec["our_hits"]),
+		"met_for": t - float(rec["born"]),
+	})
+
+
+## Open / extend / close the current engagement. The tail is what keeps one
+## picket weaving through the 4k×8 boundary from printing as six fights.
+func _run_engagement(t: float, d: int, in_range: bool) -> void:
+	if in_range:
+		_engage_quiet = 0.0
+		if _engage.is_empty():
+			_engage = {"start": t, "depth": d, "dmg0": damage_taken,
+				"ours0": int(shells_fired.get(0, 0)), "hit0": int(shells_landed.get(0, 0)),
+				"theirs0": int(shells_fired.get(1, 0)), "land0": int(shells_landed.get(1, 0)),
+				"kills0": kills_booked.size(), "end": t}
+		_engage["end"] = t
+		return
+	if _engage.is_empty():
+		return
+	_engage_quiet += STEP
+	if _engage_quiet < ENGAGE_TAIL:
+		return
+	_close_engagement()
+
+
+func _close_engagement() -> void:
+	if _engage.is_empty():
+		return
+	var e: Dictionary = _engage
+	var row := {
+		"depth": int(e["depth"]),
+		"start": float(e["start"]),
+		"secs": float(e["end"]) - float(e["start"]),
+		"damage": damage_taken - float(e["dmg0"]),
+		"theirs": int(shells_fired.get(1, 0)) - int(e["theirs0"]),
+		"landed": int(shells_landed.get(1, 0)) - int(e["land0"]),
+		"ours": int(shells_fired.get(0, 0)) - int(e["ours0"]),
+		"we_hit": int(shells_landed.get(0, 0)) - int(e["hit0"]),
+		"kills": kills_booked.size() - int(e["kills0"]),
+	}
+	engagements.append(row)
+	_engage_spans.append([float(e["start"]), float(e["end"])])
+	_engage = {}
+	_engage_quiet = 0.0
+
+
+## THE COMBAT SCORECARD (Q-O), printed. Every percentage goes through
+## `tools/combat_score.gd`, which the suite checks — a probe asserts nothing, so
+## the arithmetic behind a number that ranks four design candidates has to be
+## pinned somewhere else.
+func _print_scorecard(t: float, met_total: int) -> void:
+	var sides := {0: "OURS   ", 1: "PICKETS", 2: "CREATURE", 3: "WRECKS "}
+	print("\n=== COMBAT SCORECARD (Q-O) ===")
+	print("  shooter  | fired | landed |  hit % | damage dealt | stopped by: rock | own side | expired | still flying")
+	for fac in [1, 0, 2, 3]:
+		var f := int(shells_fired.get(fac, 0))
+		if f == 0:
+			continue
+		var l := int(shells_landed.get(fac, 0))
+		var rock := int(shells_why.get("%d|terrain" % fac, 0))
+		var own := int(shells_why.get("%d|blocked" % fac, 0))
+		var old := int(shells_why.get("%d|expired" % fac, 0))
+		print("  %-8s | %5d | %6d | %5.1f%% | %12.0f | %16d | %8d | %7d | %12d" % [
+			String(sides.get(fac, "f%d" % fac)), f, l, Score.hit_pct(l, f),
+			float(shells_dealt.get(fac, 0.0)), rock, own, old,
+			f - l - rock - own - old])
+	if spits_fired > 0:
+		print("  BASILISK SPIT (a hazard, not a shell): %d spat | %d burned something | %d of those on US for %.0f damage"
+			% [spits_fired, spits_landed, spits_on_us, spits_dealt_us])
+	# WHAT EACH SIDE'S SHELLS ACTUALLY HIT. The line that says whether a hit rate
+	# is low because the gunners miss or because the sky is full of rock.
+	for fac in [1, 0]:
+		var onto := ""
+		for k in shells_onto:
+			if String(k).begins_with("%d|" % fac):
+				onto += "%s:%d " % [String(k).split("|")[1], int(shells_onto[k])]
+		if onto != "":
+			print("  %s landed on: %s" % [String(sides.get(fac, "?")).strip_edges(), onto])
+
+	# TIME TO KILL, per kind. Only bodies OUR guns actually hit have one: a
+	# picket that flew into a cliff is a death, not a kill, and averaging it in
+	# would make the guns look twice as good as they are.
+	print("\n--- time to kill (first shell of ours that landed -> death) ---")
+	print("  kind        | killed | ours | median-ish mean s | damage we spent | hits | died to us %")
+	var by_kind := {}
+	for k in kills_booked:
+		var kind := String(k["kind"])
+		if not by_kind.has(kind):
+			by_kind[kind] = {"n": 0, "ours": 0, "ttk": [], "dmg": 0.0, "hits": 0}
+		var b: Dictionary = by_kind[kind]
+		b["n"] = int(b["n"]) + 1
+		if bool(k["ours"]) and float(k["ttk"]) >= 0.0:
+			b["ours"] = int(b["ours"]) + 1
+			(b["ttk"] as Array).append(float(k["ttk"]))
+			b["dmg"] = float(b["dmg"]) + float(k["damage"])
+			b["hits"] = int(b["hits"]) + int(k["hits"])
+	for kind in by_kind:
+		var b: Dictionary = by_kind[kind]
+		print("  %-11s | %6d | %4d | %17.1f | %15.0f | %4d | %11.0f%%" % [
+			kind, int(b["n"]), int(b["ours"]), Score.mean(b["ttk"] as Array),
+			Score.per_each(float(b["dmg"]), int(b["ours"])), int(b["hits"]),
+			Score.pct(float(int(b["ours"])), float(int(b["n"])))])
+	if by_kind.is_empty():
+		print("  nothing died in the whole run")
+	print("  %d hostiles left the books ALIVE (culled behind us, never beaten)" % foes_gone_alive)
+
+	# DO PICKETS EVER CLOSE? (BACKLOG "Enemies are not aggressive.") Firing range
+	# is the honest bar — a hostile that never got inside `enemy_aggro_range`
+	# never had the option of fighting you.
+	var gun: float = Tunables.get_num("enemy_aggro_range") * float(world.get("world_scale"))
+	print("\n--- did they ever close? (firing range is %.0f px) ---" % gun)
+	print("  kind        | met | reached firing range | nearest ever px")
+	for kind in met_of_kind:
+		print("  %-11s | %3d | %20d | %15.0f" % [kind, int(met_of_kind[kind]),
+			int(closed_to_gun.get(kind, 0)), float(closest_by_kind.get(kind, INF))])
+
+	# ENGAGEMENTS — the honest replacement for "per surge" (the timer surge is
+	# retired; a run normally has none).
+	var fight := Score.span_union(_engage_spans)
+	print("\n--- engagements (a hostile inside %.0f px, closed after %.0fs of quiet) ---"
+		% [ENGAGE_RANGE, ENGAGE_TAIL])
+	print("  #  | depth | started | secs | damage taken | their shells | landed | hit % | our shells | landed | hit % | kills")
+	var n := 0
+	for e in engagements:
+		n += 1
+		print("  %-2d | %5d | %7.1f | %4.0f | %12.0f | %12d | %6d | %5.1f%% | %10d | %6d | %5.1f%% | %5d" % [
+			n, int(e["depth"]), float(e["start"]), float(e["secs"]), float(e["damage"]),
+			int(e["theirs"]), int(e["landed"]), Score.hit_pct(int(e["landed"]), int(e["theirs"])),
+			int(e["ours"]), int(e["we_hit"]), Score.hit_pct(int(e["we_hit"]), int(e["ours"])),
+			int(e["kills"])])
+	if engagements.is_empty():
+		print("  NONE — nothing came within %.0f px for the whole run" % ENGAGE_RANGE)
+	print("  %d engagements | %.0f s of the run's %.0f s spent in contact (%.0f%%) | %.0f damage per engagement"
+		% [engagements.size(), fight, t, Score.pct(fight, t),
+			Score.per_each(damage_taken, engagements.size())])
+
+	# TIME TO FIRST CONTACT, per rung — for anything, not only the deep.
+	var ttfc := ""
+	for dd in range(1, 9):
+		ttfc += "d%d:%s " % [dd, ("%.1f" % float(first_contact[dd]))
+			if first_contact.has(dd) else "-"]
+	print("FIRST CONTACT:  %s(seconds after entering the rung, any live hostile)" % ttfc)
+
+	# THE SHELL LEDGER, RUNG BY RUNG.
+	print("\n--- gunnery, rung by rung ---")
+	print("  depth | their shells | landed | hit % | our shells | landed | hit %")
+	for dd in range(1, 9):
+		var tf := int(shells_fired_d.get("%d|1" % dd, 0))
+		var of := int(shells_fired_d.get("%d|0" % dd, 0))
+		if tf == 0 and of == 0:
+			continue
+		var tl := int(shells_landed_d.get("%d|1" % dd, 0))
+		var ol := int(shells_landed_d.get("%d|0" % dd, 0))
+		print("  %5d | %12d | %6d | %5.1f%% | %10d | %6d | %5.1f%%" % [
+			dd, tf, tl, Score.hit_pct(tl, tf), of, ol, Score.hit_pct(ol, of)])
 
 
 func _initialize() -> void:
@@ -367,6 +791,13 @@ func _initialize() -> void:
 	print("HULL BEAM: %.0f x %.0f px | shelf slab %s | sight %.0f px" % [
 		hull0.solid_bounds.size.x, hull0.solid_bounds.size.y,
 		str(world.call("_dive_shelf_span")), world.call("max_view_horizon_px")])
+	# THE BOOKS OPEN HERE, not at boot: the deck is not the fight, and a shell
+	# fired while the pilot was walking to a helm would be in the hit rate. Every
+	# shell and every basilisk spit from now on is booked at birth by
+	# `_on_node_added` — the SceneTree's own signal, which is the only hook that
+	# cannot miss a shell fired and stopped inside one frame.
+	_scoring = true
+	node_added.connect(_on_node_added)
 	var rows: Array[Dictionary] = []
 	var mark := _snapshot(1, 0.0, 0)
 	var guard := 0
@@ -380,6 +811,9 @@ func _initialize() -> void:
 		if run == null or String(run.get("outcome")) != "":
 			break
 		var d := int(run.get("depth"))
+		# Which rung a shell fired THIS tick belongs to. Read by `_on_node_added`
+		# from inside the engine's own signal, which has no other way to know.
+		_depth_now = d
 		# THE PILOT. One tick of looking, flying and shooting — the whole of the
 		# v0.149.0 change lives in these two calls.
 		_fly(d)
@@ -394,8 +828,8 @@ func _initialize() -> void:
 			mark = _snapshot(d, t, 0)
 			last_depth = d
 			depth_started = t
-		_count_enemy_fire()
 		_tally_krakens(t, d, depth_started)
+		_tally_foes(t, d, depth_started)
 		# THREAT: did anything actually reach us? A garrison you never met is
 		# a spawn count, not a fight.
 		for sh in fleet.ships():
@@ -433,6 +867,10 @@ func _initialize() -> void:
 			log_lines.append("  hull lost at depth %d — the rest of the run is shipless, stopping" % d)
 			break
 	_release_all()
+	# THE BOOKS CLOSE WITH THE DESCENT. What follows is the climb home, and a
+	# shell fired there belongs to no rung.
+	_close_engagement()
+	_scoring = false
 	rows.append(_row(last_depth, mark, t - depth_started,
 		int(met_by_depth.get(last_depth, 0))))
 
@@ -455,17 +893,19 @@ func _initialize() -> void:
 	# THE COMBAT SCORECARD (Q-O): what the fight actually did, in numbers.
 	# Per-picket, not per-surge: the surge timer is retired, so the denominator
 	# that means something is how many hostiles actually reached us.
-	var per_n := maxi(met_total, 1)
 	var hull3 = world.get("local_ship")
 	var integ := "unarmed"
 	if hull3 != null and is_instance_valid(hull3) and hull3.hull_integrity_max > 0.0:
 		integ = "%.0f/%.0f" % [hull3.hull_integrity, hull3.hull_integrity_max]
-	print("COMBAT: enemy shells fired %d | hits on us %d (%.0f%% of shells) | damage %.0f (%.0f per picket met) | integrity %s"
-		% [enemy_shots, hits_taken,
-			(100.0 * float(hits_taken) / float(maxi(enemy_shots, 1))),
-			damage_taken, damage_taken / float(per_n), integ])
+	# NOT A HIT RATE, and it never was: `hits_taken` counts DAMAGE EVENTS on our
+	# hull from every source at once (a crush, a ram and a chew all land here),
+	# so dividing it by shells fired mixed two populations. Kept as the "what got
+	# through" line; the gunnery rate is the ledger below.
+	print("DAMAGE ON US: %d damage events, %.0f total (%.0f per picket met) | integrity %s"
+		% [hits_taken, damage_taken, Score.per_each(damage_taken, met_total), integ])
 	print("OUR FIRE:  %d volleys sent | closest the keel ever came to rock while descending: %.0f px"
 		% [shots_fired, _worst_clear])
+	_print_scorecard(t, met_total)
 	print("DODGES:    %d frames keeping station off other bodies | %d times the descent pushed through anyway | nearest one ever %.0f px"
 		% [dodges, vetoes_spent, _closest_wildlife])
 	# WHAT ATE THE HULL. The line the old scorecard could not draw: a run that
@@ -488,16 +928,24 @@ func _initialize() -> void:
 	for dd in range(1, 9):
 		ttc += "d%d:%s " % [dd, ("%.1f" % float(kraken_first_contact[dd]))
 			if kraken_first_contact.has(dd) else "-"]
-	var mins := maxf(t / 60.0, 0.001)
 	print("KRAKEN CONTACT: %s| %.1f s of contact in %.0f s of diving" % [ttc,
 		float(kraken_contact_frames) * STEP, t])
 	var seen_line := ""
 	for dd in range(1, 9):
 		seen_line += "d%d:%d " % [dd, int(kraken_seen.get(dd, 0))]
 	print("KRAKENS MET:    %s" % seen_line)
+	# GRAB UPTIME (Q-O). Grabs per minute is a rate over the WHOLE run, which
+	# blames the mouth for the descent: the fair denominator is the time a
+	# kraken was actually inside grab reach. A low uptime with plenty of reach
+	# time is a readability/mechanic problem; a low uptime with no reach time at
+	# all is a pursuit problem, and they want opposite fixes.
+	var held: float = Score.frames_to_secs(kraken_grab_frames, STEP)
+	var reach: float = Score.frames_to_secs(kraken_reach_frames, STEP)
 	print("KRAKEN GRABS:   %d | %.2f per minute | held %.1f s total, longest %.1f s"
-		% [kraken_grabs, float(kraken_grabs) / mins,
-			float(kraken_grab_frames) * STEP, kraken_longest_hold])
+		% [kraken_grabs, Score.per_minute(kraken_grabs, t),
+			held, kraken_longest_hold])
+	print("KRAKEN UPTIME:  %.1f s within grab reach | %.1f s actually grabbing = %.0f%% uptime"
+		% [reach, held, Score.uptime_pct(held, reach)])
 	print("KRAKEN BILL:    %.0f of %.0f damage taken (%.0f%%) | %d killed | %d CULLED ALIVE"
 		% [kraken_damage, damage_taken,
 			100.0 * kraken_damage / maxf(damage_taken, 1.0),
