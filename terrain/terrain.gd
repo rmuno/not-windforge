@@ -171,6 +171,42 @@ func is_solid(cell: Vector2i) -> bool:
 	return TerrainDB.is_solid(cell_type(cell))
 
 
+## Is anything solid in the horizontal RUN of `steps` cells starting one cell
+## from `from` in direction `dir` (-1 left, +1 right)? Exactly the answer a loop
+## of `is_solid` gives, found the way `chunk_bytes` exists for: the chunk is
+## located once per chunk crossed instead of once per cell, and an all-AIR chunk
+## — which most of the sky is — is skipped whole without a single cell read.
+##
+## WHY IT EARNS ITS PLACE (2026-09-07, tools/floor_tick_probe): the Dive's
+## shelter test (`world._dive_scan_shelter`) is two such runs of ~35 cells, and
+## it is asked once per body the weather stamps. At the floor that was ~1,300
+## `is_solid` calls a tick, each re-deriving a chunk coordinate with two float
+## divides and re-hashing the chunk dictionary for a row the caller had already
+## named — the same waste `chunk_bytes`'s own note measured at 43% of a chunk
+## rebuild.
+func any_solid_in_row(from: Vector2i, dir: int, steps: int) -> bool:
+	if steps <= 0 or dir == 0:
+		return false
+	var chunk_y := floori(float(from.y) / CHUNK)
+	var row := (from.y - chunk_y * CHUNK) * CHUNK
+	var i := 1
+	while i <= steps:
+		var x := from.x + dir * i
+		var chunk_x := floori(float(x) / CHUNK)
+		var lx := x - chunk_x * CHUNK
+		# How much of what is left lies inside THIS chunk, so the loop advances a
+		# chunk at a time rather than a cell at a time.
+		var run: int = mini((CHUNK - lx) if dir > 0 else (lx + 1), steps - i + 1)
+		var bytes: PackedByteArray = _chunks.get(Vector2i(chunk_x, chunk_y),
+			PackedByteArray())
+		if not bytes.is_empty():
+			for k in run:
+				if TerrainDB.is_solid(bytes[row + lx + dir * k]):
+					return true
+		i += run
+	return false
+
+
 ## The raw bytes of ONE chunk, or an EMPTY array when that chunk has never had
 ## anything solid written into it (chunks allocate lazily — see set_cell).
 ##
@@ -690,7 +726,13 @@ func flush_rebuilds() -> void:
 
 
 func _physics_process(_delta: float) -> void:
+	# The stopwatch is off in play — one bool read (see debug/tick_perf.gd).
+	if not TickPerf.on:
+		flush_rebuilds()
+		return
+	var t0 := Time.get_ticks_usec()
 	flush_rebuilds()
+	TickPerf.bill("terrain flush", t0)
 
 
 func _promote(coord: Vector2i) -> void:

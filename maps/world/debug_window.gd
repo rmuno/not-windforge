@@ -46,6 +46,10 @@ const _ACCENT := Color(0.55, 0.82, 0.55)
 ## instead of getting its own auto-tab — see _build (a same-named second tab
 ## collapsed to an unreadable "@ScrollContainer@NN" title).
 const PLAYER_TAB := "Player"
+## ...and the same arrangement for Perf, whose tab is a READOUT the window
+## builds by hand (`_build_perf_tab`). Its levers are rendered into that tab
+## rather than getting an auto-tab of their own, for the same reason.
+const PERF_TAB := "Perf"
 ## One label column for every lever row, so the sliders line up down the tab.
 ## Labels are capped at 28 characters in the registry and clipped here, so this
 ## width is a promise the rows cannot break.
@@ -138,7 +142,7 @@ func _build() -> void:
 	_build_player_tab()
 	_build_spawn_tab()
 	for group in Tunables.groups():
-		if group == PLAYER_TAB:
+		if group == PLAYER_TAB or group == PERF_TAB:
 			continue
 		_build_lever_tab(group)
 	_build_perf_tab()
@@ -418,6 +422,10 @@ func _build_perf_tab() -> void:
 	_perf_label.tooltip_text = _perf_text()
 	box.add_child(_perf_label)
 	_hint(box, "Hover the line for the full cost picture.")
+	# ...and the one lever that belongs next to the cost picture rather than in a
+	# balance tab: what an OVERRUN looks like (see the registry note).
+	for row in Tunables.in_group(PERF_TAB):
+		_build_lever_row(box, row as Dictionary)
 	_action_button(box, "Toggle whale diagnostic",
 		"The same overlay F3 toggles: what the whale brains are thinking.",
 		func() -> void:

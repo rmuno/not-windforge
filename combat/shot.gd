@@ -143,10 +143,45 @@ func fire(impulse: Vector2, platform_velocity := Vector2.ZERO) -> void:
 ## the whole placeable if so (Ship.damage_balloon — one pool, pops entirely) and
 ## returns true, so the shell stops there. Faction rule as for hulls: a friendly
 ## shell passes harmlessly through its own side's balloons.
-func _hit_a_balloon(from: Vector2, to: Vector2) -> bool:
-	for node in get_tree().get_nodes_in_group("ships"):
+## --- THE SKY, LOOKED UP ONCE A TICK ---------------------------------------
+## Both sweeps below (prop wash, balloons) used to ask the SceneTree for the
+## "ships" group per shell per tick and then walk all of it: at the Dive floor
+## that is 56 shells × 25 ships × 2 sweeps = 2,800 visits and 112 freshly
+## allocated Arrays every 16 ms, and it measured 1.6 ms of a tick with 16.7 to
+## spend. It is the same answer for every shell, so it is asked ONCE per physics
+## frame — and the two lists are pre-filtered to the bodies that can actually do
+## anything: one with propellers, one with balloons. At the floor almost nothing
+## is either (a creature has neither), so both loops usually have nothing to walk.
+##
+## Deliberate, and the only behaviour difference: a ship that ENTERS the sky
+## midway through a physics tick is invisible to shells that step later in that
+## same tick, and is picked up on the next one. A 16 ms delay on a deflection
+## field, against a per-tick cost that was growing as O(shells × ships).
+static var _sky_frame := -1
+static var _wash_ships: Array[Ship] = []
+static var _balloon_ships: Array[Ship] = []
+
+
+static func _refresh_sky(tree: SceneTree) -> void:
+	var f := Engine.get_physics_frames()
+	if f == _sky_frame:
+		return
+	_sky_frame = f
+	_wash_ships.clear()
+	_balloon_ships.clear()
+	for node in tree.get_nodes_in_group("ships"):
 		var ship := node as Ship
-		if ship == null or ship.balloons.is_empty() or ship.faction == faction:
+		if ship == null:
+			continue
+		if ship.has_wash():
+			_wash_ships.append(ship)
+		if not ship.balloons.is_empty():
+			_balloon_ships.append(ship)
+
+
+func _hit_a_balloon(from: Vector2, to: Vector2) -> bool:
+	for ship in _balloon_ships:
+		if not is_instance_valid(ship) or ship.faction == faction:
 			continue
 		for i in ship.balloons.size():
 			var c := ship.balloon_center(i)
@@ -164,12 +199,25 @@ func _hit_a_balloon(from: Vector2, to: Vector2) -> bool:
 
 
 func _physics_process(delta: float) -> void:
+	# The stopwatch is off in play — one bool read (see debug/tick_perf.gd).
+	if not TickPerf.on:
+		_tick_physics(delta)
+		return
+	var t0 := Time.get_ticks_usec()
+	_tick_physics(delta)
+	TickPerf.bill("shots", t0)
+
+
+func _tick_physics(delta: float) -> void:
 	velocity.y += gravity * delta  # the arc is real
+	_refresh_sky(get_tree())
 	# Prop wash bends the flight (owner survey: the original's props
 	# visibly deflect slow shells; machine-gun rounds barely notice —
 	# emergent here, because deflection is dwell time in the jet).
-	for ship in get_tree().get_nodes_in_group("ships"):
-		velocity += (ship as Ship).wash_accel_at(position) * delta
+	for ship in _wash_ships:
+		if not is_instance_valid(ship):
+			continue
+		velocity += ship.wash_accel_at(position) * delta
 	var to := position + velocity * delta
 	_travelled += velocity.length() * delta
 	# BALLOONS FIRST: a tethered balloon is a rendered placeable with no physics

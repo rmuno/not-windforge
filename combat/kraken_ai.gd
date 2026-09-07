@@ -476,50 +476,91 @@ func _is_alive() -> bool:
 
 
 ## Latch the mouth onto the prey and chew: find the prey's solid cell nearest the
-## mouth and, if it is within bite range, drain it by GRAB_DPS·delta. Cheap: the
-## O(cells) nearest-cell scan runs only after a coarse whole-body proximity gate,
-## so it costs nothing until the mouth is actually near the prey.
+## mouth and, if it is within bite range, drain it by GRAB_DPS·delta.
+##
+## A BITE IS A LOCAL QUESTION, AND IT IS ASKED LOCALLY (v0.164.0). This used to
+## walk the prey's whole block dictionary — every cell transformed to world space
+## and distance-tested — to find a cell that is, by definition, within four
+## authored cells of the mouth. Measured at the Dive floor (tools/floor_tick_probe):
+## 4.4 ms per call on a 3,595-cell hull, ~1.3 ms of every physics tick, and it
+## grew with the size of the SHIP rather than with the size of the bite.
+##
+## The answer is the same one, found two ways instead:
+##
+##   * THE COARSE GATE IS THE PREY'S ACTUAL BOX, not a radius around its origin.
+##     `solid_bounds` grown by the reach, tested in the prey's own local space —
+##     still a superset of "within reach of a solid cell", so no bite is lost,
+##     but it rejects a mouth that is merely near a long hull's midpoint.
+##   * THE SEARCH IS A RING WALK OUTWARD FROM THE MOUTH'S OWN CELL, stopping as
+##     soon as no further ring can beat what it already has. A latched mouth is
+##     standing on the hull, so it answers in the first ring or two.
+##
+## The cell it damages is identical: the transform is a rigid motion with uniform
+## scale, so ordering by local distance and ordering by world distance are the
+## same ordering, and the reach is converted once rather than per cell.
 func _mouth_grab(delta: float, target: Ship, sites: Array[Vector2],
 		latched: Dictionary) -> void:
 	if sites.is_empty():
 		return
 	var u := whale.scale_unit
 	var reach := Tunables.get_num("kraken_grab_reach") * u
-	# Coarse gate, per site: skip the per-cell scan for any site that is not near
-	# the prey body at all (reach + the prey's own extent). solid_bounds is
-	# body-local px.
-	var coarse := reach + target.solid_bounds.size.length()
-	var near: Array[int] = []
-	for i in sites.size():
-		if (sites[i] - target.global_position).length() <= coarse:
-			near.append(i)
-	if near.is_empty():
+	if target.blocks.is_empty():
 		return
-	# ONE walk of the prey grid for every near site. Seven separate scans of an
-	# 8× hull's ~11,000 cells would cost seven times what the shipped single
-	# mouth did; the sites ride along inside the one dictionary walk instead.
-	var best_cell: Array[Vector2i] = []
-	var best_d2: Array[float] = []
-	best_cell.resize(near.size())
-	best_d2.resize(near.size())
-	for j in near.size():
-		best_d2[j] = INF
-	for cell in target.blocks:
-		if not BlockDB.get_def(target.blocks[cell]["type"])["solid"]:
-			continue
-		var at := target.to_global(target.local_pos_of(cell))
-		for j in near.size():
-			var d2 := (at - sites[near[j]]).length_squared()
-			if d2 < best_d2[j]:
-				best_d2[j] = d2
-				best_cell[j] = cell
+	# The reach in the PREY's local units — the space `solid_bounds`, the cell
+	# lattice and the search below all live in.
+	var body_scale: float = maxf(target.global_transform.get_scale().x, 0.0001)
+	var reach_local := reach / body_scale
+	var box := target.solid_bounds.grow(reach_local)
 	var dps := Tunables.get_num("kraken_grab_dps")
-	for j in near.size():
-		if best_d2[j] > reach * reach:
+	var t_walk := Time.get_ticks_usec()
+	for i in sites.size():
+		var at := target.to_local(sites[i])
+		if not box.has_point(at):
 			continue
-		target.net_damage_cell(best_cell[j], dps * delta)
+		var cell := _nearest_solid_cell_near(target, at, reach_local)
+		if cell.x == 0x7FFFFFFF:
+			continue
+		target.net_damage_cell(cell, dps * delta)
 		grabbing = true
-		latched[near[j]] = true
+		latched[i] = true
+	if TickPerf.on:
+		TickPerf.bill("in: kraken grab grid-walk", t_walk)
+
+
+## The prey's SOLID cell nearest a point in its own local space, within
+## `reach_local` px of it — or the sentinel `(0x7FFFFFFF, 0)` when the bite finds
+## nothing. Rings outward from the point's own cell in Chebyshev order and stops
+## once the nearest possible cell of the next ring is already further than the
+## best found: a mouth resting on plating answers after one or two rings, and a
+## mouth in open air past the plating's edge stops at the reach.
+static func _nearest_solid_cell_near(target: Ship, at: Vector2,
+		reach_local: float) -> Vector2i:
+	var cell_px := float(Ship.CELL)
+	var base := Vector2i(roundi(at.x / cell_px), roundi(at.y / cell_px))
+	var max_r := int(ceilf(reach_local / cell_px)) + 1
+	var best := Vector2i(0x7FFFFFFF, 0)
+	var best_d2 := reach_local * reach_local
+	for r in max_r + 1:
+		# Any cell on ring r is at least (r - 0.5) cells away, because `at` sits
+		# within half a cell of `base`'s centre. Once that floor beats the best
+		# distance so far, no further ring can improve on it.
+		var floor_px := (float(r) - 0.5) * cell_px
+		if r > 0 and floor_px * floor_px > best_d2:
+			break
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if maxi(absi(dx), absi(dy)) != r:
+					continue
+				var c := base + Vector2i(dx, dy)
+				if not target.blocks.has(c):
+					continue
+				if not BlockDB.get_def(target.blocks[c]["type"])["solid"]:
+					continue
+				var d2 := (Vector2(c) * cell_px - at).length_squared()
+				if d2 < best_d2:
+					best_d2 = d2
+					best = c
+	return best
 
 
 ## The mouth chews PEOPLE too (owner follow-up 2026-08-24): stand in the jaws on

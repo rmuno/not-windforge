@@ -2146,7 +2146,20 @@ func _check_the_breath(w: Node, pl, boss: Ship, roof: Rect2, cpx: float) -> void
 	# 28,096 blocks into stone measures a crush, not a withdrawal.)
 	boss.global_position = den + Vector2(8000.0, 6000.0)
 	boss.linear_velocity = Vector2.ZERO
-	var was := boss.global_position.distance_to(den)
+	# THE BASELINE IS TAKEN AFTER THE PLACEMENT SETTLES, not at the assignment
+	# (2026-09-07). Dropping 28,096 cells at a point picked by arithmetic can land
+	# them overlapping rock, and the solver's first job is then to push that
+	# overlap out — measured at ~12,000 px of ejection before the brain gets a say.
+	# That is the placement resolving, not the withdrawal failing, and billing it
+	# to the withdrawal made this check read the boss's own depenetration as a
+	# refusal to go home. (It passed for years only because a facing flip used to
+	# destroy and rebuild the collider ~18 times a SECOND, so no overlap ever
+	# survived long enough to be resolved — v0.163.0's dwell ended that, and the
+	# check went red without the behaviour it measures having changed at all.)
+	for i in 20:
+		await w.get_tree().physics_frame
+		_hold_body(pl, safe)
+	var was := boss.global_position.distance_to(den) if is_instance_valid(boss) else 0.0
 	for i in 90:
 		await w.get_tree().physics_frame
 		_hold_body(pl, safe)
