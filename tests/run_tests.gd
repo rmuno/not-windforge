@@ -4069,6 +4069,24 @@ func _test_dive_ladder() -> void:
 	_check(is_equal_approx(float(conf["h"]) * 4.0, span),
 		"4 rectangles tile the usable sky exactly (%.4f × 4 = %.4f)"
 			% [float(conf["h"]), span])
+	# THE SHIPPED NUMBERS ARE WRITTEN DOWN TWICE — once as the model's own
+	# constants (which is where §11's table lives, next to the geometry it
+	# describes) and once as the F2 defaults the owner actually flies. They are
+	# two files and nothing joins them, so this is the join: an edit to either
+	# that forgets the other fails here rather than in a playtest.
+	_check(Tunables.get_int("dive_ladder_rungs") == DiveRun.LADDER_RUNGS
+			and is_equal_approx(Tunables.get_num("dive_ladder_sink"), DiveRun.LADDER_SINK)
+			and is_equal_approx(Tunables.get_num("dive_ladder_column_tiles"),
+				DiveRun.LADDER_COLUMN_TILES)
+			and is_equal_approx(Tunables.get_num("dive_ladder_calm_tiles"),
+				DiveRun.LADDER_CALM_TILES),
+		"the F2 defaults ARE the model's shipped numbers (%d rungs, %.0f px/s, %.0f/%.0f tiles)"
+			% [DiveRun.LADDER_RUNGS, DiveRun.LADDER_SINK,
+				DiveRun.LADDER_COLUMN_TILES, DiveRun.LADDER_CALM_TILES])
+	# ...and the ring's own drafts are OFF by default, which is what "the v0.141
+	# wind ring is retired by the ladder" means as a shipped fact (§11).
+	_check(is_zero_approx(Tunables.get_num("dive_zone_wind_mult")),
+		"...and the v0.141 wind ring's drafts default OFF under it")
 
 	# --- 1. RULING 3: THE LOOP TURNS, AND SHARED WALLS AGREE --------------
 	# Sinking column counter-clockwise: left wall DOWN, bottom → RIGHT, right wall

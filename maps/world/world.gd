@@ -1323,6 +1323,7 @@ func begin_dive() -> void:
 	_dive_seal_said.clear()
 	_dive_ladder_conf = {}
 	_dive_ladder_pieces.clear()
+	_dive_shelter_memo.clear()
 	if _dive_scrap != null:
 		_dive_scrap.clear()
 	# A FRESH SEED EACH RUN, AND THE GROUND WITH IT (owner, 2026-08-30). Before
@@ -2839,6 +2840,9 @@ var _dive_ladder_conf := {}
 ## ...and its pieces in WORLD PIXELS, rebuilt with it: `{rect, dir, part, band}`.
 ## The grind walks these; so does the painter.
 var _dive_ladder_pieces: Array = []
+## ...and this tick's shelter answers, one per terrain cell (see
+## `dive_wind_sheltered`). Cleared with the geometry.
+var _dive_shelter_memo := {}
 
 
 ## The band thickness expressed in ring tiles — the one conversion
@@ -2868,6 +2872,7 @@ func _dive_advance_ladder(delta: float) -> void:
 		Tunables.get_num("dive_ladder_calm_tiles"),
 		dive_ladder_wall_tiles())
 	_dive_ladder_pieces.clear()
+	_dive_shelter_memo.clear()
 	if not dive_ladder_on():
 		return
 	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
@@ -2899,8 +2904,11 @@ func _dive_advance_ladder(delta: float) -> void:
 ## an altitude fraction. Everything that asks about the ladder asks here.
 func dive_ladder_at(pos: Vector2) -> Dictionary:
 	if not dive_ladder_on() or _dive_ladder_conf.is_empty():
+		# The same SHAPE `DiveRun.ladder_at` returns for a corridor, `carry` and
+		# all: a caller that reads one key off this must not have to know which
+		# of the two "there is no ladder here" answers it got.
 		return {"zone": "none", "part": "", "column": -1, "rung": -1,
-			"dir": Vector2.ZERO}
+			"dir": Vector2.ZERO, "carry": Vector2.ZERO}
 	var cx: float = _world_rect.get_center().x if _world_rect.size.x > 0.0 else 0.0
 	return DiveRun.ladder_at((pos.x - cx) / _dive_tile_w(),
 		dive_altitude_frac(pos), dive.ladder_travel, _dive_ladder_conf)
@@ -2981,6 +2989,22 @@ func dive_shelter_reach_px() -> float:
 func dive_wind_sheltered(pos: Vector2) -> bool:
 	if terrain == null or not is_instance_valid(terrain):
 		return false
+	# ONE ANSWER PER CELL PER TICK. The scan is up to 70 `is_solid` calls, and it
+	# is asked of EVERY body the weather stamps plus, for the person, twice more
+	# (the airstream and the flat shove) and again at the 4 Hz toll — all at the
+	# same position in the same frame. Keyed on the terrain cell rather than the
+	# float position so those repeats actually collide; cleared by
+	# `_dive_advance_ladder`, which is the tick boundary the ladder already has.
+	var key := terrain.world_to_cell(pos)
+	if _dive_shelter_memo.has(key):
+		return bool(_dive_shelter_memo[key])
+	var answer := _dive_scan_shelter(pos)
+	_dive_shelter_memo[key] = answer
+	return answer
+
+
+## `dive_wind_sheltered` with the memo peeled off — the scan itself.
+func _dive_scan_shelter(pos: Vector2) -> bool:
 	var reach := dive_shelter_reach_px()
 	if reach <= 0.0:
 		return false
@@ -3180,7 +3204,9 @@ func _dive_say_the_seal() -> void:
 			Tunables.get_num("dive_zone_tile_widths")):
 		return
 	_dive_seal_said[d] = true
-	_notify("THE DEPTH IS CLEARED. The ladder runs 25%% faster.")
+	# No `%` FORMAT HERE, so no doubled sign: this string is handed to `_notify`
+	# as it stands, and "25%%" would reach the player's screen with both.
+	_notify("THE DEPTH IS CLEARED. The ladder runs 25% faster.")
 
 
 ## Where `hull`'s plating overlaps a WALL, in world px, or an empty Rect2 for a
