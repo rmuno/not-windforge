@@ -194,6 +194,12 @@ const _REGISTRY := [
 	{"id": "kraken_coil_seconds", "label": "Kraken coil time", "group": "Combat",
 		"kind": KIND_FLOAT, "default": 0.7, "min": 0.0, "max": 3.0, "step": 0.05,
 		"tip": "Seconds a kraken rears away before it heaves — the tell, and your window to move. 0 removes the windup and it strikes with no warning."},   # KrakenAI.COIL_SECONDS
+	{"id": "kraken_root_hp_per_cell", "label": "Kraken arm hp per cell", "group": "Combat",
+		"kind": KIND_FLOAT, "default": 80.0, "min": 0.0, "max": 2000.0, "step": 25.0,
+		"tip": "Hit points each authored cell gives a kraken ARM as its own pool, on top of the shared one. Shoot an arm to zero and it comes off the body and stops grabbing. 0 sheds an arm on the first hit."},   # KrakenAI.ROOT_HP_PER_CELL
+	{"id": "kraken_hoard_mult", "label": "Kraken hoard multiplier", "group": "Combat",
+		"kind": KIND_FLOAT, "default": 2.0, "min": 0.0, "max": 10.0, "step": 0.5,
+		"tip": "How many times the kill's own scrap a dead kraken's sealed cavity spills as a SECOND cloud, hanging where the hoard was. 0 turns the hoard off."},   # world._dive_drop_hoard
 	{"id": "creature_shell_resist", "label": "Creature shell resist", "group": "Combat",
 		"kind": KIND_FLOAT, "default": 4.0, "min": 1.0, "max": 12.0, "step": 0.5,
 		"tip": "How many times better a creature's SHELL survives a SHOT than its bare meat. 1 makes armour and throat identical again. Never touches vessels, and never a collision."},   # Ship.damage_cell, the living branch

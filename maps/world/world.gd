@@ -2743,6 +2743,55 @@ func _dive_drop_scrap(kind: String, at: Vector2, bounty := -1) -> void:
 	_dive_scrap.spawn(at, DiveRun.scrap_for(kind, dive.depth, bounty), float(world_scale))
 
 
+## THE HOARD (DESIGN_KRAKEN §4, v0.148.0). "The source's krakens carry swallowed
+## loot; every plan has a sealed cavity. On death the cavity drops a SECOND scrap
+## cloud." `kraken_hoard_mult` × the kill's own scrap, at the CAVITY's world
+## position — the sealed interior air pocket `Ship.cavity_cells` latched at spawn,
+## which is precisely the complement of the exterior flood `KrakenAI`'s mouth
+## finder reads (one definition of "sealed", two users).
+##
+## WHERE IT LANDS — the call this round had to make. The design's §4 says both
+## "at the cavity's position" AND "a carcass FALLS: a kraken killed over open
+## lava drops its hoard into the core". Those are two different drops, because
+## SCRAP HAS NO BODY: a mote is a position and a value (`combat/scrap.gd` is pure
+## by construction), so a cloud hangs exactly where it is dropped while the
+## carcass falls away from it. Chosen: **the cavity, at the moment of death.**
+##   * It is the one that needs no new system. Dropping at the carcass's REST
+##     position means watching a corpse fall, deciding when it has settled, and
+##     a silent failure mode where the body is eaten by the core and the reward
+##     simply never appears — a reward you cannot see is not risk/reward, it is
+##     a bug report.
+##   * The lesson survives, in the form the engine actually supports: the hoard
+##     hangs at the ALTITUDE you chose to fight at. Kill it low over the core and
+##     you must fly down into the heat to collect; kill it high, or over the den's
+##     roof, and the cloud is somewhere you can reach. Position still decides the
+##     reward — it is just your position, not the corpse's.
+##   * And it READS: the second cloud appears in the same breath as the first, at
+##     the animal's belly rather than under it, which is what makes it legible as
+##     the thing it swallowed.
+## Kraken-kinds only (the design's ruling), and only a body that actually has a
+## sealed cavity — a whale's stomach is a mining reward and stays one.
+func _dive_drop_hoard(kind: String, body: Ship, bounty: int) -> void:
+	if dive == null or dive.outcome != "" or _dive_scrap == null:
+		return
+	if not kind.begins_with("kraken"):
+		return
+	var mult := Tunables.get_num("kraken_hoard_mult")
+	if mult <= 0.0:
+		return
+	var cavity: Dictionary = body.cavity_cells()
+	if cavity.is_empty():
+		return
+	var sum := Vector2.ZERO
+	for cell in cavity:
+		sum += body.local_pos_of(cell as Vector2i)
+	var at := body.to_global(body._mirror_point(sum / float(cavity.size())))
+	var worth := int(round(float(DiveRun.scrap_for(kind, dive.depth, bounty)) * mult))
+	if worth <= 0:
+		return
+	_dive_scrap.spawn(at, worth, float(world_scale))
+
+
 ## THE ABSORPTION RADIUS, in world px. Authored at 1x and scaled, like every
 ## other distance in the game. The default (F2 `dive_scrap_radius`, 120 at 1x =
 ## 960 px at the shipped 8x) is about a QUARTER of the helm view's height — close
@@ -6303,6 +6352,7 @@ func _on_creature_perished(kind: String, body: Ship = null) -> void:
 	# still left something worth flying through.
 	if body != null and is_instance_valid(body):
 		_dive_drop_scrap(kind, body.global_position, bounty)
+		_dive_drop_hoard(kind, body, bounty)
 	# THE RUN'S WIN (DESIGN_KRAKEN §7 slice 1). Killing the floor's resident is
 	# the only thing that ends a run in TRIUMPH, and until this round nothing in
 	# the world ever called `DiveRun.triumph()` — depth 8 was unwinnable.
@@ -6634,7 +6684,15 @@ func _whale_ai_for(creature: Ship) -> WhaleAI:
 		ai.home = creature.global_position
 		_whale_ais[id] = ai
 		creature.damaged.connect(
-			func(_cell: Vector2i, _amount: float) -> void:
+			func(cell: Vector2i, amount: float) -> void:
+				# WHERE the hit landed matters to a kraken (v0.148.0,
+				# DESIGN_KRAKEN §1.2): a hit on one of its ARMS drains that
+				# arm's own pool as well as the shared one, and an arm at zero
+				# comes off. Routed HERE because this is already the one place
+				# a creature's brain hears about damage — a second `damaged`
+				# connection would be a second copy of the same wire.
+				if ai is KrakenAI:
+					(ai as KrakenAI).absorb_hit(cell, amount)
 				# Retaliate against the ACTUAL attacker: Shot stamps the
 				# shooter's id onto the ship just before the damage lands, so
 				# resolving it here hands the brain who to ram (the on-foot
