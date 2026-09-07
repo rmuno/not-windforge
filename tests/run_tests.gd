@@ -160,6 +160,8 @@ func _initialize() -> void:
 	await _test_thrust_mult_scales_the_props()
 	await _test_components_die_as_a_whole()
 	await _test_shots_respect_factions()
+	await _test_a_shell_books_its_own_outcome()
+	await _test_the_combat_scorecard_arithmetic()
 	await _test_crash_bite_scales_with_the_world()
 	await _test_walls_hold_the_ship_together()
 	await _test_turret_arcs_derive_from_mounting()
@@ -10152,6 +10154,194 @@ func _test_shots_respect_factions() -> void:
 
 	friend.queue_free()
 	foe.queue_free()
+	await process_frame
+
+
+## THE COMBAT SCORECARD'S ARITHMETIC (Q-O). `tools/dive_probe.gd` prints hit
+## rates, grab uptime, engagement time and time-to-kill, and the owner ranks four
+## combat candidates off those figures — but a PROBE asserts nothing, so until
+## this test the numbers steering the decision had nothing behind them. The
+## arithmetic lives in `tools/combat_score.gd` (pure, dependency-free) precisely
+## so it can be pinned here.
+##
+## The failure this really guards against is not a wrong formula, it is a
+## PLAUSIBLE one: an empty denominator printing `nan%`, or an interval union that
+## adds three simultaneous pickets into three times the fight.
+func _test_the_combat_scorecard_arithmetic() -> void:
+	_t("the combat scorecard's arithmetic (hit %, uptime, spans, time-to-kill)")
+
+	# --- HIT RATE. The number every enemy-shell-speed argument turns on.
+	_check_approx(CombatScore.hit_pct(37, 412), 8.981, 0.01,
+		"37 of 412 shells is a 9% hit rate")
+	_check_approx(CombatScore.hit_pct(0, 0), 0.0, 0.0001,
+		"nobody fired = 0%, not a division by zero")
+	_check_approx(CombatScore.pct(5.0, 0.0), 0.0, 0.0001,
+		"an empty whole is 0% — a probe line must never read `nan`")
+	_check_approx(CombatScore.hit_pct(9, 9), 100.0, 0.0001,
+		"every shell landing is 100%")
+
+	# --- GRAB UPTIME. Held over TIME IN REACH, not over the whole run: a hunter
+	# that never caught up cannot be blamed for not grabbing.
+	_check_approx(CombatScore.uptime_pct(2.0, 8.0), 25.0, 0.0001,
+		"two seconds of grab in eight seconds of reach is 25% uptime")
+	_check_approx(CombatScore.uptime_pct(0.0, 0.0), 0.0, 0.0001,
+		"never in reach reads 0%, not nan")
+	_check_approx(CombatScore.frames_to_secs(60, 1.0 / 60.0), 1.0, 0.0001,
+		"sixty frames at the fixed step is one second")
+	_check_approx(CombatScore.frames_to_secs(-5, 1.0 / 60.0), 0.0, 0.0001,
+		"a negative frame count cannot buy time back")
+
+	# --- ENGAGEMENT TIME is a UNION, not a sum. Three pickets on you at once for
+	# ten seconds is ten seconds of fighting; summing their clocks would print
+	# thirty and make the run look three times as violent as it was.
+	_check_approx(CombatScore.span_union([[0.0, 10.0], [5.0, 12.0]]), 12.0, 0.0001,
+		"overlapping engagements merge (12 s, not 17)")
+	_check_approx(CombatScore.span_union([[0.0, 10.0], [20.0, 25.0]]), 15.0, 0.0001,
+		"separate engagements add up")
+	_check_approx(CombatScore.span_union([[0.0, 10.0], [10.0, 20.0]]), 20.0, 0.0001,
+		"engagements that touch at the seam are one stretch")
+	_check_approx(CombatScore.span_union([[20.0, 25.0], [0.0, 10.0]]), 15.0, 0.0001,
+		"the order they arrive in does not change the total")
+	_check_approx(CombatScore.span_union([[0.0, 30.0], [5.0, 6.0], [7.0, 8.0]]),
+		30.0, 0.0001, "spans swallowed by a longer one count once")
+	_check_approx(CombatScore.span_union([]), 0.0, 0.0001, "no engagements is no time")
+	_check_approx(CombatScore.span_union([[5.0, 5.0], [8.0, 2.0]]), 0.0, 0.0001,
+		"zero-length and backwards spans contribute nothing")
+	var spans_in := [[3.0, 4.0], [1.0, 2.0]]
+	var _union_ignored := CombatScore.span_union(spans_in)
+	_check(float(spans_in[0][0]) == 3.0,
+		"the caller's own array is not re-ordered underneath it")
+
+	# --- TIME TO KILL is measured from the first shell of OURS that landed.
+	_check_approx(CombatScore.ttk(3.0, 10.0), 7.0, 0.0001,
+		"first hit at 3 s, dead at 10 s, is a 7 s kill")
+	_check(CombatScore.ttk(-1.0, 10.0) < 0.0,
+		"a body we never hit has no time-to-kill (it died to terrain or its own side)")
+	_check(CombatScore.ttk(10.0, 3.0) < 0.0,
+		"a death before the first hit is refused, not averaged in as instant")
+	_check_approx(CombatScore.mean([1.0, 2.0, 6.0]), 3.0, 0.0001, "the mean is the mean")
+	_check_approx(CombatScore.mean([]), 0.0, 0.0001, "no kills is no average kill time")
+
+	# --- RATES.
+	_check_approx(CombatScore.per_minute(3, 120.0), 1.5, 0.0001,
+		"three grabs in two minutes is 1.5 a minute")
+	_check_approx(CombatScore.per_minute(3, 0.0), 0.0, 0.0001,
+		"a run of no length has no rate")
+	_check_approx(CombatScore.per_each(100.0, 4), 25.0, 0.0001, "damage per picket met")
+	_check_approx(CombatScore.per_each(100.0, 0), 0.0, 0.0001,
+		"a run that met nobody took no damage per picket")
+
+
+## THE SHELL LEDGER (Q-O). A hit rate cannot be measured from outside a shell: a
+## miss simply disappears. `Shot.spent` books every shell's own outcome, and the
+## scorecard's whole gunnery half stands on it — so if this signal ever stops
+## firing (or starts calling a blocked shell a hit), the probe prints a
+## confident, wrong number and the owner tunes combat against it.
+##
+## Four outcomes, four cases: it damaged a foe, our own side stopped it, it hit
+## rock, it expired in empty sky. `amount > 0` is the DEFINITION of a landed
+## shell, which is what makes "blocked" and "terrain" the interesting cases here.
+func _test_a_shell_books_its_own_outcome() -> void:
+	_t("every shell books its own outcome — the hit rate's only honest source")
+	var book: Array = []
+	var ledger := func(reason: String, victim: Node, amount: float) -> void:
+		book.append({"reason": reason, "victim": victim, "amount": amount})
+
+	var foe := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.HULL,
+		Vector2i(0, -1): BlockDB.Type.HULL,
+	})
+	foe.position = Vector2(420, -5400)
+	foe.faction = 1
+	var friend := _make_ship({
+		Vector2i(0, 0): BlockDB.Type.HULL,
+		Vector2i(0, -1): BlockDB.Type.HULL,
+	})
+	friend.position = Vector2(200, -5400)
+	friend.faction = 0
+	await _step(2)
+
+	# 1. IT LANDS on a hostile hull: reason "hull", the victim IS the foe, and the
+	# amount is the damage — the only combination the scorecard counts as a hit.
+	var landed := Shot.new()
+	landed.position = Vector2(320, -5400)
+	landed.velocity = Vector2(900, 0)
+	landed.gravity = 0.0
+	landed.faction = 0
+	landed.damage = 30.0
+	landed.spent.connect(ledger)
+	root.add_child(landed)
+	await _step(30)
+	_check(book.size() == 1 and String(book[0]["reason"]) == "hull",
+		"a shell into a hostile hull books it as a hull hit (got %s)"
+			% ("nothing" if book.is_empty() else String(book[0]["reason"])))
+	_check(not book.is_empty() and book[0]["victim"] == foe,
+		"...naming the body it hit, so every hit is attributable")
+	_check(not book.is_empty() and is_equal_approx(float(book[0]["amount"]), 30.0),
+		"...and carrying the damage it dealt")
+
+	# 2. STOPPED BY OUR OWN SIDE. It touched a hull and hurt nobody, so `amount`
+	# is zero and the scorecard cannot count it as landed. This is the check that
+	# stops our own plating inflating our hit rate.
+	book.clear()
+	var blocked := Shot.new()
+	blocked.position = Vector2(100, -5400)
+	blocked.velocity = Vector2(900, 0)
+	blocked.gravity = 0.0
+	blocked.faction = 0
+	blocked.damage = 30.0
+	blocked.spent.connect(ledger)
+	root.add_child(blocked)
+	await _step(30)
+	_check(book.size() == 1 and String(book[0]["reason"]) == "blocked",
+		"our own hull stopping a shell books it as blocked (got %s)"
+			% ("nothing" if book.is_empty() else String(book[0]["reason"])))
+	_check(not book.is_empty() and float(book[0]["amount"]) == 0.0,
+		"...with no damage, so the scorecard reads it as a MISS, not a hit")
+
+	# 3. ROCK. A bare static body is what a terrain chunk looks like to the ray.
+	book.clear()
+	var rock := StaticBody2D.new()
+	var shape := CollisionShape2D.new()
+	var box := RectangleShape2D.new()
+	box.size = Vector2(64, 64)
+	shape.shape = box
+	rock.add_child(shape)
+	rock.position = Vector2(700, -5400)
+	root.add_child(rock)
+	await _step(2)
+	var into_rock := Shot.new()
+	into_rock.position = Vector2(600, -5400)
+	into_rock.velocity = Vector2(900, 0)
+	into_rock.gravity = 0.0
+	into_rock.faction = 1
+	into_rock.damage = 30.0
+	into_rock.spent.connect(ledger)
+	root.add_child(into_rock)
+	await _step(30)
+	_check(book.size() == 1 and String(book[0]["reason"]) == "terrain",
+		"a shell into rock books terrain (got %s)"
+			% ("nothing" if book.is_empty() else String(book[0]["reason"])))
+
+	# 4. EMPTY SKY. It out-flies its range and books "expired" — the miss that
+	# touches nothing at all, and the commonest one at a stand-off.
+	book.clear()
+	var missed := Shot.new()
+	missed.position = Vector2(0, -9000)
+	missed.velocity = Vector2(1200, 0)
+	missed.gravity = 0.0
+	missed.faction = 1
+	missed.max_travel = 400.0
+	missed.spent.connect(ledger)
+	root.add_child(missed)
+	await _step(40)
+	_check(book.size() == 1 and String(book[0]["reason"]) == "expired",
+		"a shell that touches nothing books expired (got %s)"
+			% ("nothing" if book.is_empty() else String(book[0]["reason"])))
+
+	foe.queue_free()
+	friend.queue_free()
+	rock.queue_free()
 	await process_frame
 
 

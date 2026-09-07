@@ -89,6 +89,24 @@ var dive_world: Node = null
 ## the turret slab still clears its own gun.
 var _travelled := 0.0
 
+## THE SHELL'S LEDGER (Q-O, the combat scorecard). Emitted exactly ONCE, the
+## instant this shell stops flying, saying WHY it stopped and WHAT it touched:
+##
+##   "hull"     — damaged an enemy ship        (victim = the Ship, amount = damage)
+##   "balloon"  — burst an enemy's balloon     (victim = its Ship, amount = damage)
+##   "person"   — hit a person of another side (victim = the Player, amount = damage)
+##   "blocked"  — stopped harmlessly by its OWN side's hull, person or furniture
+##   "terrain"  — stopped by rock
+##   "expired"  — ran out of `life` or `max_travel` having touched nothing
+##
+## Nothing in the game listens; this is measurement plumbing and it changes no
+## behaviour. It exists because HIT RATE cannot be seen from outside a shell — a
+## miss simply disappears — so "fired minus landed", the number every
+## enemy-shell-speed decision has to answer to, was unmeasurable until now
+## (`tools/dive_probe.gd`, COMBAT SCORECARD). Emitted BEFORE the `queue_free`
+## that follows it, so a listener can still read the shell and its victim.
+signal spent(reason: String, victim: Node, amount: float)
+
 
 ## Joined so anything that needs the live-shot population can COUNT it in O(1)
 ## — today the whale diagnostic, which logs the swarm size behind an FPS drop
@@ -140,6 +158,7 @@ func _hit_a_balloon(from: Vector2, to: Vector2) -> bool:
 				else clampf((c - from).dot(seg) / seg.length_squared(), 0.0, 1.0)
 			if (from + seg * t).distance_to(c) <= r:
 				ship.net_damage_balloon(i, damage)
+				spent.emit("balloon", ship, damage)
 				return true
 	return false
 
@@ -178,6 +197,9 @@ func _physics_process(delta: float) -> void:
 		if person != null:
 			if faction != person.faction:
 				person.take_damage(damage)
+				spent.emit("person", person, damage)
+			else:
+				spent.emit("blocked", person, 0.0)
 			queue_free()
 			return
 		var ship := body as Ship
@@ -217,6 +239,15 @@ func _physics_process(delta: float) -> void:
 					# vessel is a long way from the plating you actually hit).
 					dive_world.call("_dive_on_hit", ship, damage,
 						hit["position"] as Vector2)
+				spent.emit("hull", ship, damage)
+			else:
+				# Our own side's plating stopped it: a shove, no damage. The
+				# scorecard must not read this as a hit on anybody.
+				spent.emit("blocked", ship, 0.0)
+		else:
+			# Not a ship and not a person — rock. (`body` is a Node in every
+			# case the ray can return here; the cast keeps the signal honest.)
+			spent.emit("terrain", body as Node, 0.0)
 		queue_free()
 		return
 	position = to
@@ -226,6 +257,7 @@ func _physics_process(delta: float) -> void:
 	# weight — free it now rather than pay its per-frame raycast + prop-wash
 	# sweep for the rest of the half-minute (see max_travel).
 	if life <= 0.0 or _travelled >= max_travel:
+		spent.emit("expired", null, 0.0)
 		queue_free()
 	queue_redraw()
 
