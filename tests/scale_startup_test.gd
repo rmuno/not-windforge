@@ -3242,17 +3242,27 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 			TerrainDB.Type.STONE)
 		terrain.call("set_cell", Vector2i(here_cell.x + dx, here_cell.y + arm),
 			TerrainDB.Type.STONE)
+	# A TICK BETWEEN EVERY EDIT AND THE QUESTION AFTER IT. `dive_wind_sheltered`
+	# answers once per terrain cell per tick (the scan is 70 `is_solid` calls and
+	# every stamped body asks for it), and this check rewrites the terrain
+	# underneath the same cell four times inside one frame — without the
+	# refresh it reads its own first answer back three times. In play the memo
+	# is at most one physics tick stale, which is nothing; here it is the whole
+	# measurement.
+	w.call("_dive_advance_ladder", 0.0)
 	_ok(not bool(w.call("dive_wind_sheltered", pocket)),
 		"a roof and a floor shelter NOTHING — the loops sweep vertically (ruling 8)")
 	# ...now the two WALLS, and only then is it a pocket.
 	for dy in range(-arm, arm + 1):
 		terrain.call("set_cell", Vector2i(here_cell.x - arm, here_cell.y + dy),
 			TerrainDB.Type.STONE)
+	w.call("_dive_advance_ladder", 0.0)
 	_ok(not bool(w.call("dive_wind_sheltered", pocket)),
 		"...nor does rock on ONE side — enclosure means left AND right")
 	for dy in range(-arm, arm + 1):
 		terrain.call("set_cell", Vector2i(here_cell.x + arm, here_cell.y + dy),
 			TerrainDB.Type.STONE)
+	w.call("_dive_advance_ladder", 0.0)
 	_ok(bool(w.call("dive_wind_sheltered", pocket)),
 		"rock LEFT and RIGHT at one altitude IS shelter (%d cells out, reach %.0f px)"
 			% [arm, reach_px])
@@ -3268,6 +3278,7 @@ func _check_dive_ladder(w: Node, pl, run, terrain, cx: float) -> void:
 			if absf(float(dx)) == float(arm) or absf(float(dy)) == float(arm):
 				terrain.call("set_cell", Vector2i(here_cell.x + dx,
 					here_cell.y + dy), TerrainDB.Type.AIR)
+	w.call("_dive_advance_ladder", 0.0)
 	_ok(not bool(w.call("dive_wind_sheltered", pocket)),
 		"...and the pocket is dug back out behind the check")
 
