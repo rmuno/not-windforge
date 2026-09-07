@@ -81,6 +81,7 @@ func _initialize() -> void:
 	_test_dive_floating_chunks()
 	_test_dive_garrison()
 	_test_dive_seal()
+	_test_dive_ladder()
 	await _test_map_room_screen()
 	_test_dive_cards()
 	_test_dive_scrap()
@@ -3902,30 +3903,19 @@ func _test_dive_seal() -> void:
 	var tw := 20.0
 	var sv := 424242
 
-	# --- SIX SEALS, AND WHERE THEY SIT ------------------------------------
+	# --- SIX DEPTHS STILL CARRY A GARRISON THE TEMPO IS COUNTED ON ---------
+	# (The six FIXED BANDS these depths used to carry are retired — the ladder
+	# replaced them, DESIGN_DESCENT §11. What `has_seal` still names is the range
+	# of depths whose clear buys tempo, and what `_test_dive_ladder` below tests
+	# is the geometry that took the bands' place.)
 	var seals := 0
 	for d in range(0, DiveRun.DEPTHS + 2):
 		if DiveRun.has_seal(d):
 			seals += 1
-	_check(seals == 6, "six seals in a run, under depths 2..%d (got %d)"
+	_check(seals == 6, "six clearable depths in a run, 2..%d (got %d)"
 		% [DiveRun.DEPTHS - 1, seals])
 	_check(not DiveRun.has_seal(1) and not DiveRun.has_seal(DiveRun.DEPTHS),
-		"...never under the launch deck, never under the floor")
-	for d in range(2, DiveRun.DEPTHS):
-		var mid := (DiveRun.depth_altitude(d) + DiveRun.depth_altitude(d + 1)) * 0.5
-		_check(is_equal_approx(DiveRun.seal_altitude(d), mid),
-			"the band under depth %d is centred on the %d/%d boundary itself" % [d, d, d + 1])
-		var b := DiveRun.seal_band(d)
-		_check(float(b[0]) > float(b[1]),
-			"...and reports [top, bottom] with top the higher altitude")
-		_check(is_equal_approx(float(b[0]) - float(b[1]),
-				DiveRun.BAND_RUNGS * DiveRun.rung_frac()),
-			"...%.2f rungs tall" % DiveRun.BAND_RUNGS)
-		_check(DiveRun.seal_at(DiveRun.seal_altitude(d)) == d
-				and DiveRun.seal_at(DiveRun.depth_altitude(d)) == 0,
-			"...you are in it at its centre and out of it at the rung above")
-	_check(DiveRun.seal_band(1)[0] == DiveRun.seal_band(1)[1],
-		"a depth with no seal has a zero-height band — it contains nothing")
+		"...never the launch deck, never the floor")
 
 	# The 8× world the numbers were authored against, from the same constants
 	# the generator uses.
@@ -3943,39 +3933,11 @@ func _test_dive_seal() -> void:
 		"the band (%.0f px) is taller than the tallest island (%.0f px) — %.2f× clear"
 			% [band_px, island_px, band_px / maxf(island_px, 1.0)])
 
-	# --- A BAND NEVER LANDS ON A LANDING -----------------------------------
-	# A landing is `World.LAUNCH_SHELF_PX.y` × scale tall and sits at a rung
-	# centre; a band's near edge is (0.5 - BAND_RUNGS/2) rungs away from one.
-	var shelf_px := 200.0 * scale   # World.LAUNCH_SHELF_PX.y — read here so an
-	# edit to the shelf that reached a band would fail this line rather than the game.
-	var gap_px := (0.5 - DiveRun.BAND_RUNGS * 0.5) * rung_px - shelf_px
-	_check(gap_px > 0.0,
-		"no band touches a landing shelf (%.0f px of clear air between them)" % gap_px)
-
-	# --- ...NOR ON A FLOATING SLAB ----------------------------------------
-	# A slab's `h` is in TILE widths and its `alt` is an altitude fraction, so the
-	# comparison needs the tile's px width. Rebuilt from the same two numbers
-	# `world.dive_nominal_tile_w` uses (the launch shelf's span × the F2 tile
-	# width), with a tenth over the top for the lattice snap that function applies
-	# — this file is the pure suite and cannot ask a world.
-	var tile_px := 1400.0 * scale * Tunables.get_num("dive_zone_tile_widths") * 1.1
-	var slab_frac_cap := DiveRun.CHUNK_W_MAX * DiveRun.CHUNK_ASPECT * tile_px / world_px
-	var worst := INF
-	for s2 in [11, 918273, 5, 99999]:
-		for tile in DiveRun.RING.size():
-			for d in range(2, DiveRun.DEPTHS + 1):
-				for row in DiveRun.tile_chunks(s2, tile, d):
-					var alt := float((row as Dictionary)["alt"])
-					for dd in range(2, DiveRun.DEPTHS):
-						var b2 := DiveRun.seal_band(dd)
-						# Clear if the slab's whole reach is above the band's top or
-						# below its bottom.
-						var above := (alt - slab_frac_cap * 0.5) - float(b2[0])
-						var below := float(b2[1]) - (alt + slab_frac_cap * 0.5)
-						worst = minf(worst, maxf(above, below))
-	_check(worst > 0.0,
-		"no floating slab reaches a band (worst clearance %.4f of world height, %.0f px)"
-			% [worst, worst * world_px])
+	# (The old "no band touches a landing / a floating slab" parity guards went
+	# out with the fixed bands: a rectangle that TRANSLATES passes every altitude
+	# in the sky sooner or later, so "does a band sit on a landing" has no answer
+	# any more. What replaced it is ruling 7 — the run STARTS in calm — which
+	# `_test_dive_ladder` pins directly.)
 
 	# --- RULING 3: MASS BEATS IT ------------------------------------------
 	_check(is_equal_approx(DiveRun.seal_speed_for(DiveRun.BETA_REF), 1.0),
@@ -4083,6 +4045,294 @@ func _test_dive_seal() -> void:
 	# A depth with no seal answers "open" so the world asks one question.
 	_check(run2.seal_open(sv, 1, tw) and run2.seal_open(sv, DiveRun.DEPTHS, tw),
 		"the deck and the floor are always open")
+
+
+## THE LADDER (Q-V, DESIGN_DESCENT §11): two columns of rectangular wind loops
+## in place of the seal's six fixed bands. Pure geometry, so all of it is
+## testable with no world — which is the point of putting it in `DiveRun` rather
+## than in the weather site that reads it.
+##
+## Six claims, and the ladder is only the thing the owner drew if all six hold:
+## shared walls agree, the deck starts in calm, the pieces never overlap, the
+## wrap is seamless, 4 and 8 rungs both tile the usable sky, and the loop turns
+## the way ruling 3 says it turns.
+func _test_dive_ladder() -> void:
+	_t("THE LADDER: two columns of wind loops, translating, wrapped, non-overlapping")
+	# The shipped geometry: 4 rectangles a column, 4-tile columns against 2-tile
+	# corridors, and a wall as thick as the seal's own band was tall.
+	var wall_tiles := 0.14   # ≈ 4,483 px against a ~33,700 px tile at 8×
+	var conf := DiveRun.ladder_conf(4, 4.0, 2.0, wall_tiles)
+	var n := float(DiveRun.RING.size())
+	var span := DiveRun.ladder_span()
+	_check(is_equal_approx(float(conf["cw"]) * 2.0, 4.0),
+		"the shipped levers give 4-tile columns on a %d-tile ring (%.2f)"
+			% [DiveRun.RING.size(), float(conf["cw"]) * 2.0])
+	_check(is_equal_approx(float(conf["h"]) * 4.0, span),
+		"4 rectangles tile the usable sky exactly (%.4f × 4 = %.4f)"
+			% [float(conf["h"]), span])
+	# THE SHIPPED NUMBERS ARE WRITTEN DOWN TWICE — once as the model's own
+	# constants (which is where §11's table lives, next to the geometry it
+	# describes) and once as the F2 defaults the owner actually flies. They are
+	# two files and nothing joins them, so this is the join: an edit to either
+	# that forgets the other fails here rather than in a playtest.
+	_check(Tunables.get_int("dive_ladder_rungs") == DiveRun.LADDER_RUNGS
+			and is_equal_approx(Tunables.get_num("dive_ladder_sink"), DiveRun.LADDER_SINK)
+			and is_equal_approx(Tunables.get_num("dive_ladder_column_tiles"),
+				DiveRun.LADDER_COLUMN_TILES)
+			and is_equal_approx(Tunables.get_num("dive_ladder_calm_tiles"),
+				DiveRun.LADDER_CALM_TILES),
+		"the F2 defaults ARE the model's shipped numbers (%d rungs, %.0f px/s, %.0f/%.0f tiles)"
+			% [DiveRun.LADDER_RUNGS, DiveRun.LADDER_SINK,
+				DiveRun.LADDER_COLUMN_TILES, DiveRun.LADDER_CALM_TILES])
+	# ...and the ring's own drafts are OFF by default, which is what "the v0.141
+	# wind ring is retired by the ladder" means as a shipped fact (§11).
+	_check(is_zero_approx(Tunables.get_num("dive_zone_wind_mult")),
+		"...and the v0.141 wind ring's drafts default OFF under it")
+
+	# --- 1. RULING 3: THE LOOP TURNS, AND SHARED WALLS AGREE --------------
+	# Sinking column counter-clockwise: left wall DOWN, bottom → RIGHT, right wall
+	# UP, top ← LEFT. Rising column the mirror. Sampled at the vertical centre of
+	# a rectangle for the walls (so the wall's own corner rule owns them) and at
+	# the inner middle for the horizontal bands.
+	var h := float(conf["h"])
+	var cw := float(conf["cw"])
+	var wall := float(conf["wall"])
+	var band := float(conf["band"])
+	# The deck is dead centre of a rectangle at travel 0 (ruling 7), so the
+	# rectangle around it runs from h/2 above the deck to h/2 below.
+	var a_mid := DiveRun.TOP_FRAC
+	# The rectangle the deck sits in is the one CROSSING the floor/ceiling seam
+	# (that is what "the deck is dead centre of a calm" costs), so the horizontal
+	# bands are sampled on the NEXT rectangle down, whose top lip is h/2 below
+	# the deck and whose bottom lip is 3h/2 below it.
+	var a_top_band := DiveRun.TOP_FRAC - (h * 0.5 + band * 0.5)
+	var a_bot_band := DiveRun.TOP_FRAC - (h * 1.5 - band * 0.5)
+	var sink_left := DiveRun.ladder_at(-cw + wall * 0.5, a_mid, 0.0, conf)
+	var sink_right := DiveRun.ladder_at(cw - wall * 0.5, a_mid, 0.0, conf)
+	_check(String(sink_left["part"]) == "left"
+			and (sink_left["dir"] as Vector2).y > 0.0,
+		"the sinking column's LEFT wall blows DOWN")
+	_check(String(sink_right["part"]) == "right"
+			and (sink_right["dir"] as Vector2).y < 0.0,
+		"...and its RIGHT wall blows UP")
+	var sink_top := DiveRun.ladder_at(0.0, a_top_band, 0.0, conf)
+	var sink_bot := DiveRun.ladder_at(0.0, a_bot_band, 0.0, conf)
+	_check(String(sink_top["part"]) == "top" and (sink_top["dir"] as Vector2).x < 0.0,
+		"...its TOP band pushes LEFT, into the down-wall (the chute's first step)")
+	_check(String(sink_bot["part"]) == "bottom" and (sink_bot["dir"] as Vector2).x > 0.0,
+		"...and its BOTTOM band pushes RIGHT")
+	var rise_left := DiveRun.ladder_at(n * 0.5 - cw + wall * 0.5, a_mid, 0.0, conf)
+	var rise_right := DiveRun.ladder_at(n * 0.5 + cw - wall * 0.5, a_mid, 0.0, conf)
+	_check(int(rise_left["column"]) == 1 and int(rise_right["column"]) == 1,
+		"the rising column sits on the seam (both its walls are column 1)")
+	_check((rise_left["dir"] as Vector2).y < 0.0
+			and (rise_right["dir"] as Vector2).y > 0.0,
+		"...and turns the other way: left wall UP, right wall DOWN")
+	# SHARED WALLS AGREE. Close the corridor and the two columns touch; the walls
+	# that meet must blow the same way or the seam would be a shear line.
+	_check((sink_right["dir"] as Vector2) == (rise_left["dir"] as Vector2)
+			and (sink_left["dir"] as Vector2) == (rise_right["dir"] as Vector2),
+		"SHARED WALLS AGREE — sinking-right and rising-left both UP, the other pair DOWN")
+	var closed := DiveRun.ladder_conf(4, 4.0, 0.0, wall_tiles)
+	_check(is_equal_approx(float(closed["cw"]) * 2.0, n * 0.5),
+		"...and with the corridor at 0 the columns fill the ring and touch (%.1f tiles each)"
+			% (float(closed["cw"]) * 2.0))
+
+	# --- 2. RULING 7: THE START IS A SAFE ZONE ----------------------------
+	var deck := DiveRun.ladder_at(0.0, DiveRun.TOP_FRAC, 0.0, conf)
+	_check(String(deck["zone"]) == "calm" and int(deck["column"]) == 0,
+		"at travel 0 the launch deck is in the sinking column's CALM")
+	_check((deck["dir"] as Vector2) == Vector2.ZERO
+			and (deck["carry"] as Vector2).y > 0.0,
+		"...which has NO circulation of its own and carries you down at the stack's speed (ruling 5)")
+	# ...and it is dead CENTRE of that calm: the nearest band is half a rectangle
+	# away in either direction, which is what "nothing rushes the first minute"
+	# means as a number.
+	var up_gap := 0.0
+	var dn_gap := 0.0
+	for i in 400:
+		var step := float(i) * h / 400.0
+		if up_gap <= 0.0 and String(DiveRun.ladder_at(0.0,
+				DiveRun.TOP_FRAC + step, 0.0, conf)["zone"]) == "band":
+			up_gap = step
+		if dn_gap <= 0.0 and String(DiveRun.ladder_at(0.0,
+				DiveRun.TOP_FRAC - step, 0.0, conf)["zone"]) == "band":
+			dn_gap = step
+	_check(up_gap > 0.0 and dn_gap > 0.0 and absf(up_gap - dn_gap) < h * 0.02,
+		"...dead centre of it — %.4f of the world above, %.4f below (%.0f px each at 8x)"
+			% [up_gap, dn_gap, dn_gap * float(IslandGen.WORLD_CELLS.size.y)
+				* TerrainDB.CELL * 8.0])
+
+	# --- 3. THE PIECES NEVER OVERLAP --------------------------------------
+	# Checked on the actual decomposition the wind reads, at several travels and
+	# at both rung counts, because a wrap seam is where an off-by-one would hide.
+	var overlaps := 0
+	var pieces_seen := 0
+	for rungs in [4, 8]:
+		var cf := DiveRun.ladder_conf(rungs, 4.0, 2.0, wall_tiles)
+		for tstep in [0.0, 0.013, 0.05, 0.11, 0.19, 0.37]:
+			var rects := DiveRun.ladder_rects(float(tstep), cf)
+			pieces_seen += rects.size()
+			for i in rects.size():
+				var ra := rects[i] as Dictionary
+				for j in range(i + 1, rects.size()):
+					var rb := rects[j] as Dictionary
+					var x_hit := minf(float(ra["x1"]), float(rb["x1"])) \
+						- maxf(float(ra["x0"]), float(rb["x0"]))
+					var y_hit := minf(float(ra["top"]), float(rb["top"])) \
+						- maxf(float(ra["bottom"]), float(rb["bottom"]))
+					if x_hit > 1e-6 and y_hit > 1e-9:
+						overlaps += 1
+	_check(overlaps == 0,
+		"no two pieces of the ladder ever overlap (%d pieces checked over 12 snapshots)"
+			% pieces_seen)
+
+	# --- 4. 4 AND 8 BOTH TILE THE USABLE SKY ------------------------------
+	# Every altitude in a column is SOMETHING — a wall or a calm, never a hole —
+	# and the calm always exists (two bands and an interior fit at 8 rungs too).
+	for rungs2 in [4, 8]:
+		var cf2 := DiveRun.ladder_conf(rungs2, 4.0, 2.0, wall_tiles)
+		_check(float(cf2["band"]) * 2.0 < float(cf2["h"]),
+			"at %d rungs a rectangle (%.0f px) still has a calm inside two %.0f px bands"
+				% [rungs2, float(cf2["h"]) * 589824.0,
+					float(cf2["band"]) * 589824.0])
+		var holes := 0
+		var calms := 0
+		for i in 500:
+			var a := DiveRun.FLOOR_FRAC + span * (float(i) + 0.5) / 500.0
+			var z := DiveRun.ladder_at(0.0, a, 0.037, cf2)
+			if String(z["zone"]) == "none":
+				holes += 1
+			elif String(z["zone"]) == "calm":
+				calms += 1
+		_check(holes == 0 and calms > 0,
+			"at %d rungs the column is continuous top to bottom (%d holes, %d calm samples)"
+				% [rungs2, holes, calms])
+
+	# --- 5. THE WRAP IS SEAMLESS ------------------------------------------
+	# A ring is a circle: asking one tile-offset past the seam and one tile-offset
+	# short of the other edge must be the same answer, or a hull crossing the seam
+	# would step out of a wall and into one.
+	var seam_bad := 0
+	for i in 60:
+		var x := -n * 0.5 + n * float(i) / 60.0
+		for a2 in [0.2, 0.45, 0.7, 0.84]:
+			var l := DiveRun.ladder_at(x, float(a2), 0.021, conf)
+			var r := DiveRun.ladder_at(x + n, float(a2), 0.021, conf)
+			if String(l["part"]) != String(r["part"]) \
+					or (l["dir"] as Vector2) != (r["dir"] as Vector2):
+				seam_bad += 1
+	_check(seam_bad == 0, "the ring wraps seamlessly — x and x+%d are one place" % int(n))
+	# ...and the rising column really is SPLIT by the seam: pieces touch both
+	# edges of the unrolled ring, which is the owner's "it shows on both flanks".
+	var touches_left := false
+	var touches_right := false
+	for row_v in DiveRun.ladder_rects(0.0, conf):
+		var row := row_v as Dictionary
+		if int(row["column"]) != 1:
+			continue
+		if float(row["x0"]) <= -n * 0.5 + 0.001:
+			touches_left = true
+		if float(row["x1"]) >= n * 0.5 - 0.001:
+			touches_right = true
+	_check(touches_left and touches_right,
+		"the rising column is split by the wrap seam — it shows on both flanks")
+
+	# --- 6. THE STACK TRANSLATES, AND RECYCLES ----------------------------
+	# One rectangle-height of travel puts the geometry back where it started (the
+	# conveyor's period), and in between a fixed point drifts UP through its own
+	# rectangle — which is the rectangle sinking past it.
+	var at0 := DiveRun.ladder_at(0.0, 0.5, 0.0, conf)
+	var at_h := DiveRun.ladder_at(0.0, 0.5, h, conf)
+	_check(String(at0["part"]) == String(at_h["part"]),
+		"one rectangle of travel returns the stack to its own phase — it recycles")
+	# The sinking column sinks and the rising column rises, measured as which way
+	# a fixed point's own rectangle moves past it.
+	var sank := false
+	var rose := false
+	for i in 200:
+		var t2 := float(i) * h / 200.0
+		var s_now := DiveRun.ladder_at(0.0, DiveRun.TOP_FRAC - h * 0.5 + 1e-5,
+			t2, conf)
+		if String(s_now["part"]) == "calm":
+			sank = true    # the top band that was here has moved DOWN off it
+		var r_now := DiveRun.ladder_at(n * 0.5, DiveRun.TOP_FRAC - h * 0.5 - 1e-5,
+			t2, conf)
+		if String(r_now["part"]) == "top":
+			rose = true    # ...and on the far side a band has climbed ONTO it
+	_check(sank and rose,
+		"the sinking column's rectangles sink and the rising column's rise")
+
+	# --- 6b. RULING 6: THE PERIMETER IS A CHUTE, NEVER A TRAP -------------
+	# A tracer released anywhere on the perimeter and carried by the circulation
+	# ALONE (i.e. in the rectangle's own frame, which is where the owner's drawing
+	# is drawn) must LEAVE the rectangle. It cannot circle, and the reason is the
+	# corner rule: the walls own the corners, so the down-wall carries you out
+	# through the bottom instead of handing you back to the bottom band.
+	#
+	# Integrated on the pure field rather than measured on a hull, because "does
+	# this field have a closed orbit" is a question about the field.
+	var trapped := 0
+	var released := 0
+	var half_h := h * 0.5
+	for sxi in 24:
+		for syi in 24:
+			# Start on the perimeter only: skip anything the field calls calm.
+			var x := -cw + 2.0 * cw * float(sxi) / 23.0
+			var vv := h * float(syi) / 23.0
+			var probe := DiveRun.ladder_at(x, DiveRun.TOP_FRAC - (half_h + vv),
+				0.0, conf)
+			if String(probe["zone"]) != "band":
+				continue
+			released += 1
+			# Follow the circulation in the rectangle's frame. Steps are a
+			# fortieth of a wall thickness, so a corner cannot be jumped.
+			var step := float(conf["wall"]) * 0.025
+			var pos := Vector2(x, vv)
+			var out_of_it := false
+			for _i in 4000:
+				var here := DiveRun.ladder_at(pos.x,
+					DiveRun.TOP_FRAC - (half_h + pos.y), 0.0, conf)
+				if String(here["zone"]) == "none" or pos.y < 0.0 or pos.y > h \
+						or absf(pos.x) > cw:
+					out_of_it = true
+					break
+				if String(here["zone"]) == "calm":
+					out_of_it = true   # handed into the interior — also an exit
+					break
+				# `dir` is world sense (+y DOWN) and `pos.y` is depth below the
+				# rectangle's own top lip, so the two agree with no flip.
+				pos += (here["dir"] as Vector2) * step
+			if not out_of_it:
+				trapped += 1
+	_check(released > 0 and trapped == 0,
+		"NEVER CIRCLES — %d perimeter tracers, every one leaves the rectangle" % released)
+
+	# --- 7. THE CLEAR REWARD IS TEMPO, NOT A DOOR (ruling 9) --------------
+	var run3 := DiveRun.new()
+	run3.seed_v = 7788
+	var tw3 := 3.0
+	_check(is_equal_approx(run3.ladder_tempo(7788, tw3), 1.0),
+		"a fresh run's ladder runs at 1.00x")
+	for k in DiveRun.depth_keys(7788, 2, tw3):
+		run3.mark_garrison_killed(String(k))
+	_check(is_equal_approx(run3.ladder_tempo(7788, tw3),
+			1.0 + DiveRun.LADDER_CLEAR_TEMPO),
+		"...clearing one depth buys +%.0f%% for the rest of it"
+			% (DiveRun.LADDER_CLEAR_TEMPO * 100.0))
+	_check(run3.ladder_cleared(7788, tw3) == 1,
+		"...and the HUD's count agrees (1 depth cleared)")
+	for d3 in range(2, DiveRun.DEPTHS):
+		for k in DiveRun.depth_keys(7788, d3, tw3):
+			run3.mark_garrison_killed(String(k))
+	_check(is_equal_approx(run3.ladder_tempo(7788, tw3), DiveRun.LADDER_TEMPO_MAX),
+		"...capped at %.2fx with every depth cleared" % DiveRun.LADDER_TEMPO_MAX)
+	# THE MEMO IS NOT STALE. It is read every frame by the weather stamp and the
+	# only thing that moves it is a kill — including one written straight into the
+	# dictionary, which is what tests and the F2 verbs do.
+	run3.garrison_killed.clear()
+	_check(is_equal_approx(run3.ladder_tempo(7788, tw3), 1.0),
+		"...and reaching into `garrison_killed` directly still moves the tempo")
 
 
 func _test_dive_floating_chunks() -> void:

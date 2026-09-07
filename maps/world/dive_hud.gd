@@ -131,21 +131,23 @@ func _draw_gauge(d: Dictionary) -> void:
 	var y := y0 + float(rungs) * (h + gap) + fs * 2.6
 	draw_string(font, Vector2(x - 52.0 * s, y), "carrying %d" % int(d.get("pot", 0)),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _COIN)
-	# THE SEAL (Q-R): the band under this rung, and how many kills open it. ONE
-	# line, in the stack that is already there — without the count a player cannot
-	# see that two more kills opens the door, and reads the whole band as
-	# arbitrary weather (DESIGN_DESCENT §7.4). Absent entirely at a depth with no
-	# seal under it, and drawn ABOVE the shipless return because a run on foot is
-	# the one that most needs telling a live band will not let it past.
+	# THE LADDER (Q-V): what this depth still has standing, and what killing it
+	# buys. Since the ladder replaced the fixed bands a clear no longer opens a
+	# door — it speeds the whole stack up 25 % for the rest of the run (ruling 9)
+	# — so the same row now counts down to a REWARD instead of to a gate. ONE
+	# line, in the stack that is already there: without the count a player cannot
+	# see that two more kills is worth anything (DESIGN_DESCENT §7.4). Absent at a
+	# depth with no garrison, and drawn ABOVE the shipless return because a run on
+	# foot is the one a wall will least let past.
 	var seal := d.get("seal", {}) as Dictionary
 	if not seal.is_empty():
-		var line := "seal open"
+		var line := "tempo x%.2f" % float(seal.get("tempo", 1.0))
 		var tint := _DIM
 		if bool(seal.get("live", false)):
-			line = "seal %d of %d" % [int(seal.get("left", 0)), int(seal.get("of", 0))]
+			line = "clear %d of %d" % [int(seal.get("left", 0)), int(seal.get("of", 0))]
 			tint = _ALARM
 		if bool(seal.get("inside", false)):
-			line = "IN THE SEAL"
+			line = "IN THE WIND"
 			tint = _ALARM
 		draw_string(font, Vector2(x - 52.0 * s, y + fs * 2.6), line,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, tint)

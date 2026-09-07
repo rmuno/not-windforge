@@ -787,6 +787,52 @@ func _print_scorecard(t: float, met_total: int) -> void:
 			dd, tf, tl, Score.hit_pct(tl, tf), of, ol, Score.hit_pct(ol, of)])
 
 
+# --- THE LADDER (Q-V, DESIGN_DESCENT §11), as the pilot actually met it -------
+#
+# The seal is two columns of moving wind loops now, and the pacing questions the
+# owner asked are all about TIME: how much of a run is spent riding a calm down,
+# how often a wall catches you, how long it holds you when it does, and what it
+# bills while it has you. All four are one accumulator each, sampled on the
+# COMMITTED HULL (the thing the ladder is a decision for) at the probe's own tick.
+var _lad_calm := 0.0
+var _lad_band := 0.0
+var _lad_none := 0.0
+var _lad_entries := 0
+var _lad_in := false
+var _lad_stay := 0.0
+var _lad_longest := 0.0
+var _lad_bill := 0.0
+var _lad_hp_was := -1.0
+
+
+## One tick of "where in the ladder is the hull, and what is it costing".
+## The bill is a DELTA on `hull_integrity` rather than a read of the grind rate:
+## what the owner wants to know is what a wall actually took off the pool while
+## it had hold of the hull, mender refunds and all.
+func _tally_the_ladder(world: Node, hull) -> void:
+	if hull == null or not is_instance_valid(hull) 			or not world.has_method("dive_ladder_at"):
+		return
+	var zone := String((world.call("dive_ladder_at", hull.global_position)
+		as Dictionary).get("zone", "none"))
+	if zone == "band":
+		_lad_band += STEP
+		if not _lad_in:
+			_lad_entries += 1
+			_lad_in = true
+			_lad_stay = 0.0
+		_lad_stay += STEP
+		_lad_longest = maxf(_lad_longest, _lad_stay)
+		if _lad_hp_was >= 0.0:
+			_lad_bill += maxf(_lad_hp_was - hull.hull_integrity, 0.0)
+	else:
+		_lad_in = false
+		if zone == "calm":
+			_lad_calm += STEP
+		else:
+			_lad_none += STEP
+	_lad_hp_was = hull.hull_integrity
+
+
 func _initialize() -> void:
 	var packed: PackedScene = load("res://maps/world/world.tscn")
 	world = packed.instantiate()
@@ -938,6 +984,7 @@ func _initialize() -> void:
 		_fly(d)
 		_shoot()
 		_watch_the_body(t, d)
+		_tally_the_ladder(world, world.get("local_ship"))
 		if d != last_depth:
 			log_lines.append("  depth %d -> %d after %5.1f s   (pot %d, kills %d, surges %d)"
 				% [last_depth, d, t - depth_started, int(run.get("pot")),
@@ -1027,6 +1074,8 @@ func _initialize() -> void:
 	# through" line; the gunnery rate is the ledger below.
 	print("DAMAGE ON US: %d damage events, %.0f total (%.0f per picket met) | integrity %s"
 		% [hits_taken, damage_taken, Score.per_each(damage_taken, met_total), integ])
+	print("LADDER: %.0f s riding a calm | %.0f s in a wall over %d catches (longest %.1f s) | %.0f s in a corridor | %.0f hp of grind"
+		% [_lad_calm, _lad_band, _lad_entries, _lad_longest, _lad_none, _lad_bill])
 	print("OUR FIRE:  %d volleys sent | closest the keel ever came to rock while descending: %.0f px"
 		% [shots_fired, _worst_clear])
 	_print_scorecard(t, met_total)

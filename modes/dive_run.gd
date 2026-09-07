@@ -1670,35 +1670,291 @@ static func has_seal(d: int) -> bool:
 	return d >= 2 and d <= DEPTHS - 1
 
 
-## The altitude fraction the band under depth `d` is CENTRED on: exactly the
-## boundary between depth `d` and `d + 1`, which `depth_of` already rounds at. The
-## seal is the depth boundary made physical — crossing the band and becoming
-## depth d+1 are the same event, so the HUD's depth readout flips in the frame the
-## wind lets go of you.
-static func seal_altitude(d: int) -> float:
-	return depth_altitude(d) - rung_frac() * 0.5
+# --- THE LADDER (Q-V, DESIGN_DESCENT §11 — SUPERSEDES the fixed bands) ------
+#
+# The seal's SIX FIXED BANDS are gone (`seal_altitude` / `seal_band` / `seal_at`
+# were here and are retired with them). What replaces them is the owner's own
+# drawing, 2026-09-06:
+#
+#     ^>>>>>v ..... v<<<<<^ ..... ^>>>>>v .....
+#     ^     v ..... v     ^ ..... ^     v .....
+#     ^<<<<<v ..... v>>>>>^ ..... ^<<<<<v .....
+#
+# TWO COLUMNS OF RECTANGULAR WIND LOOPS, running the whole height of the sky.
+# One SINKING column centred on the ring's landing line, one RISING column on the
+# far side (the wrap seam runs down its middle, so it shows on both flanks), with
+# a calm corridor between them either way round. Each column is a STACK of
+# `rungs` rectangles that translates — sinking rectangles sink, rising ones rise —
+# and a rectangle that runs off one end is reborn at the other, because the stack
+# tiles the sky EXACTLY (`rungs × h == span`) and the whole thing is therefore a
+# torus in altitude. That is the conveyor of ruling 4 with no bookkeeping.
+#
+# A RECTANGLE IS A WIND LOOP: wind on the perimeter, calm inside.
+#
+#   * SINKING column, counter-clockwise (ruling 3): left wall DOWN, bottom band
+#     → RIGHT, right wall UP, top band ← LEFT.
+#   * RISING column, clockwise: the mirror. So the sinking column's right wall
+#     and the rising column's left wall both blow UP, and its left wall and the
+#     rising column's right wall both blow DOWN — shared walls agree, which is
+#     what lets the two columns sit next to each other with the corridor closed.
+#   * THE CALM INTERIOR IS NOT STILL: it carries a mild draught equal to the
+#     STACK'S OWN SPEED (down in the sinking column, up in the rising one), so a
+#     neutral stick rides the rectangle it is in and a full down-stick outruns it
+#     through the bottom band into the next rung's calm (ruling 5).
+#
+# THE WALLS OWN THE CORNERS, and that is the whole of ruling 6 ("it should hinder,
+# not fully impede"). A stalled hull is caught by the top band, pushed sideways
+# into the down-wall, and the wall carries it PAST the bottom band's corner and
+# out of the rectangle — into the calm one rung lower, with the grind paid once.
+# If the horizontal band owned the corner instead, the bottom band would hand it
+# back to the up-wall and it would circle forever, which is the trap the owner
+# ruled out. One `if` order, one ruling.
+#
+# EVERYTHING HERE IS PURE and unit-free: vertical in ALTITUDE FRACTIONS (the
+# currency the rest of this file trades in), horizontal in RING TILE OFFSETS from
+# the ring's centre (the currency `zone_offset` / `draft_strength` trade in). The
+# world converts once, in `world.dive_ladder_wind_at`, so the wind, the grind and
+# the painter cannot disagree about where a wall is.
+
+## The stack, per column. 4 by default; 8 "might be a lot… we'll feel it out"
+## (ruling 2), so both must read — `_test_dive_ladder` runs the geometry at both.
+const LADDER_RUNGS := 4
+
+## How fast the stack translates, px/s at scale 1 (× `world_scale` at the site,
+## the idiom every speed in this file uses) → 1,000 px/s at the shipped 8×, which
+## is ~7.5 minutes of floor-to-ceiling on a neutral stick and about half the
+## speed of a full down-stick (1,920 px/s). F2 `dive_ladder_sink`.
+const LADDER_SINK := 125.0
+
+## The column and the corridor, in RING TILES — but read as a RATIO, not as an
+## absolute (see `ladder_conf`): the ring's own circumference sets the scale so
+## the wrap is seamless at every setting. 4 and 2 give the shipped 12-tile ring
+## exactly the owner's layout: 4-tile columns, 2-tile corridors.
+const LADDER_COLUMN_TILES := 4.0
+const LADDER_CALM_TILES := 2.0
+
+## THE CLEAR REWARD (ruling 9, carried from §0): clearing a depth's whole
+## standing garrison no longer opens anything — it speeds the stack up by 25 %
+## for the rest of the run. The fight buys TEMPO, not permission. Capped so six
+## clears cannot turn the sky into a lift shaft.
+const LADDER_CLEAR_TEMPO := 0.25
+const LADDER_TEMPO_MAX := 2.0
 
 
-## The band under depth `d` as [top_frac, bottom_frac] — altitude fractions, top
-## first (the higher number). Zero-height for a depth with no seal, so a caller
-## that forgets `has_seal` contains nothing rather than everything.
-static func seal_band(d: int) -> Array:
-	if not has_seal(d):
-		return [0.0, 0.0]
-	var mid := seal_altitude(d)
-	var half := BAND_RUNGS * rung_frac() * 0.5
-	return [mid + half, mid - half]
+## The usable sky, in altitude fraction — the ladder's whole domain, and the
+## thing `rungs` rectangles tile exactly.
+static func ladder_span() -> float:
+	return TOP_FRAC - FLOOR_FRAC
 
 
-## Which depth's seal band the altitude fraction `a` is inside, or 0 for none.
-## The bands are half a rung apart and 0.07 rungs tall, so at most one can ever
-## contain a point — this is an exact answer, not a nearest match.
-static func seal_at(a: float) -> int:
-	for d in range(2, DEPTHS):
-		var b := seal_band(d)
-		if a <= float(b[0]) and a >= float(b[1]):
-			return d
-	return 0
+## A perimeter band's thickness, in altitude fraction. The seal's own
+## `BAND_RUNGS` (0.07 rungs = 4,483 px at 8×), unchanged: ruling 4's "all islands
+## smaller than the wind band" is the constraint it was squeezed to satisfy and
+## the ladder does not relax it.
+static func ladder_band_frac() -> float:
+	return BAND_RUNGS * rung_frac()
+
+
+## THE LADDER'S GEOMETRY, resolved once. Everything downstream reads this rather
+## than the levers, so a lever cannot be read twice in one frame and disagree.
+##
+## `wall_tiles` is the band thickness expressed in ring tiles — the ONE number
+## this model cannot derive, because it is a length in px against a tile in px
+## and neither exists here. The world hands it over (`band_px / tile_w`).
+##
+## THE COLUMNS ARE A RATIO OF THE RING, not an absolute width. `col_tiles` and
+## `calm_tiles` set how the ring's HALF-circumference is split between one column
+## and one corridor; the ring's size sets the rest. At the shipped 12 tiles that
+## is literally the owner's 4 and 2, and at any other setting the two columns
+## still land exactly on 0 and the seam — which is what keeps the wrap seamless
+## (a pattern with its own period would tear at the ring's edge).
+static func ladder_conf(rungs: int, col_tiles: float, calm_tiles: float,
+		wall_tiles: float) -> Dictionary:
+	var n := float(RING.size())
+	var hp := n * 0.5
+	var ratio := maxf(col_tiles, 0.01) / maxf(col_tiles + calm_tiles, 0.02)
+	var cw := clampf(hp * ratio * 0.5, 0.05, hp * 0.5)
+	var k := maxi(rungs, 2)
+	var h := ladder_span() / float(k)
+	# Two bands and a calm always fit, even at 8 rungs and a fat band.
+	var band := minf(ladder_band_frac(), h * 0.4)
+	var wall := clampf(wall_tiles, 0.0001, cw * 0.4)
+	return {"n": n, "half": hp, "rungs": k, "h": h, "band": band,
+		"cw": cw, "wall": wall}
+
+
+## The signed SHORT WAY round the ring from `c` to `x`, in tiles — the same
+## wrapped distance `draft_strength` measures, kept signed because the ladder
+## needs to know which WALL a point is near, not just how far.
+static func ladder_offset(x_off_tiles: float, c: float, n: float) -> float:
+	return wrapf(x_off_tiles - c + n * 0.5, 0.0, n) - n * 0.5
+
+
+## Which column `x_off_tiles` is in, as (column, signed offset from its centre):
+## 0 = the SINKING column on the landing line, 1 = the RISING column on the seam,
+## -1 = a calm corridor between them.
+static func ladder_column(x_off_tiles: float, conf: Dictionary) -> Vector2:
+	var n := float(conf["n"])
+	var cw := float(conf["cw"])
+	var s0 := ladder_offset(x_off_tiles, 0.0, n)
+	if absf(s0) <= cw:
+		return Vector2(0.0, s0)
+	var s1 := ladder_offset(x_off_tiles, float(conf["half"]), n)
+	if absf(s1) <= cw:
+		return Vector2(1.0, s1)
+	return Vector2(-1.0, 0.0)
+
+
+## Where a column's rectangle BOUNDARIES sit right now, as a depth-below-the-top
+## offset in [0, h). `travel` is how far the stack has moved (altitude fraction,
+## accumulated by the world so a tempo change never jumps the phase — see
+## `DiveRun.ladder_travel`); the sinking column's boundaries move DOWN with it and
+## the rising column's move UP.
+##
+## BOTH START AT h/2, which is ruling 7 ("the start is a safe zone"): the launch
+## deck sits at `TOP_FRAC`, i.e. depth 0 below the top, so a boundary offset of
+## h/2 puts the deck exactly halfway through a rectangle — dead centre of its
+## calm, half a rectangle from the nearest band in either direction.
+static func ladder_phase(travel: float, column: int, conf: Dictionary) -> float:
+	var h := float(conf["h"])
+	return fposmod(h * 0.5 + (travel if column == 0 else -travel), h)
+
+
+## THE LADDER AT ONE POINT: `{zone, part, column, rung, dir}`.
+##
+## `zone` is "none" (a calm corridor — no ladder wind at all), "calm" (inside a
+## rectangle) or "band" (a perimeter wall, and the only place the grind bills).
+##
+## TWO UNIT VECTORS, and keeping them apart is the whole physics of a MOVING
+## loop. `carry` is the rectangle's own velocity — the air the rectangle is made
+## of, going where the rectangle goes — and `dir` is the CIRCULATION inside it,
+## which is what the owner's drawing draws. The world composes them:
+##
+##     wind = carry × stack_speed  +  dir × wall_speed
+##
+## Get that wrong (circulation alone) and the sinking column's walls are SLOWER
+## than the rectangle they belong to: a hull in the down-wall would be overtaken
+## by its own rectangle and carried out of the TOP of it, which is the chute
+## backwards. Composed, every relative motion is the drawing: in the rectangle's
+## own frame the loop turns counter-clockwise, and in the world the sinking
+## column sinks everywhere, walls included.
+static func ladder_at(x_off_tiles: float, a: float, travel: float,
+		conf: Dictionary) -> Dictionary:
+	var col := ladder_column(x_off_tiles, conf)
+	var c := int(col.x)
+	if c < 0:
+		return {"zone": "none", "part": "", "column": -1, "rung": -1,
+			"dir": Vector2.ZERO, "carry": Vector2.ZERO}
+	var cw := float(conf["cw"])
+	var wall := float(conf["wall"])
+	var h := float(conf["h"])
+	var band := float(conf["band"])
+	var span := ladder_span()
+	# Depth below the ceiling, wrapped — the torus the conveyor runs on. The lava
+	# floor and the ceiling are the SAME point here, which is exactly what makes a
+	# rectangle leaving at one end reappear at the other with no bookkeeping.
+	var u := fposmod(TOP_FRAC - a, span)
+	var p := ladder_phase(travel, c, conf)
+	var rel := fposmod(u - p, span)
+	var v := fposmod(rel, h)
+	var rung := int(floor(rel / h))
+	var sx := col.y
+	# +1 for the sinking column, −1 for the rising one: ONE sign flips the whole
+	# loop from counter-clockwise to clockwise, which is ruling 3 in one variable.
+	var sink := 1.0 if c == 0 else -1.0
+	var carry := Vector2(0.0, sink)
+	# THE WALLS OWN THE CORNERS (see the header): tested first, so a hull carried
+	# down the wall leaves through the bottom corner instead of being handed back
+	# to the bottom band and round again.
+	if sx <= -cw + wall:
+		return {"zone": "band", "part": "left", "column": c, "rung": rung,
+			"dir": Vector2(0.0, sink), "carry": carry}
+	if sx >= cw - wall:
+		return {"zone": "band", "part": "right", "column": c, "rung": rung,
+			"dir": Vector2(0.0, -sink), "carry": carry}
+	if v < band:
+		return {"zone": "band", "part": "top", "column": c, "rung": rung,
+			"dir": Vector2(-sink, 0.0), "carry": carry}
+	if v >= h - band:
+		return {"zone": "band", "part": "bottom", "column": c, "rung": rung,
+			"dir": Vector2(sink, 0.0), "carry": carry}
+	# The calm has no circulation of its own — it IS the rectangle moving, which
+	# is exactly ruling 5's "the calm carries you down gently".
+	return {"zone": "calm", "part": "calm", "column": c, "rung": rung,
+		"dir": Vector2.ZERO, "carry": carry}
+
+
+## EVERY PIECE OF THE LADDER RIGHT NOW, as plain rectangles a painter can draw
+## and a test can intersect: `{column, rung, part, x0, x1, top, bottom, dir}`,
+## x in ring tiles wrapped into [−n/2, n/2], top/bottom in altitude fractions
+## (top first, the higher number — `seal_band`'s old convention).
+##
+## The five parts of a rectangle are emitted SEPARATELY (four walls + the calm)
+## rather than as one rect plus an inset, because that is the decomposition the
+## wind already uses: the pieces are disjoint by construction, so "rectangles
+## never overlap" is a property a test can check on exactly the geometry the
+## physics reads. A piece that crosses the wrap seam or the floor/ceiling seam is
+## emitted as two — the split belongs here, not in every caller.
+static func ladder_rects(travel: float, conf: Dictionary) -> Array:
+	var out: Array = []
+	var n := float(conf["n"])
+	var hp := float(conf["half"])
+	var cw := float(conf["cw"])
+	var wall := float(conf["wall"])
+	var h := float(conf["h"])
+	var band := float(conf["band"])
+	var k := int(conf["rungs"])
+	var span := ladder_span()
+	for c in 2:
+		var xc := 0.0 if c == 0 else hp
+		var sink := 1.0 if c == 0 else -1.0
+		var p := ladder_phase(travel, c, conf)
+		var inner_lo := xc - cw + wall
+		var inner_hi := xc + cw - wall
+		var carry := Vector2(0.0, sink)
+		for i in k:
+			var u0 := p + float(i) * h
+			_ladder_piece(out, c, i, "left", xc - cw, xc - cw + wall,
+				u0, u0 + h, Vector2(0.0, sink), carry, n, hp, span)
+			_ladder_piece(out, c, i, "right", xc + cw - wall, xc + cw,
+				u0, u0 + h, Vector2(0.0, -sink), carry, n, hp, span)
+			_ladder_piece(out, c, i, "top", inner_lo, inner_hi,
+				u0, u0 + band, Vector2(-sink, 0.0), carry, n, hp, span)
+			_ladder_piece(out, c, i, "bottom", inner_lo, inner_hi,
+				u0 + h - band, u0 + h, Vector2(sink, 0.0), carry, n, hp, span)
+			_ladder_piece(out, c, i, "calm", inner_lo, inner_hi,
+				u0 + band, u0 + h - band, Vector2.ZERO, carry, n, hp, span)
+	return out
+
+
+## One piece, split at the wrap seam and at the floor/ceiling seam, appended.
+static func _ladder_piece(out: Array, c: int, rung: int, part: String,
+		x_lo: float, x_hi: float, u_lo: float, u_hi: float, dir: Vector2,
+		carry: Vector2, n: float, hp: float, span: float) -> void:
+	if x_hi <= x_lo or u_hi <= u_lo:
+		return
+	var xw := x_hi - x_lo
+	var uw := u_hi - u_lo
+	var x0 := wrapf(x_lo + hp, 0.0, n) - hp
+	var u0 := fposmod(u_lo, span)
+	var xs: Array = [Vector2(x0, minf(x0 + xw, hp))]
+	if x0 + xw > hp:
+		xs.append(Vector2(-hp, -hp + (x0 + xw - hp)))
+	var us: Array = [Vector2(u0, minf(u0 + uw, span))]
+	if u0 + uw > span:
+		us.append(Vector2(0.0, u0 + uw - span))
+	for xr in xs:
+		for ur in us:
+			var xv := xr as Vector2
+			var uv := ur as Vector2
+			if xv.y <= xv.x or uv.y <= uv.x:
+				continue
+			out.append({
+				"column": c, "rung": rung, "part": part,
+				"x0": xv.x, "x1": xv.y,
+				"top": TOP_FRAC - uv.x, "bottom": TOP_FRAC - uv.y,
+				"dir": dir, "carry": carry,
+			})
 
 
 ## THE AIRSTREAM A HULL FEELS, as a multiple of `SEAL_AIR_SPEED` (ruling 3, "mass
@@ -1761,6 +2017,7 @@ func mark_garrison_killed(key: String) -> void:
 	if key == "":
 		return   # a surge picket carries no key — the F2 verb never counts (§2.4)
 	garrison_killed[key] = true
+	_ladder_tempo_memo = -1.0   # a clear may have just bought tempo (ruling 9)
 
 
 ## The roster memo: `depth_keys` answers, by "seed:depth:tile_widths".
@@ -1806,3 +2063,47 @@ func seal_open(sv: int, d: int, tile_widths: float) -> bool:
 		return true
 	var p := seal_progress(sv, d, tile_widths)
 	return int(p[0]) >= int(p[1])
+
+
+# --- THE LADDER'S LIVE HALF: how far the stack has run, and how fast ---------
+
+## HOW FAR THE STACK HAS TRANSLATED, in altitude fraction. Accumulated by the
+## world (`world._dive_advance_ladder`) rather than derived from `elapsed`,
+## and that is load-bearing: the tempo below CHANGES the speed mid-run, and
+## `speed × clock` would teleport every rectangle the frame a depth is cleared.
+## An accumulator only ever changes the derivative.
+var ladder_travel := 0.0
+
+## `ladder_tempo`'s answer, or -1 when a kill has dirtied it, plus the size of
+## the killed set it was computed against. The tempo is read every frame by the
+## weather stamp and only ever changes when that set does — and the SIZE is
+## carried too because tests (and the F2 verbs) reach into `garrison_killed`
+## directly, where no setter can invalidate anything.
+var _ladder_tempo_memo := -1.0
+var _ladder_tempo_n := -1
+
+
+## THE CLEAR REWARD (ruling 9): the stack runs `1 + 25 %` faster for every depth
+## whose whole standing garrison is dead, for the rest of the run. Clearing no
+## longer OPENS anything — `seal_open` gates nothing now — it buys TEMPO, which
+## is the owner's "if you clear the dive too fast, the wind can move a little
+## faster to avoid dead time" turned from an anti-dead-time compensator into the
+## reward for the fight.
+func ladder_tempo(sv: int, tile_widths: float) -> float:
+	if _ladder_tempo_memo >= 0.0 and _ladder_tempo_n == garrison_killed.size():
+		return _ladder_tempo_memo
+	_ladder_tempo_n = garrison_killed.size()
+	_ladder_tempo_memo = minf(
+		1.0 + LADDER_CLEAR_TEMPO * float(ladder_cleared(sv, tile_widths)),
+		LADDER_TEMPO_MAX)
+	return _ladder_tempo_memo
+
+
+## How many of the run's six depths are cleared — what the HUD's one row counts
+## and the only reason the roster is still read.
+func ladder_cleared(sv: int, tile_widths: float) -> int:
+	var cleared := 0
+	for d in range(2, DEPTHS):
+		if seal_open(sv, d, tile_widths):
+			cleared += 1
+	return cleared
