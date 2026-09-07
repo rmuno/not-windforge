@@ -80,6 +80,7 @@ func _initialize() -> void:
 	_test_ring_terrain_is_periodic()
 	_test_dive_floating_chunks()
 	_test_dive_garrison()
+	_test_dive_seal()
 	await _test_map_room_screen()
 	_test_dive_cards()
 	_test_dive_scrap()
@@ -3799,6 +3800,202 @@ func _test_ring_terrain_is_periodic() -> void:
 ## MODEL is the only place either can be wrong. Pinned: only the rock tiles grow
 ## them, they stay inside their own tile, and they hang in the ladder's air —
 ## never above the launch deck, never in the lava.
+## THE DESCENT SEAL, the pure half (DESIGN_DESCENT.md, owner rulings §0).
+##
+## The geometry is squeezed between things that live in three other files, so
+## most of what follows is a PARITY guard rather than a behaviour check: an edit
+## to `IslandGen.R_MAX`, to `TOP_FRAC`, to the landing shelf or to `BAND_RUNGS`
+## must redden here instead of quietly voiding ruling 4 ("all islands smaller
+## than the wind band") or dropping a band on top of a landing you are meant to
+## stand on.
+func _test_dive_seal() -> void:
+	_t("THE DESCENT SEAL: six bands, the geometry they must clear, and the lock")
+	var tw := 20.0
+	var sv := 424242
+
+	# --- SIX SEALS, AND WHERE THEY SIT ------------------------------------
+	var seals := 0
+	for d in range(0, DiveRun.DEPTHS + 2):
+		if DiveRun.has_seal(d):
+			seals += 1
+	_check(seals == 6, "six seals in a run, under depths 2..%d (got %d)"
+		% [DiveRun.DEPTHS - 1, seals])
+	_check(not DiveRun.has_seal(1) and not DiveRun.has_seal(DiveRun.DEPTHS),
+		"...never under the launch deck, never under the floor")
+	for d in range(2, DiveRun.DEPTHS):
+		var mid := (DiveRun.depth_altitude(d) + DiveRun.depth_altitude(d + 1)) * 0.5
+		_check(is_equal_approx(DiveRun.seal_altitude(d), mid),
+			"the band under depth %d is centred on the %d/%d boundary itself" % [d, d, d + 1])
+		var b := DiveRun.seal_band(d)
+		_check(float(b[0]) > float(b[1]),
+			"...and reports [top, bottom] with top the higher altitude")
+		_check(is_equal_approx(float(b[0]) - float(b[1]),
+				DiveRun.BAND_RUNGS * DiveRun.rung_frac()),
+			"...%.2f rungs tall" % DiveRun.BAND_RUNGS)
+		_check(DiveRun.seal_at(DiveRun.seal_altitude(d)) == d
+				and DiveRun.seal_at(DiveRun.depth_altitude(d)) == 0,
+			"...you are in it at its centre and out of it at the rung above")
+	_check(DiveRun.seal_band(1)[0] == DiveRun.seal_band(1)[1],
+		"a depth with no seal has a zero-height band — it contains nothing")
+
+	# The 8× world the numbers were authored against, from the same constants
+	# the generator uses.
+	var scale := 8.0
+	var world_px := float(IslandGen.WORLD_CELLS.size.y) * TerrainDB.CELL * scale
+	var rung_px := DiveRun.rung_frac() * world_px
+	var band_px := DiveRun.BAND_RUNGS * rung_px
+
+	# --- RULING 4: ALL ISLANDS SMALLER THAN THE WIND BAND ------------------
+	# `IslandGen._place_island` gives ry = max(3·sub, round(radius × 0.7)); the cap
+	# overwrites body cells and adds no rows, so 2·ry+1 cells IS the tallest island.
+	var island_px := float(2 * int(round(float(IslandGen.R_MAX) * 0.7)) + 1) \
+		* TerrainDB.CELL * scale
+	_check(band_px > island_px,
+		"the band (%.0f px) is taller than the tallest island (%.0f px) — %.2f× clear"
+			% [band_px, island_px, band_px / maxf(island_px, 1.0)])
+
+	# --- A BAND NEVER LANDS ON A LANDING -----------------------------------
+	# A landing is `World.LAUNCH_SHELF_PX.y` × scale tall and sits at a rung
+	# centre; a band's near edge is (0.5 - BAND_RUNGS/2) rungs away from one.
+	var shelf_px := 200.0 * scale   # World.LAUNCH_SHELF_PX.y — read here so an
+	# edit to the shelf that reached a band would fail this line rather than the game.
+	var gap_px := (0.5 - DiveRun.BAND_RUNGS * 0.5) * rung_px - shelf_px
+	_check(gap_px > 0.0,
+		"no band touches a landing shelf (%.0f px of clear air between them)" % gap_px)
+
+	# --- ...NOR ON A FLOATING SLAB ----------------------------------------
+	# A slab's `h` is in TILE widths and its `alt` is an altitude fraction, so the
+	# comparison needs the tile's px width. Rebuilt from the same two numbers
+	# `world.dive_nominal_tile_w` uses (the launch shelf's span × the F2 tile
+	# width), with a tenth over the top for the lattice snap that function applies
+	# — this file is the pure suite and cannot ask a world.
+	var tile_px := 1400.0 * scale * Tunables.get_num("dive_zone_tile_widths") * 1.1
+	var slab_frac_cap := DiveRun.CHUNK_W_MAX * DiveRun.CHUNK_ASPECT * tile_px / world_px
+	var worst := INF
+	for s2 in [11, 918273, 5, 99999]:
+		for tile in DiveRun.RING.size():
+			for d in range(2, DiveRun.DEPTHS + 1):
+				for row in DiveRun.tile_chunks(s2, tile, d):
+					var alt := float((row as Dictionary)["alt"])
+					for dd in range(2, DiveRun.DEPTHS):
+						var b2 := DiveRun.seal_band(dd)
+						# Clear if the slab's whole reach is above the band's top or
+						# below its bottom.
+						var above := (alt - slab_frac_cap * 0.5) - float(b2[0])
+						var below := float(b2[1]) - (alt + slab_frac_cap * 0.5)
+						worst = minf(worst, maxf(above, below))
+	_check(worst > 0.0,
+		"no floating slab reaches a band (worst clearance %.4f of world height, %.0f px)"
+			% [worst, worst * world_px])
+
+	# --- RULING 3: MASS BEATS IT ------------------------------------------
+	_check(is_equal_approx(DiveRun.seal_speed_for(DiveRun.BETA_REF), 1.0),
+		"the stock starter (β %.2f) feels exactly the authored airstream" % DiveRun.BETA_REF)
+	var prev := INF
+	var strictly := true
+	for b3 in [DiveRun.BETA_REF * 0.6, DiveRun.BETA_REF * 0.9, DiveRun.BETA_REF,
+			DiveRun.BETA_REF * 1.5, DiveRun.BETA_REF * 2.5]:
+		var v := DiveRun.seal_speed_for(b3)
+		if v >= prev:
+			strictly = false
+		prev = v
+	_check(strictly, "the airstream a hull feels falls strictly as β rises — mass wins")
+	_check(is_equal_approx(DiveRun.seal_speed_for(DiveRun.BETA_REF * 100.0),
+			DiveRun.SEAL_SPEED_MIN)
+		and is_equal_approx(DiveRun.seal_speed_for(DiveRun.BETA_REF * 0.001),
+			DiveRun.SEAL_SPEED_MAX),
+		"...clamped to [%.2f, %.2f]× at both ends"
+			% [DiveRun.SEAL_SPEED_MIN, DiveRun.SEAL_SPEED_MAX])
+	_check(is_equal_approx(DiveRun.beta_ref_at(8.0), DiveRun.BETA_REF)
+		and is_equal_approx(DiveRun.beta_ref_at(1.0), DiveRun.BETA_REF / 8.0),
+		"β scales with the world (measured at 8×, correct at 1×)")
+
+	# --- THE GRIND'S FRONTAL MEASURE --------------------------------------
+	_check(DiveRun.seal_sites(DiveRun.BEAM_REF) == DiveRun.SEAL_SITES,
+		"the stock beam grinds at %d sites = %.0f hp/s"
+			% [DiveRun.SEAL_SITES, float(DiveRun.SEAL_SITES) * DiveRun.SEAL_GRIND])
+	_check(DiveRun.seal_sites(DiveRun.BEAM_REF * 0.05) == DiveRun.SEAL_SITES_MIN,
+		"a dart still pays the %d-site floor" % DiveRun.SEAL_SITES_MIN)
+	_check(DiveRun.seal_sites(DiveRun.BEAM_REF * 20.0) == DiveRun.SEAL_SITES_MAX,
+		"a barge is capped at %d sites" % DiveRun.SEAL_SITES_MAX)
+	# The beam yardstick scales with the world exactly as β does — the toll's
+	# frontal measure and the force's must never be read at different scales, or
+	# the 8× starter would grind at the 12-site cap while feeling a 1× airstream.
+	_check(is_equal_approx(DiveRun.beam_ref_at(8.0), DiveRun.BEAM_REF)
+		and is_equal_approx(DiveRun.beam_ref_at(1.0), DiveRun.BEAM_REF / 8.0),
+		"the beam yardstick scales with the world too")
+	_check(DiveRun.seal_sites(DiveRun.BEAM_REF, DiveRun.beam_ref_at(8.0))
+			== DiveRun.seal_sites(DiveRun.BEAM_REF / 8.0, DiveRun.beam_ref_at(1.0)),
+		"...so one hull grinds at the same site count at either scale")
+	# THE CROSSING'S PRICE, from the constants alone (the live measurement is in
+	# scale_startup_test). Band height / (down stick − airstream) × sites × grind,
+	# against the shipped pool: DESCENT §3.3's X ≈ 30 %.
+	var cross_px := DiveRun.BAND_RUNGS * DiveRun.rung_frac() \
+		* float(IslandGen.WORLD_CELLS.size.y) * TerrainDB.CELL * 8.0
+	var cross_v := (240.0 - DiveRun.SEAL_AIR_SPEED) * 8.0
+	var bill := cross_px / cross_v * float(DiveRun.SEAL_SITES) * DiveRun.SEAL_GRIND
+	_check(bill / 3000.0 > 0.2 and bill / 3000.0 < 0.45,
+		"a stock crossing prices at %.0f hp = %.0f%% of a 3,000 pool (%.2f s at %.0f px/s)"
+			% [bill, bill / 3000.0 * 100.0, cross_px / cross_v, cross_v])
+
+	# --- THE LOCK: KILLED ≠ DESPAWNED (§2.4) ------------------------------
+	var run := DiveRun.new()
+	run.seed_v = sv
+	var keys := DiveRun.depth_keys(sv, 2, tw)
+	_check(keys.size() == DiveRun.surge_count(2),
+		"depth 2's seal is locked to its whole garrison (%d keys)" % keys.size())
+	_check(not run.seal_open(sv, 2, tw), "a fresh run's seal is LIVE")
+	for i in keys.size():
+		if i == keys.size() - 1:
+			_check(not run.seal_open(sv, 2, tw),
+				"...still live with one of %d left" % keys.size())
+		run.mark_garrison_killed(String(keys[i]))
+	_check(run.seal_open(sv, 2, tw), "...and OPEN the moment the last one dies")
+	_check(run.seal_progress(sv, 2, tw) == [keys.size(), keys.size()],
+		"the HUD count agrees with the lock")
+	# THE MEMO SAYS THE SAME THING AS THE FUNCTION IT CACHES. `seal_open` is read
+	# by the weather stamp, the toll and the door's one notification every frame,
+	# and each read used to rebuild the whole ring — a Dictionary per garrison
+	# entry, 60 times a second, for an answer fixed at `begin_dive`. The cache is
+	# keyed on the arguments, so this also pins that a different seed or a retuned
+	# tile width gets its own answer instead of the first one asked for.
+	var memo_same := true
+	for d_m in range(2, DiveRun.DEPTHS):
+		if run.depth_roster(sv, d_m, tw) != DiveRun.depth_keys(sv, d_m, tw):
+			memo_same = false
+		if run.depth_roster(sv, d_m, tw) != DiveRun.depth_keys(sv, d_m, tw):
+			memo_same = false   # ...and again, off the cache this time
+	_check(memo_same, "the roster memo answers exactly what depth_keys computes")
+	_check(run.depth_roster(sv + 1, 2, tw) == DiveRun.depth_keys(sv + 1, 2, tw)
+			and run.depth_roster(sv, 2, tw * 2.0)
+				== DiveRun.depth_keys(sv, 2, tw * 2.0),
+		"...and a different seed or tile width is a different memo, not a stale one")
+
+	# A CULLED SURVIVOR IS NOT A DEAD ONE. The cull unmarks it (so it comes back
+	# when you return); only a kill writes the permanent record.
+	var run2 := DiveRun.new()
+	run2.seed_v = sv
+	var keys3 := DiveRun.depth_keys(sv, 3, tw)
+	for k3 in keys3:
+		run2.mark_garrison_spawned(String(k3))
+	for k3 in keys3:
+		run2.unmark_garrison_spawned(String(k3))
+	_check(not run2.seal_open(sv, 3, tw),
+		"culling depth 3's whole garrison does NOT open its seal")
+	for k3 in keys3:
+		_check(not run2.garrison_is_spawned(String(k3)), "...every culled entry is pending again")
+		break
+	_check(not run2.garrison_is_killed(String(keys3[0])),
+		"...and none of them counts as killed")
+	# A SURGE PICKET CARRIES NO KEY, so the F2 verb can never open a door.
+	run2.mark_garrison_killed("")
+	_check(run2.garrison_killed.size() == 0,
+		"a keyless (surge) kill writes nothing — surges never count")
+	# A depth with no seal answers "open" so the world asks one question.
+	_check(run2.seal_open(sv, 1, tw) and run2.seal_open(sv, DiveRun.DEPTHS, tw),
+		"the deck and the floor are always open")
+
+
 func _test_dive_floating_chunks() -> void:
 	_t("THE ROCKS: floating land in the ring's intermediate tiles")
 	var sv := 918273
