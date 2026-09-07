@@ -56,9 +56,10 @@ enum Type {
 ##   shield: blocks BULLETS but not bodies (the control panel is furniture
 ##           you stand at, not a wall — owner spec). Rendered as a separate
 ##           layer-4 child body, because per-shape layers do not exist.
-## thrust  — propulsive force at full input. ONE propeller block serves both
-##           axes: its axis derives from mounting (see Ship._derive_prop_axes) —
-##           hung under a hull it lifts, mounted on a side wall it pushes.
+## thrust  — propulsive force at full input, BEFORE PROP_STRENGTH (below).
+##           ONE propeller block serves both axes: its axis derives from
+##           mounting (see Ship._derive_prop_axes) — hung under a hull it
+##           lifts, mounted on a side wall it pushes.
 ## power   — power produced (engines).
 ## draw    — power consumed at full activity (propellers, turrets).
 ## is_core — ship survives severing around blocks flagged as core.
@@ -110,6 +111,27 @@ const BLOCKS := {
 ## Newtons of lift per unit of `lift` at full air density. Tuned so gravity
 ## (980) is exactly cancelled: one gasbag holds up `lift` units of mass.
 const LIFT_PER_MASS := 980.0
+
+## THE PROPELLER'S RATED FORCE, ×  (owner 2026-09-07: "add 50% thrust to ships
+## somehow — propellers should be that much stronger. This applies to both
+## vertical and horizontal motion"). The owner flew the Dive's `thrust` card at
+## 1.35 and wanted that as the baseline, so the whole `thrust` column is dialled
+## here rather than in one mode: expedition and the Dive, P(V) and P(H), yours
+## and theirs.
+##
+## WHY A SEPARATE CONSTANT AND NOT 45000 IN THE TABLE: `draw` is a sibling column
+## and must NOT follow. A propeller pulls 1.5× the force for the same 900 power —
+## the owner asked for stronger props, not hungrier ones, and the starter has no
+## supply headroom to pay for a 1.5× bill (see DECISIONS). Baking the force into
+## the table would also collapse the two into one number the next reader cannot
+## tell apart. `Ship.thrust_mult` stays the CARD's channel at 1.0, so a taken
+## card still reads as a card and stacks on top of this (1.5 × 1.35).
+##
+## Live lever: F2 → World → "Prop strength" (`Tunables.get_num("prop_strength")`
+## is the read; 1.0 is the pre-2026-09-07 force). Applied at USE TIME in
+## `Ship._physics_process`, next to `_fp_norm`, so a mid-flight change lands
+## without a rebuild.
+const PROP_STRENGTH := 1.5
 
 ## True component footprints at the shipped 8× scale (owner survey,
 ## WORLD_SPEC.md → "Scale and component footprints, observed"): engine
